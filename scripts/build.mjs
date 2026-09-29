@@ -16,7 +16,7 @@ const coreRoot = packageRoot('tesseract.js-core')
 
 await mkdir(dist, { recursive: true })
 
-// The OCR extension entry ships a public type surface without pulling Host/UI
+// The extension entries ship a public type surface without pulling Host/UI
 // development-only declarations into an external engine plugin.
 await new Promise((resolveBuild, rejectBuild) => {
   const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.ocr.json'], {
@@ -76,6 +76,12 @@ await writeFile(join(dist, 'client.js'), `window.__ModuleLoader__.load({\n  id: 
 const ocrBuild = await build({
   ...browser, entryPoints: ['src/ocr/index.ts'], outfile: 'dist/ocr.js', format: 'esm',
 })
+const translationBuild = await build({
+  ...browser, entryPoints: ['src/translation/index.ts'], outfile: 'dist/translation.js', format: 'esm',
+})
+const dictionaryBuild = await build({
+  ...browser, entryPoints: ['src/client/native-dictionary.ts'], outfile: 'dist/native-dictionary.js', format: 'esm',
+})
 const bridgeBuild = await build({
   ...browser, entryPoints: ['src/ocr/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
 })
@@ -104,7 +110,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including embedded font/WASM assets.
 const roots = new Set([pdfRoot, tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, clientBuild, ocrBuild, bridgeBuild]) {
+for (const result of [hostBuild, clientBuild, ocrBuild, translationBuild, dictionaryBuild, bridgeBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -129,4 +135,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, Harness Client, OCR SDK, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, Harness Client, OCR/translation/dictionary SDKs, and ${manifestFiles.length} local OCR resources.`)

@@ -13,5 +13,5 @@
     "rootDir": "src",
     "outDir": "dist/types"
   },
-  "include": ["src/ocr/**/*.ts"]
+  "include": ["src/ocr/**/*.ts", "src/translation/**/*.ts", "src/client/native-dictionary.ts"]
 }

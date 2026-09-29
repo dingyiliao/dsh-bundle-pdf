@@ -82,6 +82,19 @@
 .dsh-pdf-mode-region :is(.dsh-pdf-text-layer, .dsh-pdf-ocr-layer), .dsh-pdf-mode-note :is(.dsh-pdf-text-layer, .dsh-pdf-ocr-layer) { pointer-events: none; user-select: none; }
 .dsh-pdf-comments, .dsh-pdf-search-panel { position: absolute; inset: 0 0 0 auto; z-index: 6; width: 260px; max-width: min(80%, 320px); background: var(--pdf-panel); overflow: hidden; border-left: 1px solid var(--pdf-border); box-shadow: var(--dsw-elevation-prominent); }
 .dsh-pdf-panel-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: 10px; }
+.dsh-pdf-translation-panel { position: absolute; inset: 0 0 0 auto; z-index: 6; width: min(360px, 85%); min-width: 0; overflow: hidden; background: var(--pdf-panel); border-left: 1px solid var(--pdf-border); box-shadow: var(--dsw-elevation-prominent); }
+.dsh-pdf-translation-meta { color: var(--pdf-muted); font-size: 12px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.dsh-pdf-translation-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0; }
+.dsh-pdf-translation-controls label { width: 100%; font-size: 12px; color: var(--pdf-muted); }
+.dsh-pdf-translation-controls select { flex: 1; }
+.dsh-pdf-translation-original { margin-block: 12px; }
+.dsh-pdf-translation-original summary { cursor: pointer; color: var(--pdf-muted); }
+.dsh-pdf-translation-text { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; line-height: 1.6; }
+.dsh-pdf-translation-result { margin: 12px 0; }
+.dsh-pdf-translation-result h4 { font-size: 13px; margin: 0 0 8px; }
+.dsh-pdf-translation-status { color: var(--pdf-muted); font-size: 12px; margin-block: 8px; }
+.dsh-pdf-translation-error, .dsh-pdf-translation-warning { padding: 8px; border: 1px solid var(--pdf-border); border-radius: 5px; overflow-wrap: anywhere; }
+.dsh-pdf-translation-warnings { font-size: 12px; color: var(--pdf-muted); padding-left: 18px; }
 .dsh-pdf-search-panel { inset: 0 auto 0 0; border-left: 0; border-right: 1px solid var(--pdf-border); }
 .dsh-pdf-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .dsh-pdf-panel-heading h3 { margin: 0; font-size: 13px; }

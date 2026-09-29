@@ -20,12 +20,13 @@ export interface SettingsProps {
   form: ConfigForm
   t: (key: string) => string
   engines: readonly { id: string; label: string }[]
+  translationEngines: readonly { id: string; label: string }[]
 }
 
 export const settingsLocales = {
   zh: {
     'settings.title': 'PDF',
-    'settings.description': '配置扫描件文字识别、标注和阅读跳转。修改后手动保存。',
+    'settings.description': '配置扫描件文字识别、选中文字翻译、标注和阅读跳转。修改后手动保存。',
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
     'settings.memory': '当前连接仅支持临时设置，无法保存到 Host。',
@@ -39,6 +40,16 @@ export const settingsLocales = {
     'settings.languageHelp': '使用所选引擎的语言代码。LocalOCR 可用 eng、chi_sim，以 + 分隔。',
     'settings.ocrTimeoutMs': '识别超时（毫秒）',
     'settings.timeoutHelp': '单次 OCR 请求的最长等待时间。',
+    'settings.translationEngine': '翻译引擎',
+    'settings.translationNone': 'NoneTranslation · 关闭翻译',
+    'settings.translationDshModel': 'DSH 模型 · 文字翻译',
+    'settings.translationHelp': '仅在点击翻译时，将选中文字提交给所选引擎。翻译请求和结果不会加入会话历史。选择 NoneTranslation 可关闭翻译。',
+    'settings.translationSourceLanguage': '原文语言',
+    'settings.translationSourceHelp': 'auto 表示自动检测。也可输入 BCP 47 语言标签或语言名称，如 en、英语。',
+    'settings.translationTargetLanguage': '目标语言',
+    'settings.translationTargetHelp': '输入 BCP 47 语言标签或语言名称，如 zh、zh-Hans、中文。',
+    'settings.translationTimeoutMs': '翻译超时（毫秒）',
+    'settings.translationTimeoutHelp': '单次翻译请求的最长等待时间，1000–600000 毫秒。',
     'settings.defaultColor': '默认标注颜色',
     'settings.colorHelp': '仅用于之后新增的高亮、下划线等标注。',
     'settings.historyCapacity': '跳转历史容量',
@@ -61,14 +72,17 @@ export const settingsLocales = {
     'settings.refused': '设置未被接受。请检查字段或重新载入最新设置。',
     'settings.failed': '保存失败：',
     'settings.invalidNumber': '请输入大于 0 的整数。',
+    'settings.invalidTimeout': '请输入 1000 到 600000 之间的整数。',
     'settings.invalidLanguage': '请输入识别语言。',
+    'settings.invalidTranslationLanguage': '请输入不超过 100 个字符的翻译语言。',
     'settings.invalidColor': '请输入六位十六进制颜色，例如 #ffff00。',
     'settings.invalidEngine': '请选择一个可用的 OCR 引擎。',
+    'settings.invalidTranslationEngine': '请选择一个可用的翻译引擎。',
     'settings.validation': '请先修正标出的设置。',
   },
   en: {
     'settings.title': 'PDF',
-    'settings.description': 'Configure scanned text recognition, annotations, and reading navigation. Save changes manually.',
+    'settings.description': 'Configure scanned text recognition, selected text translation, annotations, and reading navigation. Save changes manually.',
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
     'settings.memory': 'This connection only supports temporary settings and cannot save them to the Host.',
@@ -82,6 +96,16 @@ export const settingsLocales = {
     'settings.languageHelp': 'Use the selected engine’s language codes. LocalOCR supports eng and chi_sim, separated by +.',
     'settings.ocrTimeoutMs': 'Recognition timeout (milliseconds)',
     'settings.timeoutHelp': 'Maximum waiting time for one OCR request.',
+    'settings.translationEngine': 'Translation engine',
+    'settings.translationNone': 'NoneTranslation · Translation disabled',
+    'settings.translationDshModel': 'DSH model · Text translation',
+    'settings.translationHelp': 'Selected text is sent to the chosen engine only when you click Translate. Requests and results are not added to conversation history. Choose NoneTranslation to disable translation.',
+    'settings.translationSourceLanguage': 'Source language',
+    'settings.translationSourceHelp': 'Use auto to detect the language, or enter a BCP 47 tag or language name, such as en or English.',
+    'settings.translationTargetLanguage': 'Target language',
+    'settings.translationTargetHelp': 'Enter a BCP 47 tag or language name, such as zh, zh-Hans, or Chinese.',
+    'settings.translationTimeoutMs': 'Translation timeout (milliseconds)',
+    'settings.translationTimeoutHelp': 'Maximum waiting time for one translation request, from 1000 to 600000 milliseconds.',
     'settings.defaultColor': 'Default annotation color',
     'settings.colorHelp': 'Applies to highlights, underlines, and other annotations created later.',
     'settings.historyCapacity': 'Navigation history capacity',
@@ -104,14 +128,18 @@ export const settingsLocales = {
     'settings.refused': 'Settings were not accepted. Check the fields or load the latest settings.',
     'settings.failed': 'Could not save: ',
     'settings.invalidNumber': 'Enter a positive integer.',
+    'settings.invalidTimeout': 'Enter an integer from 1000 to 600000.',
     'settings.invalidLanguage': 'Enter a recognition language.',
+    'settings.invalidTranslationLanguage': 'Enter a translation language of at most 100 characters.',
     'settings.invalidColor': 'Enter a six-digit hexadecimal color, such as #ffff00.',
     'settings.invalidEngine': 'Choose an available OCR engine.',
+    'settings.invalidTranslationEngine': 'Choose an available translation engine.',
     'settings.validation': 'Correct the highlighted settings first.',
   },
 } as const
 
-const fields = ['ocrEngine', 'ocrLanguages', 'ocrTimeoutMs', 'defaultColor', 'historyCapacity', 'maxFileBytes'] as const
+const fields = ['ocrEngine', 'ocrLanguages', 'ocrTimeoutMs', 'translationEngine', 'translationSourceLanguage',
+  'translationTargetLanguage', 'translationTimeoutMs', 'defaultColor', 'historyCapacity', 'maxFileBytes'] as const
 type Field = typeof fields[number]
 type Draft = Record<Field, string>
 interface Editor { source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[] }
@@ -124,7 +152,8 @@ const buttonStyle: CSSProperties = { ...inputStyle, width: 'auto', cursor: 'poin
 const noticeStyle: CSSProperties = { padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, lineHeight: 1.6 }
 
 function toDraft(settings: PdfSettings): Draft {
-  return Object.fromEntries(fields.map(field => [field, String(settings[field])])) as Draft
+  const complete = { ...defaultSettings, ...settings }
+  return Object.fromEntries(fields.map(field => [field, String(complete[field])])) as Draft
 }
 function isDirty(editor: Editor | null): boolean {
   return editor !== null && (editor.unsets.length > 0 || fields.some(field => editor.source[field] !== editor.draft[field]))
@@ -136,7 +165,7 @@ function acceptedEditor(snapshot: ConfigFormSnapshot): Editor | null {
 }
 
 /** Settings card with an explicit save boundary and revision-fenced local edits. */
-export function Settings({ form, t, engines }: SettingsProps) {
+export function Settings({ form, t, engines, translationEngines }: SettingsProps) {
   const tr = useCallback((key: keyof typeof settingsLocales.zh): string => {
     const value = t(key)
     return value && value !== key ? value : settingsLocales.zh[key]
@@ -182,15 +211,26 @@ export function Settings({ form, t, engines }: SettingsProps) {
   const available = [{ id: 'none', label: tr('settings.ocrNone') }, ...engines.filter(engine => engine.id !== 'none').map(engine => ({
     id: engine.id, label: engine.id === 'local' ? tr('settings.ocrLocal') : engine.label,
   }))].filter((engine, index, all) => all.findIndex(other => other.id === engine.id) === index)
+  const availableTranslations = [{ id: 'none', label: tr('settings.translationNone') },
+    ...translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
+      id: engine.id, label: engine.id === 'dsh-model' ? tr('settings.translationDshModel') : engine.label,
+    }))].filter((engine, index, all) => all.findIndex(other => other.id === engine.id) === index)
   const validation: Partial<Record<Field, string>> = {}
   if (editor) {
-    for (const field of ['ocrTimeoutMs', 'historyCapacity', 'maxFileBytes'] as const) {
+    for (const field of ['ocrTimeoutMs', 'translationTimeoutMs', 'historyCapacity', 'maxFileBytes'] as const) {
       const value = Number(editor.draft[field])
       if (!/^\d+$/.test(editor.draft[field]) || !Number.isSafeInteger(value) || value < 1) validation[field] = tr('settings.invalidNumber')
+      if ((field === 'ocrTimeoutMs' || field === 'translationTimeoutMs') && (value < 1000 || value > 600000)) {
+        validation[field] = tr('settings.invalidTimeout')
+      }
     }
     if (!editor.draft.ocrLanguages.trim()) validation.ocrLanguages = tr('settings.invalidLanguage')
+    for (const field of ['translationSourceLanguage', 'translationTargetLanguage'] as const) {
+      if (!editor.draft[field].trim() || editor.draft[field].trim().length > 100) validation[field] = tr('settings.invalidTranslationLanguage')
+    }
     if (!/^#[0-9a-f]{6}$/i.test(editor.draft.defaultColor)) validation.defaultColor = tr('settings.invalidColor')
     if (!available.some(engine => engine.id === editor.draft.ocrEngine)) validation.ocrEngine = tr('settings.invalidEngine')
+    if (!availableTranslations.some(engine => engine.id === editor.draft.translationEngine)) validation.translationEngine = tr('settings.invalidTranslationEngine')
   }
 
   function edit(field: Field, value: string) {
@@ -229,7 +269,7 @@ export function Settings({ form, t, engines }: SettingsProps) {
     const ops = fields.filter(field => editor.unsets.includes(field) || editor.draft[field] !== editor.source[field]).map(field =>
       editor.unsets.includes(field) ? { op: 'unset' as const, path: [field] } : {
         op: 'set' as const, path: [field],
-        value: field === 'ocrTimeoutMs' || field === 'historyCapacity' || field === 'maxFileBytes'
+        value: field === 'ocrTimeoutMs' || field === 'translationTimeoutMs' || field === 'historyCapacity' || field === 'maxFileBytes'
           ? Number(editor.draft[field]) : editor.draft[field].trim(),
       })
     const owner = form
@@ -283,7 +323,14 @@ export function Settings({ form, t, engines }: SettingsProps) {
         {available.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
       </select>)}
       {fieldRow('ocrLanguages', 'settings.languageHelp', <input {...attributes('ocrLanguages')} value={editor.draft.ocrLanguages} spellCheck={false} onChange={event => edit('ocrLanguages', event.target.value)} />)}
-      {fieldRow('ocrTimeoutMs', 'settings.timeoutHelp', <input {...attributes('ocrTimeoutMs')} type="number" min={1} step={1} value={editor.draft.ocrTimeoutMs} onChange={event => edit('ocrTimeoutMs', event.target.value)} />)}
+      {fieldRow('ocrTimeoutMs', 'settings.timeoutHelp', <input {...attributes('ocrTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.ocrTimeoutMs} onChange={event => edit('ocrTimeoutMs', event.target.value)} />)}
+      {fieldRow('translationEngine', 'settings.translationHelp', <select {...attributes('translationEngine')} value={editor.draft.translationEngine} onChange={event => edit('translationEngine', event.target.value)}>
+        {!availableTranslations.some(engine => engine.id === editor.draft.translationEngine) && <option value={editor.draft.translationEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.translationEngine}</option>}
+        {availableTranslations.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
+      </select>)}
+      {fieldRow('translationSourceLanguage', 'settings.translationSourceHelp', <input {...attributes('translationSourceLanguage')} value={editor.draft.translationSourceLanguage} spellCheck={false} onChange={event => edit('translationSourceLanguage', event.target.value)} />)}
+      {fieldRow('translationTargetLanguage', 'settings.translationTargetHelp', <input {...attributes('translationTargetLanguage')} value={editor.draft.translationTargetLanguage} spellCheck={false} onChange={event => edit('translationTargetLanguage', event.target.value)} />)}
+      {fieldRow('translationTimeoutMs', 'settings.translationTimeoutHelp', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
       {fieldRow('defaultColor', 'settings.colorHelp', <div style={{ display: 'flex', gap: 8 }}>
         <input type="color" aria-label={tr('settings.defaultColor')} disabled={disabled} value={/^#[0-9a-f]{6}$/i.test(editor.draft.defaultColor) ? editor.draft.defaultColor : defaultSettings.defaultColor} onChange={event => edit('defaultColor', event.target.value)} style={{ ...inputStyle, padding: 3, width: 46 }} />
         <input {...attributes('defaultColor')} value={editor.draft.defaultColor} spellCheck={false} onChange={event => edit('defaultColor', event.target.value)} />

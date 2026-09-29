@@ -4,6 +4,10 @@ export interface PdfSettings {
   ocrEngine: string
   ocrLanguages: string
   ocrTimeoutMs: number
+  translationEngine: string
+  translationSourceLanguage: string
+  translationTargetLanguage: string
+  translationTimeoutMs: number
   defaultColor: string
   historyCapacity: number
   maxFileBytes: number
@@ -11,6 +15,7 @@ export interface PdfSettings {
 
 export const defaultSettings: PdfSettings = {
   ocrEngine: 'none', ocrLanguages: 'eng+chi_sim', ocrTimeoutMs: 120000,
+  translationEngine: 'dsh-model', translationSourceLanguage: 'auto', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   defaultColor: '#ffff00', historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
 }
 

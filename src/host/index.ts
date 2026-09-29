@@ -6,6 +6,7 @@ import { createLocalFiles } from './local-files.ts'
 import { registerAssets } from './assets.ts'
 import { createWorkspaces } from './workspaces.ts'
 import { draftSchema, type DraftRecord } from './validation.ts'
+import { createHostTranslations, type TranslationHostContext } from './translations.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -13,7 +14,8 @@ export const inject = ['connection', 'sessionController', 'fs', 'sandboxPolicy',
 
 type TransportContext = Parameters<typeof registerPdfTransport>[0]
 type LocalContext = Parameters<typeof createLocalFiles>[0]
-interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext {
+interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext, TranslationHostContext {
+  reflect: { provide(key: string, value: unknown): () => void }
   connection: {
     fetch: {
       register(route: {
@@ -49,6 +51,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     name: `pdf_drafts_${suffix}`, version: 1, layout: 'per-record', tables: { drafts: domainTable(draftSchema) },
   }))
   const workspaces = createWorkspaces(files, domain.table('drafts'))
+  const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
   const disposers: (() => Promise<void>)[] = []
   let disposed: Promise<void> | undefined
   const dispose = (): Promise<void> => {
@@ -56,6 +59,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     // Close operation admission synchronously, then release transports. Domain
     // writes remain available until every already-admitted operation settles.
     const drain = workspaces.dispose()
+    translations.registry.dispose()
     disposed = (async () => {
       const results = await Promise.allSettled(disposers.splice(0).reverse().map(close => close()))
       await drain
@@ -68,6 +72,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
   try {
     ctx.effect(() => {
       disposers.push(registerPdfTransport(ctx, workspaces.dispatch))
+      disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerAssets(ctx))
       // Settings bootstrap carries no file contents and works outside a session.
       disposers.push(ctx.connection.fetch.register({
@@ -89,12 +94,13 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
             return new Response('Invalid RPC', { status: 400, headers })
           }
           return Response.json({ type: 'server-response', rpcId: input.rpcId,
-            result: { ok: true, value: { namespace, settings: readConfig(config) } },
+            result: { ok: true, value: { namespace, settings: readConfig(config), translationEngines: translations.registry.list() } },
           }, { headers })
         },
       }))
       return dispose
     }, 'pdf: routes, working copies and draft storage')
+    ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
   } catch (error) {
     await dispose().catch(() => undefined)
     throw error

@@ -37,12 +37,14 @@ export type PdfDispatch = (
 export function registerPdfTransport(
   ctx: TransportContext,
   dispatch: PdfDispatch,
-  options: { maxRequestBytes?: number } = {},
+  options: { maxRequestBytes?: number; endpoint?: string } = {},
 ): () => Promise<void> {
   const maxBytes = options.maxRequestBytes ?? 16 * 1024 * 1024
+  const endpoint = options.endpoint ?? PDF_ENDPOINT
+  if (!/^pdf\.[a-z.]+$/.test(endpoint)) throw new TypeError('Invalid PDF endpoint')
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError('Invalid PDF request limit')
   return ctx.connection.fetch.register({
-    path: `/api/${PDF_ENDPOINT}`,
+    path: `/api/${endpoint}`,
     methods: ['POST'],
     requestBody: 'streaming',
     async fetch(request) {
@@ -60,7 +62,7 @@ export function registerPdfTransport(
       }
       if (!isRecord(envelope) || envelope.type !== 'client-request'
         || typeof envelope.rpcId !== 'string' || envelope.rpcId.length === 0 || envelope.rpcId.length > 256
-        || envelope.method !== PDF_ENDPOINT) {
+        || envelope.method !== endpoint) {
         return new Response('Invalid RPC envelope', { status: 400, headers })
       }
       let result: unknown

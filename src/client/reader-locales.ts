@@ -1,4 +1,7 @@
+import { translationEn, translationZh } from './translation-locales.js'
+
 const en = {
+  ...translationEn,
   title: 'PDF reader', page: 'Page', loading: 'Opening PDF…', loadingPage: 'Rendering page…', cannotOpen: 'The PDF could not be opened.',
   navigation: 'Reading navigation', editing: 'Annotation tools', back: 'Back', previous: 'Previous page', next: 'Next page', zoom: 'Zoom',
   fitWidth: 'Fit width', fitPage: 'Fit page', rotate: 'Rotate view', search: 'Search', comments: 'Annotations', selectText: 'Text', selectRegion: 'Region',
@@ -6,6 +9,10 @@ const en = {
   tools: 'Tools', regionScreenshot: 'Region screenshot', screenshotHint: 'Drag a rectangle on one page. Text selection resumes after capture. Escape cancels.',
   screenshotPreparing: 'Creating screenshot…', textActions: 'Selected text actions', copyText: 'Copy text', textCopied: 'Copied', copyTextFailed: 'Could not copy the selected text.',
   verticalScroll: 'Vertical scrollbar', horizontalScroll: 'Horizontal scrollbar',
+  translateSelection: 'Translate', translationDshModel: 'DSH session model', dictionaryLookup: 'Look Up',
+  dictionaryLookupHelp: 'Look up the selected text in the native macOS dictionary popup.',
+  dictionaryUnavailable: 'This DSH version does not expose the native macOS dictionary popup to plugins.',
+  dictionarySelectionUnavailable: 'Select the text again before using the native dictionary.',
   'screenshot.title': 'Screenshot preview', 'screenshot.imageAlt': 'Screenshot of the selected region', 'screenshot.page': 'Page', 'screenshot.close': 'Close',
   'screenshot.copy': 'Copy image', 'screenshot.copying': 'Copying…', 'screenshot.copied': 'Image copied', 'screenshot.download': 'Download PNG', 'screenshot.recognize': 'Recognize region',
   'screenshot.clipboardUnavailable': 'Image copying is unavailable here. Download the PNG instead.',
@@ -31,6 +38,7 @@ const en = {
   'reason.reply-chain': 'This annotation belongs to a reply thread, which is read only in this version.',
 }
 const zh: Record<keyof typeof en, string> = {
+  ...translationZh,
   title: 'PDF 阅读器', page: '页', loading: '正在打开 PDF…', loadingPage: '正在绘制页面…', cannotOpen: '无法打开这份 PDF。',
   navigation: '阅读导航', editing: '标注工具', back: '返回上一跳', previous: '上一页', next: '下一页', zoom: '缩放',
   fitWidth: '适合宽度', fitPage: '适合整页', rotate: '旋转视图', search: '搜索', comments: '标注', selectText: '选择文字', selectRegion: '选择区域',
@@ -38,6 +46,10 @@ const zh: Record<keyof typeof en, string> = {
   tools: '工具', regionScreenshot: '区域截图', screenshotHint: '在单页中拖出截图区域，完成后自动恢复文字选择。按 Escape 取消。',
   screenshotPreparing: '正在生成截图…', textActions: '选中文字的操作', copyText: '复制文字', textCopied: '已复制', copyTextFailed: '无法复制选中的文字。',
   verticalScroll: '纵向滚动条', horizontalScroll: '横向滚动条',
+  translateSelection: '翻译', translationDshModel: 'DSH 会话模型', dictionaryLookup: '查询',
+  dictionaryLookupHelp: '在 macOS 原生词典浮窗中查询选中文字。',
+  dictionaryUnavailable: '当前 DSH 尚未向插件开放 macOS 原生词典浮窗接口。',
+  dictionarySelectionUnavailable: '请重新选择文字，再调用原生词典。',
   'screenshot.title': '截图预览', 'screenshot.imageAlt': '选中区域截图', 'screenshot.page': '页', 'screenshot.close': '关闭',
   'screenshot.copy': '复制图片', 'screenshot.copying': '正在复制…', 'screenshot.copied': '图片已复制', 'screenshot.download': '下载 PNG', 'screenshot.recognize': '识别区域文字',
   'screenshot.clipboardUnavailable': '当前环境不支持复制图片，请下载 PNG。',

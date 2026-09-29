@@ -12,6 +12,14 @@
       "types": "./dist/types/ocr/index.d.ts",
       "import": "./dist/ocr.js"
     },
+    "./translation": {
+      "types": "./dist/types/translation/index.d.ts",
+      "import": "./dist/translation.js"
+    },
+    "./native-dictionary": {
+      "types": "./dist/types/client/native-dictionary.d.ts",
+      "import": "./dist/native-dictionary.js"
+    },
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },

@@ -11,10 +11,11 @@
 | P0 · PDF 阅读和编辑 | 右侧文档栏阅读、缩放和旋转视图、原有文字选择、文字搜索；识别和编辑原生高亮、下划线、删除线、便笺批注；撤销、重做、手动保存和另存为 |
 | P0 · 阅读跳转 | PDF 内部链接跳转、页码定位、搜索结果和批注定位；按后进先出顺序返回跳转前的位置，恢复 PDF 坐标、缩放、旋转和适配方式 |
 | P0 · 扫描件与设置 | 整页或框选区域 OCR；可取消和超时；NoneOCR / LocalOCR；DSH 设置页中的 PDF 配置卡片 |
+| 当前阅读扩展 · 选区翻译 | 浮动工具条翻译选中文字；独立翻译引擎，复用 DSH 模型，默认中文；结果仅显示在 PDF 面板 |
 | P1 · PDF 书签 | 后续实现 |
-| P3 · 模型操作 PDF | 后续实现，包括模型工具、文字或图像发送至会话、解读和翻译 |
+| P3 · 模型操作 PDF | 后续实现，包括模型工具、文字或图像发送至会话、会话中的解读和翻译 |
 
-此处的“PDF 编辑”指**标注编辑**，不包括修改正文、重新排版、页面增删、涂黑脱敏或编辑表单。选择文字、框选区域和 OCR 已用于阅读与标注；当前没有发送到模型的操作。
+此处的“PDF 编辑”指**标注编辑**，不包括修改正文、重新排版、页面增删、涂黑脱敏或编辑表单。选择文字、框选区域和 OCR 已用于阅读与标注；点击“翻译”时才向所选翻译引擎提交选中文字，不附带会话上下文，也不把请求或结果写入会话历史。
 
 详细产品约定见 [SPEC.md](./SPEC.md)。
 
@@ -116,9 +117,17 @@ LocalOCR 的 worker、WASM、语言数据全部随插件提供，经 `/api/pdf-a
 
 成功跳转后，“返回”恢复上一次位置。连续跳转按栈回退；失败、取消及无实际位移的跳转不新增记录。普通滚动不建立跳转记录。历史属于当前 PDF 标签；重新加载不同内容后会清除旧内容的历史。
 
+### 选区翻译与原生查询
+
+选择文字后点击浮动工具条的“翻译”，右侧面板显示原文、页码和译文。默认采用 PDF 所属会话当前选择的 DSH 模型（尚未选择时采用 DSH 默认模型），复用宿主已有凭据，源语言自动检测、目标语言为中文。可以切换目标语言后再次翻译、取消、重试或复制译文；翻译不修改 PDF。
+
+单次选区最多 8192 个 UTF-16 字符，默认超时 30 秒，模型输出上限为 4096 tokens，统一输出上限为 32768 个字符。输入不会被静默截断；模型达到输出限制时保留部分译文并显示未完成提示。切换文档、关闭面板或改变翻译配置会取消旧请求。
+
+“查询”功能要求 **macOS 选区旁的原生词典浮窗**。当前 DSH 0.2.0-rc.1 没有向插件开放主窗口 `showDefinitionForSelection()` 对应接口，因此此功能尚未接通：Windows/Linux 不显示按钮，macOS 显示禁用按钮及原因。插件仅提供 `pdfDictionary` 能力注册接口，等待真实宿主桥接；不会改用词典应用或联网查询来冒充浮窗。
+
 ### 设置
 
-PDF 配置卡片提供 OCR 引擎、识别语言、超时、默认标注颜色、跳转历史容量和 PDF 大小上限。设置修改需要手动保存；“恢复默认”移除当前层的覆盖值，重新采用宿主配置组合的默认值，保存后生效。
+PDF 配置卡片提供 OCR 引擎、识别语言、超时、翻译引擎、原文/目标语言、翻译超时、默认标注颜色、跳转历史容量和 PDF 大小上限。设置修改需要手动保存；“恢复默认”移除当前层的覆盖值，重新采用宿主配置组合的默认值，保存后生效。
 
 默认超时为 120 秒，跳转历史容量为 100，文件大小上限为 64 MiB。大文件、复杂页面和 OCR 会增加内存占用。
 
@@ -166,6 +175,14 @@ export function apply(ctx: Context) {
 
 当前提供通用设置字段和注册机制，尚未内置任何厂商 OCR，也未提供自动生成厂商专用配置表单的功能。适配器应先完成加载，再打开 PDF 设置页选择对应引擎。
 
+## 扩展翻译引擎与词典能力
+
+翻译 SDK 入口为 `@local/dsh-pdf/translation`。翻译功能只调用 `TranslationRegistry` / `TranslationService`，引擎实现 `descriptor`、可选的 `availability(configuration)` 与 `translate(request, configuration)`，返回纯文本、完整/部分状态和警告；引擎负责具体厂商协议，并转发取消信号。内置 `NoneTranslation` 和 DSH 模型实现，OCR 与翻译的引擎和设置互相独立。
+
+Host 扩展插件通过 `ctx.pdfTranslation.register(engine)` 注册后端，并在自己的配置中管理端点与凭据。请求经认证的 `/api/pdf.translation` 路由进入 Host；Client 使用通用代理，不引用厂商 SDK，也不接收模型密钥。安装新 Host 引擎后重新加载 PDF 插件，使客户端取得新的引擎目录。客户端本地实现也可注册到 Client 的 `pdfTranslation`，SDK 不要求某个特定供应商。
+
+词典 SDK 为 `@local/dsh-pdf/native-dictionary`，Client 扩展可以通过 `ctx.pdfDictionary.register({ platform: 'darwin', lookupSelection })` 注册真实原生桥接。注册并通过 macOS 平台检测后按钮才可用；接口不会自行获得 Electron 主窗口权限。当前没有随包提供的可用桥接实现。
+
 ## 目录与构建产物
 
 ```text
@@ -174,11 +191,14 @@ src/client/        Sidebar 阅读器、设置卡片、PDF.js runtime
 src/core/          PDF 原生标注及文档处理
 src/navigation/    跳转历史
 src/ocr/           OCR 接口、Registry、NoneOCR、LocalOCR
+src/translation/   独立翻译接口、Registry、请求服务、NoneTranslation
 scripts/build.mjs  独立打包与本地资源收集
 dist/index.js      DSH Host 插件入口
 dist/client.js     DSH ModuleLoader 客户端入口
 dist/ocr.js        浏览器 OCR SDK
 dist/types/ocr/    OCR SDK 类型声明
+dist/translation.js 翻译 SDK（附类型声明）
+dist/native-dictionary.js macOS 原生词典能力 SDK（附类型声明）
 dist/assets/ocr/   本地 OCR worker、WASM 和中英文语言数据
 ```
 

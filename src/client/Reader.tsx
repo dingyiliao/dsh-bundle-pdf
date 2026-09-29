@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AnnotationMode, type PDFDocumentProxy } from 'pdfjs-dist'
 import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
@@ -15,6 +15,8 @@ import { OverlayScrollbars } from './OverlayScrollbar.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 import { capturePdfRegion, type PdfRegionScreenshot } from './reader-screenshot.js'
 import { ScreenshotPreview } from './ScreenshotPreview.js'
+import { TranslationPanel, type TranslationPanelProps } from './TranslationPanel.js'
+import { TranslationService, TranslationError, type TranslationRequest } from '../translation/index.js'
 
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -32,6 +34,7 @@ function groupAnnotations(annotations: readonly PdfAnnotation[]) {
 export function Reader(props: ReaderProps) {
   const { api, t, settings, sessionId } = props
   const { tab } = props.useTabInfo()
+  const dictionary = useSyncExternalStore(props.dictionary.subscribe, props.dictionary.getSnapshot, props.dictionary.getSnapshot)
   const lifetime = readerLifetime(sessionId, tab.id, tab.signal, settings.historyCapacity)
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null)
   const [displayOwner, setDisplayOwner] = useState<{ token: number; content: ReaderProps['content'] } | null>(null)
@@ -52,6 +55,9 @@ export function Reader(props: ReaderProps) {
   const [screenshot, setScreenshot] = useState<(PdfRegionScreenshot & { page: number; region: PdfRect; revision: number }) | null>(null)
   const [screenshotBusy, setScreenshotBusy] = useState(false)
   const [textCopied, setTextCopied] = useState(false)
+  const [translationSelection, setTranslationSelection] = useState<(TranslationPanelProps['selection'] & {
+    owner: number; documentId: string; contentVersion: string
+  }) | null>(null)
   const [color, setColor] = useState(settings.defaultColor)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
@@ -75,6 +81,10 @@ export function Reader(props: ReaderProps) {
   const views = useRef(new Map<number, PageView>())
   const currentSelection = useRef(selection)
   currentSelection.current = selection
+  const nativeSelectionRange = useRef<Range | null>(null)
+  const translationService = useRef<TranslationService | null>(null)
+  const translationOwner = useRef(translationSelection)
+  translationOwner.current = translationSelection
   const toolsMenu = useRef<HTMLDetailsElement>(null)
   const screenshotController = useRef<AbortController | null>(null)
   const history = useRef(lifetime.history)
@@ -104,6 +114,9 @@ export function Reader(props: ReaderProps) {
     const token = ++ownerSequence.current
     const ownerContent = props.content
     screenshotController.current?.abort()
+    translationService.current?.setSource(undefined)
+    setTranslationSelection(null)
+    nativeSelectionRange.current = null
     setScreenshot(null)
     setSelection(null)
     setMode('text')
@@ -171,6 +184,8 @@ export function Reader(props: ReaderProps) {
     activePdf.current = null
     ocrController.current?.abort()
     screenshotController.current?.abort()
+    translationService.current?.dispose()
+    translationService.current = null
     searchSequence.current++
   }, [])
   useEffect(() => { lifetime.ocrPages = ocrPages }, [ocrPages, lifetime])
@@ -189,6 +204,8 @@ export function Reader(props: ReaderProps) {
     if (history.current.resetForDocument(snapshot.contentVersion)) {
       setSelectedAnnotation(undefined)
       setPendingNote(null)
+      translationService.current?.setSource(undefined)
+      setTranslationSelection(null)
       setOcrPages(new Map())
       setHits([])
       setSearched(false)
@@ -198,14 +215,20 @@ export function Reader(props: ReaderProps) {
     }
     lifetime.contentVersion = snapshot.contentVersion
     setSelection(null)
+    nativeSelectionRange.current = null
     setHistoryRevision((n) => n + 1)
   }, [snapshot?.contentVersion])
   useEffect(() => {
     setSelection(null)
+    nativeSelectionRange.current = null
     setMode('text')
     screenshotController.current?.abort()
     setScreenshot(null)
   }, [snapshot?.revision, snapshot?.id])
+  useEffect(() => {
+    translationService.current?.cancel()
+    setTranslationSelection(null)
+  }, [settings.translationEngine, settings.translationSourceLanguage, settings.translationTargetLanguage, settings.translationTimeoutMs])
   useEffect(() => {
     if (!textCopied) return
     const timer = setTimeout(() => setTextCopied(false), 1500)
@@ -454,6 +477,8 @@ export function Reader(props: ReaderProps) {
 
   const beginNote = (page: number, point: number[]) => {
     if (!snapshot || snapshot.document.readOnly) return
+    translationService.current?.cancel()
+    setTranslationSelection(null)
     const bounds = snapshot.document.pages[page - 1].cropBox
     const width = Math.min(20, bounds[2] - bounds[0]), height = Math.min(20, bounds[3] - bounds[1])
     const x = Math.max(bounds[0], Math.min(bounds[2] - width, point[0]))
@@ -590,7 +615,48 @@ export function Reader(props: ReaderProps) {
   const deleteAnnotation = async () => {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
   }
-  const clearSelection = () => { setSelection(null); window.getSelection()?.removeAllRanges() }
+  const clearSelection = () => { setSelection(null); nativeSelectionRange.current = null; window.getSelection()?.removeAllRanges() }
+  const captureSelection = () => {
+    if (mode !== 'text' || !scrollRoot || !snapshot) return
+    const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
+    const browserSelection = window.getSelection()
+    nativeSelectionRange.current = next && browserSelection?.rangeCount ? browserSelection.getRangeAt(0).cloneRange() : null
+    setSelection(next)
+    if (next) setSelectedAnnotation(undefined)
+  }
+  const beginTranslation = () => {
+    if (!hasTextSelection || !selection || !snapshot || displayOwner?.token !== ownerSequence.current) return
+    translationService.current?.cancel()
+    setCommentsOpen(false)
+    setTranslationSelection({ text: selection.text, pages: selection.fragments.map(fragment => fragment.page),
+      sourceLanguage: settings.translationSourceLanguage, targetLanguage: settings.translationTargetLanguage,
+      owner: ownerSequence.current, documentId: snapshot.id, contentVersion: snapshot.contentVersion })
+  }
+  const translateSelection = useCallback(async (request: TranslationRequest) => {
+    const source = translationOwner.current
+    const current = state.current.snapshot
+    if (!source || source.owner !== ownerSequence.current || current?.id !== source.documentId || current.contentVersion !== source.contentVersion) {
+      throw new TranslationError('stale-result', 'The PDF selection is no longer current.')
+    }
+    translationService.current ??= new TranslationService(props.translation)
+    translationService.current.setSource({ documentId: source.documentId, contentVersion: source.contentVersion })
+    return translationService.current.translate({ ...request, timeoutMs: callbacks.current.settings.translationTimeoutMs,
+      signal: request.signal ? AbortSignal.any([request.signal, tab.signal]) : tab.signal,
+      context: { sessionId, documentId: source.documentId, contentVersion: source.contentVersion, pages: source.pages } })
+  }, [props.translation, sessionId, tab.signal])
+  const closeTranslation = () => { translationService.current?.cancel(); setTranslationSelection(null) }
+  const lookupSelection = async () => {
+    const range = nativeSelectionRange.current
+    if (!range || range.collapsed || !range.startContainer.isConnected || !range.endContainer.isConnected) {
+      notifyError(new Error(t('reader.dictionarySelectionUnavailable')))
+      return
+    }
+    const browserSelection = window.getSelection()
+    browserSelection?.removeAllRanges()
+    browserSelection?.addRange(range.cloneRange())
+    try { await props.dictionary.lookupSelection() }
+    catch { notifyError(new Error(t('reader.dictionaryUnavailable'))) }
+  }
   const cancelScreenshot = () => {
     screenshotController.current?.abort()
     setScreenshot(null)
@@ -665,6 +731,10 @@ export function Reader(props: ReaderProps) {
   }
 
   return <div className="dsh-pdf-reader" aria-label={t('reader.title')} onKeyDown={(event) => {
+    if (event.target instanceof Element && event.target.closest('.dsh-pdf-translation-panel')) {
+      if (event.key === 'Escape') { event.preventDefault(); closeTranslation() }
+      return
+    }
     const input = event.target instanceof HTMLElement && event.target.closest('input,textarea,[contenteditable="true"]')
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (editable) void save() }
     if (!input && editable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
@@ -675,7 +745,7 @@ export function Reader(props: ReaderProps) {
       event.preventDefault(); void deleteAnnotation()
     }
     if (!input && event.key === 'Escape') {
-      clearAnnotation(); cancelScreenshot()
+      clearAnnotation(); cancelScreenshot(); closeTranslation()
       if (toolsMenu.current) toolsMenu.current.open = false
     }
   }}>
@@ -701,7 +771,7 @@ export function Reader(props: ReaderProps) {
       </select>
       <button onClick={() => setRotation((value) => (value + 90) % 360)} disabled={!pdf || navigating} title={t('reader.rotate')}>↻</button>
       <button aria-pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>{t('reader.search')}</button>
-      <button aria-pressed={commentsOpen} onClick={() => setCommentsOpen((value) => !value)}>{t('reader.comments')}</button>
+      <button aria-pressed={commentsOpen} onClick={() => { closeTranslation(); setCommentsOpen((value) => !value) }}>{t('reader.comments')}</button>
     </div>
     <div className="dsh-pdf-toolbar dsh-pdf-editbar" role="toolbar" aria-label={t('reader.editing')}>
       <details className="dsh-pdf-tools" ref={toolsMenu} onBlur={(event) => {
@@ -728,6 +798,10 @@ export function Reader(props: ReaderProps) {
     </div>
     {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
       <button onClick={() => void copyText()}>{t(textCopied ? 'reader.textCopied' : 'reader.copyText')}</button>
+      <button onClick={beginTranslation}>{t('reader.translateSelection')}</button>
+      {dictionary.platform === 'darwin' && <button disabled={!dictionary.available}
+        title={t(dictionary.available ? 'reader.dictionaryLookupHelp' : 'reader.dictionaryUnavailable')}
+        onClick={() => void lookupSelection()}>{t('reader.dictionaryLookup')}</button>}
       <input type="color" aria-label={t('reader.color')} value={color} disabled={!editable} onChange={(event) => setColor(event.target.value)} />
       <button disabled={!editable} onClick={() => void mark('Highlight')}>{t('reader.highlight')}</button>
       <button disabled={!editable} onClick={() => void mark('Underline')}>{t('reader.underline')}</button>
@@ -743,7 +817,7 @@ export function Reader(props: ReaderProps) {
       <input type="color" aria-label={t('reader.annotationColor')} value={commentColor} disabled={!editable || !selected.editable} onChange={(event) => setCommentColor(event.target.value)} />
       <button disabled={!editable || !selected.editable || commentColor === colorToHex(selected.color)} onClick={() => void change([{ type: 'update', id: selected.id, patch: { color: colorFromHex(commentColor) } }])}>{t('reader.applyColor')}</button>
       <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>
-      <button onClick={() => setCommentsOpen(true)}>{t('reader.commentText')}</button>
+      <button onClick={() => { closeTranslation(); setCommentsOpen(true) }}>{t('reader.commentText')}</button>
       <button onClick={clearAnnotation}>{t('reader.deselectAnnotation')}</button>
     </FloatingToolbar>}
     {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
@@ -779,19 +853,8 @@ export function Reader(props: ReaderProps) {
         const top = scrollRoot.getBoundingClientRect().top
         const page = [...scrollRoot.querySelectorAll<HTMLElement>('[data-page-number]')].find((element) => element.getBoundingClientRect().bottom > top + 40)
         if (page) { const number = Number(page.dataset.pageNumber); setCurrentPage(number); setPageInput(String(number)) }
-      }} onPointerDown={() => { if (mode === 'text') setSelection(null) }} onPointerUp={() => {
-        if (mode === 'text' && scrollRoot && snapshot) {
-          const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
-          setSelection(next)
-          if (next) setSelectedAnnotation(undefined)
-        }
-      }} onKeyUp={() => {
-        if (scrollRoot && snapshot) {
-          const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
-          setSelection(next)
-          if (next) setSelectedAnnotation(undefined)
-        }
-      }}>
+      }} onPointerDown={() => { if (mode === 'text') { setSelection(null); nativeSelectionRange.current = null } }}
+        onPointerUp={captureSelection} onKeyUp={captureSelection}>
         {!pdf && <div className="dsh-pdf-empty" role="status">{error ? t('reader.cannotOpen') : t('reader.loading')}</div>}
         {pdf && snapshot?.document.pages.map((geometry) => <Page key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
           scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
@@ -829,6 +892,9 @@ export function Reader(props: ReaderProps) {
         </button>)}
         {!snapshot?.document.annotations.some((annotation) => annotation.supported) && <p className="dsh-pdf-muted">{t('reader.noAnnotations')}</p>}
       </ScrollablePanel>}
+      {translationSelection && <TranslationPanel selection={translationSelection} translate={translateSelection} onClose={closeTranslation} t={t}
+        engineName={settings.translationEngine === 'dsh-model' ? t('reader.translationDshModel')
+          : props.translation.list().find(engine => engine.id === settings.translationEngine)?.name ?? settings.translationEngine} />}
     </div>
     <div className="dsh-pdf-footer"><span title={snapshot?.path}>{snapshot?.path}</span>
       {selection && <button onClick={clearSelection}>{t('reader.clearSelection')}</button>}

@@ -2,6 +2,8 @@ import type { RefCallback } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import type { OcrRegistry } from '../ocr/registry.ts'
 import type { PdfClientApi, PdfSettings } from '../shared/contracts.ts'
+import type { TranslationRegistry } from '../translation/index.js'
+import type { NativeDictionary } from './native-dictionary.js'
 
 export type { PdfClientApi, PdfSettings, WorkspaceSnapshot } from '../shared/contracts.ts'
 
@@ -20,6 +22,8 @@ export interface ReaderProps {
   t: (key: string) => string
   api: PdfClientApi
   ocr: OcrRegistry
+  translation: TranslationRegistry
+  dictionary: NativeDictionary
   settings: PdfSettings
   openPdf: (bytes: Uint8Array, signal?: AbortSignal) => Promise<{ document: PDFDocumentProxy; dispose(): Promise<void> }>
 }
