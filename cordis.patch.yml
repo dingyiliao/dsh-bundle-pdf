@@ -1,0 +1,3 @@
+- insert:
+    - id: pdf-reader
+      name: '@local/dsh-pdf'

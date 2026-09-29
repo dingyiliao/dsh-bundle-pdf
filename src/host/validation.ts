@@ -1,0 +1,48 @@
+import { z } from 'zod'
+
+const scalar = z.number().finite()
+const color = z.tuple([scalar.min(0).max(1), scalar.min(0).max(1), scalar.min(0).max(1)])
+const rect = z.tuple([scalar, scalar, scalar, scalar]).refine(value => value[2] >= value[0] && value[3] >= value[1], 'Rectangle bounds are reversed')
+const id = z.string().min(1).max(512)
+const path = z.string().min(1).max(32768).refine(value => !value.includes('\0'), 'Path contains NUL')
+const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
+export const operationSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('add'), annotation: z.object({
+    id, page: z.number().int().min(1),
+    subtype: z.enum(['Highlight', 'Underline', 'StrikeOut', 'Text']), rect,
+    quadPoints: z.array(scalar).min(8).max(32000).refine(value => value.length % 8 === 0).optional(),
+    color: color.optional(), contents: z.string().max(100000).optional(), author: z.string().max(1024).optional(),
+  }).strict() }).strict(),
+  z.object({ type: z.literal('update'), id, patch: z.object({
+    contents: z.string().max(100000).optional(), color: color.optional(),
+  }).strict() }).strict(),
+  z.object({ type: z.literal('delete'), id }).strict(),
+])
+
+export const draftSchema = z.object({
+  format: z.literal(1), sessionId: id, path,
+  sourceHash: hash, sourceVersion: z.string().min(1).max(4096), contentVersion: id,
+  // Absolute deployment ceiling. Per-operation volatile limits remain enforced by the file adapter.
+  original: z.string().min(1).max(357913944), revision: z.number().int().min(0),
+  /** Actual published working-copy bytes, including generated annotation timestamps. */
+  renderedHash: hash.optional(),
+  groups: z.array(z.array(operationSchema).max(1000)).max(500),
+  cursor: z.number().int().min(0).max(500),
+}).strict().refine(value => value.cursor <= value.groups.length)
+export type DraftRecord = z.infer<typeof draftSchema>
+
+export const requestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('open'), sessionId: id, address: z.string().min(1).max(32768) }).strict(),
+  z.object({ action: z.literal('inspectTarget'), sessionId: id, path }).strict(),
+  ...(['undo', 'redo', 'reload'] as const).map(action => z.object({
+    action: z.literal(action), sessionId: id, id, revision: z.number().int().min(0),
+  }).strict()),
+  z.object({ action: z.literal('change'), sessionId: id, id, revision: z.number().int().min(0),
+    operations: z.array(operationSchema).min(1).max(1000),
+  }).strict(),
+  z.object({ action: z.literal('save'), sessionId: id, id, revision: z.number().int().min(0),
+    options: z.object({ path: path.optional(), overwrite: z.boolean().optional(),
+      expectedTargetVersion: hash.nullable().optional(),
+    }).strict(),
+  }).strict(),
+])
