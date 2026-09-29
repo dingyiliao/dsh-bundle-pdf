@@ -17,6 +17,9 @@ import { capturePdfRegion, type PdfRegionScreenshot } from './reader-screenshot.
 import { ScreenshotPreview } from './ScreenshotPreview.js'
 import { TranslationPanel, type TranslationPanelProps } from './TranslationPanel.js'
 import { TranslationService, TranslationError, type TranslationRequest } from '../translation/index.js'
+import { ReadingSidebar, type ReadingSidebarSection } from './ReadingSidebar.js'
+import { usePdfWheelZoom } from './use-pdf-wheel-zoom.js'
+import { usePdfViewportSize } from './use-pdf-viewport-size.js'
 
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -59,13 +62,13 @@ export function Reader(props: ReaderProps) {
     owner: number; documentId: string; contentVersion: string
   }) | null>(null)
   const [color, setColor] = useState(settings.defaultColor)
-  const [commentsOpen, setCommentsOpen] = useState(false)
+  const [sidebarSection, setSidebarSection] = useState<ReadingSidebarSection>('annotations')
+  const [sidebarExpanded, setSidebarExpanded] = useState(true)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
   const [pendingAnnotations, setPendingAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [pendingNote, setPendingNote] = useState<NewPdfAnnotation | null>(null)
   const [comment, setComment] = useState('')
   const [commentColor, setCommentColor] = useState(settings.defaultColor)
-  const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
   const [hits, setHits] = useState<SearchHit[]>([])
@@ -104,6 +107,9 @@ export function Reader(props: ReaderProps) {
   const callbacks = useRef(props)
   callbacks.current = props
   void historyRevision
+  const showSidebar = useCallback((section: ReadingSidebarSection) => {
+    setSidebarSection(section); setSidebarExpanded(true)
+  }, [])
 
   const notifyError = useCallback((value: unknown) => {
     const needsPassword = value instanceof Error && (('code' in value && value.code === 'password-required') || value.name === 'PasswordException')
@@ -246,13 +252,6 @@ export function Reader(props: ReaderProps) {
     return () => document.removeEventListener('pointerdown', close)
   }, [])
   useEffect(() => { history.current.setCapacity(settings.historyCapacity); setHistoryRevision((n) => n + 1) }, [settings.historyCapacity])
-
-  useEffect(() => {
-    if (!scrollRoot) return
-    const observer = new ResizeObserver(([entry]) => setSize({ width: entry.contentRect.width, height: entry.contentRect.height }))
-    observer.observe(scrollRoot)
-    return () => observer.disconnect()
-  }, [scrollRoot])
 
   useEffect(() => {
     if (!snapshot?.dirty) return
@@ -445,6 +444,8 @@ export function Reader(props: ReaderProps) {
     return [...combined.values()]
   }, [snapshot?.document.annotations, pendingAnnotations])
   const annotationsById = useMemo(() => new Map(displayAnnotations.map(annotation => [annotation.id, annotation])), [displayAnnotations])
+  const annotationIndex = useRef(annotationsById)
+  annotationIndex.current = annotationsById
   const selected = selectedAnnotation ? annotationsById.get(selectedAnnotation) : undefined
   const commentItems = useMemo(() => (snapshot?.document.annotations ?? noAnnotations)
     .filter(annotation => annotation.supported || (annotation.contents && annotation.subtype !== 'Popup'))
@@ -485,8 +486,6 @@ export function Reader(props: ReaderProps) {
 
   const beginNote = (page: number, point: number[]) => {
     if (!snapshot || snapshot.document.readOnly) return
-    translationService.current?.cancel()
-    setTranslationSelection(null)
     const bounds = snapshot.document.pages[page - 1].cropBox
     const width = Math.min(20, bounds[2] - bounds[0]), height = Math.min(20, bounds[3] - bounds[1])
     const x = Math.max(bounds[0], Math.min(bounds[2] - width, point[0]))
@@ -495,7 +494,7 @@ export function Reader(props: ReaderProps) {
     setSelectedAnnotation(undefined)
     setComment('')
     setCommentColor(color)
-    setCommentsOpen(true)
+    showSidebar('notes')
     setMode('text')
   }
 
@@ -619,7 +618,8 @@ export function Reader(props: ReaderProps) {
     setSelection(null)
     window.getSelection()?.removeAllRanges()
     setSelectedAnnotation(id)
-  }, [])
+    showSidebar(annotationIndex.current.get(id)?.subtype === 'Text' ? 'notes' : 'annotations')
+  }, [showSidebar])
   const clearAnnotation = useCallback(() => { setSelectedAnnotation(undefined); setPendingNote(null) }, [])
   const deleteAnnotation = async () => {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
@@ -680,7 +680,7 @@ export function Reader(props: ReaderProps) {
   const beginTranslation = () => {
     if (!hasTextSelection || !selection || !snapshot || displayOwner?.token !== ownerSequence.current) return
     translationService.current?.cancel()
-    setCommentsOpen(false)
+    showSidebar('translation')
     setTranslationSelection({ text: selection.text, pages: selection.fragments.map(fragment => fragment.page),
       sourceLanguage: settings.translationSourceLanguage, targetLanguage: settings.translationTargetLanguage,
       owner: ownerSequence.current, documentId: snapshot.id, contentVersion: snapshot.contentVersion })
@@ -807,9 +807,60 @@ export function Reader(props: ReaderProps) {
     selected?.id, selected?.page, selection, ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
     selectAnnotation, pageNote, pageRegion, dismissContext, notifyError])
 
+  const wheelScale = useCallback((page: number) => {
+    const geometry = state.current.snapshot?.document.pages[page - 1]
+    return geometry ? pageScale(geometry) : state.current.zoom
+  }, [pageScale])
+  const applyWheelScale = useCallback((scale: number) => { setFit('custom'); setZoom(scale) }, [])
+  usePdfWheelZoom({ root: scrollRoot, enabled: !!pdf && !busy && !navigating, views: views.current,
+    getScale: wheelScale, onScale: applyWheelScale, ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${rotation}` })
+  usePdfViewportSize({ root: scrollRoot, size, onSize: setSize,
+    preserveAnchor: !!pdf && fit !== 'custom' && !navigating,
+    ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${rotation}:${fit}` })
+
+  const annotationLists = useMemo(() => {
+    const annotations: React.ReactNode[] = [], notes: React.ReactNode[] = []
+    for (const { annotation, created, modified } of commentItems) {
+      const row = <button className={`dsh-pdf-comment-item${selectedAnnotation === annotation.id ? ' is-selected' : ''}`} key={annotation.id}
+        onClick={() => { selectAnnotation(annotation.id); void jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }}>
+        <strong>{t('reader.page')} {annotation.page} · {annotation.supported ? t(`reader.type.${annotation.subtype}`) : annotation.subtype}</strong>
+        <span>{annotation.contents || t('reader.noComment')}</span>
+        {annotation.author && <small>{annotation.author}</small>}
+        {created && <small>{t('reader.created')} {created}</small>}
+        {modified && <small>{t('reader.modified')} {modified}</small>}
+      </button>
+      const group = annotation.subtype === 'Text' ? notes : annotations
+      group.push(row)
+    }
+    return { annotations, notes }
+  }, [commentItems, selectedAnnotation, selectAnnotation, jump, t])
+
+  const renderCommentEditor = () => <div className="dsh-pdf-comment-editor">
+    <label>{t('reader.commentText')}<textarea value={comment} disabled={!!selected && !selected.editable} onChange={(event) => setComment(event.target.value)} rows={5} /></label>
+    <label>{t('reader.color')}<input type="color" value={commentColor} disabled={!!selected && !selected.editable} onChange={(event) => setCommentColor(event.target.value)} /></label>
+    {selected?.readOnlyReason && <p className="dsh-pdf-muted">{t(`reader.reason.${selected.readOnlyReason}`)}</p>}
+    <button disabled={!editable || (!!selected && !selected.editable)} onClick={async () => {
+      const patch = { contents: comment, color: colorFromHex(commentColor) }
+      const next = pendingNote ? await change([{ type: 'add', annotation: { ...pendingNote, ...patch } }]) : selected ? await change([{ type: 'update', id: selected.id, patch }]) : undefined
+      if (next && pendingNote) { setSelectedAnnotation(pendingNote.id); setPendingNote(null) }
+    }}>{t('reader.applyComment')}</button>
+    {pendingNote && <button onClick={() => setPendingNote(null)}>{t('reader.cancel')}</button>}
+    {selected && <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>}
+  </div>
+  const annotationPanels = (notes: boolean) => {
+    const items = notes ? annotationLists.notes : annotationLists.annotations
+    return <ScrollablePanel className={notes ? 'dsh-pdf-notes' : 'dsh-pdf-comments'} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
+      <div className="dsh-pdf-panel-heading"><h3>{t(notes ? 'reader.sidebar.notes' : 'reader.comments')}</h3></div>
+      {((notes && pendingNote) || (selected && notes === (selected.subtype === 'Text'))) && renderCommentEditor()}
+      {notes && <p className="dsh-pdf-muted">{t('reader.sidebar.notesHint')}</p>}
+      {items}
+      {!items.length && <p className="dsh-pdf-muted">{t(notes ? 'reader.sidebar.noNotes' : 'reader.noAnnotations')}</p>}
+    </ScrollablePanel>
+  }
+
   return <div className="dsh-pdf-reader" ref={readerElement} aria-label={t('reader.title')} onPointerDown={(event) => {
     if (event.button !== 0 || !(event.target instanceof Element) || scrollRoot?.contains(event.target)) return
-    if (!event.target.closest('button,a,input,textarea,select,summary,.dsh-pdf-context-toolbar,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) dismissContext()
+    if (!event.target.closest('button,a,input,textarea,select,summary,.dsh-pdf-context-toolbar,.dsh-pdf-sidebar-divider,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) dismissContext()
   }} onKeyDown={(event) => {
     if (event.target instanceof Element && event.target.closest('.dsh-pdf-translation-panel')) {
       if (event.key === 'Escape') { event.preventDefault(); closeTranslation() }
@@ -829,7 +880,29 @@ export function Reader(props: ReaderProps) {
       if (toolsMenu.current) toolsMenu.current.open = false
     }
   }}>
-    <div className="dsh-pdf-toolbar" role="toolbar" aria-label={t('reader.navigation')}>
+    <div className="dsh-pdf-toolbar dsh-pdf-main-toolbar" role="toolbar" aria-label={t('reader.sidebar.toolbar')}>
+      <details className="dsh-pdf-tools" ref={toolsMenu} onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
+      }}>
+        <summary>{t('reader.tools')} ▾</summary>
+        <div className="dsh-pdf-tools-menu" role="group" aria-label={t('reader.tools')}>
+          <button disabled={!pdf || busy || screenshotBusy} onClick={beginScreenshot}>{t('reader.regionScreenshot')}</button>
+          <button disabled={!editable} onClick={() => {
+            clearSelection(); clearAnnotation(); setMode('note')
+            if (toolsMenu.current) toolsMenu.current.open = false
+          }}>{t('reader.note')}</button>
+          <button disabled={!pdf || !!ocrProgress} onClick={() => {
+            setMode('text'); void recognize()
+            if (toolsMenu.current) toolsMenu.current.open = false
+          }}>{t('reader.ocrPage')}</button>
+          <button disabled={!snapshot || busy} onClick={() => {
+            if (snapshot?.dirty || snapshot?.canRedo) setReloadConfirm(true)
+            else void act(current => api.reload(sessionId, current.id, current.revision, tab.signal))
+            if (toolsMenu.current) toolsMenu.current.open = false
+          }}>{t('reader.reload')}</button>
+        </div>
+      </details>
+      <div className="dsh-pdf-toolbar-controls">
       <button disabled={!history.current.canGoBack || busy || navigating} title={`${t('reader.back')} ${history.current.peek()?.page ?? ''}`} onClick={() => {
         if (navigationLock.current) return
         navigationLock.current = true; setNavigating(true)
@@ -850,32 +923,14 @@ export function Reader(props: ReaderProps) {
         {fit === 'custom' && ![0.5, 0.75, 1, 1.25, 1.5, 2, 3].includes(zoom) && <option value={zoom}>{Math.round(zoom * 100)}%</option>}
       </select>
       <button onClick={() => setRotation((value) => (value + 90) % 360)} disabled={!pdf || navigating} title={t('reader.rotate')}>↻</button>
-      <button aria-pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>{t('reader.search')}</button>
-      <button aria-pressed={commentsOpen} onClick={() => { closeTranslation(); setCommentsOpen((value) => !value) }}>{t('reader.comments')}</button>
-    </div>
-    <div className="dsh-pdf-toolbar dsh-pdf-editbar" role="toolbar" aria-label={t('reader.editing')}>
-      <details className="dsh-pdf-tools" ref={toolsMenu} onBlur={(event) => {
-        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
-      }}>
-        <summary>{t('reader.tools')} ▾</summary>
-        <div className="dsh-pdf-tools-menu" role="group" aria-label={t('reader.tools')}>
-          <button disabled={!pdf || busy || screenshotBusy} onClick={beginScreenshot}>{t('reader.regionScreenshot')}</button>
-          <button disabled={!editable} onClick={() => {
-            clearSelection(); clearAnnotation(); setMode('note')
-            if (toolsMenu.current) toolsMenu.current.open = false
-          }}>{t('reader.note')}</button>
-          <button disabled={!pdf || !!ocrProgress} onClick={() => {
-            setMode('text'); void recognize()
-            if (toolsMenu.current) toolsMenu.current.open = false
-          }}>{t('reader.ocrPage')}</button>
-        </div>
-      </details>
+      <span className="dsh-pdf-toolbar-divider" aria-hidden="true" />
       <button disabled={!snapshot?.canUndo || busy} onClick={() => void act((current) => api.undo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.undo')}>↶</button>
       <button disabled={!snapshot?.canRedo || busy} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
       <button className="dsh-pdf-primary" disabled={!editable || !snapshot?.dirty} onClick={() => void save()}>{t('reader.save')}</button>
       <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
       <button disabled={!snapshot || busy || (!snapshot.dirty && !snapshot.canRedo && !hasUnappliedComment)} title={t('reader.discardHelp')} onClick={() => void discardChanges()}>{t('reader.discard')}</button>
-      <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
+      </div>
+      <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} title={snapshot?.path} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
     {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
       <button onClick={() => void copyText()}>{t(textCopied ? 'reader.textCopied' : 'reader.copyText')}</button>
@@ -898,7 +953,7 @@ export function Reader(props: ReaderProps) {
       <input type="color" aria-label={t('reader.annotationColor')} value={commentColor} disabled={!editable || !selected.editable} onChange={(event) => setCommentColor(event.target.value)} />
       <button disabled={!editable || !selected.editable || commentColor === colorToHex(selected.color)} onClick={() => void change([{ type: 'update', id: selected.id, patch: { color: colorFromHex(commentColor) } }])}>{t('reader.applyColor')}</button>
       <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>
-      <button onClick={() => { closeTranslation(); setCommentsOpen(true) }}>{t('reader.commentText')}</button>
+      <button onClick={() => showSidebar(selected.subtype === 'Text' ? 'notes' : 'annotations')}>{t('reader.commentText')}</button>
       <button onClick={clearAnnotation}>{t('reader.deselectAnnotation')}</button>
     </FloatingToolbar>}
     {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
@@ -919,16 +974,7 @@ export function Reader(props: ReaderProps) {
       <button onClick={() => { void act((current) => api.reload(sessionId, current.id, current.revision, tab.signal)); setReloadConfirm(false) }}>{t('reader.reload')}</button>
       <button onClick={() => setReloadConfirm(false)}>{t('reader.cancel')}</button></div>}
     <div className="dsh-pdf-body">
-      {searchOpen && <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
-        <div className="dsh-pdf-panel-heading"><h3>{t('reader.search')}</h3><button aria-label={t('reader.closeSearch')} onClick={() => setSearchOpen(false)}>×</button></div>
-        <form onSubmit={(event) => void runSearch(event)}><input aria-label={t('reader.search')} placeholder={t('reader.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} />
-          <button disabled={searching || !query.trim() || !pdf}>{searching ? t('reader.searching') : t('reader.search')}</button></form>
-        <p className="dsh-pdf-muted">{t('reader.searchCoverage')}</p>
-        {searched && <p>{hits.length ? `${hits.length}${hits.length >= 500 ? '+' : ''} ${t('reader.results')}` : t('reader.noResults')}</p>}
-        {hits.map((hit, index) => <button className="dsh-pdf-search-hit" key={index} onClick={() => void jump(hit.page, { x: hit.x, y: hit.y })}>
-          <strong>{t('reader.page')} {hit.page} · {hit.source === 'ocr' ? t('reader.ocrText') : t('reader.nativeText')}</strong><span>{hit.text}</span>
-        </button>)}
-      </ScrollablePanel>}
+      <div className="dsh-pdf-content" aria-label={t('reader.sidebar.pdfContent')}>
       <div className="dsh-pdf-scroll" ref={scrollRef} tabIndex={0} onScroll={updateScrolledPage}
         onPointerDown={(event) => {
           if (event.button !== 0 || mode !== 'text' || (event.target instanceof Element && event.target.closest('button,a,input,textarea'))) return
@@ -943,38 +989,28 @@ export function Reader(props: ReaderProps) {
         {pageElements}
       </div>
       <OverlayScrollbars target={scrollRoot} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
-      {commentsOpen && <ScrollablePanel className="dsh-pdf-comments" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
-        <div className="dsh-pdf-panel-heading"><h3>{t('reader.comments')}</h3><button aria-label={t('reader.closeComments')} onClick={() => setCommentsOpen(false)}>×</button></div>
-        {(selected || pendingNote) && <div className="dsh-pdf-comment-editor">
-          <label>{t('reader.commentText')}<textarea value={comment} disabled={!!selected && !selected.editable} onChange={(event) => setComment(event.target.value)} rows={5} /></label>
-          <label>{t('reader.color')}<input type="color" value={commentColor} disabled={!!selected && !selected.editable} onChange={(event) => setCommentColor(event.target.value)} /></label>
-          {selected?.readOnlyReason && <p className="dsh-pdf-muted">{t(`reader.reason.${selected.readOnlyReason}`)}</p>}
-          <button disabled={!editable || (!!selected && !selected.editable)} onClick={async () => {
-            const patch = { contents: comment, color: colorFromHex(commentColor) }
-            const next = pendingNote ? await change([{ type: 'add', annotation: { ...pendingNote, ...patch } }]) : selected ? await change([{ type: 'update', id: selected.id, patch }]) : undefined
-            if (next && pendingNote) { setSelectedAnnotation(pendingNote.id); setPendingNote(null) }
-          }}>{t('reader.applyComment')}</button>
-          {pendingNote && <button onClick={() => setPendingNote(null)}>{t('reader.cancel')}</button>}
-          {selected && <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>}
-        </div>}
-        {commentItems.map(({ annotation, created, modified }) => <button
-          className={`dsh-pdf-comment-item${selectedAnnotation === annotation.id ? ' is-selected' : ''}`} key={annotation.id}
-          onClick={() => { selectAnnotation(annotation.id); void jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }}>
-          <strong>{t('reader.page')} {annotation.page} · {annotation.supported ? t(`reader.type.${annotation.subtype}`) : annotation.subtype}</strong>
-          <span>{annotation.contents || t('reader.noComment')}</span>
-          {annotation.author && <small>{annotation.author}</small>}
-          {created && <small>{t('reader.created')} {created}</small>}
-          {modified && <small>{t('reader.modified')} {modified}</small>}
-        </button>)}
-        {!snapshot?.document.annotations.some((annotation) => annotation.supported) && <p className="dsh-pdf-muted">{t('reader.noAnnotations')}</p>}
-      </ScrollablePanel>}
-      {translationSelection && <TranslationPanel selection={translationSelection} translate={translateSelection} onClose={closeTranslation} t={t}
-        engineName={settings.translationEngine === 'dsh-model' ? t('reader.translationDshModel')
-          : props.translation.list().find(engine => engine.id === settings.translationEngine)?.name ?? settings.translationEngine} />}
-    </div>
-    <div className="dsh-pdf-footer"><span title={snapshot?.path}>{snapshot?.path}</span>
-      {selection && <button onClick={clearSelection}>{t('reader.clearSelection')}</button>}
-      <button disabled={!snapshot || busy} onClick={() => snapshot?.dirty ? setReloadConfirm(true) : void act((current) => api.reload(sessionId, current.id, current.revision, tab.signal))}>{t('reader.reload')}</button>
+      </div>
+      <ReadingSidebar activeSection={sidebarSection} onSectionChange={showSidebar} expanded={sidebarExpanded}
+        onExpandedChange={setSidebarExpanded} t={t} panels={{
+          annotations: annotationPanels(false), notes: annotationPanels(true),
+          search: <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
+            <div className="dsh-pdf-panel-heading"><h3>{t('reader.search')}</h3></div>
+            <form onSubmit={event => void runSearch(event)}><input aria-label={t('reader.search')} placeholder={t('reader.searchPlaceholder')} value={query} onChange={event => setQuery(event.target.value)} />
+              <button disabled={searching || !query.trim() || !pdf}>{searching ? t('reader.searching') : t('reader.search')}</button></form>
+            <p className="dsh-pdf-muted">{t('reader.searchCoverage')}</p>
+            {searched && <p>{hits.length ? `${hits.length}${hits.length >= 500 ? '+' : ''} ${t('reader.results')}` : t('reader.noResults')}</p>}
+            {hits.map((hit, index) => <button className="dsh-pdf-search-hit" key={index} onClick={() => void jump(hit.page, { x: hit.x, y: hit.y })}>
+              <strong>{t('reader.page')} {hit.page} · {hit.source === 'ocr' ? t('reader.ocrText') : t('reader.nativeText')}</strong><span>{hit.text}</span>
+            </button>)}
+          </ScrollablePanel>,
+          translation: translationSelection ? <TranslationPanel selection={translationSelection} translate={translateSelection} onClose={closeTranslation} t={t}
+            engineName={settings.translationEngine === 'dsh-model' ? t('reader.translationDshModel')
+              : props.translation.list().find(engine => engine.id === settings.translationEngine)?.name ?? settings.translationEngine} />
+            : <ScrollablePanel className="dsh-pdf-translation-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
+              <div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.translation')}</h3></div>
+              <p className="dsh-pdf-muted">{t('reader.sidebar.translationHint')}</p>
+            </ScrollablePanel>,
+        }} />
     </div>
     {screenshot && <ScreenshotPreview image={screenshot} t={t} onError={notifyError} onClose={() => { setScreenshot(null); clearSelection() }}
       onOcr={ocrProgress ? undefined : () => void recognize({ page: screenshot.page, rect: screenshot.region })} />}

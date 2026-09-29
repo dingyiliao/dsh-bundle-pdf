@@ -7,15 +7,9 @@ interface FloatingToolbarProps {
   children: React.ReactNode
 }
 
-/** Drawers cover the page rather than squeezing it; actions use the exposed area. */
+/** Docked tools live outside this viewport; contextual actions stay within the PDF column. */
 export function visibleReadingBounds(viewport: HTMLElement): DOMRect {
-  const bounds = viewport.getBoundingClientRect()
-  const reader = viewport.closest('.dsh-pdf-reader')
-  const search = reader?.querySelector('.dsh-pdf-search-panel')?.getBoundingClientRect()
-  const comments = reader?.querySelector('.dsh-pdf-comments, .dsh-pdf-translation-panel')?.getBoundingClientRect()
-  const left = Math.max(bounds.left, search?.right ?? bounds.left)
-  const right = Math.min(bounds.right, comments?.left ?? bounds.right)
-  return new DOMRect(left, bounds.top, Math.max(0, right - left), bounds.height)
+  return viewport.getBoundingClientRect()
 }
 
 /** Keep contextual actions near their PDF anchor without changing page layout. */
