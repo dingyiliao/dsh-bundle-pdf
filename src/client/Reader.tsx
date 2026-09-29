@@ -69,7 +69,8 @@ export function Reader(props: ReaderProps) {
   void historyRevision
 
   const notifyError = useCallback((value: unknown) => {
-    const message = value instanceof Error ? value.message : String(value)
+    const needsPassword = value instanceof Error && (('code' in value && value.code === 'password-required') || value.name === 'PasswordException')
+    const message = needsPassword ? callbacks.current.t('reader.passwordRequired') : value instanceof Error ? value.message : String(value)
     setError(message)
   }, [])
 
@@ -536,9 +537,9 @@ export function Reader(props: ReaderProps) {
       <button disabled={!snapshot?.canRedo || busy} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
       <button className="dsh-pdf-primary" disabled={!editable || !snapshot?.dirty} onClick={() => void save()}>{t('reader.save')}</button>
       <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
-      <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.dirty ? t('reader.unsaved') : t('reader.saved')}</span>
+      <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
-    {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t('reader.signedReadOnly')}</div>}
+    {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
     {mode === 'note' && <div className="dsh-pdf-notice">{t('reader.placeNote')}</div>}
     {error && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
     {snapshot?.warning && <div className="dsh-pdf-notice" role="status">{snapshot.warning}</div>}

@@ -5,7 +5,8 @@ export type EditableAnnotationType = 'Highlight' | 'Underline' | 'StrikeOut' | '
 
 export interface PdfPageInfo {
   page: number
-  mediaBox: PdfRect
+  /** Absent when read-only inspection exposes only the visible page box. */
+  mediaBox?: PdfRect
   cropBox: PdfRect
   rotation: number
   userUnit: number
@@ -37,7 +38,7 @@ export interface PdfDocumentInfo {
   annotations: PdfAnnotation[]
   title?: string
   signed: boolean
-  encrypted: false
+  encrypted: boolean
   readOnly: boolean
   readOnlyReason?: string
 }
@@ -61,6 +62,7 @@ export type PdfAnnotationOperation =
 
 export type PdfDocumentErrorCode =
   | 'encrypted'
+  | 'password-required'
   | 'invalid-pdf'
   | 'read-only'
   | 'invalid-operation'

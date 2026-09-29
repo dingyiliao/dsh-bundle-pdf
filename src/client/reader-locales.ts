@@ -5,6 +5,8 @@ const en = {
   color: 'Color', highlight: 'Highlight', underline: 'Underline', strike: 'Strike out', note: 'Note', ocrRegion: 'OCR region', ocrPage: 'OCR page',
   undo: 'Undo annotation edit', redo: 'Redo annotation edit', save: 'Save', saveAs: 'Save as', working: 'Working…', unsaved: 'Unsaved changes', saved: 'Saved',
   signedReadOnly: 'This PDF is digitally signed. Reading is available; annotation editing and saving are disabled.', placeNote: 'Click on the page to place a note.',
+  encryptedReadOnly: 'This PDF is encrypted. Reading and existing annotations are available; editing and encrypted saving are not supported yet.',
+  readOnly: 'Read only', passwordRequired: 'This PDF requires a password. Interactive unlocking is not supported yet; do not send the password to a chat.',
   dismiss: 'Dismiss', conflict: 'The source file changed outside this reader. Save a copy or reload the source.', cancel: 'Cancel', savePath: 'PDF path',
   overwrite: 'Overwrite the existing target', reloadConfirm: 'Reload the source PDF and discard this working copy’s unsaved annotations?', reload: 'Reload source',
   searchPlaceholder: 'Find in PDF', searching: 'Searching…', searchCoverage: 'Searches the original text layer and pages recognized with OCR. Unrecognized scan images are not searched.',
@@ -16,6 +18,7 @@ const en = {
   targetChecking: 'Checking save target…', targetNew: 'A new PDF file will be created.', targetExists: 'The target exists. Select overwrite to replace the inspected version.', targetUnchecked: 'Wait for the save target to be checked.',
   'type.Highlight': 'Highlight', 'type.Underline': 'Underline', 'type.StrikeOut': 'Strike out', 'type.Text': 'Note',
   'reason.signed-document': 'Signed PDF: read only.', 'reason.unsupported-annotation-type': 'This annotation type is preserved but cannot be edited.',
+  'reason.encrypted-document': 'Encrypted PDF: annotations are read only.',
   'reason.annotation-locked': 'This annotation is locked or read only.', 'reason.invalid-annotation-geometry': 'The annotation has unsupported geometry.',
   'reason.reply-chain': 'This annotation belongs to a reply thread, which is read only in this version.',
 }
@@ -26,6 +29,8 @@ const zh: Record<keyof typeof en, string> = {
   color: '颜色', highlight: '高亮', underline: '下划线', strike: '删除线', note: '便笺', ocrRegion: '识别区域', ocrPage: '识别本页',
   undo: '撤销标注编辑', redo: '重做标注编辑', save: '保存', saveAs: '另存为', working: '处理中…', unsaved: '有未保存修改', saved: '已保存',
   signedReadOnly: '这份 PDF 带有数字签名，可以阅读；标注编辑和保存已禁用。', placeNote: '点击页面上的位置放置便笺。',
+  encryptedReadOnly: '这份 PDF 使用加密，可以阅读并查看已有标注；当前尚不支持编辑和加密保存。',
+  readOnly: '只读', passwordRequired: '这份 PDF 需要密码。当前尚不支持交互式解锁，请勿将密码发送到会话。',
   dismiss: '关闭提示', conflict: '源文件已被外部修改。请另存副本，或重新加载源文件。', cancel: '取消', savePath: 'PDF 路径',
   overwrite: '覆盖已有目标文件', reloadConfirm: '重新加载源 PDF，并放弃当前工作副本中未保存的标注？', reload: '重新加载',
   searchPlaceholder: '在 PDF 中查找', searching: '搜索中…', searchCoverage: '搜索原有文字层和已完成 OCR 的页面。尚未识别的扫描图像不在搜索范围内。',
@@ -37,6 +42,7 @@ const zh: Record<keyof typeof en, string> = {
   targetChecking: '正在检查保存目标…', targetNew: '将创建一份新的 PDF 文件。', targetExists: '目标文件已存在。勾选覆盖后，将替换当前检查到的版本。', targetUnchecked: '请等待保存目标检查完成。',
   'type.Highlight': '高亮', 'type.Underline': '下划线', 'type.StrikeOut': '删除线', 'type.Text': '便笺',
   'reason.signed-document': '已签名 PDF：只读。', 'reason.unsupported-annotation-type': '此类型的标注会保留，当前版本不能编辑。',
+  'reason.encrypted-document': '加密 PDF：标注仅供查看。',
   'reason.annotation-locked': '此标注已锁定或设为只读。', 'reason.invalid-annotation-geometry': '此标注的坐标格式暂不支持编辑。',
   'reason.reply-chain': '此标注属于回复链，当前版本仅支持查看。',
 }

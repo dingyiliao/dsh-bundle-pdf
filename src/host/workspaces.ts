@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { applyPdfOperations, loadPdfDocument } from '../core/pdf-document.ts'
+import { loadPdfForReading } from './pdf-inspection.ts'
 import type { WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import { draftSchema, requestSchema, type DraftRecord } from './validation.ts'
@@ -42,7 +43,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     const operations = record.groups.slice(0, record.cursor).flat()
     const { bytes, document } = operations.length
       ? await applyPdfOperations(original, operations)
-      : { bytes: original, document: await loadPdfDocument(original) }
+      : { bytes: original, document: await loadPdfForReading(original) }
     return {
       id, path: record.path, sourceVersion: record.sourceVersion, contentVersion: record.contentVersion,
       revision: record.revision, dirty: record.cursor > 0,

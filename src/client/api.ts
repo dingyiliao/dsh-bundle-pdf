@@ -12,9 +12,9 @@ const wireSnapshot = z.object({
   revision: z.number().int(), dirty: z.boolean(), canUndo: z.boolean(), canRedo: z.boolean(), conflict: z.boolean(),
   warning: z.string().optional(), bytes: z.string(),
   document: z.object({
-    pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.literal(false),
+    pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
     readOnly: z.boolean(), readOnlyReason: z.string().optional(),
-    pages: z.array(z.object({ page: z.number().int(), mediaBox: rect, cropBox: rect, rotation: z.number(), userUnit: z.number() })),
+    pages: z.array(z.object({ page: z.number().int(), mediaBox: rect.optional(), cropBox: rect, rotation: z.number(), userUnit: z.number() })),
     annotations: z.array(z.object({
       id: z.string(), page: z.number().int(), subtype: z.string(), rect: rect.optional(), quadPoints: z.array(z.number()).optional(),
       color: color.optional(), opacity: z.number().optional(), contents: z.string().optional(), author: z.string().optional(),

@@ -52,7 +52,7 @@ const browser = {
 // Host imports belong to the installed Harness profile, not to a second bundled runtime.
 const hostBuild = await build({
   ...common, entryPoints: ['src/host/index.ts'], outfile: 'dist/index.js',
-  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*', 'pdfjs-dist/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
 })
 
