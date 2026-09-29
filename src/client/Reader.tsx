@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationMode, type PDFDocumentProxy } from 'pdfjs-dist'
-import type { NewPdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
+import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
 import { mapImageBoxToPdf, mapResultToPdf } from '../ocr/mapping.js'
 import type { WorkspaceSnapshot } from '../shared/contracts.js'
@@ -9,9 +9,20 @@ import { Page } from './Page.js'
 import { captureTextSelection, colorFromHex, colorToHex, pdfRectToViewport, overlapFraction, type PageView, type ReaderSelection } from './reader-selection.js'
 import { readerLifetime, type OcrPage } from './reader-lifetime.js'
 import { joinSearchText } from './reader-search.js'
+import { formatAnnotationDate } from './reader-dates.js'
 
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+const noAnnotations: PdfAnnotation[] = []
+function groupAnnotations(annotations: readonly PdfAnnotation[]) {
+  const grouped = new Map<number, PdfAnnotation[]>()
+  for (const annotation of annotations) {
+    const page = grouped.get(annotation.page)
+    if (page) page.push(annotation)
+    else grouped.set(annotation.page, [annotation])
+  }
+  return grouped
+}
 
 export function Reader(props: ReaderProps) {
   const { api, t, settings, sessionId } = props
@@ -20,6 +31,7 @@ export function Reader(props: ReaderProps) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null)
   const [displayOwner, setDisplayOwner] = useState<{ token: number; content: ReaderProps['content'] } | null>(null)
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
+  const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null)
@@ -35,6 +47,7 @@ export function Reader(props: ReaderProps) {
   const [color, setColor] = useState(settings.defaultColor)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
+  const [pendingAnnotations, setPendingAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [pendingNote, setPendingNote] = useState<NewPdfAnnotation | null>(null)
   const [comment, setComment] = useState('')
   const [commentColor, setCommentColor] = useState(settings.defaultColor)
@@ -58,7 +71,7 @@ export function Reader(props: ReaderProps) {
   const navigationLock = useRef(false)
   const operationLock = useRef(false)
   const [navigating, setNavigating] = useState(false)
-  const activePdf = useRef<{ document: PDFDocumentProxy; dispose(): Promise<void> } | null>(null)
+  const activePdf = useRef<{ document: PDFDocumentProxy; bytes: Uint8Array; dispose(): Promise<void> } | null>(null)
   const ocrController = useRef<AbortController | null>(null)
   const searchSequence = useRef(0)
   const ownerSequence = useRef(0)
@@ -97,17 +110,24 @@ export function Reader(props: ReaderProps) {
 
   useEffect(() => {
     if (!snapshot || !displayOwner || displayOwner.token !== ownerSequence.current) return
+    if (activePdf.current?.bytes === snapshot.bytes) {
+      const latest = state.current.snapshot
+      displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
+      return
+    }
     const controller = new AbortController()
     let accepted = false
     let cancelled = false
-    void callbacks.current.openPdf(snapshot.bytes.slice(), controller.signal).then(async (opened) => {
+    void callbacks.current.openPdf(snapshot.bytes, controller.signal).then(async (opened) => {
       if (controller.signal.aborted || cancelled || displayOwner.token !== ownerSequence.current) { await opened.dispose(); return }
       accepted = true
       const previous = activePdf.current
-      activePdf.current = opened
+      activePdf.current = { ...opened, bytes: snapshot.bytes }
       views.current.clear()
       setPdf(opened.document)
-      displayOwner.content.loaded(snapshot.sourceVersion)
+      setPdfAnnotations(snapshot.document.annotations)
+      const latest = state.current.snapshot
+      displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
       // Give React a frame to cancel the previous canvas/text-layer work.
       await frame()
       await previous?.dispose()
@@ -115,7 +135,13 @@ export function Reader(props: ReaderProps) {
       if (!controller.signal.aborted && displayOwner.token === ownerSequence.current) { notifyError(failure); displayOwner.content.failed() }
     })
     return () => { cancelled = true; if (!accepted) controller.abort() }
-  }, [snapshot?.id, snapshot?.revision, snapshot?.sourceVersion, displayOwner?.token, notifyError])
+  }, [snapshot?.bytes, displayOwner?.token, notifyError])
+
+  useEffect(() => {
+    if (snapshot && displayOwner?.token === ownerSequence.current && activePdf.current?.bytes === snapshot.bytes) {
+      displayOwner.content.loaded(snapshot.sourceVersion)
+    }
+  }, [snapshot?.sourceVersion])
 
   useLayoutEffect(() => () => {
     // Layout cleanup captures geometry before React detaches the page elements.
@@ -338,26 +364,43 @@ export function Reader(props: ReaderProps) {
     return () => { clearTimeout(timer); controller.abort() }
   }, [api, sessionId, saveAsOpen, savePath, notifyError])
 
-  const selected = snapshot?.document.annotations.find((annotation) => annotation.id === selectedAnnotation)
+  const displayAnnotations = useMemo(() => {
+    if (!pendingAnnotations.length) return snapshot?.document.annotations ?? noAnnotations
+    const combined = new Map((snapshot?.document.annotations ?? []).map((annotation) => [annotation.id, annotation]))
+    for (const annotation of pendingAnnotations) if (!combined.has(annotation.id)) combined.set(annotation.id, annotation)
+    return [...combined.values()]
+  }, [snapshot?.document.annotations, pendingAnnotations])
+  const selected = displayAnnotations.find((annotation) => annotation.id === selectedAnnotation)
   useEffect(() => {
     if (!selected) return
     setComment(selected.contents ?? '')
     setCommentColor(colorToHex(selected.color))
   }, [selected?.id, selected?.contents, selected?.color?.join(',')])
+  useEffect(() => {
+    if (selectedAnnotation && snapshot && !selected) setSelectedAnnotation(undefined)
+  }, [snapshot, selected, selectedAnnotation])
+
+  const annotationsByPage = useMemo(() => groupAnnotations(displayAnnotations), [displayAnnotations])
+  const renderedAnnotationsByPage = useMemo(() => groupAnnotations(pdfAnnotations), [pdfAnnotations])
 
   const mark = async (subtype: 'Highlight' | 'Underline' | 'StrikeOut') => {
-    if (!snapshot || !selection || selection.revision !== snapshot.revision || selection.kind !== 'text') return
-    const operations: PdfAnnotationOperation[] = selection.fragments.map((fragment) => ({ type: 'add', annotation: {
+    if (!snapshot || operationLock.current || snapshot.document.readOnly || !selection || selection.revision !== snapshot.revision || selection.kind !== 'text') return
+    const annotations: NewPdfAnnotation[] = selection.fragments.map((fragment) => ({
       id: crypto.randomUUID(), page: fragment.page, subtype, rect: fragment.rect,
       quadPoints: fragment.quadPoints, color: colorFromHex(color),
-    } }))
+    }))
+    const operations: PdfAnnotationOperation[] = annotations.map((annotation) => ({ type: 'add', annotation }))
+    // Give visible feedback immediately while the Host persists the edit.
+    // Failed commits remove the preview and leave the authoritative PDF intact.
+    setPendingAnnotations(annotations.map((annotation) => ({ ...annotation, flags: 4, supported: true, editable: true })))
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+    setSelectedAnnotation(annotations[0]?.id)
     const changed = await change(operations)
+    setPendingAnnotations(noAnnotations)
     if (changed) {
-      setSelection(null)
-      window.getSelection()?.removeAllRanges()
-      setCommentsOpen(true)
       setPendingNote(null)
-      if (operations[0].type === 'add') setSelectedAnnotation(operations[0].annotation.id)
+      if (operations[0]?.type === 'add') setSelectedAnnotation(operations[0].annotation.id)
     }
   }
 
@@ -486,15 +529,28 @@ export function Reader(props: ReaderProps) {
   const hasTextSelection = selection?.kind === 'text' && selection.revision === snapshot?.revision
   const registerView = useCallback((number: number, view: PageView | null) => { if (view) views.current.set(number, view); else views.current.delete(number) }, [])
   const scrollRef = useCallback((node: HTMLDivElement | null) => { setScrollRoot(node); props.scrollportRef(node) }, [props.scrollportRef])
-  const selectAnnotation = (id: string) => { setPendingNote(null); setSelectedAnnotation(id); setCommentsOpen(true) }
+  const selectAnnotation = useCallback((id: string) => {
+    setPendingNote(null)
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+    setSelectedAnnotation(id)
+  }, [])
+  const clearAnnotation = () => { setSelectedAnnotation(undefined); setPendingNote(null) }
+  const deleteAnnotation = async () => {
+    if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
+  }
 
   return <div className="dsh-pdf-reader" aria-label={t('reader.title')} onKeyDown={(event) => {
     const input = event.target instanceof HTMLElement && event.target.closest('input,textarea,[contenteditable="true"]')
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save() }
-    if (!input && snapshot && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (editable) void save() }
+    if (!input && editable && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault()
       void act((current) => event.shiftKey ? api.redo(sessionId, current.id, current.revision, tab.signal) : api.undo(sessionId, current.id, current.revision, tab.signal))
     }
+    if (!input && selected && event.key === 'Delete' && editable && selected.editable) {
+      event.preventDefault(); void deleteAnnotation()
+    }
+    if (!input && event.key === 'Escape') { clearAnnotation(); setSelection(null); window.getSelection()?.removeAllRanges() }
   }}>
     <div className="dsh-pdf-toolbar" role="toolbar" aria-label={t('reader.navigation')}>
       <button disabled={!history.current.canGoBack || busy || navigating} title={`${t('reader.back')} ${history.current.peek()?.page ?? ''}`} onClick={() => {
@@ -539,6 +595,14 @@ export function Reader(props: ReaderProps) {
       <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
       <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
+    {selected && <div className="dsh-pdf-toolbar dsh-pdf-selectionbar" role="toolbar" aria-label={t('reader.selectedAnnotation')}>
+      <span>{t('reader.selectedAnnotation')} · {selected.supported ? t(`reader.type.${selected.subtype}`) : selected.subtype}</span>
+      <input type="color" aria-label={t('reader.annotationColor')} value={commentColor} disabled={!editable || !selected.editable} onChange={(event) => setCommentColor(event.target.value)} />
+      <button disabled={!editable || !selected.editable || commentColor === colorToHex(selected.color)} onClick={() => void change([{ type: 'update', id: selected.id, patch: { color: colorFromHex(commentColor) } }])}>{t('reader.applyColor')}</button>
+      <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>
+      <button onClick={() => setCommentsOpen(true)}>{t('reader.commentText')}</button>
+      <button onClick={clearAnnotation}>{t('reader.deselectAnnotation')}</button>
+    </div>}
     {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
     {mode === 'note' && <div className="dsh-pdf-notice">{t('reader.placeNote')}</div>}
     {error && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
@@ -556,6 +620,7 @@ export function Reader(props: ReaderProps) {
       <button onClick={() => setReloadConfirm(false)}>{t('reader.cancel')}</button></div>}
     <div className="dsh-pdf-body">
       {searchOpen && <aside className="dsh-pdf-search-panel">
+        <div className="dsh-pdf-panel-heading"><h3>{t('reader.search')}</h3><button aria-label={t('reader.closeSearch')} onClick={() => setSearchOpen(false)}>×</button></div>
         <form onSubmit={(event) => void runSearch(event)}><input aria-label={t('reader.search')} placeholder={t('reader.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} />
           <button disabled={searching || !query.trim() || !pdf}>{searching ? t('reader.searching') : t('reader.search')}</button></form>
         <p className="dsh-pdf-muted">{t('reader.searchCoverage')}</p>
@@ -573,14 +638,20 @@ export function Reader(props: ReaderProps) {
         if (mode === 'text' && scrollRoot && snapshot) {
           const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
           setSelection(next)
+          if (next) setSelectedAnnotation(undefined)
         }
       }} onKeyUp={() => {
-        if (scrollRoot && snapshot) setSelection(captureTextSelection(scrollRoot, views.current, snapshot.revision))
+        if (scrollRoot && snapshot) {
+          const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
+          setSelection(next)
+          if (next) setSelectedAnnotation(undefined)
+        }
       }}>
         {!pdf && <div className="dsh-pdf-empty" role="status">{error ? t('reader.cannotOpen') : t('reader.loading')}</div>}
         {pdf && snapshot?.document.pages.map((geometry) => <Page key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
           scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
-          annotations={snapshot.document.annotations.filter((annotation) => annotation.page === geometry.page)}
+          annotations={annotationsByPage.get(geometry.page) ?? noAnnotations}
+          renderedAnnotations={renderedAnnotationsByPage.get(geometry.page) ?? noAnnotations}
           selectedAnnotation={selectedAnnotation} selection={selection} ocrWords={ocrPages.get(geometry.page)?.words}
           onView={registerView} onDestination={(value) => void destination(value)}
           onNamedAction={(action) => void jump(action === 'FirstPage' ? 1 : action === 'LastPage' ? pdf.numPages : action === 'NextPage' ? geometry.page + 1 : geometry.page - 1)}
@@ -588,7 +659,7 @@ export function Reader(props: ReaderProps) {
           onError={notifyError} />)}
       </div>
       {commentsOpen && <aside className="dsh-pdf-comments">
-        <h3>{t('reader.comments')}</h3>
+        <div className="dsh-pdf-panel-heading"><h3>{t('reader.comments')}</h3><button aria-label={t('reader.closeComments')} onClick={() => setCommentsOpen(false)}>×</button></div>
         {(selected || pendingNote) && <div className="dsh-pdf-comment-editor">
           <label>{t('reader.commentText')}<textarea value={comment} disabled={!!selected && !selected.editable} onChange={(event) => setComment(event.target.value)} rows={5} /></label>
           <label>{t('reader.color')}<input type="color" value={commentColor} disabled={!!selected && !selected.editable} onChange={(event) => setCommentColor(event.target.value)} /></label>
@@ -599,7 +670,7 @@ export function Reader(props: ReaderProps) {
             if (next && pendingNote) { setSelectedAnnotation(pendingNote.id); setPendingNote(null) }
           }}>{t('reader.applyComment')}</button>
           {pendingNote && <button onClick={() => setPendingNote(null)}>{t('reader.cancel')}</button>}
-          {selected && <button disabled={!editable || !selected.editable} onClick={async () => { if (await change([{ type: 'delete', id: selected.id }])) setSelectedAnnotation(undefined) }}>{t('reader.delete')}</button>}
+          {selected && <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>}
         </div>}
         {snapshot?.document.annotations.filter((annotation) => annotation.supported || (annotation.contents && annotation.subtype !== 'Popup')).map((annotation) => <button
           className={`dsh-pdf-comment-item${selectedAnnotation === annotation.id ? ' is-selected' : ''}`} key={annotation.id}
@@ -607,8 +678,8 @@ export function Reader(props: ReaderProps) {
           <strong>{t('reader.page')} {annotation.page} · {annotation.supported ? t(`reader.type.${annotation.subtype}`) : annotation.subtype}</strong>
           <span>{annotation.contents || t('reader.noComment')}</span>
           {annotation.author && <small>{annotation.author}</small>}
-          {annotation.createdAt && <small>{t('reader.created')} {annotation.createdAt}</small>}
-          {annotation.modifiedAt && <small>{t('reader.modified')} {annotation.modifiedAt}</small>}
+          {annotation.createdAt && <small>{t('reader.created')} {formatAnnotationDate(annotation.createdAt)}</small>}
+          {annotation.modifiedAt && <small>{t('reader.modified')} {formatAnnotationDate(annotation.modifiedAt)}</small>}
         </button>)}
         {!snapshot?.document.annotations.some((annotation) => annotation.supported) && <p className="dsh-pdf-muted">{t('reader.noAnnotations')}</p>}
       </aside>}

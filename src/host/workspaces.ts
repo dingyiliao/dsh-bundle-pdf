@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { applyPdfOperations, loadPdfDocument } from '../core/pdf-document.ts'
+import { applyPdfOperations } from '../core/pdf-document.ts'
 import { loadPdfForReading } from './pdf-inspection.ts'
 import type { WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
@@ -18,6 +18,19 @@ interface WorkingCopy {
   snapshot: WorkspaceSnapshot
 }
 type Files = ReturnType<typeof createLocalFiles>
+type RenderedPdf = Pick<WorkspaceSnapshot, 'bytes' | 'document'>
+interface CachedRender {
+  owner: string
+  record: Pick<DraftRecord, 'original' | 'sourceHash' | 'groups' | 'cursor'>
+  pdf: RenderedPdf
+}
+
+const renderCacheBytes = 32 * 1024 * 1024
+const encodedCacheBytes = 4 * 1024 * 1024
+
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')
+}
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 function pathKey(path: string): string { return process.platform === 'win32' ? path.toLowerCase() : path }
@@ -32,42 +45,109 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   const copies = new Map<string, WorkingCopy>()
   const byPath = new Map<string, string>()
   const queues = new Map<string, Promise<unknown>>()
+  // Only derived state is cached. Original bytes and operations remain the durable source of truth.
+  const rendered = new Map<string, CachedRender>()
+  const checkedSources = new Map<string, Pick<DraftRecord, 'original' | 'sourceHash'>>()
+  const hashes = new WeakMap<Uint8Array, string>()
+  const encoded = new WeakMap<Uint8Array, string>()
+  let cachedBytes = 0
   let closing = false
   let disposal: Promise<void> | undefined
 
-  async function materialize(id: string, record: DraftRecord, conflict = false): Promise<WorkspaceSnapshot> {
-    const original = new Uint8Array(Buffer.from(record.original, 'base64'))
-    if (Buffer.from(original).toString('base64') !== record.original || contentHash(original) !== record.sourceHash) {
-      fail('pdf/draft-damaged', 'Saved draft source bytes failed their integrity check')
+  function renderedHash(bytes: Uint8Array): string {
+    let value = hashes.get(bytes)
+    if (!value) { value = contentHash(bytes); hashes.set(bytes, value) }
+    return value
+  }
+
+  function samePrefix(cached: CachedRender['record'], record: DraftRecord): boolean {
+    return cached.original === record.original && cached.sourceHash === record.sourceHash &&
+      cached.cursor <= record.groups.length &&
+      cached.groups.slice(0, cached.cursor).every((group, index) => group === record.groups[index])
+  }
+
+  function dropRender(key: string) {
+    const entry = rendered.get(key)
+    if (!entry) return
+    cachedBytes -= entry.pdf.bytes.byteLength
+    rendered.delete(key)
+  }
+
+  function rememberRender(id: string, record: DraftRecord, pdf: RenderedPdf) {
+    for (const [key, entry] of rendered) {
+      if (entry.owner === id && !samePrefix(entry.record, record)) dropRender(key)
     }
-    const operations = record.groups.slice(0, record.cursor).flat()
-    const { bytes, document } = operations.length
-      ? await applyPdfOperations(original, operations)
-      : { bytes: original, document: await loadPdfForReading(original) }
+    const key = `${id}:${record.cursor}`
+    dropRender(key)
+    if (pdf.bytes.byteLength > renderCacheBytes) return
+    rendered.set(key, { owner: id, record: { original: record.original, sourceHash: record.sourceHash,
+      cursor: record.cursor, groups: record.groups.slice(0, record.cursor) }, pdf })
+    cachedBytes += pdf.bytes.byteLength
+    const own = [...rendered.entries()].filter(([, entry]) => entry.owner === id)
+    // Keep the current state and at most two prior rendered states for rapid undo/redo.
+    for (const [old] of own.slice(0, -3)) dropRender(old)
+    while (cachedBytes > renderCacheBytes) dropRender(rendered.keys().next().value!)
+  }
+
+  function cachedRender(id: string, record: DraftRecord): RenderedPdf | undefined {
+    const key = `${id}:${record.cursor}`
+    const entry = rendered.get(key)
+    if (!entry) return undefined
+    if (!samePrefix(entry.record, record)) { dropRender(key); return undefined }
+    rendered.delete(key)
+    rendered.set(key, entry)
+    return entry.pdf
+  }
+
+  async function materialize(id: string, record: DraftRecord, conflict = false, supplied?: RenderedPdf): Promise<WorkspaceSnapshot> {
+    let pdf = supplied ?? cachedRender(id, record)
+    if (!pdf) {
+      const original: Uint8Array = Buffer.from(record.original, 'base64')
+      const checked = checkedSources.get(id)
+      if (checked?.original !== record.original || checked.sourceHash !== record.sourceHash) {
+        if (base64(original) !== record.original || renderedHash(original) !== record.sourceHash) {
+          fail('pdf/draft-damaged', 'Saved draft source bytes failed their integrity check')
+        }
+        if (copies.has(id)) checkedSources.set(id, { original: record.original, sourceHash: record.sourceHash })
+      }
+      const operations = record.groups.slice(0, record.cursor).flat()
+      pdf = operations.length
+        ? await applyPdfOperations(original, operations)
+        : { bytes: original, document: await loadPdfForReading(original) }
+    }
     return {
       id, path: record.path, sourceVersion: record.sourceVersion, contentVersion: record.contentVersion,
       revision: record.revision, dirty: record.cursor > 0,
       canUndo: record.cursor > 0, canRedo: record.cursor < record.groups.length,
-      conflict, document, bytes,
+      conflict, document: pdf.document, bytes: pdf.bytes,
     }
   }
 
   function fresh(sessionId: string, source: PdfFileRead, revision = 0, contentVersion: string = randomUUID()): DraftRecord {
     return { format: 1, sessionId, path: source.path, sourceHash: source.version,
-      sourceVersion: source.fsVersion, contentVersion, original: Buffer.from(source.bytes).toString('base64'),
+      sourceVersion: source.fsVersion, contentVersion, original: base64(source.bytes),
       revision, groups: [], cursor: 0 }
   }
 
-  async function publish(copy: WorkingCopy, record: DraftRecord, conflict = copy.snapshot.conflict, signal?: AbortSignal) {
-    const snapshot = await materialize(copy.id, record, conflict)
+  async function sourcePdf(source: PdfFileRead): Promise<RenderedPdf> {
+    // The file adapter has already checked the digest. A fresh working copy can
+    // inspect those exact bytes without encoding, decoding and hashing another copy.
+    hashes.set(source.bytes, source.version)
+    return { bytes: source.bytes, document: await loadPdfForReading(source.bytes) }
+  }
+
+  async function publish(copy: WorkingCopy, record: DraftRecord, conflict = copy.snapshot.conflict, signal?: AbortSignal, pdf?: RenderedPdf) {
+    const snapshot = await materialize(copy.id, record, conflict, pdf)
     signal?.throwIfAborted()
-    const persisted = { ...record, renderedHash: contentHash(snapshot.bytes) }
+    const persisted = { ...record, renderedHash: renderedHash(snapshot.bytes) }
     // Persist redo history too: an undone edit remains available after a disconnected client returns.
     const key = recordKey(record.sessionId, record.path)
     if (record.groups.length) await drafts.put(key, persisted)
     else await drafts.delete(key)
     copy.record = persisted
     copy.snapshot = snapshot
+    checkedSources.set(copy.id, { original: record.original, sourceHash: record.sourceHash })
+    rememberRender(copy.id, persisted, snapshot)
     return snapshot
   }
 
@@ -92,7 +172,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         copy.snapshot = { ...copy.snapshot, sourceVersion: source.fsVersion }
       }
       if (source && conflict && !copy.snapshot.dirty && copy.record.groups.length === 0) {
-        return publish(copy, fresh(sessionId, source, copy.record.revision + 1), false, signal)
+        return publish(copy, fresh(sessionId, source, copy.record.revision + 1), false, signal, await sourcePdf(source))
       }
       copy.snapshot = { ...copy.snapshot, conflict }
       return copy.snapshot
@@ -107,15 +187,16 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       record = { ...record, sourceVersion: source.fsVersion }
     }
     const id = randomUUID()
-    let snapshot = await materialize(id, record, record.sourceHash !== source?.version)
+    let snapshot = await materialize(id, record, record.sourceHash !== source?.version,
+      saved ? undefined : await sourcePdf(source!))
     signal.throwIfAborted()
     // A file may have committed just before the connection or draft cleanup
     // failed. Exact output equality proves that recovery need not reapply it.
-    const alreadySaved = source && (record.renderedHash === source.version || contentHash(snapshot.bytes) === source.version)
+    const alreadySaved = saved && source && (record.renderedHash === source.version || renderedHash(snapshot.bytes) === source.version)
     if (saved && source && (record.groups.length === 0 || alreadySaved)) {
       const contentVersion = alreadySaved ? record.contentVersion : randomUUID()
       record = fresh(sessionId, source, record.revision + 1, contentVersion)
-      snapshot = await materialize(id, record, false)
+      snapshot = await materialize(id, record, false, await sourcePdf(source))
       try { await drafts.delete(key) } catch (error) {
         snapshot = { ...snapshot, warning: `The PDF is saved, but recovered draft cleanup failed: ${errorText(error)}` }
       }
@@ -123,6 +204,8 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     signal.throwIfAborted()
     copies.set(id, { id, record, snapshot })
     byPath.set(key, id)
+    checkedSources.set(id, { original: record.original, sourceHash: record.sourceHash })
+    rememberRender(id, record, snapshot)
     return snapshot
   }
 
@@ -143,7 +226,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     const record = copy.record
     if (input.action === 'reload') {
       const source = await files.read(agent, record.path, signal)
-      return publish(copy, fresh(input.sessionId, source, record.revision + 1), false, signal)
+      return publish(copy, fresh(input.sessionId, source, record.revision + 1), false, signal, await sourcePdf(source))
     }
     if (input.action === 'save') {
       if (copy.snapshot.document.readOnly) fail('pdf/read-only', copy.snapshot.document.readOnlyReason ?? 'This PDF is read-only')
@@ -154,10 +237,10 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       if (!same && drafts.get(targetKey)?.groups.length) fail('pdf/target-draft', 'The destination has a saved draft; open it first or choose another path')
       const expected = same ? record.sourceHash : input.options.expectedTargetVersion ?? null
       if (!same && expected !== null && input.options.overwrite !== true) fail('pdf/overwrite-required', 'Explicit replacement confirmation is required')
-      // All PDF parsing finishes before publication. Post-commit bookkeeping
-      // cannot turn a successful filesystem save into an ordinary parse error.
-      const committedBytes = copy.snapshot.bytes.slice()
-      const document = await loadPdfDocument(committedBytes)
+      // Materialization has already validated these immutable bytes. The file adapter
+      // takes its own write buffer; retaining identity also avoids reopening the reader on save.
+      const committedBytes = copy.snapshot.bytes
+      const document = copy.snapshot.document
       signal.throwIfAborted()
       try {
         const saved = await files.save(agent, target, committedBytes, expected, { overwrite: input.options.overwrite, signal })
@@ -171,6 +254,9 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         // The PDF has committed. Keep the in-memory revision aligned even if draft cleanup fails.
         copy.record = next
         copy.snapshot = snapshot
+        checkedSources.set(copy.id, { original: next.original, sourceHash: next.sourceHash })
+        hashes.set(committedBytes, next.sourceHash)
+        rememberRender(copy.id, next, snapshot)
         byPath.delete(recordKey(input.sessionId, record.path))
         byPath.set(recordKey(input.sessionId, saved.path), copy.id)
         const cleanupKeys = new Set([recordKey(input.sessionId, record.path), targetKey])
@@ -201,8 +287,11 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     }
     if (input.action !== 'change') fail('pdf/invalid-action', 'Unknown PDF operation')
     if (record.cursor >= 500) fail('pdf/history-limit', 'Save the PDF before making more edits')
+    // The editor preserves annotation IDs across serialization, so an edit needs
+    // only the latest bytes and this batch. Durable recovery still replays the original history.
+    const pdf = await applyPdfOperations(copy.snapshot.bytes, input.operations)
     return publish(copy, { ...record, groups: [...record.groups.slice(0, record.cursor), input.operations],
-      cursor: record.cursor + 1, revision: record.revision + 1 }, undefined, signal)
+      cursor: record.cursor + 1, revision: record.revision + 1 }, undefined, signal, pdf)
   }
 
   return {
@@ -214,13 +303,22 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       queues.set(sessionId, task)
       try {
         const value = await task
-        return 'bytes' in value ? { ...value, bytes: Buffer.from(value.bytes).toString('base64') } : value
+        if (!('bytes' in value)) return value
+        let wireBytes = encoded.get(value.bytes)
+        if (!wireBytes) {
+          wireBytes = base64(value.bytes)
+          if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
+        }
+        return { ...value, bytes: wireBytes, bytesHash: renderedHash(value.bytes) }
       } finally { if (queues.get(sessionId) === task) queues.delete(sessionId) }
     },
     dispose(): Promise<void> {
       if (disposal) return disposal
       closing = true
-      disposal = (async () => { await Promise.allSettled([...queues.values()]); copies.clear(); byPath.clear(); queues.clear() })()
+      disposal = (async () => {
+        await Promise.allSettled([...queues.values()])
+        copies.clear(); byPath.clear(); queues.clear(); rendered.clear(); checkedSources.clear(); cachedBytes = 0
+      })()
       return disposal
     },
   }

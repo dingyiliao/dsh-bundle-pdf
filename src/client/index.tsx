@@ -1,10 +1,10 @@
-import React, { useSyncExternalStore, type ComponentType } from 'react'
+import React, { useCallback, useEffect, useRef, useSyncExternalStore, type ComponentType } from 'react'
 import { z } from 'zod'
 import { Reader } from './Reader.tsx'
 import { Settings, settingsLocales, type ConfigForm } from './Settings.tsx'
 import { readerLocales } from './reader-locales.ts'
 import { createPdfApi, type PdfConnection } from './api.ts'
-import { openPdf } from './pdf-runtime.ts'
+import { createPdfRuntime } from './pdf-runtime.ts'
 import { createOcrRegistry } from '../ocr/index.ts'
 import { defaultSettings } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
@@ -85,9 +85,19 @@ export async function apply(ctx: ClientContext): Promise<void> {
   type OwnerProps = Omit<ReaderProps, 'api' | 'ocr' | 'settings' | 'openPdf'>
   function PdfSurface(props: OwnerProps) {
     const state = useSyncExternalStore(subscribeSettings, readSettings, readSettings)
+    const pdfRuntime = useRef<ReturnType<typeof createPdfRuntime> | null>(null)
+    const openDocument = useCallback((bytes: Uint8Array, signal?: AbortSignal) => {
+      pdfRuntime.current ??= createPdfRuntime(lifetime.signal)
+      return pdfRuntime.current.openPdf(bytes, signal)
+    }, [])
+    useEffect(() => () => {
+      const current = pdfRuntime.current
+      pdfRuntime.current = null
+      void current?.dispose()
+    }, [])
     // Resource addresses carry their own session. The active chat may be different.
     const file = sessionFile(props.resourceAddress)
-    return <Reader {...props} sessionId={file.sessionId} api={api} ocr={ocr} openPdf={openPdf}
+    return <Reader {...props} sessionId={file.sessionId} api={api} ocr={ocr} openPdf={openDocument}
       settings={state.value ?? info.settings ?? defaultSettings} />
   }
   function PdfSettingsSection(props: { t: (key: string) => string }) {

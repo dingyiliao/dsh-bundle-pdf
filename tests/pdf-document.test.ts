@@ -122,7 +122,7 @@ test('deleting an annotation detaches its own popup and retains unrelated links 
 
 test('locked annotations and reply chains remain read only', async () => {
   const { bytes, highlight } = await fixture()
-  for (const flags of [32, 128, 512]) {
+  for (const flags of [64, 128, 512]) {
     const doc = await PDFDocument.load(bytes)
     doc.context.lookup(highlight, PDFDict).set(PDFName.of('F'), doc.context.obj(flags))
     const locked = await doc.save()

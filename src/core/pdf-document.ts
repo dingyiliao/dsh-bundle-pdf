@@ -1,6 +1,6 @@
 import {
   PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber,
-  PDFObject, PDFRef, PDFString,
+  PDFObject, PDFRef, PDFString, ParseSpeeds,
 } from 'pdf-lib'
 import { setAnnotationAppearance } from './pdf-appearance.js'
 import {
@@ -14,7 +14,7 @@ export * from './pdf-types.js'
 const editableTypes = new Set<string>(['Highlight', 'Underline', 'StrikeOut', 'Text'])
 const privateId = PDFName.of('DSHPDFId')
 const defaultColor: PdfColor = [1, 0.85, 0]
-const lockedFlags = 32 | 128 | 512 // ReadOnly, Locked, LockedContents.
+const lockedFlags = 64 | 128 | 512 // ReadOnly (0x40), Locked, LockedContents; NoView (0x20) only controls visibility.
 
 interface AnnotationEntry {
   value: PDFObject
@@ -95,9 +95,15 @@ function hasSignature(doc: PDFDocument): boolean {
         const permissions = get(doc, object, 'Perms')
         if (permissions instanceof PDFDict && get(doc, permissions, 'DocMDP')) return true
       }
-      queue.push(...object.entries().map(([, value]) => value))
+      // Indirect objects are already in the initial queue. Visit only direct
+      // containers here, avoiding every number/string in large annotation lists.
+      for (const [, value] of object.entries()) {
+        if (value instanceof PDFDict || value instanceof PDFArray) queue.push(value)
+      }
     } else if (object instanceof PDFArray) {
-      queue.push(...object.asArray())
+      for (const value of object.asArray()) {
+        if (value instanceof PDFDict || value instanceof PDFArray) queue.push(value)
+      }
     }
   }
   return false
@@ -161,8 +167,8 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
   return entries
 }
 
-function documentInfo(doc: PDFDocument): PdfDocumentInfo {
-  const signed = hasSignature(doc)
+function documentInfo(doc: PDFDocument, known?: { signed: boolean; annotations: PdfAnnotation[] }): PdfDocumentInfo {
+  const signed = known?.signed ?? hasSignature(doc)
   return {
     pageCount: doc.getPageCount(),
     pages: doc.getPages().map((page, index) => {
@@ -174,7 +180,7 @@ function documentInfo(doc: PDFDocument): PdfDocumentInfo {
         userUnit: readNumber(get(doc, page.node, 'UserUnit')) ?? 1,
       }
     }),
-    annotations: annotationEntries(doc, signed).map((entry) => entry.model),
+    annotations: known?.annotations ?? annotationEntries(doc, signed).map((entry) => entry.model),
     title: doc.getTitle(), signed, encrypted: false, readOnly: signed,
     readOnlyReason: signed ? 'signed-document' : undefined,
   }
@@ -183,7 +189,9 @@ function documentInfo(doc: PDFDocument): PdfDocumentInfo {
 async function parse(bytes: Uint8Array): Promise<PDFDocument> {
   try {
     // Metadata and AcroForm appearances are not rewritten as a side effect of opening.
-    const doc = await PDFDocument.load(bytes, { updateMetadata: false, throwOnInvalidObject: true })
+    const doc = await PDFDocument.load(bytes, {
+      updateMetadata: false, throwOnInvalidObject: true, parseSpeed: ParseSpeeds.Medium,
+    })
     if (doc.isEncrypted) throw new PdfDocumentError('encrypted', 'Encrypted PDFs cannot be edited in this version.')
     return doc
   } catch (error) {
@@ -242,17 +250,17 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation): Annotati
   validateNew(annotation, doc)
   const page = doc.getPage(annotation.page - 1)
   const color = annotation.color ?? defaultColor
+  const timestamp = PDFString.fromDate(new Date())
   const dictionary = doc.context.obj({
     Type: 'Annot', Subtype: annotation.subtype, P: page.ref,
     Rect: annotation.rect, C: color, F: 4,
     NM: PDFHexString.fromText(annotation.id), DSHPDFId: PDFHexString.fromText(annotation.id),
-    CreationDate: PDFString.fromDate(new Date()), M: PDFString.fromDate(new Date()),
+    CreationDate: timestamp, M: timestamp,
   })
   if (annotation.quadPoints) dictionary.set(PDFName.of('QuadPoints'), doc.context.obj(annotation.quadPoints))
   if (annotation.subtype === 'Text') dictionary.set(PDFName.of('Name'), PDFName.of('Comment'))
   if (annotation.contents !== undefined) setContents(dictionary, annotation.contents)
   if (annotation.author !== undefined) dictionary.set(PDFName.of('T'), PDFHexString.fromText(annotation.author))
-  setAnnotationAppearance(doc, dictionary, annotation.subtype, annotation.rect, annotation.quadPoints, color)
   const value = doc.context.register(dictionary)
   const existingArray = get(doc, page.node, 'Annots')
   const array = existingArray instanceof PDFArray ? existingArray : doc.context.obj([])
@@ -262,7 +270,11 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation): Annotati
   array.push(value)
   return {
     value, dictionary, array,
-    model: { ...annotation, color, flags: 4, supported: true, editable: true },
+    model: {
+      ...annotation, rect: [...annotation.rect], quadPoints: annotation.quadPoints?.slice(), color: [...color],
+      createdAt: timestamp.decodeText(), modifiedAt: timestamp.decodeText(),
+      flags: 4, supported: true, editable: true,
+    },
   }
 }
 
@@ -280,12 +292,21 @@ export async function applyPdfOperations(
   bytes: Uint8Array,
   operations: readonly PdfAnnotationOperation[],
 ): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
-  const doc = await parse(bytes)
-  const info = documentInfo(doc)
-  if (info.readOnly) throw new PdfDocumentError('read-only', 'Digitally signed PDFs are read only in this version.')
   if (!Array.isArray(operations)) fail('An annotation operation list is required.')
+  const doc = await parse(bytes)
+  if (hasSignature(doc)) throw new PdfDocumentError('read-only', 'Digitally signed PDFs are read only in this version.')
+  const initialEntries = annotationEntries(doc)
+  const info = documentInfo(doc, { signed: false, annotations: initialEntries.map((entry) => entry.model) })
   if (operations.length === 0) return { bytes: bytes.slice(), document: info }
-  const entries = new Map(annotationEntries(doc).map((entry) => [entry.model.id, entry]))
+  const entries = new Map(initialEntries.map((entry) => [entry.model.id, entry]))
+  const byDictionary = new Map<PDFDict, AnnotationEntry[]>()
+  const appearances = new Map<PDFDict, AnnotationEntry>()
+  let reindexAnnotations = false
+  for (const entry of initialEntries) {
+    const aliases = byDictionary.get(entry.dictionary)
+    if (aliases) { aliases.push(entry); reindexAnnotations = true }
+    else byDictionary.set(entry.dictionary, [entry])
+  }
   // Direct dictionaries have no object reference identity. Persist their current
   // IDs before deleting anything can shift another annotation's array index.
   for (const entry of entries.values()) {
@@ -299,16 +320,20 @@ export async function applyPdfOperations(
       if (entries.has(operation.annotation?.id)) fail('Annotation ID already exists.')
       const added = addAnnotation(doc, operation.annotation)
       entries.set(added.model.id, added)
+      byDictionary.set(added.dictionary, [added])
+      appearances.set(added.dictionary, added)
       continue
     }
     const entry = entries.get(operation.id)
     if (!entry) throw new PdfDocumentError('unknown-annotation', `Annotation not found: ${operation.id}`)
     if (!entry.model.editable) throw new PdfDocumentError('annotation-read-only', `Annotation cannot be edited: ${entry.model.readOnlyReason}`)
     if (operation.type === 'delete') {
+      reindexAnnotations = true
+      appearances.delete(entry.dictionary)
       const popup = get(doc, entry.dictionary, 'Popup')
       if (popup instanceof PDFDict) {
-        for (const associated of entries.values()) {
-          if (associated.dictionary === popup && associated.model.subtype === 'Popup') {
+        for (const associated of byDictionary.get(popup) ?? []) {
+          if (associated.model.subtype === 'Popup') {
             removeValue(doc, associated.array, associated.value)
             entries.delete(associated.model.id)
           }
@@ -323,20 +348,39 @@ export async function applyPdfOperations(
     if (patch.contents !== undefined) {
       if (typeof patch.contents !== 'string') fail('Annotation contents must be text.')
       setContents(entry.dictionary, patch.contents)
-      entry.model.contents = patch.contents
+      for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.contents = patch.contents
     }
     if (patch.color !== undefined) {
       validateColor(patch.color)
-      entry.dictionary.set(PDFName.of('C'), doc.context.obj(patch.color))
-      setAnnotationAppearance(doc, entry.dictionary, entry.model.subtype as EditableAnnotationType,
-        entry.model.rect!, entry.model.quadPoints, patch.color)
-      entry.model.color = patch.color
+      const unchanged = entry.model.color?.every((value, index) => value === patch.color![index])
+      if (!unchanged) {
+        entry.dictionary.set(PDFName.of('C'), doc.context.obj(patch.color))
+        const color: PdfColor = [patch.color[0], patch.color[1], patch.color[2]]
+        for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.color = color
+        appearances.set(entry.dictionary, entry)
+      }
     }
     // A modified direct dictionary gets a persistent ID before array positions can change.
     if (!(entry.value instanceof PDFRef)) entry.dictionary.set(privateId, PDFHexString.fromText(entry.model.id))
-    entry.dictionary.set(PDFName.of('M'), PDFString.fromDate(new Date()))
+    const timestamp = PDFString.fromDate(new Date())
+    entry.dictionary.set(PDFName.of('M'), timestamp)
+    for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.modifiedAt = timestamp.decodeText()
   }
-  const saved = await doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false })
-  // Reparse serialized output so callers receive the same IDs/geometry a subsequent open sees.
-  return { bytes: saved, document: await loadPdfDocument(saved) }
+  // Recovery can replay many edits of the same highlight. Only its final visible
+  // appearance needs a stream, and deleted annotations need no new appearance.
+  for (const entry of appearances.values()) {
+    setAnnotationAppearance(doc, entry.dictionary, entry.model.subtype as EditableAnnotationType,
+      entry.model.rect!, entry.model.quadPoints, entry.model.color ?? defaultColor)
+  }
+  const saved = await doc.save({
+    useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false, objectsPerTick: 500,
+  })
+  // pdf-lib preserves object references during serialization. Derive metadata
+  // from the graph we just wrote instead of parsing the entire PDF a second time.
+  // Deletion can shift unsupported direct annotations, so recompute only their
+  // enumeration/identities when the annotation graph's membership changed.
+  const annotations = reindexAnnotations
+    ? annotationEntries(doc).map((entry) => entry.model)
+    : [...entries.values()].map((entry) => entry.model).sort((left, right) => left.page - right.page)
+  return { bytes: saved, document: { ...info, annotations } }
 }

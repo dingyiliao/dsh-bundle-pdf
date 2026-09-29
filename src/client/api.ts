@@ -10,7 +10,7 @@ const color = z.tuple([z.number(), z.number(), z.number()])
 const wireSnapshot = z.object({
   id: z.string(), path: z.string(), sourceVersion: z.string(), contentVersion: z.string(),
   revision: z.number().int(), dirty: z.boolean(), canUndo: z.boolean(), canRedo: z.boolean(), conflict: z.boolean(),
-  warning: z.string().optional(), bytes: z.string(),
+  warning: z.string().optional(), bytes: z.string(), bytesHash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   document: z.object({
     pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
     readOnly: z.boolean(), readOnlyReason: z.string().optional(),
@@ -31,7 +31,8 @@ const response = z.discriminatedUnion('ok', [
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
   const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
   const latest = new Map<string, WorkspaceSnapshot>()
-  lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear() }, { once: true })
+  const byteIdentities = new Map<string, string>()
+  lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear(); byteIdentities.clear() }, { once: true })
   const call = async (payload: object, signal?: AbortSignal) => {
     const result = response.parse(await connection.rpc.call('/api', 'pdf.dispatch', payload,
       signal ? AbortSignal.any([signal, lifetime]) : lifetime))
@@ -40,13 +41,20 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
   }
   const snapshot = async (payload: object, signal?: AbortSignal): Promise<WorkspaceSnapshot> => {
     const wire = wireSnapshot.parse(await call(payload, signal))
-    const binary = atob(wire.bytes)
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+    const previous = latest.get(wire.id)
+    if (previous && previous.revision > wire.revision) return previous
+    // Save/status changes retain their bytes, so the reader keeps its worker,
+    // canvases and text layers instead of opening the same document again.
+    let bytes: Uint8Array
+    const identity = wire.bytesHash ?? wire.bytes
+    if (previous && byteIdentities.get(wire.id) === identity) bytes = previous.bytes
+    else {
+      const binary = atob(wire.bytes)
+      bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+    }
     const value: WorkspaceSnapshot = { ...wire, bytes }
-    const previous = latest.get(value.id)
-    // A late read must never replace a more recently accepted edit.
-    if (previous && previous.revision > value.revision) return previous
+    byteIdentities.set(value.id, identity)
     latest.set(value.id, value)
     for (const listener of listeners.get(value.id) ?? []) listener(value)
     return value
@@ -67,7 +75,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       let set = listeners.get(id)
       if (!set) { set = new Set(); listeners.set(id, set) }
       set.add(callback)
-      return () => { set.delete(callback); if (!set.size) { listeners.delete(id); latest.delete(id) } }
+      return () => { set.delete(callback); if (!set.size) { listeners.delete(id); latest.delete(id); byteIdentities.delete(id) } }
     },
   }
 }
