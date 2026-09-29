@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist'
 import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type PageViewport, type ReaderSelection } from './reader-selection.js'
-import { annotationAtPoint, annotationPolygons, pendingMarkupAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
-import { actionableLink, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
+import { annotationAtPoint, annotationPolygons, createAnnotationHitTester, createRectHitIndex, pendingMarkupAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
+import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
 
 export interface PageProps {
   pdf: PDFDocumentProxy
@@ -24,12 +24,16 @@ export interface PageProps {
   onDestination(destination: unknown): void
   onNamedAction(action: string): void
   onAnnotation(id: string): void
+  onBackground?(): void
   onRegion(page: number, geometry: { rect: PdfRect; quadPoints: number[] }): void
   onNote(page: number, point: number[]): void
   onError(message: string): void
 }
 
 interface LoadedPage { owner: PDFDocumentProxy; page: PDFPageProxy; annotations: PdfAnnotation[]; links?: PdfLink[] }
+const noLinks: PdfLink[] = []
+const noAnnotations: PdfAnnotation[] = []
+const noOcrWords: PdfOcrTextPart[] = []
 
 function screenRect(viewport: PageViewport, rect: readonly number[]) {
   const value = pdfRectToViewport(viewport, rect)
@@ -42,7 +46,7 @@ function releaseCanvases(host: HTMLElement | null) {
   host.replaceChildren()
 }
 
-function PendingMarkup({ annotation, viewport }: { annotation: PdfAnnotation; viewport: PageViewport }) {
+const PendingMarkup = memo(function PendingMarkup({ annotation, viewport }: { annotation: PdfAnnotation; viewport: PageViewport }) {
   const polygons = annotationPolygons(annotation, viewport)
   const color = `rgb(${(annotation.color ?? [1, 0.85, 0]).map((value) => Math.round(value * 255)).join(',')})`
   return <g data-annotation-id={annotation.id}>
@@ -55,9 +59,9 @@ function PendingMarkup({ annotation, viewport }: { annotation: PdfAnnotation; vi
       return <line key={index} x1={first[0]} y1={first[1]} x2={second[0]} y2={second[1]} stroke={color} strokeWidth={thickness} opacity={annotation.opacity ?? 1} />
     })}
   </g>
-}
+})
 
-function OcrWord({ word, viewport }: { word: PdfOcrTextPart; viewport: PageViewport }) {
+const OcrWord = memo(function OcrWord({ word, viewport }: { word: PdfOcrTextPart; viewport: PageViewport }) {
   if (!word.pdf) return null
   const q = word.pdf.quad
   const [x0, y0] = viewport.convertToViewportPoint(q[0], q[1])
@@ -68,10 +72,8 @@ function OcrWord({ word, viewport }: { word: PdfOcrTextPart; viewport: PageViewp
   return <span className="dsh-pdf-ocr-word" style={{
     left: x0, top: y0, width, height, fontSize: height * 0.9,
     transform: `matrix(${(x1 - x0) / width},${(y1 - y0) / width},${(x2 - x0) / height},${(y2 - y0) / height},0,0)`,
-  }}><span ref={(node) => {
-    if (node) { const natural = node.scrollWidth; node.style.transform = natural ? `scaleX(${width / natural})` : '' }
-  }}>{word.text} </span></span>
-}
+  }}><span data-ocr-width={width}>{word.text} </span></span>
+})
 
 /** Canvas rendering is lazy. Text and native links share the identical PDF.js viewport. */
 export function Page(props: PageProps) {
@@ -80,6 +82,7 @@ export function Page(props: PageProps) {
   const surface = useRef<HTMLDivElement>(null)
   const canvasHost = useRef<HTMLDivElement>(null)
   const textHost = useRef<HTMLDivElement>(null)
+  const ocrHost = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
   const [loaded, setLoaded] = useState<LoadedPage | null>(null)
   const loadedCache = useRef<LoadedPage | null>(null)
@@ -97,7 +100,7 @@ export function Page(props: PageProps) {
   const callbacks = useRef(props)
   callbacks.current = props
   const angle = ((geometry.rotation + rotation) % 360 + 360) % 360
-  const viewport = page?.getViewport({ scale, rotation: angle })
+  const viewport = useMemo(() => page?.getViewport({ scale, rotation: angle }), [page, scale, angle])
   const quarterTurn = angle % 180 !== 0
   const baseWidth = (geometry.cropBox[2] - geometry.cropBox[0]) * geometry.userUnit
   const baseHeight = (geometry.cropBox[3] - geometry.cropBox[1]) * geometry.userUnit
@@ -217,7 +220,30 @@ export function Page(props: PageProps) {
     const bounds = surface.current!.getBoundingClientRect()
     return { x: Math.max(0, Math.min(width, event.clientX - bounds.left)), y: Math.max(0, Math.min(height, event.clientY - bounds.top)) }
   }
-  const activeLinks = pageOwner === pdf && loaded?.links === links ? links : []
+  const activeLinks = pageOwner === pdf && loaded?.links === links ? links : noLinks
+  const hitLink = useMemo(() => near ? createLinkHitTester(activeLinks) : undefined, [near, activeLinks])
+  const hitAnnotation = useMemo(() => near && viewport ? createAnnotationHitTester(props.annotations, viewport) : undefined,
+    [near, props.annotations, viewport])
+  const keyboardLinks = useMemo(() => activeLinks.filter(actionableLink), [activeLinks])
+  const nativeIndex = useMemo(() => createRectHitIndex(near ? nativeBoxes.map(rect => ({ rect, value: rect })) : []), [near, nativeBoxes])
+  const visibleOcrWords = useMemo(() => {
+    if (!near || !viewport || !props.ocrWords?.length) return noOcrWords
+    return props.ocrWords.filter(word => {
+      if (!word.pdf) return false
+      if (!nativeBoxes.length) return true
+      const rect = pdfRectToViewport(viewport, word.pdf.rect)
+      return !nativeIndex.intersect(rect).some(box => overlapFraction(rect, box) > 0.5)
+    })
+  }, [near, viewport, props.ocrWords, nativeBoxes, nativeIndex])
+  useLayoutEffect(() => {
+    const host = ocrHost.current
+    if (!host) return
+    // Read every intrinsic width first, then write transforms in one batch.
+    const words = Array.from(host.querySelectorAll<HTMLElement>('[data-ocr-width]')).map(node => ({
+      node, target: Number(node.dataset.ocrWidth), natural: node.scrollWidth,
+    }))
+    for (const { node, target, natural } of words) node.style.transform = natural ? `scaleX(${target / natural})` : ''
+  }, [visibleOcrWords, viewport])
   const cancelLinkClick = () => {
     if (pendingLink.current) clearTimeout(pendingLink.current)
     pendingLink.current = undefined
@@ -238,10 +264,10 @@ export function Page(props: PageProps) {
     }
   }
   const updateLinkCursor = (event: React.PointerEvent) => {
-    if (props.mode !== 'text' || !viewport || !(event.target instanceof HTMLElement)
+    if (props.mode !== 'text' || !viewport || !activeLinks.length || !(event.target instanceof HTMLElement)
       || event.target.closest('button,a,input,textarea')) { clearLinkCursor(); return }
     const point = pointer(event)
-    const link = linkAtPoint(activeLinks, viewport, [point.x, point.y])
+    const link = hitLink ? hitLink(viewport, [point.x, point.y]) : linkAtPoint(activeLinks, viewport, [point.x, point.y])
     if (!link) { clearLinkCursor(); return }
     if (hoveredText.current?.element === event.target) return
     clearLinkCursor()
@@ -264,8 +290,12 @@ export function Page(props: PageProps) {
     textPress.current = null
   }, [pdf, props.mode, near])
   const region = props.selection?.kind === 'region' ? props.selection.fragments.find((f) => f.page === geometry.page) : undefined
-  const selected = props.annotations.find((annotation) => annotation.id === props.selectedAnnotation)
-  const pending = pendingMarkupAnnotations(props.annotations, paintedAnnotations)
+  const selected = useMemo(() => props.annotations.find((annotation) => annotation.id === props.selectedAnnotation),
+    [props.annotations, props.selectedAnnotation])
+  const pending = useMemo(() => near ? pendingMarkupAnnotations(props.annotations, paintedAnnotations) : noAnnotations,
+    [near, props.annotations, paintedAnnotations])
+  const noteMarkers = useMemo(() => near ? props.annotations.filter(annotation => annotation.subtype === 'Text'
+    && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, props.annotations])
 
   return <div ref={outer} className="dsh-pdf-page-wrap" data-page-number={geometry.page}>
     <div className="dsh-pdf-page-label">{t('reader.page')} {geometry.page}{props.ocrWords?.length ? ` · ${t('reader.ocrText')}` : ''}</div>
@@ -300,8 +330,9 @@ export function Page(props: PageProps) {
             || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 3
             || (selection && !selection.isCollapsed)) return
           const point = pointer(event)
-          const annotation = annotationAtPoint(props.annotations, viewport, [point.x, point.y])
-          const link = linkAtPoint(activeLinks, viewport, [point.x, point.y])
+          // IntersectionObserver can lag one frame after a programmatic jump.
+          const annotation = hitAnnotation ? hitAnnotation([point.x, point.y]) : annotationAtPoint(props.annotations, viewport, [point.x, point.y])
+          const link = hitLink ? hitLink(viewport, [point.x, point.y]) : linkAtPoint(activeLinks, viewport, [point.x, point.y])
           if (annotation && !(link && (event.ctrlKey || event.metaKey))) props.onAnnotation(annotation.id)
           else if (link) {
             const owner = pdf
@@ -310,7 +341,7 @@ export function Page(props: PageProps) {
               pendingLink.current = undefined
               if (callbacks.current.pdf === owner && callbacks.current.mode === 'text') followLink(link)
             }, 500)
-          }
+          } else props.onBackground?.()
           return
         }
         if (!drag || !viewport || dragPointer.current?.pointerId !== event.pointerId) return
@@ -329,19 +360,18 @@ export function Page(props: PageProps) {
       </svg>}
       {!rendered && <div className="dsh-pdf-page-loading" role="status">{t('reader.loadingPage')}</div>}
       <div ref={textHost} className="textLayer dsh-pdf-text-layer" data-pdf-text="active" />
-      {near && !!props.ocrWords?.length && viewport && <div className="dsh-pdf-ocr-layer" data-pdf-text="active">
-        {props.ocrWords.filter((word) => word.pdf && !nativeBoxes.some((box) => overlapFraction(pdfRectToViewport(viewport, word.pdf!.rect), box) > 0.5))
-          .map((word) => <OcrWord key={word.id} word={word} viewport={viewport} />)}
+      {near && !!visibleOcrWords.length && viewport && <div ref={ocrHost} className="dsh-pdf-ocr-layer" data-pdf-text="active">
+        {visibleOcrWords.map((word) => <OcrWord key={word.id} word={word} viewport={viewport} />)}
       </div>}
       {near && viewport && props.mode === 'text' && <div className="dsh-pdf-keyboard-links">
-        {activeLinks.filter(actionableLink).map((link) => {
+        {keyboardLinks.map((link) => {
           const url = safeLinkUrl(link.url)
           if (url && !link.dest && !namedLinkAction(link.action)) return <a key={link.id} href={url} target="_blank" rel="noreferrer noopener">{url}</a>
           return <button key={link.id} type="button" onClick={() => followLink(link)}>{t('reader.internalLink')}</button>
         })}
       </div>}
       {near && viewport && props.mode === 'text' && <div className="dsh-pdf-links">
-        {props.annotations.filter((annotation) => annotation.subtype === 'Text' && annotation.rect && visibleAnnotation(annotation)).map((annotation) => <button
+        {noteMarkers.map((annotation) => <button
           key={annotation.id} className="dsh-pdf-note-marker" style={screenRect(viewport, annotation.rect!)}
           title={annotation.contents || t('reader.note')} aria-label={annotation.contents || t('reader.note')}
           onClick={() => props.onAnnotation(annotation.id)}>▤</button>)}

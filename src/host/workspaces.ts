@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { isAbsolute, resolve } from 'node:path'
 import { applyPdfOperations } from '../core/pdf-document.ts'
+import type { PdfAnnotationOperation } from '../core/pdf-types.ts'
 import { loadPdfForReading } from './pdf-inspection.ts'
 import type { WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
@@ -61,9 +63,11 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   }
 
   function samePrefix(cached: CachedRender['record'], record: DraftRecord): boolean {
-    return cached.original === record.original && cached.sourceHash === record.sourceHash &&
-      cached.cursor <= record.groups.length &&
-      cached.groups.slice(0, cached.cursor).every((group, index) => group === record.groups[index])
+    if (cached.original !== record.original || cached.sourceHash !== record.sourceHash || cached.cursor > record.groups.length) return false
+    for (let index = 0; index < cached.cursor; index++) {
+      if (cached.groups[index] !== record.groups[index]) return false
+    }
+    return true
   }
 
   function dropRender(key: string) {
@@ -83,9 +87,10 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     rendered.set(key, { owner: id, record: { original: record.original, sourceHash: record.sourceHash,
       cursor: record.cursor, groups: record.groups.slice(0, record.cursor) }, pdf })
     cachedBytes += pdf.bytes.byteLength
-    const own = [...rendered.entries()].filter(([, entry]) => entry.owner === id)
+    const own: string[] = []
+    for (const [entryKey, entry] of rendered) if (entry.owner === id) own.push(entryKey)
     // Keep the current state and at most two prior rendered states for rapid undo/redo.
-    for (const [old] of own.slice(0, -3)) dropRender(old)
+    for (let index = 0; index < own.length - 3; index++) dropRender(own[index])
     while (cachedBytes > renderCacheBytes) dropRender(rendered.keys().next().value!)
   }
 
@@ -99,21 +104,43 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     return entry.pdf
   }
 
+  function checkpointRender(id: string, record: DraftRecord): { cursor: number; pdf: RenderedPdf } | undefined {
+    let best: { cursor: number; pdf: RenderedPdf } | undefined
+    const current = copies.get(id)
+    // The live snapshot is retained even when a large PDF exceeds the LRU budget.
+    // A redo can therefore apply only its next group without decoding the source.
+    if (current && current.record.cursor <= record.cursor && samePrefix(current.record, record)) {
+      best = { cursor: current.record.cursor, pdf: current.snapshot }
+    }
+    for (const entry of rendered.values()) {
+      if (entry.owner !== id || entry.record.cursor > record.cursor || entry.record.cursor <= (best?.cursor ?? -1)) continue
+      if (samePrefix(entry.record, record)) best = { cursor: entry.record.cursor, pdf: entry.pdf }
+    }
+    return best
+  }
+
   async function materialize(id: string, record: DraftRecord, conflict = false, supplied?: RenderedPdf): Promise<WorkspaceSnapshot> {
     let pdf = supplied ?? cachedRender(id, record)
     if (!pdf) {
-      const original: Uint8Array = Buffer.from(record.original, 'base64')
-      const checked = checkedSources.get(id)
-      if (checked?.original !== record.original || checked.sourceHash !== record.sourceHash) {
-        if (base64(original) !== record.original || renderedHash(original) !== record.sourceHash) {
-          fail('pdf/draft-damaged', 'Saved draft source bytes failed their integrity check')
+      const checkpoint = checkpointRender(id, record)
+      let bytes = checkpoint?.pdf.bytes
+      if (!bytes) {
+        bytes = Buffer.from(record.original, 'base64')
+        const checked = checkedSources.get(id)
+        if (checked?.original !== record.original || checked.sourceHash !== record.sourceHash) {
+          if (base64(bytes) !== record.original || renderedHash(bytes) !== record.sourceHash) {
+            fail('pdf/draft-damaged', 'Saved draft source bytes failed their integrity check')
+          }
+          if (copies.has(id)) checkedSources.set(id, { original: record.original, sourceHash: record.sourceHash })
         }
-        if (copies.has(id)) checkedSources.set(id, { original: record.original, sourceHash: record.sourceHash })
       }
-      const operations = record.groups.slice(0, record.cursor).flat()
+      const operations: PdfAnnotationOperation[] = []
+      for (let index = checkpoint?.cursor ?? 0; index < record.cursor; index++) {
+        for (const operation of record.groups[index]) operations.push(operation)
+      }
       pdf = operations.length
-        ? await applyPdfOperations(original, operations)
-        : { bytes: original, document: await loadPdfForReading(original) }
+        ? await applyPdfOperations(bytes, operations)
+        : checkpoint?.pdf ?? { bytes, document: await loadPdfForReading(bytes) }
     }
     return {
       id, path: record.path, sourceVersion: record.sourceVersion, contentVersion: record.contentVersion,
@@ -220,10 +247,57 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         throw error
       }
     }
+    if (input.action === 'discardMany' || input.action === 'discardAddresses') {
+      const keys = new Set<string>()
+      const ids = new Set(input.action === 'discardMany' ? input.ids : [])
+      if (input.action === 'discardAddresses') {
+        for (const address of input.addresses) {
+          const file = sessionFile(address)
+          if (file.sessionId !== input.sessionId) fail('pdf/session-mismatch', 'PDF draft address belongs to another session')
+          if (!/\.pdf$/i.test(file.path)) fail('pdf/invalid-address', 'Only PDF draft addresses can be discarded')
+          const cwd = agent.session.header.cwd
+          if (!isAbsolute(file.path) && (!cwd || !isAbsolute(cwd))) fail('pdf/invalid-address', 'A relative PDF draft needs the session working directory')
+          // These keys address plugin-owned storage, not filesystem mutations.
+          // Lexical resolution also works after the PDF or its directory vanished.
+          const key = recordKey(input.sessionId, resolve(cwd ?? '', file.path))
+          keys.add(key)
+          const id = byPath.get(key)
+          if (id) ids.add(id)
+        }
+      }
+      // Validate every owner before deleting anything. Unknown IDs are already
+      // disposed, making cleanup safe to retry after a lost response.
+      for (const id of ids) {
+        const copy = copies.get(id)
+        if (copy && copy.record.sessionId !== input.sessionId) fail('pdf/session-mismatch', 'Working copy belongs to another session')
+        if (copy) keys.add(recordKey(copy.record.sessionId, copy.record.path))
+      }
+      const failures: string[] = []
+      const disposedIds = new Set<string>()
+      for (const key of keys) {
+        try {
+          await drafts.delete(key)
+          const id = byPath.get(key)
+          if (!id) continue
+          copies.delete(id)
+          if (byPath.get(key) === id) byPath.delete(key)
+          checkedSources.delete(id)
+          disposedIds.add(id)
+        } catch (error) { failures.push(errorText(error)) }
+      }
+      for (const [cacheKey, entry] of rendered) if (disposedIds.has(entry.owner)) dropRender(cacheKey)
+      if (failures.length) fail('pdf/discard-failed', `Could not discard PDF drafts: ${failures.join('; ')}`)
+      return { discarded: [...ids] }
+    }
     const copy = copies.get(input.id)
     if (!copy || copy.record.sessionId !== input.sessionId) fail('pdf/unknown-document', 'Reopen this PDF in the current session')
     if (copy.record.revision !== input.revision) fail('pdf/stale-revision', 'The working copy changed in another tab; reopen it to load the latest draft')
     const record = copy.record
+    if (input.action === 'discard') {
+      // The baseline survives external file removal and includes a successful
+      // manual save. Drop both undo and redo; never touch the source file.
+      return publish(copy, { ...record, groups: [], cursor: 0, revision: record.revision + 1 }, undefined, signal)
+    }
     if (input.action === 'reload') {
       const source = await files.read(agent, record.path, signal)
       return publish(copy, fresh(input.sessionId, source, record.revision + 1), false, signal, await sourcePdf(source))
@@ -304,12 +378,14 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       try {
         const value = await task
         if (!('bytes' in value)) return value
+        const bytesHash = renderedHash(value.bytes)
+        if (input.knownBytesHash === bytesHash) return { ...value, bytes: undefined, document: undefined, bytesHash }
         let wireBytes = encoded.get(value.bytes)
         if (!wireBytes) {
           wireBytes = base64(value.bytes)
           if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
         }
-        return { ...value, bytes: wireBytes, bytesHash: renderedHash(value.bytes) }
+        return { ...value, bytes: wireBytes, bytesHash }
       } finally { if (queues.get(sessionId) === task) queues.delete(sessionId) }
     },
     dispose(): Promise<void> {

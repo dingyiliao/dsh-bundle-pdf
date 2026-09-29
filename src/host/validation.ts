@@ -6,6 +6,7 @@ const rect = z.tuple([scalar, scalar, scalar, scalar]).refine(value => value[2] 
 const id = z.string().min(1).max(512)
 const path = z.string().min(1).max(32768).refine(value => !value.includes('\0'), 'Path contains NUL')
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
+const wireHints = { knownBytesHash: hash.optional() }
 export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('add'), annotation: z.object({
     id, page: z.number().int().min(1),
@@ -32,15 +33,17 @@ export const draftSchema = z.object({
 export type DraftRecord = z.infer<typeof draftSchema>
 
 export const requestSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('open'), sessionId: id, address: z.string().min(1).max(32768) }).strict(),
-  z.object({ action: z.literal('inspectTarget'), sessionId: id, path }).strict(),
-  ...(['undo', 'redo', 'reload'] as const).map(action => z.object({
-    action: z.literal(action), sessionId: id, id, revision: z.number().int().min(0),
+  z.object({ ...wireHints, action: z.literal('open'), sessionId: id, address: z.string().min(1).max(32768) }).strict(),
+  z.object({ ...wireHints, action: z.literal('inspectTarget'), sessionId: id, path }).strict(),
+  ...(['undo', 'redo', 'reload', 'discard'] as const).map(action => z.object({
+    ...wireHints, action: z.literal(action), sessionId: id, id, revision: z.number().int().min(0),
   }).strict()),
-  z.object({ action: z.literal('change'), sessionId: id, id, revision: z.number().int().min(0),
+  z.object({ ...wireHints, action: z.literal('discardMany'), sessionId: id, ids: z.array(id).max(1000) }).strict(),
+  z.object({ ...wireHints, action: z.literal('discardAddresses'), sessionId: id, addresses: z.array(z.string().min(1).max(32768)).max(1000) }).strict(),
+  z.object({ ...wireHints, action: z.literal('change'), sessionId: id, id, revision: z.number().int().min(0),
     operations: z.array(operationSchema).min(1).max(1000),
   }).strict(),
-  z.object({ action: z.literal('save'), sessionId: id, id, revision: z.number().int().min(0),
+  z.object({ ...wireHints, action: z.literal('save'), sessionId: id, id, revision: z.number().int().min(0),
     options: z.object({ path: path.optional(), overwrite: z.boolean().optional(),
       expectedTargetVersion: hash.nullable().optional(),
     }).strict(),

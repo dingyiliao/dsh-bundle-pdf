@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useSyncExternalStore, type ComponentType } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ComponentType } from 'react'
 import { z } from 'zod'
 import { Reader } from './Reader.tsx'
 import { Settings, settingsLocales, type ConfigForm } from './Settings.tsx'
@@ -12,16 +12,19 @@ import type { ReaderProps } from './contracts.ts'
 import { createTranslationRegistry } from '../translation/index.js'
 import { createHostTranslationEngine } from './translation-api.js'
 import { createNativeDictionary } from './native-dictionary.js'
+import { createPdfSessionLifecycle, type PdfSessionOwner, type PdfSessionSource, type PdfSidebarNavigation } from './pdf-session-lifecycle.js'
 import styles from './reader.css'
 
 export const name = 'pdf-reader-client'
-export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms']
+export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms', 'uiSession', 'sidebarRight']
 const NS = 'pdfReader'
 const ID = '@local/dsh-pdf'
 
 interface ClientContext {
   fiber?: { readonly uid: number | null }
   connection: PdfConnection
+  uiSession: { readonly adapter: { readonly current: PdfSessionSource } }
+  sidebarRight: PdfSidebarNavigation
   configForms: { get(namespace: string): ConfigForm }
   effect(callback: () => (() => void | Promise<void>), label?: string): unknown
   reflect: { provide(key: string, value: unknown): () => void }
@@ -93,6 +96,11 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => () => dictionary.dispose(), 'pdf: native dictionary lifecycle')
   ctx.effect(() => ctx.reflect.provide('pdfDictionary', dictionary), 'pdf: native dictionary capability')
   const api = createPdfApi(ctx.connection, lifetime.signal)
+  const sessionLifecycle = createPdfSessionLifecycle({
+    currentSession: ctx.uiSession.adapter.current, sidebar: ctx.sidebarRight, api, signal: lifetime.signal,
+    onError: error => { console.error('[pdf] Failed to discard PDFs after Session switch', error) },
+  })
+  ctx.effect(() => () => sessionLifecycle.dispose(), 'pdf: Session switch cleanup')
   ctx.effect(() => ctx.locale.register(NS, {
     zh: { ...readerLocales.zh, ...settingsLocales.zh, title: 'PDF 阅读与标注' },
     en: { ...readerLocales.en, ...settingsLocales.en, title: 'PDF reader & annotations' },
@@ -105,9 +113,15 @@ export async function apply(ctx: ClientContext): Promise<void> {
     document.head.append(style)
     return () => style.remove()
   }, 'pdf: reader stylesheet')
-  type OwnerProps = Omit<ReaderProps, 'api' | 'ocr' | 'translation' | 'dictionary' | 'settings' | 'openPdf'>
+  type ReaderTabInfo = ReturnType<ReaderProps['useTabInfo']>
+  type OwnerProps = Omit<ReaderProps, 'api' | 'ocr' | 'translation' | 'dictionary' | 'settings' | 'openPdf' | 'useTabInfo'> & {
+    useTabInfo(): ReaderTabInfo & { tab: ReaderTabInfo['tab'] & {
+      actions: ReaderTabInfo['tab']['actions'] & { close(): void }
+    } }
+  }
   function PdfSurface(props: OwnerProps) {
     const state = useSyncExternalStore(subscribeSettings, readSettings, readSettings)
+    const { tab } = props.useTabInfo()
     const pdfRuntime = useRef<ReturnType<typeof createPdfRuntime> | null>(null)
     const openDocument = useCallback((bytes: Uint8Array, signal?: AbortSignal) => {
       pdfRuntime.current ??= createPdfRuntime(lifetime.signal)
@@ -120,7 +134,21 @@ export async function apply(ctx: ClientContext): Promise<void> {
     }, [])
     // Resource addresses carry their own session. The active chat may be different.
     const file = sessionFile(props.resourceAddress)
-    return <Reader {...props} sessionId={file.sessionId} api={api} ocr={ocr} translation={translation} dictionary={dictionary} openPdf={openDocument}
+    const owner = useMemo<PdfSessionOwner>(() => ({
+      containerSessionId: props.sessionId, resourceSessionId: file.sessionId,
+      tabId: tab.id, resourceAddress: props.resourceAddress,
+      signal: tab.signal, close: () => tab.actions.close(),
+    }), [props.sessionId, file.sessionId, tab.id, props.resourceAddress, tab.signal, tab.actions])
+    useLayoutEffect(() => {
+      if (!owner.signal.aborted) sessionLifecycle.register(owner)
+      // The occurrence owns this registration; hiding/unmounting a body must
+      // preserve it so a later Session switch can still close the tab.
+    }, [owner])
+    const readerApi = useMemo<ReaderProps['api']>(() => ({
+      ...api,
+      open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
+    }), [owner])
+    return <Reader {...props} sessionId={file.sessionId} api={readerApi} ocr={ocr} translation={translation} dictionary={dictionary} openPdf={openDocument}
       settings={state.value ?? info.settings ?? defaultSettings} />
   }
   function PdfSettingsSection(props: { t: (key: string) => string }) {

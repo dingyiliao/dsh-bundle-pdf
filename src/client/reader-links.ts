@@ -1,4 +1,5 @@
 import type { PageViewport } from './reader-selection.js'
+import { createRectHitIndex } from './reader-annotations.js'
 
 export interface PdfLink {
   id: string
@@ -27,11 +28,11 @@ export function actionableLink(link: PdfLink): boolean {
   return !!link.dest || namedLinkAction(link.action) || !!safeLinkUrl(link.url)
 }
 
-function pointInQuad(x: number, y: number, quad: number[]): boolean {
+function pointInQuad(x: number, y: number, quad: number[], offset = 0): boolean {
   const corners = [0, 2, 6, 4]
   let sign = 0
   for (let index = 0; index < corners.length; index++) {
-    const first = corners[index], second = corners[(index + 1) % corners.length]
+    const first = offset + corners[index], second = offset + corners[(index + 1) % corners.length]
     const cross = (quad[second] - quad[first]) * (y - quad[first + 1]) - (quad[second + 1] - quad[first + 1]) * (x - quad[first])
     if (Math.abs(cross) < 0.00001) continue
     const next = Math.sign(cross)
@@ -52,11 +53,31 @@ export function linkAtPoint(links: readonly PdfLink[], viewport: PageViewport, p
     if (link.quadPoints?.length && link.quadPoints.length % 8 === 0 && link.quadPoints.every(Number.isFinite)) {
       let inside = false
       for (let offset = 0; offset < link.quadPoints.length; offset += 8) {
-        if (pointInQuad(x, y, link.quadPoints.slice(offset, offset + 8))) { inside = true; break }
+        if (pointInQuad(x, y, link.quadPoints, offset)) { inside = true; break }
       }
       if (!inside) continue
     }
     return link
   }
   return undefined
+}
+
+/** Index PDF coordinates once; zoom/rotation only change the query's viewport conversion. */
+export function createLinkHitTester(links: readonly PdfLink[]) {
+  const records = links.filter(link => actionableLink(link) && link.rect.length === 4 && link.rect.every(Number.isFinite)).map(link => ({
+    rect: link.rect,
+    value: { link, quads: link.quadPoints?.length && link.quadPoints.length % 8 === 0 && link.quadPoints.every(Number.isFinite)
+      ? link.quadPoints : undefined },
+  }))
+  const index = createRectHitIndex(records)
+  return (viewport: PageViewport, point: [number, number]): PdfLink | undefined => {
+    const [x, y] = viewport.convertToPdfPoint(point[0], point[1])
+    const candidates = index.at(x, y)
+    for (let order = candidates.length - 1; order >= 0; order--) {
+      const { link, quads } = candidates[order]
+      if (!quads) return link
+      for (let offset = 0; offset < quads.length; offset += 8) if (pointInQuad(x, y, quads, offset)) return link
+    }
+    return undefined
+  }
 }

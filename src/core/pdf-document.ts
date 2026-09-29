@@ -83,10 +83,12 @@ function normalizedRect(value: PDFObject | undefined): PdfRect | undefined {
 /** Signature dictionaries can also be direct objects; do not rely only on AcroForm fields. */
 function hasSignature(doc: PDFDocument): boolean {
   const visited = new Set<PDFObject>()
-  const queue: PDFObject[] = [doc.catalog, ...doc.context.enumerateIndirectObjects().map(([, value]) => value)]
-  while (queue.length) {
-    const object = doc.context.lookup(queue.pop())
-    if (!object || visited.has(object)) continue
+  const roots = doc.context.enumerateIndirectObjects()
+  const queue: PDFObject[] = [doc.catalog]
+  let rootIndex = 0
+  while (queue.length || rootIndex < roots.length) {
+    const object = doc.context.lookup(queue.length ? queue.pop() : roots[rootIndex++][1])
+    if (!(object instanceof PDFDict || object instanceof PDFArray) || visited.has(object)) continue
     visited.add(object)
     if (object instanceof PDFDict) {
       if (readName(get(doc, object, 'Type')) === 'Sig') return true
@@ -95,13 +97,14 @@ function hasSignature(doc: PDFDocument): boolean {
         const permissions = get(doc, object, 'Perms')
         if (permissions instanceof PDFDict && get(doc, permissions, 'DocMDP')) return true
       }
-      // Indirect objects are already in the initial queue. Visit only direct
+      // Indirect objects are already in roots. Visit only direct
       // containers here, avoiding every number/string in large annotation lists.
       for (const [, value] of object.entries()) {
         if (value instanceof PDFDict || value instanceof PDFArray) queue.push(value)
       }
     } else if (object instanceof PDFArray) {
-      for (const value of object.asArray()) {
+      for (let index = 0; index < object.size(); index++) {
+        const value = object.get(index)
         if (value instanceof PDFDict || value instanceof PDFArray) queue.push(value)
       }
     }
@@ -278,9 +281,20 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation): Annotati
   }
 }
 
-function removeValue(doc: PDFDocument, array: PDFArray, value: PDFObject) {
-  for (let index = array.size() - 1; index >= 0; index--) {
-    if (array.get(index) === value || doc.context.lookup(array.get(index)) === doc.context.lookup(value)) array.remove(index)
+/** Compact each changed Annots array once; repeated splice operations copy its tail. */
+function removeQueuedAnnotations(doc: PDFDocument, removals: Map<PDFArray, Set<PDFDict>>) {
+  for (const [array, dictionaries] of removals) {
+    const length = array.size()
+    let writeIndex = 0
+    for (let readIndex = 0; readIndex < length; readIndex++) {
+      const value = array.get(readIndex)
+      const dictionary = doc.context.lookup(value)
+      if (dictionary instanceof PDFDict && dictionaries.has(dictionary)) continue
+      if (writeIndex !== readIndex) array.set(writeIndex, value)
+      writeIndex++
+    }
+    // Remove only the compacted tail: each splice now removes the final element.
+    while (array.size() > writeIndex) array.remove(array.size() - 1)
   }
 }
 
@@ -301,6 +315,14 @@ export async function applyPdfOperations(
   const entries = new Map(initialEntries.map((entry) => [entry.model.id, entry]))
   const byDictionary = new Map<PDFDict, AnnotationEntry[]>()
   const appearances = new Map<PDFDict, AnnotationEntry>()
+  const removals = new Map<PDFArray, Set<PDFDict>>()
+  const removedPopups = new Set<PDFDict>()
+  const queueRemoval = (entry: AnnotationEntry) => {
+    let dictionaries = removals.get(entry.array)
+    if (!dictionaries) { dictionaries = new Set(); removals.set(entry.array, dictionaries) }
+    dictionaries.add(entry.dictionary)
+    entries.delete(entry.model.id)
+  }
   let reindexAnnotations = false
   for (const entry of initialEntries) {
     const aliases = byDictionary.get(entry.dictionary)
@@ -317,7 +339,8 @@ export async function applyPdfOperations(
   for (const operation of operations) {
     if (!operation || !['add', 'update', 'delete'].includes(operation.type)) fail('Unsupported annotation operation.')
     if (operation.type === 'add') {
-      if (entries.has(operation.annotation?.id)) fail('Annotation ID already exists.')
+      const existing = entries.get(operation.annotation?.id)
+      if (existing && !removals.get(existing.array)?.has(existing.dictionary)) fail('Annotation ID already exists.')
       const added = addAnnotation(doc, operation.annotation)
       entries.set(added.model.id, added)
       byDictionary.set(added.dictionary, [added])
@@ -325,22 +348,21 @@ export async function applyPdfOperations(
       continue
     }
     const entry = entries.get(operation.id)
-    if (!entry) throw new PdfDocumentError('unknown-annotation', `Annotation not found: ${operation.id}`)
+    if (!entry || removals.get(entry.array)?.has(entry.dictionary)) {
+      throw new PdfDocumentError('unknown-annotation', `Annotation not found: ${operation.id}`)
+    }
     if (!entry.model.editable) throw new PdfDocumentError('annotation-read-only', `Annotation cannot be edited: ${entry.model.readOnlyReason}`)
     if (operation.type === 'delete') {
       reindexAnnotations = true
       appearances.delete(entry.dictionary)
       const popup = get(doc, entry.dictionary, 'Popup')
-      if (popup instanceof PDFDict) {
+      if (popup instanceof PDFDict && !removedPopups.has(popup)) {
+        removedPopups.add(popup)
         for (const associated of byDictionary.get(popup) ?? []) {
-          if (associated.model.subtype === 'Popup') {
-            removeValue(doc, associated.array, associated.value)
-            entries.delete(associated.model.id)
-          }
+          if (associated.model.subtype === 'Popup') queueRemoval(associated)
         }
       }
-      removeValue(doc, entry.array, entry.value)
-      entries.delete(operation.id)
+      queueRemoval(entry)
       continue
     }
     const patch = operation.patch
@@ -366,6 +388,7 @@ export async function applyPdfOperations(
     entry.dictionary.set(PDFName.of('M'), timestamp)
     for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.modifiedAt = timestamp.decodeText()
   }
+  removeQueuedAnnotations(doc, removals)
   // Recovery can replay many edits of the same highlight. Only its final visible
   // appearance needs a stream, and deleted annotations need no new appearance.
   for (const entry of appearances.values()) {

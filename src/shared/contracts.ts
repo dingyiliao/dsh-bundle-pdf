@@ -42,6 +42,12 @@ export interface PdfClientApi {
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   redo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   reload(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  /** Restore the last saved/opened baseline and remove the entire undo/redo history. */
+  discard(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  /** Dispose working copies and durable drafts without reading or writing their PDF files. */
+  discardMany(sessionId: string, ids: readonly string[], signal?: AbortSignal): Promise<void>
+  /** Clear drafts for restored PDF tabs that have not mounted a reader yet. */
+  discardAddresses(sessionId: string, addresses: readonly string[], signal?: AbortSignal): Promise<void>
   inspectTarget(sessionId: string, path: string, signal?: AbortSignal): Promise<{ version: string | null }>
   save(sessionId: string, id: string, revision: number, options: { path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   subscribe(id: string, callback: (snapshot: WorkspaceSnapshot) => void): () => void

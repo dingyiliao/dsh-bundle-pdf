@@ -15,8 +15,12 @@ export interface ReaderSelection {
 }
 
 export function unionRects(rects: readonly PdfRect[]): PdfRect {
-  return [Math.min(...rects.map((r) => r[0])), Math.min(...rects.map((r) => r[1])),
-    Math.max(...rects.map((r) => r[2])), Math.max(...rects.map((r) => r[3]))]
+  const result: PdfRect = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const rect of rects) {
+    result[0] = Math.min(result[0], rect[0]); result[1] = Math.min(result[1], rect[1])
+    result[2] = Math.max(result[2], rect[2]); result[3] = Math.max(result[3], rect[3])
+  }
+  return result
 }
 
 export function viewportRectToPdf(viewport: PageViewport, rect: PdfRect) {
@@ -46,35 +50,51 @@ export function captureTextSelection(container: HTMLElement, views: Map<number, 
   if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return null
   const fragments: ReaderSelection['fragments'] = []
   const selectedText: string[] = []
-  for (const [page, view] of [...views].sort(([a], [b]) => a - b)) {
+  const selectedViews = [...views].filter(([, view]) => range.intersectsNode(view.element)).sort(([a], [b]) => a - b)
+  const piece = document.createRange()
+  for (const [page, view] of selectedViews) {
     const layers = [...view.element.querySelectorAll<HTMLElement>('[data-pdf-text="active"]')].filter((layer) => range.intersectsNode(layer))
     if (!layers.length) continue
     const pageBox = view.element.getBoundingClientRect()
-    const rects: PdfRect[] = [], quads: number[] = [], text: string[] = []
+    const bounds: PdfRect = [Infinity, Infinity, -Infinity, -Infinity]
+    const quads: number[] = [], text: string[] = []
     for (const layer of layers) {
-    const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT)
-    let node: Node | null
-    while ((node = walker.nextNode())) {
-      if (!node.textContent || !range.intersectsNode(node)) continue
-      const piece = document.createRange()
-      piece.selectNodeContents(node)
-      if (range.startContainer === node) piece.setStart(node, range.startOffset)
-      if (range.endContainer === node) piece.setEnd(node, range.endOffset)
-      if (piece.collapsed) continue
-      text.push(piece.toString())
-      for (const box of piece.getClientRects()) {
-        if (box.width < 0.1 || box.height < 0.1) continue
-        const left = Math.max(0, box.left - pageBox.left), top = Math.max(0, box.top - pageBox.top)
-        const right = Math.min(view.viewport.width, box.right - pageBox.left), bottom = Math.min(view.viewport.height, box.bottom - pageBox.top)
-        if (right <= left || bottom <= top) continue
-        const converted = viewportRectToPdf(view.viewport, [left, top, right, bottom])
-        rects.push(converted.rect)
-        quads.push(...converted.quadPoints)
+      // A word selection usually has a text/span ancestor, not the entire page.
+      const root = layer.contains(range.commonAncestorContainer) ? range.commonAncestorContainer : layer
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let node: Node | null
+      if (root.nodeType === Node.TEXT_NODE) node = root
+      else if (root.contains(range.startContainer)) {
+        // Start at the boundary instead of visiting every preceding text span.
+        walker.currentNode = range.startContainer
+        node = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer : walker.nextNode()
+      } else node = walker.nextNode()
+      while (node) {
+        if (range.comparePoint(node, 0) > 0) break
+        if (node.textContent && range.intersectsNode(node)) {
+          piece.selectNodeContents(node)
+          if (range.startContainer === node) piece.setStart(node, range.startOffset)
+          if (range.endContainer === node) piece.setEnd(node, range.endOffset)
+          if (!piece.collapsed) {
+            text.push(piece.toString())
+            for (const box of piece.getClientRects()) {
+              if (box.width < 0.1 || box.height < 0.1) continue
+              const left = Math.max(0, box.left - pageBox.left), top = Math.max(0, box.top - pageBox.top)
+              const right = Math.min(view.viewport.width, box.right - pageBox.left), bottom = Math.min(view.viewport.height, box.bottom - pageBox.top)
+              if (right <= left || bottom <= top) continue
+              const converted = viewportRectToPdf(view.viewport, [left, top, right, bottom])
+              bounds[0] = Math.min(bounds[0], converted.rect[0]); bounds[1] = Math.min(bounds[1], converted.rect[1])
+              bounds[2] = Math.max(bounds[2], converted.rect[2]); bounds[3] = Math.max(bounds[3], converted.rect[3])
+              quads.push(...converted.quadPoints)
+            }
+          }
+        }
+        if (node === range.endContainer || root.nodeType === Node.TEXT_NODE) break
+        node = walker.nextNode()
       }
     }
-    }
-    if (rects.length) {
-      fragments.push({ page, rect: unionRects(rects), quadPoints: quads })
+    if (quads.length) {
+      fragments.push({ page, rect: bounds, quadPoints: quads })
       selectedText.push(text.join(''))
     }
   }

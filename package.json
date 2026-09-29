@@ -30,6 +30,7 @@
     "icon.svg",
     "README.md",
     "SPEC.md",
+    "PERFORMANCE.md",
     "LICENSE"
   ],
   "icon": "./icon.svg",
@@ -50,6 +51,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
         "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-locale"
       ]
     }

@@ -5,7 +5,7 @@ import type { NavigationPosition } from '../navigation/index.js'
 import { mapImageBoxToPdf, mapResultToPdf } from '../ocr/mapping.js'
 import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import type { ReaderProps } from './contracts.js'
-import { Page } from './Page.js'
+import { ReaderPage } from './ReaderPage.js'
 import { captureTextSelection, colorFromHex, colorToHex, pdfRectToViewport, overlapFraction, type PageView, type ReaderSelection } from './reader-selection.js'
 import { readerLifetime, type OcrPage } from './reader-lifetime.js'
 import { joinSearchText } from './reader-search.js'
@@ -86,6 +86,8 @@ export function Reader(props: ReaderProps) {
   const translationOwner = useRef(translationSelection)
   translationOwner.current = translationSelection
   const toolsMenu = useRef<HTMLDetailsElement>(null)
+  const readerElement = useRef<HTMLDivElement>(null)
+  const scrollFrame = useRef<number | undefined>(undefined)
   const screenshotController = useRef<AbortController | null>(null)
   const history = useRef(lifetime.history)
   const captureLatest = useRef<(() => NavigationPosition) | undefined>(undefined)
@@ -187,6 +189,7 @@ export function Reader(props: ReaderProps) {
     translationService.current?.dispose()
     translationService.current = null
     searchSequence.current++
+    if (scrollFrame.current !== undefined) cancelAnimationFrame(scrollFrame.current)
   }, [])
   useEffect(() => { lifetime.ocrPages = ocrPages }, [ocrPages, lifetime])
   useEffect(() => {
@@ -441,7 +444,12 @@ export function Reader(props: ReaderProps) {
     for (const annotation of pendingAnnotations) if (!combined.has(annotation.id)) combined.set(annotation.id, annotation)
     return [...combined.values()]
   }, [snapshot?.document.annotations, pendingAnnotations])
-  const selected = displayAnnotations.find((annotation) => annotation.id === selectedAnnotation)
+  const annotationsById = useMemo(() => new Map(displayAnnotations.map(annotation => [annotation.id, annotation])), [displayAnnotations])
+  const selected = selectedAnnotation ? annotationsById.get(selectedAnnotation) : undefined
+  const commentItems = useMemo(() => (snapshot?.document.annotations ?? noAnnotations)
+    .filter(annotation => annotation.supported || (annotation.contents && annotation.subtype !== 'Popup'))
+    .map(annotation => ({ annotation, created: annotation.createdAt ? formatAnnotationDate(annotation.createdAt) : undefined,
+      modified: annotation.modifiedAt ? formatAnnotationDate(annotation.modifiedAt) : undefined })), [snapshot?.document.annotations])
   useEffect(() => {
     if (!selected) return
     setComment(selected.contents ?? '')
@@ -599,6 +607,7 @@ export function Reader(props: ReaderProps) {
   }
 
   const editable = !!snapshot && !snapshot.document.readOnly && !busy
+  const hasUnappliedComment = !!pendingNote || (!!selected && (comment !== (selected.contents ?? '') || commentColor !== colorToHex(selected.color)))
   const hasTextSelection = selection?.kind === 'text' && selection.revision === snapshot?.revision
   const registerView = useCallback((number: number, view: PageView | null) => {
     if (view) views.current.set(number, view); else views.current.delete(number)
@@ -611,11 +620,55 @@ export function Reader(props: ReaderProps) {
     window.getSelection()?.removeAllRanges()
     setSelectedAnnotation(id)
   }, [])
-  const clearAnnotation = () => { setSelectedAnnotation(undefined); setPendingNote(null) }
+  const clearAnnotation = useCallback(() => { setSelectedAnnotation(undefined); setPendingNote(null) }, [])
   const deleteAnnotation = async () => {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
   }
-  const clearSelection = () => { setSelection(null); nativeSelectionRange.current = null; window.getSelection()?.removeAllRanges() }
+  const clearSelection = useCallback(() => {
+    setSelection(null); nativeSelectionRange.current = null
+    const browser = window.getSelection(), root = state.current.scrollRoot
+    if (browser?.rangeCount && root?.contains(browser.getRangeAt(0).commonAncestorContainer)) browser.removeAllRanges()
+  }, [])
+  const dismissContext = useCallback(() => {
+    clearAnnotation(); clearSelection(); setComment(''); setMode('text')
+  }, [clearAnnotation, clearSelection])
+  useEffect(() => {
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.button !== 0 || !(event.target instanceof Node)) return
+      // Portaled/floating controls preserve the browser selection while operating
+      // on it; a click outside this PDF closes only its contextual UI.
+      if (!readerElement.current?.contains(event.target)) dismissContext()
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    return () => document.removeEventListener('pointerdown', dismissOutside)
+  }, [dismissContext])
+  const updateScrolledPage = useCallback(() => {
+    if (scrollFrame.current !== undefined) return
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = undefined
+      const root = state.current.scrollRoot
+      if (!root || !state.current.snapshot) return
+      // Page wrappers are ordered direct children with exact DOM heights. Binary
+      // search handles long documents and large scroll jumps without scanning P rects.
+      const children = root.children
+      const boundary = root.scrollTop + 40
+      let low = 0, high = children.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        const element = children[middle] as HTMLElement
+        if (element.offsetTop + element.offsetHeight <= boundary) low = middle + 1
+        else high = middle
+      }
+      const element = children[Math.min(low, children.length - 1)] as HTMLElement | undefined
+      const number = Number(element?.dataset.pageNumber)
+      if (number > 0 && number !== state.current.currentPage) { setCurrentPage(number); setPageInput(String(number)) }
+    })
+  }, [])
+  const discardChanges = async () => {
+    if (operationLock.current) return
+    const next = await act(current => api.discard(sessionId, current.id, current.revision, tab.signal))
+    if (next) { dismissContext(); setPendingAnnotations(noAnnotations); setSaveAsOpen(false); setReloadConfirm(false); setScreenshot(null) }
+  }
   const captureSelection = () => {
     if (mode !== 'text' || !scrollRoot || !snapshot) return
     const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
@@ -730,7 +783,34 @@ export function Reader(props: ReaderProps) {
     return anchor
   }
 
-  return <div className="dsh-pdf-reader" aria-label={t('reader.title')} onKeyDown={(event) => {
+  const pageCallbacks = useRef({ destination, jump, beginNote, takeScreenshot })
+  pageCallbacks.current = { destination, jump, beginNote, takeScreenshot }
+  const pageDestination = useCallback((value: unknown) => { void pageCallbacks.current.destination(value) }, [])
+  const pageAction = useCallback((page: number, action: string) => {
+    const last = state.current.snapshot?.document.pageCount ?? page
+    void pageCallbacks.current.jump(action === 'FirstPage' ? 1 : action === 'LastPage' ? last : action === 'NextPage' ? page + 1 : page - 1)
+  }, [])
+  const pageNote = useCallback((page: number, point: number[]) => pageCallbacks.current.beginNote(page, point), [])
+  const pageRegion = useCallback((page: number, region: Parameters<typeof takeScreenshot>[1]) => { void pageCallbacks.current.takeScreenshot(page, region) }, [])
+  const pageElements = useMemo(() => {
+    if (!pdf || !snapshot) return null
+    const selectedPages = new Set(selection?.fragments.map(fragment => fragment.page))
+    return snapshot.document.pages.map(geometry => <ReaderPage key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
+      scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
+      annotations={annotationsByPage.get(geometry.page) ?? noAnnotations}
+      renderedAnnotations={renderedAnnotationsByPage.get(geometry.page) ?? noAnnotations}
+      selectedAnnotation={selected?.page === geometry.page ? selected.id : undefined}
+      selection={selectedPages.has(geometry.page) ? selection : null} ocrWords={ocrPages.get(geometry.page)?.words}
+      onView={registerView} onDestination={pageDestination} onAction={pageAction}
+      onAnnotation={selectAnnotation} onNote={pageNote} onRegion={pageRegion} onBackground={dismissContext} onError={notifyError} />)
+  }, [pdf, snapshot?.id, snapshot?.document.pages, rotation, mode, t, scrollRoot, annotationsByPage, renderedAnnotationsByPage,
+    selected?.id, selected?.page, selection, ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
+    selectAnnotation, pageNote, pageRegion, dismissContext, notifyError])
+
+  return <div className="dsh-pdf-reader" ref={readerElement} aria-label={t('reader.title')} onPointerDown={(event) => {
+    if (event.button !== 0 || !(event.target instanceof Element) || scrollRoot?.contains(event.target)) return
+    if (!event.target.closest('button,a,input,textarea,select,summary,.dsh-pdf-context-toolbar,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) dismissContext()
+  }} onKeyDown={(event) => {
     if (event.target instanceof Element && event.target.closest('.dsh-pdf-translation-panel')) {
       if (event.key === 'Escape') { event.preventDefault(); closeTranslation() }
       return
@@ -745,7 +825,7 @@ export function Reader(props: ReaderProps) {
       event.preventDefault(); void deleteAnnotation()
     }
     if (!input && event.key === 'Escape') {
-      clearAnnotation(); cancelScreenshot(); closeTranslation()
+      dismissContext(); cancelScreenshot(); closeTranslation()
       if (toolsMenu.current) toolsMenu.current.open = false
     }
   }}>
@@ -794,6 +874,7 @@ export function Reader(props: ReaderProps) {
       <button disabled={!snapshot?.canRedo || busy} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
       <button className="dsh-pdf-primary" disabled={!editable || !snapshot?.dirty} onClick={() => void save()}>{t('reader.save')}</button>
       <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
+      <button disabled={!snapshot || busy || (!snapshot.dirty && !snapshot.canRedo && !hasUnappliedComment)} title={t('reader.discardHelp')} onClick={() => void discardChanges()}>{t('reader.discard')}</button>
       <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
     {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
@@ -848,23 +929,18 @@ export function Reader(props: ReaderProps) {
           <strong>{t('reader.page')} {hit.page} · {hit.source === 'ocr' ? t('reader.ocrText') : t('reader.nativeText')}</strong><span>{hit.text}</span>
         </button>)}
       </ScrollablePanel>}
-      <div className="dsh-pdf-scroll" ref={scrollRef} tabIndex={0} onScroll={() => {
-        if (!scrollRoot) return
-        const top = scrollRoot.getBoundingClientRect().top
-        const page = [...scrollRoot.querySelectorAll<HTMLElement>('[data-page-number]')].find((element) => element.getBoundingClientRect().bottom > top + 40)
-        if (page) { const number = Number(page.dataset.pageNumber); setCurrentPage(number); setPageInput(String(number)) }
-      }} onPointerDown={() => { if (mode === 'text') { setSelection(null); nativeSelectionRange.current = null } }}
+      <div className="dsh-pdf-scroll" ref={scrollRef} tabIndex={0} onScroll={updateScrolledPage}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || mode !== 'text' || (event.target instanceof Element && event.target.closest('button,a,input,textarea'))) return
+          // Remove the old native Range before browser default selection starts;
+          // otherwise pointerup can recapture it after clicking page whitespace.
+          if (event.shiftKey) { setSelection(null); nativeSelectionRange.current = null }
+          else clearSelection()
+          clearAnnotation()
+        }}
         onPointerUp={captureSelection} onKeyUp={captureSelection}>
         {!pdf && <div className="dsh-pdf-empty" role="status">{error ? t('reader.cannotOpen') : t('reader.loading')}</div>}
-        {pdf && snapshot?.document.pages.map((geometry) => <Page key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
-          scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
-          annotations={annotationsByPage.get(geometry.page) ?? noAnnotations}
-          renderedAnnotations={renderedAnnotationsByPage.get(geometry.page) ?? noAnnotations}
-          selectedAnnotation={selectedAnnotation} selection={selection} ocrWords={ocrPages.get(geometry.page)?.words}
-          onView={registerView} onDestination={(value) => void destination(value)}
-          onNamedAction={(action) => void jump(action === 'FirstPage' ? 1 : action === 'LastPage' ? pdf.numPages : action === 'NextPage' ? geometry.page + 1 : geometry.page - 1)}
-          onAnnotation={selectAnnotation} onNote={beginNote} onRegion={(page, region) => void takeScreenshot(page, region)}
-          onError={notifyError} />)}
+        {pageElements}
       </div>
       <OverlayScrollbars target={scrollRoot} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
       {commentsOpen && <ScrollablePanel className="dsh-pdf-comments" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
@@ -881,14 +957,14 @@ export function Reader(props: ReaderProps) {
           {pendingNote && <button onClick={() => setPendingNote(null)}>{t('reader.cancel')}</button>}
           {selected && <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>}
         </div>}
-        {snapshot?.document.annotations.filter((annotation) => annotation.supported || (annotation.contents && annotation.subtype !== 'Popup')).map((annotation) => <button
+        {commentItems.map(({ annotation, created, modified }) => <button
           className={`dsh-pdf-comment-item${selectedAnnotation === annotation.id ? ' is-selected' : ''}`} key={annotation.id}
           onClick={() => { selectAnnotation(annotation.id); void jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }}>
           <strong>{t('reader.page')} {annotation.page} · {annotation.supported ? t(`reader.type.${annotation.subtype}`) : annotation.subtype}</strong>
           <span>{annotation.contents || t('reader.noComment')}</span>
           {annotation.author && <small>{annotation.author}</small>}
-          {annotation.createdAt && <small>{t('reader.created')} {formatAnnotationDate(annotation.createdAt)}</small>}
-          {annotation.modifiedAt && <small>{t('reader.modified')} {formatAnnotationDate(annotation.modifiedAt)}</small>}
+          {created && <small>{t('reader.created')} {created}</small>}
+          {modified && <small>{t('reader.modified')} {modified}</small>}
         </button>)}
         {!snapshot?.document.annotations.some((annotation) => annotation.supported) && <p className="dsh-pdf-muted">{t('reader.noAnnotations')}</p>}
       </ScrollablePanel>}
