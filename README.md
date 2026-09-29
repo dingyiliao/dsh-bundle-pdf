@@ -2,6 +2,8 @@
 
 独立的 DeepSeek Harness 插件，安装包名为 `@local/dsh-pdf`。源码和依赖放在本目录，通过 DSH 的插件、右侧文档栏、设置页和 Connection 扩展接口接入。
 
+公开仓库：[dingyiliao/dsh-bundle-pdf](https://github.com/dingyiliao/dsh-bundle-pdf)。
+
 当前实现对接 **DSH 0.2.0-rc.1** 的公开接口，已在本地 Web 和 Desktop profile 链接并确认 Host 激活。当前布局改动已通过类型检查和构建；此前代表 PDF 的解析与只读兼容检查已通过。尚未完成完整界面交互验收或性能基准。DSH 接口仍可能随版本变化，需要与实际使用的宿主版本一起确认。
 
 ## 功能范围
@@ -40,6 +42,8 @@ git clone https://github.com/dingyiliao/dsh-bundle-pdf.git
 Set-Location .\dsh-bundle-pdf
 npm ci
 ```
+
+已有 checkout 时，在其目录执行 `npm ci` 即可。
 
 `prepare` 会执行构建，生成 `dist/`。如果安装时禁用了生命周期脚本，或之后修改了源码，执行：
 

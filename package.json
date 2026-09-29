@@ -5,6 +5,14 @@
   "type": "module",
   "description": "PDF reader, annotations, navigation and pluggable OCR for DeepSeek Harness",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dingyiliao/dsh-bundle-pdf.git"
+  },
+  "homepage": "https://github.com/dingyiliao/dsh-bundle-pdf#readme",
+  "bugs": {
+    "url": "https://github.com/dingyiliao/dsh-bundle-pdf/issues"
+  },
   "exports": {
     ".": "./dist/index.js",
     "./client": "./dist/client.js",
