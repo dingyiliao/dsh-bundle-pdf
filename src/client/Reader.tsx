@@ -10,6 +10,11 @@ import { captureTextSelection, colorFromHex, colorToHex, pdfRectToViewport, over
 import { readerLifetime, type OcrPage } from './reader-lifetime.js'
 import { joinSearchText } from './reader-search.js'
 import { formatAnnotationDate } from './reader-dates.js'
+import { FloatingToolbar, visibleReadingBounds } from './FloatingToolbar.js'
+import { OverlayScrollbars } from './OverlayScrollbar.js'
+import { ScrollablePanel } from './ScrollablePanel.js'
+import { capturePdfRegion, type PdfRegionScreenshot } from './reader-screenshot.js'
+import { ScreenshotPreview } from './ScreenshotPreview.js'
 
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -44,6 +49,9 @@ export function Reader(props: ReaderProps) {
   const [historyRevision, setHistoryRevision] = useState(0)
   const [mode, setMode] = useState<'text' | 'region' | 'note'>('text')
   const [selection, setSelection] = useState<ReaderSelection | null>(null)
+  const [screenshot, setScreenshot] = useState<(PdfRegionScreenshot & { page: number; region: PdfRect; revision: number }) | null>(null)
+  const [screenshotBusy, setScreenshotBusy] = useState(false)
+  const [textCopied, setTextCopied] = useState(false)
   const [color, setColor] = useState(settings.defaultColor)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
@@ -65,6 +73,10 @@ export function Reader(props: ReaderProps) {
   const [targetChecking, setTargetChecking] = useState(false)
   const [reloadConfirm, setReloadConfirm] = useState(false)
   const views = useRef(new Map<number, PageView>())
+  const currentSelection = useRef(selection)
+  currentSelection.current = selection
+  const toolsMenu = useRef<HTMLDetailsElement>(null)
+  const screenshotController = useRef<AbortController | null>(null)
   const history = useRef(lifetime.history)
   const captureLatest = useRef<(() => NavigationPosition) | undefined>(undefined)
   const restored = useRef(false)
@@ -91,6 +103,15 @@ export function Reader(props: ReaderProps) {
     const controller = new AbortController()
     const token = ++ownerSequence.current
     const ownerContent = props.content
+    screenshotController.current?.abort()
+    setScreenshot(null)
+    setSelection(null)
+    setMode('text')
+    setDisplayOwner(null)
+    setSelectedAnnotation(undefined)
+    setPendingNote(null)
+    setPendingAnnotations(noAnnotations)
+    setComment('')
     const stop = () => controller.abort()
     tab.signal.addEventListener('abort', stop, { once: true })
     if (tab.signal.aborted) controller.abort()
@@ -149,6 +170,7 @@ export function Reader(props: ReaderProps) {
     void activePdf.current?.dispose()
     activePdf.current = null
     ocrController.current?.abort()
+    screenshotController.current?.abort()
     searchSequence.current++
   }, [])
   useEffect(() => { lifetime.ocrPages = ocrPages }, [ocrPages, lifetime])
@@ -165,6 +187,8 @@ export function Reader(props: ReaderProps) {
   useEffect(() => {
     if (!snapshot) return
     if (history.current.resetForDocument(snapshot.contentVersion)) {
+      setSelectedAnnotation(undefined)
+      setPendingNote(null)
       setOcrPages(new Map())
       setHits([])
       setSearched(false)
@@ -176,7 +200,25 @@ export function Reader(props: ReaderProps) {
     setSelection(null)
     setHistoryRevision((n) => n + 1)
   }, [snapshot?.contentVersion])
-  useEffect(() => { setSelection(null) }, [snapshot?.revision])
+  useEffect(() => {
+    setSelection(null)
+    setMode('text')
+    screenshotController.current?.abort()
+    setScreenshot(null)
+  }, [snapshot?.revision, snapshot?.id])
+  useEffect(() => {
+    if (!textCopied) return
+    const timer = setTimeout(() => setTextCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [textCopied])
+  useEffect(() => { setTextCopied(false) }, [selection])
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !toolsMenu.current?.contains(event.target) && toolsMenu.current) toolsMenu.current.open = false
+    }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [])
   useEffect(() => { history.current.setCapacity(settings.historyCapacity); setHistoryRevision((n) => n + 1) }, [settings.historyCapacity])
 
   useEffect(() => {
@@ -327,11 +369,17 @@ export function Reader(props: ReaderProps) {
 
   const act = async (operation: (current: WorkspaceSnapshot) => Promise<WorkspaceSnapshot>) => {
     if (!snapshot || operationLock.current) return
+    const owner = ownerSequence.current
     operationLock.current = true
     setBusy(true)
     setError('')
-    try { const next = await operation(snapshot); setSnapshot(next); return next }
-    catch (failure) { notifyError(failure) }
+    try {
+      const next = await operation(snapshot)
+      if (owner !== ownerSequence.current || tab.signal.aborted) return
+      setSnapshot(next)
+      return next
+    }
+    catch (failure) { if (owner === ownerSequence.current && !tab.signal.aborted) notifyError(failure) }
     finally { operationLock.current = false; setBusy(false) }
   }
   const change = (operations: PdfAnnotationOperation[]) => act((current) => api.change(sessionId, current.id, current.revision, operations, tab.signal))
@@ -462,12 +510,12 @@ export function Reader(props: ReaderProps) {
     finally { if (sequence === searchSequence.current) setSearching(false) }
   }
 
-  const recognize = async () => {
+  const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {
     if (!pdf || !snapshot || ocrController.current) return
     const controller = new AbortController()
     ocrController.current = controller
     const version = snapshot.contentVersion
-    const region = selection?.kind === 'region' && selection.revision === snapshot.revision ? selection.fragments[0] : undefined
+    const region = requestedRegion
     const number = region?.page ?? currentPage
     setOcrProgress(t('reader.ocrPreparing'))
     setError('')
@@ -527,7 +575,10 @@ export function Reader(props: ReaderProps) {
 
   const editable = !!snapshot && !snapshot.document.readOnly && !busy
   const hasTextSelection = selection?.kind === 'text' && selection.revision === snapshot?.revision
-  const registerView = useCallback((number: number, view: PageView | null) => { if (view) views.current.set(number, view); else views.current.delete(number) }, [])
+  const registerView = useCallback((number: number, view: PageView | null) => {
+    if (view) views.current.set(number, view); else views.current.delete(number)
+    state.current.scrollRoot?.dispatchEvent(new Event('pdfviewchange'))
+  }, [])
   const scrollRef = useCallback((node: HTMLDivElement | null) => { setScrollRoot(node); props.scrollportRef(node) }, [props.scrollportRef])
   const selectAnnotation = useCallback((id: string) => {
     setPendingNote(null)
@@ -538,6 +589,79 @@ export function Reader(props: ReaderProps) {
   const clearAnnotation = () => { setSelectedAnnotation(undefined); setPendingNote(null) }
   const deleteAnnotation = async () => {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
+  }
+  const clearSelection = () => { setSelection(null); window.getSelection()?.removeAllRanges() }
+  const cancelScreenshot = () => {
+    screenshotController.current?.abort()
+    setScreenshot(null)
+    setMode('text')
+    clearSelection()
+  }
+  const beginScreenshot = () => {
+    if (!displayOwner || displayOwner.token !== ownerSequence.current) { notifyError(new Error(t('reader.notReady'))); return }
+    clearSelection()
+    clearAnnotation()
+    setScreenshot(null)
+    setMode('region')
+    if (toolsMenu.current) toolsMenu.current.open = false
+  }
+  const takeScreenshot = async (page: number, region: { rect: PdfRect; quadPoints: number[] }) => {
+    // Screenshot mode is a single action. Text selection resumes immediately.
+    setMode('text')
+    if (!pdf || !snapshot || screenshotController.current) return
+    if (!displayOwner || displayOwner.token !== ownerSequence.current || activePdf.current?.bytes !== snapshot.bytes) { notifyError(new Error(t('reader.notReady'))); return }
+    const revision = snapshot.revision
+    const owner = displayOwner.token
+    const controller = new AbortController()
+    screenshotController.current = controller
+    const stop = () => controller.abort()
+    tab.signal.addEventListener('abort', stop, { once: true })
+    if (tab.signal.aborted) controller.abort()
+    setSelection({ kind: 'region', revision, text: '', fragments: [{ page, ...region }] })
+    setScreenshotBusy(true)
+    setError('')
+    try {
+      const image = await capturePdfRegion(pdf, page, region.rect, { rotation, signal: controller.signal })
+      if (!controller.signal.aborted && ownerSequence.current === owner && state.current.snapshot?.id === snapshot.id && state.current.snapshot.revision === revision) {
+        setScreenshot({ ...image, page, region: region.rect, revision })
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted) { notifyError(failure); setSelection(null) }
+    } finally {
+      tab.signal.removeEventListener('abort', stop)
+      if (screenshotController.current === controller) { screenshotController.current = null; setScreenshotBusy(false) }
+    }
+  }
+  const copyText = async () => {
+    if (!hasTextSelection || !selection) return
+    const copiedSelection = selection
+    try {
+      await navigator.clipboard.writeText(copiedSelection.text)
+      if (!tab.signal.aborted && currentSelection.current === copiedSelection) setTextCopied(true)
+    }
+    catch { notifyError(new Error(t('reader.copyTextFailed'))) }
+  }
+  const contextualAnchor = () => {
+    if (!scrollRoot) return null
+    const bounds = visibleReadingBounds(scrollRoot)
+    const fragments = hasTextSelection ? selection!.fragments : selected?.rect ? [{ page: selected.page, rect: selected.rect, quadPoints: selected.quadPoints ?? [] }] : []
+    let anchor: DOMRect | null = null
+    for (const fragment of fragments) {
+      const view = views.current.get(fragment.page)
+      if (!view) continue
+      const pageBounds = view.element.getBoundingClientRect()
+      const rectangles: PdfRect[] = []
+      for (let index = 0; index + 7 < fragment.quadPoints.length; index += 8) {
+        const points = Array.from({ length: 4 }, (_, offset) => view.viewport.convertToViewportPoint(fragment.quadPoints[index + offset * 2], fragment.quadPoints[index + offset * 2 + 1]))
+        rectangles.push([Math.min(...points.map((p) => p[0])), Math.min(...points.map((p) => p[1])), Math.max(...points.map((p) => p[0])), Math.max(...points.map((p) => p[1]))])
+      }
+      if (!rectangles.length) rectangles.push(pdfRectToViewport(view.viewport, fragment.rect))
+      for (const box of rectangles) {
+        const rect = new DOMRect(pageBounds.left + box[0], pageBounds.top + box[1], box[2] - box[0], box[3] - box[1])
+        if (rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right) anchor = rect
+      }
+    }
+    return anchor
   }
 
   return <div className="dsh-pdf-reader" aria-label={t('reader.title')} onKeyDown={(event) => {
@@ -550,7 +674,10 @@ export function Reader(props: ReaderProps) {
     if (!input && selected && event.key === 'Delete' && editable && selected.editable) {
       event.preventDefault(); void deleteAnnotation()
     }
-    if (!input && event.key === 'Escape') { clearAnnotation(); setSelection(null); window.getSelection()?.removeAllRanges() }
+    if (!input && event.key === 'Escape') {
+      clearAnnotation(); cancelScreenshot()
+      if (toolsMenu.current) toolsMenu.current.open = false
+    }
   }}>
     <div className="dsh-pdf-toolbar" role="toolbar" aria-label={t('reader.navigation')}>
       <button disabled={!history.current.canGoBack || busy || navigating} title={`${t('reader.back')} ${history.current.peek()?.page ?? ''}`} onClick={() => {
@@ -577,34 +704,52 @@ export function Reader(props: ReaderProps) {
       <button aria-pressed={commentsOpen} onClick={() => setCommentsOpen((value) => !value)}>{t('reader.comments')}</button>
     </div>
     <div className="dsh-pdf-toolbar dsh-pdf-editbar" role="toolbar" aria-label={t('reader.editing')}>
-      <button aria-pressed={mode === 'text'} onClick={() => setMode('text')}>{t('reader.selectText')}</button>
-      <button aria-pressed={mode === 'region'} onClick={() => setMode('region')}>{t('reader.selectRegion')}</button>
-      <input type="color" aria-label={t('reader.color')} value={color} onChange={(event) => setColor(event.target.value)} />
-      <button disabled={!editable || !hasTextSelection} onClick={() => void mark('Highlight')}>{t('reader.highlight')}</button>
-      <button disabled={!editable || !hasTextSelection} onClick={() => void mark('Underline')}>{t('reader.underline')}</button>
-      <button disabled={!editable || !hasTextSelection} onClick={() => void mark('StrikeOut')}>{t('reader.strike')}</button>
-      <button disabled={!editable} aria-pressed={mode === 'note'} onClick={() => {
-        const region = selection?.fragments[0]
-        if (region) beginNote(region.page, [region.rect[0], region.rect[3]])
-        else setMode('note')
-      }}>{t('reader.note')}</button>
-      <button disabled={!pdf || !!ocrProgress} onClick={() => void recognize()}>{selection?.kind === 'region' ? t('reader.ocrRegion') : t('reader.ocrPage')}</button>
+      <details className="dsh-pdf-tools" ref={toolsMenu} onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
+      }}>
+        <summary>{t('reader.tools')} ▾</summary>
+        <div className="dsh-pdf-tools-menu" role="group" aria-label={t('reader.tools')}>
+          <button disabled={!pdf || busy || screenshotBusy} onClick={beginScreenshot}>{t('reader.regionScreenshot')}</button>
+          <button disabled={!editable} onClick={() => {
+            clearSelection(); clearAnnotation(); setMode('note')
+            if (toolsMenu.current) toolsMenu.current.open = false
+          }}>{t('reader.note')}</button>
+          <button disabled={!pdf || !!ocrProgress} onClick={() => {
+            setMode('text'); void recognize()
+            if (toolsMenu.current) toolsMenu.current.open = false
+          }}>{t('reader.ocrPage')}</button>
+        </div>
+      </details>
       <button disabled={!snapshot?.canUndo || busy} onClick={() => void act((current) => api.undo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.undo')}>↶</button>
       <button disabled={!snapshot?.canRedo || busy} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
       <button className="dsh-pdf-primary" disabled={!editable || !snapshot?.dirty} onClick={() => void save()}>{t('reader.save')}</button>
       <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
       <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
-    {selected && <div className="dsh-pdf-toolbar dsh-pdf-selectionbar" role="toolbar" aria-label={t('reader.selectedAnnotation')}>
+    {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
+      <button onClick={() => void copyText()}>{t(textCopied ? 'reader.textCopied' : 'reader.copyText')}</button>
+      <input type="color" aria-label={t('reader.color')} value={color} disabled={!editable} onChange={(event) => setColor(event.target.value)} />
+      <button disabled={!editable} onClick={() => void mark('Highlight')}>{t('reader.highlight')}</button>
+      <button disabled={!editable} onClick={() => void mark('Underline')}>{t('reader.underline')}</button>
+      <button disabled={!editable} onClick={() => void mark('StrikeOut')}>{t('reader.strike')}</button>
+      <button disabled={!editable} onClick={() => {
+        const fragment = selection?.fragments[0]
+        if (fragment) { beginNote(fragment.page, [fragment.rect[0], fragment.rect[3]]); clearSelection() }
+      }}>{t('reader.note')}</button>
+      <button aria-label={t('reader.clearSelection')} onClick={clearSelection}>×</button>
+    </FloatingToolbar>}
+    {selected && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.selectedAnnotation')}>
       <span>{t('reader.selectedAnnotation')} · {selected.supported ? t(`reader.type.${selected.subtype}`) : selected.subtype}</span>
       <input type="color" aria-label={t('reader.annotationColor')} value={commentColor} disabled={!editable || !selected.editable} onChange={(event) => setCommentColor(event.target.value)} />
       <button disabled={!editable || !selected.editable || commentColor === colorToHex(selected.color)} onClick={() => void change([{ type: 'update', id: selected.id, patch: { color: colorFromHex(commentColor) } }])}>{t('reader.applyColor')}</button>
       <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>
       <button onClick={() => setCommentsOpen(true)}>{t('reader.commentText')}</button>
       <button onClick={clearAnnotation}>{t('reader.deselectAnnotation')}</button>
-    </div>}
+    </FloatingToolbar>}
     {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
-    {mode === 'note' && <div className="dsh-pdf-notice">{t('reader.placeNote')}</div>}
+    {mode === 'note' && <div className="dsh-pdf-notice">{t('reader.placeNote')}<button onClick={() => setMode('text')}>{t('reader.cancel')}</button></div>}
+    {mode === 'region' && <div className="dsh-pdf-notice">{t('reader.screenshotHint')}<button onClick={cancelScreenshot}>{t('reader.cancel')}</button></div>}
+    {screenshotBusy && <div className="dsh-pdf-notice" role="status">{t('reader.screenshotPreparing')}<button onClick={cancelScreenshot}>{t('reader.cancel')}</button></div>}
     {error && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
     {snapshot?.warning && <div className="dsh-pdf-notice" role="status">{snapshot.warning}</div>}
     {snapshot?.conflict && <div className="dsh-pdf-notice">{t('reader.conflict')}<button onClick={() => setSaveAsOpen(true)}>{t('reader.saveAs')}</button></div>}
@@ -619,7 +764,7 @@ export function Reader(props: ReaderProps) {
       <button onClick={() => { void act((current) => api.reload(sessionId, current.id, current.revision, tab.signal)); setReloadConfirm(false) }}>{t('reader.reload')}</button>
       <button onClick={() => setReloadConfirm(false)}>{t('reader.cancel')}</button></div>}
     <div className="dsh-pdf-body">
-      {searchOpen && <aside className="dsh-pdf-search-panel">
+      {searchOpen && <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
         <div className="dsh-pdf-panel-heading"><h3>{t('reader.search')}</h3><button aria-label={t('reader.closeSearch')} onClick={() => setSearchOpen(false)}>×</button></div>
         <form onSubmit={(event) => void runSearch(event)}><input aria-label={t('reader.search')} placeholder={t('reader.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} />
           <button disabled={searching || !query.trim() || !pdf}>{searching ? t('reader.searching') : t('reader.search')}</button></form>
@@ -628,13 +773,13 @@ export function Reader(props: ReaderProps) {
         {hits.map((hit, index) => <button className="dsh-pdf-search-hit" key={index} onClick={() => void jump(hit.page, { x: hit.x, y: hit.y })}>
           <strong>{t('reader.page')} {hit.page} · {hit.source === 'ocr' ? t('reader.ocrText') : t('reader.nativeText')}</strong><span>{hit.text}</span>
         </button>)}
-      </aside>}
+      </ScrollablePanel>}
       <div className="dsh-pdf-scroll" ref={scrollRef} tabIndex={0} onScroll={() => {
         if (!scrollRoot) return
         const top = scrollRoot.getBoundingClientRect().top
         const page = [...scrollRoot.querySelectorAll<HTMLElement>('[data-page-number]')].find((element) => element.getBoundingClientRect().bottom > top + 40)
         if (page) { const number = Number(page.dataset.pageNumber); setCurrentPage(number); setPageInput(String(number)) }
-      }} onPointerUp={() => {
+      }} onPointerDown={() => { if (mode === 'text') setSelection(null) }} onPointerUp={() => {
         if (mode === 'text' && scrollRoot && snapshot) {
           const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
           setSelection(next)
@@ -655,10 +800,11 @@ export function Reader(props: ReaderProps) {
           selectedAnnotation={selectedAnnotation} selection={selection} ocrWords={ocrPages.get(geometry.page)?.words}
           onView={registerView} onDestination={(value) => void destination(value)}
           onNamedAction={(action) => void jump(action === 'FirstPage' ? 1 : action === 'LastPage' ? pdf.numPages : action === 'NextPage' ? geometry.page + 1 : geometry.page - 1)}
-          onAnnotation={selectAnnotation} onNote={beginNote} onRegion={(page, region) => setSelection({ kind: 'region', revision: snapshot.revision, text: '', fragments: [{ page, ...region }] })}
+          onAnnotation={selectAnnotation} onNote={beginNote} onRegion={(page, region) => void takeScreenshot(page, region)}
           onError={notifyError} />)}
       </div>
-      {commentsOpen && <aside className="dsh-pdf-comments">
+      <OverlayScrollbars target={scrollRoot} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
+      {commentsOpen && <ScrollablePanel className="dsh-pdf-comments" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
         <div className="dsh-pdf-panel-heading"><h3>{t('reader.comments')}</h3><button aria-label={t('reader.closeComments')} onClick={() => setCommentsOpen(false)}>×</button></div>
         {(selected || pendingNote) && <div className="dsh-pdf-comment-editor">
           <label>{t('reader.commentText')}<textarea value={comment} disabled={!!selected && !selected.editable} onChange={(event) => setComment(event.target.value)} rows={5} /></label>
@@ -682,12 +828,14 @@ export function Reader(props: ReaderProps) {
           {annotation.modifiedAt && <small>{t('reader.modified')} {formatAnnotationDate(annotation.modifiedAt)}</small>}
         </button>)}
         {!snapshot?.document.annotations.some((annotation) => annotation.supported) && <p className="dsh-pdf-muted">{t('reader.noAnnotations')}</p>}
-      </aside>}
+      </ScrollablePanel>}
     </div>
     <div className="dsh-pdf-footer"><span title={snapshot?.path}>{snapshot?.path}</span>
-      {selection && <button onClick={() => { setSelection(null); window.getSelection()?.removeAllRanges() }}>{t('reader.clearSelection')}</button>}
+      {selection && <button onClick={clearSelection}>{t('reader.clearSelection')}</button>}
       <button disabled={!snapshot || busy} onClick={() => snapshot?.dirty ? setReloadConfirm(true) : void act((current) => api.reload(sessionId, current.id, current.revision, tab.signal))}>{t('reader.reload')}</button>
     </div>
+    {screenshot && <ScreenshotPreview image={screenshot} t={t} onError={notifyError} onClose={() => { setScreenshot(null); clearSelection() }}
+      onOcr={ocrProgress ? undefined : () => void recognize({ page: screenshot.page, rect: screenshot.region })} />}
   </div>
 }
 

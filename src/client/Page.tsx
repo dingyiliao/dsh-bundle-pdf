@@ -4,6 +4,7 @@ import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type PageViewport, type ReaderSelection } from './reader-selection.js'
 import { annotationAtPoint, annotationPolygons, pendingMarkupAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
+import { actionableLink, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
 
 export interface PageProps {
   pdf: PDFDocumentProxy
@@ -28,8 +29,7 @@ export interface PageProps {
   onError(message: string): void
 }
 
-interface LinkAnnotation { id: string; rect: number[]; dest?: unknown; url?: string; action?: string; }
-interface LoadedPage { owner: PDFDocumentProxy; page: PDFPageProxy; annotations: PdfAnnotation[]; links?: LinkAnnotation[] }
+interface LoadedPage { owner: PDFDocumentProxy; page: PDFPageProxy; annotations: PdfAnnotation[]; links?: PdfLink[] }
 
 function screenRect(viewport: PageViewport, rect: readonly number[]) {
   const value = pdfRectToViewport(viewport, rect)
@@ -86,11 +86,14 @@ export function Page(props: PageProps) {
   const page = loaded?.page
   const pageOwner = loaded?.owner
   const [paintedAnnotations, setPaintedAnnotations] = useState<PdfAnnotation[]>([])
-  const [links, setLinks] = useState<LinkAnnotation[]>([])
+  const [links, setLinks] = useState<PdfLink[]>([])
   const [rendered, setRendered] = useState(false)
   const [nativeBoxes, setNativeBoxes] = useState<PdfRect[]>([])
   const [drag, setDrag] = useState<{ x: number; y: number; endX: number; endY: number } | null>(null)
+  const dragPointer = useRef<{ element: HTMLElement; pointerId: number } | null>(null)
   const textPress = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null)
+  const pendingLink = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const hoveredText = useRef<{ element: HTMLElement; previous: string } | null>(null)
   const callbacks = useRef(props)
   callbacks.current = props
   const angle = ((geometry.rotation + rotation) % 360 + 360) % 360
@@ -123,7 +126,8 @@ export function Page(props: PageProps) {
       setLoaded(record)
       const annotations = await loaded.getAnnotations({ intent: 'display' })
       const nativeLinks = annotations.filter((annotation) => annotation.subtype === 'Link').map((annotation) => ({
-        id: annotation.id, rect: annotation.rect, dest: annotation.dest, url: annotation.url, action: annotation.action,
+        id: annotation.id, rect: annotation.rect, quadPoints: annotation.quadPoints ? Array.from(annotation.quadPoints) as number[] : undefined,
+        dest: annotation.dest, url: annotation.url, action: annotation.action,
       }))
       record.links = nativeLinks
       if (active) setLinks(nativeLinks)
@@ -213,6 +217,52 @@ export function Page(props: PageProps) {
     const bounds = surface.current!.getBoundingClientRect()
     return { x: Math.max(0, Math.min(width, event.clientX - bounds.left)), y: Math.max(0, Math.min(height, event.clientY - bounds.top)) }
   }
+  const activeLinks = pageOwner === pdf && loaded?.links === links ? links : []
+  const cancelLinkClick = () => {
+    if (pendingLink.current) clearTimeout(pendingLink.current)
+    pendingLink.current = undefined
+  }
+  const clearLinkCursor = () => {
+    const previous = hoveredText.current
+    if (previous) previous.element.style.cursor = previous.previous
+    hoveredText.current = null
+  }
+  const clearDrag = () => {
+    const captured = dragPointer.current
+    dragPointer.current = null
+    setDrag(null)
+    if (captured) {
+      try {
+        if (captured.element.hasPointerCapture(captured.pointerId)) captured.element.releasePointerCapture(captured.pointerId)
+      } catch { /* The pointer or page may already have been removed. */ }
+    }
+  }
+  const updateLinkCursor = (event: React.PointerEvent) => {
+    if (props.mode !== 'text' || !viewport || !(event.target instanceof HTMLElement)
+      || event.target.closest('button,a,input,textarea')) { clearLinkCursor(); return }
+    const point = pointer(event)
+    const link = linkAtPoint(activeLinks, viewport, [point.x, point.y])
+    if (!link) { clearLinkCursor(); return }
+    if (hoveredText.current?.element === event.target) return
+    clearLinkCursor()
+    hoveredText.current = { element: event.target, previous: event.target.style.cursor }
+    // The actual text span owns its cursor; its native selection events remain untouched.
+    event.target.style.cursor = 'pointer'
+  }
+  const followLink = (link: PdfLink) => {
+    if (link.dest) callbacks.current.onDestination(link.dest)
+    else if (namedLinkAction(link.action)) callbacks.current.onNamedAction(link.action)
+    else {
+      const url = safeLinkUrl(link.url)
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    }
+  }
+  useEffect(() => () => {
+    cancelLinkClick()
+    clearLinkCursor()
+    clearDrag()
+    textPress.current = null
+  }, [pdf, props.mode, near])
   const region = props.selection?.kind === 'region' ? props.selection.fragments.find((f) => f.page === geometry.page) : undefined
   const selected = props.annotations.find((annotation) => annotation.id === props.selectedAnnotation)
   const pending = pendingMarkupAnnotations(props.annotations, paintedAnnotations)
@@ -221,6 +271,7 @@ export function Page(props: PageProps) {
     <div className="dsh-pdf-page-label">{t('reader.page')} {geometry.page}{props.ocrWords?.length ? ` · ${t('reader.ocrText')}` : ''}</div>
     <div ref={surface} data-pdf-page={geometry.page} className={`dsh-pdf-page dsh-pdf-mode-${props.mode}`}
       style={{ width, height }} onPointerDown={(event) => {
+        cancelLinkClick()
         if (!viewport || event.button !== 0) return
         if (props.mode === 'text') {
           if (event.target instanceof Element && event.target.closest('button,a,input,textarea')) return
@@ -228,12 +279,15 @@ export function Page(props: PageProps) {
           return
         }
         event.preventDefault()
+        clearDrag()
         event.currentTarget.setPointerCapture(event.pointerId)
+        dragPointer.current = { element: event.currentTarget, pointerId: event.pointerId }
         const start = pointer(event)
         setDrag({ ...start, endX: start.x, endY: start.y })
       }} onPointerMove={(event) => {
+        updateLinkCursor(event)
         if (textPress.current && Math.hypot(event.clientX - textPress.current.x, event.clientY - textPress.current.y) > 3) textPress.current.moved = true
-        if (!drag) return
+        if (props.mode === 'text' || !drag || dragPointer.current?.pointerId !== event.pointerId) return
         const end = pointer(event)
         setDrag({ ...drag, endX: end.x, endY: end.y })
       }} onPointerUp={(event) => {
@@ -247,18 +301,28 @@ export function Page(props: PageProps) {
             || (selection && !selection.isCollapsed)) return
           const point = pointer(event)
           const annotation = annotationAtPoint(props.annotations, viewport, [point.x, point.y])
-          if (annotation) props.onAnnotation(annotation.id)
+          const link = linkAtPoint(activeLinks, viewport, [point.x, point.y])
+          if (annotation && !(link && (event.ctrlKey || event.metaKey))) props.onAnnotation(annotation.id)
+          else if (link) {
+            const owner = pdf
+            // Wait for the second click so selecting a linked word never jumps first.
+            pendingLink.current = setTimeout(() => {
+              pendingLink.current = undefined
+              if (callbacks.current.pdf === owner && callbacks.current.mode === 'text') followLink(link)
+            }, 500)
+          }
           return
         }
-        if (!drag || !viewport) return
+        if (!drag || !viewport || dragPointer.current?.pointerId !== event.pointerId) return
         const end = pointer(event)
-        setDrag(null)
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+        clearDrag()
         if (props.mode === 'note') props.onNote(geometry.page, viewport.convertToPdfPoint(end.x, end.y))
         else if (Math.abs(end.x - drag.x) > 3 && Math.abs(end.y - drag.y) > 3) {
           props.onRegion(geometry.page, viewportRectToPdf(viewport, [Math.min(drag.x, end.x), Math.min(drag.y, end.y), Math.max(drag.x, end.x), Math.max(drag.y, end.y)]))
         }
-      }} onPointerCancel={() => { setDrag(null); textPress.current = null }}>
+      }} onPointerOver={updateLinkCursor} onPointerLeave={() => { clearLinkCursor(); if (textPress.current) textPress.current.moved = true }}
+      onDoubleClick={cancelLinkClick} onPointerCancel={() => { clearDrag(); textPress.current = null; cancelLinkClick(); clearLinkCursor() }}
+      onLostPointerCapture={(event) => { if (dragPointer.current?.pointerId === event.pointerId) clearDrag() }}>
       <div className="dsh-pdf-canvas" ref={canvasHost} />
       {near && viewport && pending.length > 0 && <svg className="dsh-pdf-annotation-overlay" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {pending.map((annotation) => <PendingMarkup key={annotation.id} annotation={annotation} viewport={viewport} />)}
@@ -269,14 +333,14 @@ export function Page(props: PageProps) {
         {props.ocrWords.filter((word) => word.pdf && !nativeBoxes.some((box) => overlapFraction(pdfRectToViewport(viewport, word.pdf!.rect), box) > 0.5))
           .map((word) => <OcrWord key={word.id} word={word} viewport={viewport} />)}
       </div>}
-      {viewport && props.mode === 'text' && <div className="dsh-pdf-links">
-        {links.map((link) => {
-          const style = screenRect(viewport, link.rect)
-          if (link.dest) return <button key={link.id} className="dsh-pdf-link" style={style} title={t('reader.internalLink')} aria-label={t('reader.internalLink')} onClick={() => props.onDestination(link.dest)} />
-          if (link.action && ['NextPage', 'PrevPage', 'FirstPage', 'LastPage'].includes(link.action)) return <button key={link.id} className="dsh-pdf-link" style={style} aria-label={t('reader.internalLink')} onClick={() => props.onNamedAction(link.action!)} />
-          if (link.url && /^(https?:|mailto:)/i.test(link.url)) return <a key={link.id} className="dsh-pdf-link" style={style} href={link.url} target="_blank" rel="noreferrer noopener" title={link.url} aria-label={link.url} />
-          return null
+      {near && viewport && props.mode === 'text' && <div className="dsh-pdf-keyboard-links">
+        {activeLinks.filter(actionableLink).map((link) => {
+          const url = safeLinkUrl(link.url)
+          if (url && !link.dest && !namedLinkAction(link.action)) return <a key={link.id} href={url} target="_blank" rel="noreferrer noopener">{url}</a>
+          return <button key={link.id} type="button" onClick={() => followLink(link)}>{t('reader.internalLink')}</button>
         })}
+      </div>}
+      {near && viewport && props.mode === 'text' && <div className="dsh-pdf-links">
         {props.annotations.filter((annotation) => annotation.subtype === 'Text' && annotation.rect && visibleAnnotation(annotation)).map((annotation) => <button
           key={annotation.id} className="dsh-pdf-note-marker" style={screenRect(viewport, annotation.rect!)}
           title={annotation.contents || t('reader.note')} aria-label={annotation.contents || t('reader.note')}
