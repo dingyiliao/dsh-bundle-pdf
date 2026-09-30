@@ -24,12 +24,17 @@ export const draftSchema = z.object({
   format: z.literal(1), sessionId: id, path,
   sourceHash: hash, sourceVersion: z.string().min(1).max(4096), contentVersion: id,
   // Absolute deployment ceiling. Per-operation volatile limits remain enforced by the file adapter.
-  original: z.string().min(1).max(357913944), revision: z.number().int().min(0),
-  /** Actual published working-copy bytes, including generated annotation timestamps. */
+  // Existing drafts carry original inline. New drafts store it once under baseKey.
+  original: z.string().min(1).max(357913944).optional(), baseKey: z.string().min(1).max(256).optional(),
+  revision: z.number().int().min(0),
+  /** Hash of materialized bytes persisted before a save for crash recovery. */
   renderedHash: hash.optional(),
   groups: z.array(z.array(operationSchema).max(1000)).max(500),
+  groupDates: z.array(z.string().datetime()).max(500).optional(),
   cursor: z.number().int().min(0).max(500),
-}).strict().refine(value => value.cursor <= value.groups.length)
+}).strict().refine(value => value.cursor <= value.groups.length
+  && (value.original !== undefined || value.baseKey !== undefined)
+  && (value.groupDates === undefined || value.groupDates.length === value.groups.length))
 export type DraftRecord = z.infer<typeof draftSchema>
 
 export const requestSchema = z.discriminatedUnion('action', [

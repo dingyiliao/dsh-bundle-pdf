@@ -7,20 +7,22 @@ export interface PdfConnection {
 }
 const rect = z.tuple([z.number(), z.number(), z.number(), z.number()])
 const color = z.tuple([z.number(), z.number(), z.number()])
+const wireAnnotation = z.object({
+  id: z.string(), page: z.number().int(), subtype: z.string(), rect: rect.optional(), quadPoints: z.array(z.number()).optional(),
+  color: color.optional(), opacity: z.number().optional(), contents: z.string().optional(), author: z.string().optional(),
+  createdAt: z.string().optional(), modifiedAt: z.string().optional(), flags: z.number(),
+  supported: z.boolean(), editable: z.boolean(), readOnlyReason: z.string().optional(),
+})
 const wireSnapshot = z.object({
   id: z.string(), path: z.string(), sourceVersion: z.string(), contentVersion: z.string(),
   revision: z.number().int(), dirty: z.boolean(), canUndo: z.boolean(), canRedo: z.boolean(), conflict: z.boolean(),
   warning: z.string().optional(), bytes: z.string().optional(), bytesHash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  baselineAnnotations: z.array(wireAnnotation).optional(),
   document: z.object({
     pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
     readOnly: z.boolean(), readOnlyReason: z.string().optional(),
     pages: z.array(z.object({ page: z.number().int(), mediaBox: rect.optional(), cropBox: rect, rotation: z.number(), userUnit: z.number() })),
-    annotations: z.array(z.object({
-      id: z.string(), page: z.number().int(), subtype: z.string(), rect: rect.optional(), quadPoints: z.array(z.number()).optional(),
-      color: color.optional(), opacity: z.number().optional(), contents: z.string().optional(), author: z.string().optional(),
-      createdAt: z.string().optional(), modifiedAt: z.string().optional(), flags: z.number(),
-      supported: z.boolean(), editable: z.boolean(), readOnlyReason: z.string().optional(),
-    })),
+    annotations: z.array(wireAnnotation),
   }).optional(),
 })
 const response = z.discriminatedUnion('ok', [
@@ -59,8 +61,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       bytes = new Uint8Array(binary.length)
       for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
     }
-    const document = previous && previousIdentity === identity ? previous.document
-      : wire.document && previous?.contentVersion === wire.contentVersion ? { ...wire.document, pages: previous.document.pages } : wire.document
+    // Annotation operations can change the projected metadata while retaining the
+    // original PDF bytes. Reuse the byte array, but never discard fresh metadata.
+    const document = wire.document
+      ? previous?.contentVersion === wire.contentVersion ? { ...wire.document, pages: previous.document.pages } : wire.document
+      : previous && previousIdentity === identity ? previous.document : undefined
     if (!document) throw new Error('PDF metadata snapshot is unavailable; reopen the PDF')
     const value: WorkspaceSnapshot = { ...wire, document, bytes }
     if (identity) byteIdentities.set(value.id, identity)

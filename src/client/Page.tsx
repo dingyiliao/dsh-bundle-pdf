@@ -1,9 +1,9 @@
-import React, { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist'
 import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type PageViewport, type ReaderSelection } from './reader-selection.js'
-import { annotationAtPoint, annotationPolygons, createAnnotationHitTester, createRectHitIndex, pendingMarkupAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
+import { annotationAtPoint, annotationPatchBoxes, annotationPolygons, createAnnotationHitTester, createRectHitIndex, markupOverlappingPatches, pendingMarkupAnnotations, staleNativeAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
 import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
 
 export interface PageProps {
@@ -13,7 +13,7 @@ export interface PageProps {
   rotation: number
   mode: 'text' | 'region' | 'note'
   annotations: PdfAnnotation[]
-  /** Host models belonging to this PDF proxy, before any newer edit finishes reopening. */
+  /** Annotation models baked into this immutable PDF.js document. */
   renderedAnnotations?: PdfAnnotation[]
   selectedAnnotation?: string
   selection: ReaderSelection | null
@@ -78,9 +78,11 @@ const OcrWord = memo(function OcrWord({ word, viewport }: { word: PdfOcrTextPart
 /** Canvas rendering is lazy. Text and native links share the identical PDF.js viewport. */
 export function Page(props: PageProps) {
   const { pdf, geometry, scale, rotation, t } = props
+  const patchClipId = `dsh-pdf-patch-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
   const outer = useRef<HTMLDivElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const canvasHost = useRef<HTMLDivElement>(null)
+  const patchHost = useRef<HTMLDivElement>(null)
   const textHost = useRef<HTMLDivElement>(null)
   const ocrHost = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
@@ -89,6 +91,9 @@ export function Page(props: PageProps) {
   const page = loaded?.page
   const pageOwner = loaded?.owner
   const [paintedAnnotations, setPaintedAnnotations] = useState<PdfAnnotation[]>([])
+  const [barePage, setBarePage] = useState<{
+    owner: PDFDocumentProxy; page: PDFPageProxy; scale: number; angle: number; ratio: number; canvas: HTMLCanvasElement
+  } | null>(null)
   const [links, setLinks] = useState<PdfLink[]>([])
   const [rendered, setRendered] = useState(false)
   const [nativeBoxes, setNativeBoxes] = useState<PdfRect[]>([])
@@ -106,6 +111,13 @@ export function Page(props: PageProps) {
   const baseHeight = (geometry.cropBox[3] - geometry.cropBox[1]) * geometry.userUnit
   const width = viewport?.width ?? (quarterTurn ? baseHeight : baseWidth) * scale
   const height = viewport?.height ?? (quarterTurn ? baseWidth : baseHeight) * scale
+  const sourceAnnotations = props.renderedAnnotations ?? noAnnotations
+  const staleNative = useMemo(() => staleNativeAnnotations(props.annotations, sourceAnnotations), [props.annotations, sourceAnnotations])
+  const patchBoxes = useMemo(() => viewport ? staleNative.flatMap(annotation => annotationPatchBoxes(annotation, viewport)) : [],
+    [staleNative, viewport])
+  // Preparing the clean page when an existing annotation is selected keeps the
+  // following delete/color action responsive without changing the visible page.
+  const needsBarePage = staleNative.length > 0 || sourceAnnotations.some(annotation => annotation.id === props.selectedAnnotation && annotation.editable)
 
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => setNear(entry.isIntersecting), { root: props.scrollRoot, rootMargin: '900px 0px' })
@@ -184,6 +196,45 @@ export function Page(props: PageProps) {
       if (canvas.parentNode !== host) { canvas.width = 0; canvas.height = 0 }
     }
   }, [loaded, pdf, page, scale, angle, near])
+
+  useEffect(() => {
+    if (!needsBarePage || !near || !page || pageOwner !== pdf) { setBarePage(null); return }
+    let active = true
+    const cleanViewport = page.getViewport({ scale, rotation: angle })
+    const ratio = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(24_000_000 / (cleanViewport.width * cleanViewport.height)))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.ceil(cleanViewport.width * ratio)
+    canvas.height = Math.ceil(cleanViewport.height * ratio)
+    const task = page.render({ canvas, viewport: cleanViewport, transform: [ratio, 0, 0, ratio, 0, 0], annotationMode: AnnotationMode.DISABLE })
+    void task.promise.then(() => {
+      if (active) setBarePage({ owner: pdf, page, scale, angle, ratio, canvas })
+    }).catch((error) => {
+      if (active && error?.name !== 'RenderingCancelledException') callbacks.current.onError(String(error))
+    })
+    return () => { active = false; task.cancel(); canvas.width = 0; canvas.height = 0 }
+  }, [needsBarePage, near, page, pageOwner, pdf, scale, angle])
+
+  useEffect(() => {
+    const host = patchHost.current
+    if (!host) return
+    releaseCanvases(host)
+    if (!near || !viewport || !staleNative.length || !barePage || barePage.owner !== pdf || barePage.page !== page
+      || barePage.scale !== scale || barePage.angle !== angle) return
+    for (const [left, top, right, bottom] of patchBoxes) {
+      const patch = document.createElement('canvas')
+      patch.width = Math.ceil((right - left) * barePage.ratio)
+      patch.height = Math.ceil((bottom - top) * barePage.ratio)
+      patch.style.position = 'absolute'
+      patch.style.left = `${left}px`
+      patch.style.top = `${top}px`
+      patch.style.width = `${right - left}px`
+      patch.style.height = `${bottom - top}px`
+      patch.getContext('2d')?.drawImage(barePage.canvas, left * barePage.ratio, top * barePage.ratio,
+        (right - left) * barePage.ratio, (bottom - top) * barePage.ratio, 0, 0, patch.width, patch.height)
+      host.append(patch)
+    }
+    return () => releaseCanvases(host)
+  }, [near, viewport, patchBoxes, staleNative.length, barePage, pdf, page, scale, angle])
 
   useEffect(() => {
     const host = canvasHost.current
@@ -294,6 +345,8 @@ export function Page(props: PageProps) {
     [props.annotations, props.selectedAnnotation])
   const pending = useMemo(() => near ? pendingMarkupAnnotations(props.annotations, paintedAnnotations) : noAnnotations,
     [near, props.annotations, paintedAnnotations])
+  const overlapping = useMemo(() => near && viewport ? markupOverlappingPatches(props.annotations, pending, patchBoxes, viewport) : noAnnotations,
+    [near, props.annotations, pending, patchBoxes, viewport])
   const noteMarkers = useMemo(() => near ? props.annotations.filter(annotation => annotation.subtype === 'Text'
     && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, props.annotations])
 
@@ -355,7 +408,13 @@ export function Page(props: PageProps) {
       onDoubleClick={cancelLinkClick} onPointerCancel={() => { clearDrag(); textPress.current = null; cancelLinkClick(); clearLinkCursor() }}
       onLostPointerCapture={(event) => { if (dragPointer.current?.pointerId === event.pointerId) clearDrag() }}>
       <div className="dsh-pdf-canvas" ref={canvasHost} />
-      {near && viewport && pending.length > 0 && <svg className="dsh-pdf-annotation-overlay" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <div className="dsh-pdf-annotation-patches" ref={patchHost} aria-hidden="true" />
+      {near && viewport && (pending.length > 0 || overlapping.length > 0) && <svg className="dsh-pdf-annotation-overlay" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+        {overlapping.length > 0 && <><defs><clipPath id={patchClipId}>
+          {patchBoxes.map(([left, top, right, bottom], index) => <rect key={index} x={left} y={top} width={right - left} height={bottom - top} />)}
+        </clipPath></defs><g clipPath={`url(#${patchClipId})`}>
+          {overlapping.map(annotation => <PendingMarkup key={annotation.id} annotation={annotation} viewport={viewport} />)}
+        </g></>}
         {pending.map((annotation) => <PendingMarkup key={annotation.id} annotation={annotation} viewport={viewport} />)}
       </svg>}
       {!rendered && <div className="dsh-pdf-page-loading" role="status">{t('reader.loadingPage')}</div>}

@@ -14,6 +14,10 @@ export interface PdfPageInfo {
 
 export interface PdfAnnotation {
   id: string
+  /** Host projection identity for multiple page entries referencing one PDF dictionary. */
+  sourceObjectId?: string
+  /** Host projection identity of an associated popup annotation, when present. */
+  popupObjectId?: string
   page: number
   subtype: string
   rect?: PdfRect

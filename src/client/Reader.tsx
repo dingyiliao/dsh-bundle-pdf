@@ -167,7 +167,7 @@ export function Reader(props: ReaderProps) {
       activePdf.current = { ...opened, bytes: snapshot.bytes }
       views.current.clear()
       setPdf(opened.document)
-      setPdfAnnotations(snapshot.document.annotations)
+      setPdfAnnotations(snapshot.baselineAnnotations ?? snapshot.document.annotations)
       const latest = state.current.snapshot
       displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
       // Give React a frame to cancel the previous canvas/text-layer work.
@@ -740,7 +740,11 @@ export function Reader(props: ReaderProps) {
     setScreenshotBusy(true)
     setError('')
     try {
-      const image = await capturePdfRegion(pdf, page, region.rect, { rotation, signal: controller.signal })
+      const image = await capturePdfRegion(pdf, page, region.rect, {
+        rotation, signal: controller.signal,
+        annotations: snapshot.document.annotations.filter(annotation => annotation.page === page),
+        sourceAnnotations: pdfAnnotations.filter(annotation => annotation.page === page),
+      })
       if (!controller.signal.aborted && ownerSequence.current === owner && state.current.snapshot?.id === snapshot.id && state.current.snapshot.revision === revision) {
         setScreenshot({ ...image, page, region: region.rect, revision })
       }

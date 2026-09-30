@@ -167,6 +167,15 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
       entry.model.readOnlyReason = 'reply-chain'
     }
   }
+  const objectIds = new Map<PDFDict, string>()
+  for (const entry of entries) {
+    if (!objectIds.has(entry.dictionary)) objectIds.set(entry.dictionary, `pdf-existing:${objectIds.size}`)
+  }
+  for (const entry of entries) {
+    entry.model.sourceObjectId = objectIds.get(entry.dictionary)
+    const popup = get(doc, entry.dictionary, 'Popup')
+    if (popup instanceof PDFDict) entry.model.popupObjectId = objectIds.get(popup)
+  }
   return entries
 }
 
@@ -249,11 +258,11 @@ function setContents(dictionary: PDFDict, contents: string) {
   dictionary.delete(PDFName.of('RC'))
 }
 
-function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation): AnnotationEntry {
+function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation, when: Date): AnnotationEntry {
   validateNew(annotation, doc)
   const page = doc.getPage(annotation.page - 1)
   const color = annotation.color ?? defaultColor
-  const timestamp = PDFString.fromDate(new Date())
+  const timestamp = PDFString.fromDate(when)
   const dictionary = doc.context.obj({
     Type: 'Annot', Subtype: annotation.subtype, P: page.ref,
     Rect: annotation.rect, C: color, F: 4,
@@ -276,7 +285,7 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation): Annotati
     model: {
       ...annotation, rect: [...annotation.rect], quadPoints: annotation.quadPoints?.slice(), color: [...color],
       createdAt: timestamp.decodeText(), modifiedAt: timestamp.decodeText(),
-      flags: 4, supported: true, editable: true,
+      flags: 4, supported: true, editable: true, sourceObjectId: `dsh-new:${annotation.id}`,
     },
   }
 }
@@ -305,8 +314,10 @@ function removeQueuedAnnotations(doc: PDFDocument, removals: Map<PDFArray, Set<P
 export async function applyPdfOperations(
   bytes: Uint8Array,
   operations: readonly PdfAnnotationOperation[],
+  operationDates?: readonly string[],
 ): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
   if (!Array.isArray(operations)) fail('An annotation operation list is required.')
+  if (operationDates && operationDates.length !== operations.length) fail('Operation dates do not match the operation list.')
   const doc = await parse(bytes)
   if (hasSignature(doc)) throw new PdfDocumentError('read-only', 'Digitally signed PDFs are read only in this version.')
   const initialEntries = annotationEntries(doc)
@@ -336,12 +347,15 @@ export async function applyPdfOperations(
       entry.dictionary.set(privateId, PDFHexString.fromText(entry.model.id))
     }
   }
-  for (const operation of operations) {
+  for (let operationIndex = 0; operationIndex < operations.length; operationIndex++) {
+    const operation = operations[operationIndex]
+    const when = operationDates ? new Date(operationDates[operationIndex]) : new Date()
+    if (!Number.isFinite(when.getTime())) fail('An operation has an invalid date.')
     if (!operation || !['add', 'update', 'delete'].includes(operation.type)) fail('Unsupported annotation operation.')
     if (operation.type === 'add') {
       const existing = entries.get(operation.annotation?.id)
       if (existing && !removals.get(existing.array)?.has(existing.dictionary)) fail('Annotation ID already exists.')
-      const added = addAnnotation(doc, operation.annotation)
+      const added = addAnnotation(doc, operation.annotation, when)
       entries.set(added.model.id, added)
       byDictionary.set(added.dictionary, [added])
       appearances.set(added.dictionary, added)
@@ -362,7 +376,9 @@ export async function applyPdfOperations(
           if (associated.model.subtype === 'Popup') queueRemoval(associated)
         }
       }
-      queueRemoval(entry)
+      // A dictionary may be referenced from several Annots arrays. Removing
+      // only the selected entry would leave the same visible annotation behind.
+      for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) queueRemoval(alias)
       continue
     }
     const patch = operation.patch
@@ -384,7 +400,7 @@ export async function applyPdfOperations(
     }
     // A modified direct dictionary gets a persistent ID before array positions can change.
     if (!(entry.value instanceof PDFRef)) entry.dictionary.set(privateId, PDFHexString.fromText(entry.model.id))
-    const timestamp = PDFString.fromDate(new Date())
+    const timestamp = PDFString.fromDate(when)
     entry.dictionary.set(PDFName.of('M'), timestamp)
     for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.modifiedAt = timestamp.decodeText()
   }

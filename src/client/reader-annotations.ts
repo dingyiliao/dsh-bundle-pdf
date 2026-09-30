@@ -146,3 +146,108 @@ export function pendingMarkupAnnotations(current: readonly PdfAnnotation[], pain
       || !sameNumbers(prior.color, annotation.color)
   })
 }
+
+/** Native appearances are immutable inside a PDF.js document. Identify only the old
+ * appearances that an operation removed or changed; additions need no repair. */
+export function staleNativeAnnotations(current: readonly PdfAnnotation[], source: readonly PdfAnnotation[]): PdfAnnotation[] {
+  const next = new Map(current.map((annotation) => [annotation.id, annotation]))
+  return source.filter((prior) => {
+    if (!prior.supported || !visibleAnnotation(prior)) return false
+    const annotation = next.get(prior.id)
+    if (!annotation || !visibleAnnotation(annotation)) return true
+    return annotation.subtype !== prior.subtype || annotation.opacity !== prior.opacity || annotation.flags !== prior.flags
+      || !sameNumbers(annotation.rect, prior.rect) || !sameNumbers(annotation.quadPoints, prior.quadPoints)
+      || !sameNumbers(annotation.color, prior.color)
+  })
+}
+
+/** Each quad is repaired separately, preserving unrelated native appearances elsewhere. */
+export function annotationPatchBoxes(annotation: PdfAnnotation, viewport: PageViewport): [number, number, number, number][] {
+  const polygons = annotationPolygons(annotation, viewport)
+  const pageWidth = viewport.width, pageHeight = viewport.height
+  return polygons.map((polygon) => {
+    const xs = polygon.map(([x]) => x), ys = polygon.map(([, y]) => y)
+    // PDF appearance strokes can extend slightly past the annotation geometry.
+    const box: [number, number, number, number] = [
+      Math.max(0, Math.floor(Math.min(...xs) - 2)), Math.max(0, Math.floor(Math.min(...ys) - 2)),
+      Math.min(pageWidth, Math.ceil(Math.max(...xs) + 2)), Math.min(pageHeight, Math.ceil(Math.max(...ys) + 2)),
+    ]
+    return box
+  }).filter(([left, top, right, bottom]) => right > left && bottom > top)
+}
+
+/** A repaired old appearance can cover a different, unchanged native mark. Draw
+ * just that mark's intersection with the repaired boxes back into the overlay. */
+export function markupOverlappingPatches(
+  current: readonly PdfAnnotation[], pending: readonly PdfAnnotation[],
+  patches: readonly (readonly [number, number, number, number])[], viewport: PageViewport,
+): PdfAnnotation[] {
+  if (!patches.length) return []
+  const pendingIds = new Set(pending.map(annotation => annotation.id))
+  return current.filter(annotation => markupTypes.has(annotation.subtype) && visibleAnnotation(annotation)
+    && !pendingIds.has(annotation.id) && annotationPatchBoxes(annotation, viewport).some(box => patches.some(patch =>
+      box[0] < patch[2] && box[2] > patch[0] && box[1] < patch[3] && box[3] > patch[1])))
+}
+
+/** Paint an SVG-equivalent edit preview into a cropped screenshot canvas. */
+export function paintMarkupAnnotations(
+  context: CanvasRenderingContext2D, annotations: readonly PdfAnnotation[], viewport: PageViewport,
+  offsetX = 0, offsetY = 0,
+): void {
+  context.save()
+  context.translate(-offsetX, -offsetY)
+  for (const annotation of annotations) {
+    if (!markupTypes.has(annotation.subtype) || !visibleAnnotation(annotation)) continue
+    const color = `rgb(${(annotation.color ?? [1, 0.85, 0]).map(value => Math.round(value * 255)).join(',')})`
+    const polygons = annotationPolygons(annotation, viewport)
+    context.save()
+    context.strokeStyle = color
+    context.fillStyle = color
+    context.globalAlpha = annotation.opacity ?? (annotation.subtype === 'Highlight' ? 0.4 : 1)
+    if (annotation.subtype === 'Highlight') context.globalCompositeOperation = 'multiply'
+    for (const points of polygons) {
+      if (annotation.subtype === 'Highlight') {
+        context.beginPath()
+        points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y))
+        context.closePath()
+        context.fill()
+      } else {
+        const ratio = annotation.subtype === 'StrikeOut' ? 0.5 : 0.06
+        const interpolate = (bottom: AnnotationPoint, top: AnnotationPoint): AnnotationPoint =>
+          [bottom[0] + (top[0] - bottom[0]) * ratio, bottom[1] + (top[1] - bottom[1]) * ratio]
+        const first = interpolate(points[3], points[0]), second = interpolate(points[2], points[1])
+        context.lineWidth = Math.max(0.75, Math.hypot(points[0][0] - points[3][0], points[0][1] - points[3][1]) * 0.065)
+        context.beginPath()
+        context.moveTo(first[0], first[1])
+        context.lineTo(second[0], second[1])
+        context.stroke()
+      }
+    }
+    context.restore()
+  }
+  context.restore()
+}
+
+export function paintNoteMarkers(
+  context: CanvasRenderingContext2D, annotations: readonly PdfAnnotation[], viewport: PageViewport,
+  offsetX = 0, offsetY = 0,
+): void {
+  context.save()
+  context.translate(-offsetX, -offsetY)
+  for (const annotation of annotations) {
+    if (annotation.subtype !== 'Text' || !annotation.rect || !visibleAnnotation(annotation)) continue
+    const box = annotationPatchBoxes(annotation, viewport)[0]
+    if (!box) continue
+    const [left, top, right, bottom] = box
+    const width = Math.max(12, right - left - 4), height = Math.max(12, bottom - top - 4)
+    context.fillStyle = '#ffec84'
+    context.strokeStyle = '#bc9400'
+    context.lineWidth = 1
+    context.fillRect(left + 2, top + 2, width, height)
+    context.strokeRect(left + 2.5, top + 2.5, width - 1, height - 1)
+    context.fillStyle = '#5d4900'
+    context.font = '14px sans-serif'
+    context.fillText('▤', left + 3, top + Math.min(height - 1, 14))
+  }
+  context.restore()
+}

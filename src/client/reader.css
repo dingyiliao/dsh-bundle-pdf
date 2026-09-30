@@ -58,6 +58,7 @@
 .dsh-pdf-page { position: relative; margin: 0 auto; background: white; box-shadow: var(--dsw-elevation-prominent); isolation: isolate; }
 .dsh-pdf-canvas { position: absolute; inset: 0; pointer-events: none; }
 .dsh-pdf-canvas canvas { display: block; }
+.dsh-pdf-annotation-patches { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
 .dsh-pdf-page-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dsw-alias-label-document-preview); font-size: 12px; pointer-events: none; }
 .dsh-pdf-empty { display: grid; place-items: center; min-height: 220px; color: var(--pdf-muted); padding: 25px; }
 .dsh-pdf-text-layer {

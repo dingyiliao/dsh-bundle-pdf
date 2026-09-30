@@ -1,4 +1,4 @@
-import type { PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
+import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
 
 export interface PdfSettings {
   ocrEngine: string
@@ -33,6 +33,8 @@ export interface WorkspaceSnapshot {
   conflict: boolean
   warning?: string
   document: PdfDocumentInfo
+  /** Native annotations present in bytes before projecting unsaved operations. */
+  baselineAnnotations?: PdfAnnotation[]
   bytes: Uint8Array
 }
 
