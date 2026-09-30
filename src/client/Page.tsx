@@ -5,6 +5,7 @@ import type { PdfOcrTextPart } from '../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type PageViewport, type ReaderSelection } from './reader-selection.js'
 import { annotationAtPoint, annotationPatchBoxes, annotationPolygons, createAnnotationHitTester, createRectHitIndex, markupOverlappingPatches, pendingMarkupAnnotations, staleNativeAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
 import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
+import { leasePageResources } from './experiment/page-resource-lease.js'
 
 export interface PageProps {
   pdf: PDFDocumentProxy
@@ -18,6 +19,8 @@ export interface PageProps {
   selectedAnnotation?: string
   selection: ReaderSelection | null
   ocrWords?: PdfOcrTextPart[]
+  /** Keep selectable text and its viewport while a selection spans offscreen pages. */
+  retainTextLayer?: boolean
   scrollRoot: HTMLElement | null
   t(key: string): string
   onView(page: number, view: PageView | null): void
@@ -86,6 +89,7 @@ export function Page(props: PageProps) {
   const textHost = useRef<HTMLDivElement>(null)
   const ocrHost = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
+  const textActive = near || !!props.retainTextLayer
   const [loaded, setLoaded] = useState<LoadedPage | null>(null)
   const loadedCache = useRef<LoadedPage | null>(null)
   const page = loaded?.page
@@ -126,16 +130,18 @@ export function Page(props: PageProps) {
   }, [props.scrollRoot])
 
   useEffect(() => {
-    if (!near) return
+    if (!textActive) return
     const cached = loadedCache.current
     if (cached?.owner === pdf && cached.page.pageNumber === geometry.page && cached.links) {
       setLinks(cached.links)
-      return
+      return leasePageResources(cached.page)
     }
     let active = true
+    let releasePage: (() => void) | undefined
     const model = callbacks.current.renderedAnnotations ?? callbacks.current.annotations
     void pdf.getPage(geometry.page).then(async (loaded) => {
       if (!active) return
+      releasePage = leasePageResources(loaded)
       const record: LoadedPage = { owner: pdf, page: loaded, annotations: model }
       loadedCache.current = record
       setLoaded(record)
@@ -147,15 +153,15 @@ export function Page(props: PageProps) {
       record.links = nativeLinks
       if (active) setLinks(nativeLinks)
     }).catch((error) => { if (active) callbacks.current.onError(String(error)) })
-    return () => { active = false }
-  }, [pdf, geometry.page, near])
+    return () => { active = false; releasePage?.() }
+  }, [pdf, geometry.page, textActive])
 
   useEffect(() => {
-    if (!near || !page || pageOwner !== pdf || !surface.current) return
+    if (!textActive || !page || pageOwner !== pdf || !surface.current) return
     const nextViewport = page.getViewport({ scale, rotation: angle })
     callbacks.current.onView(geometry.page, { element: surface.current, page, viewport: nextViewport })
     return () => callbacks.current.onView(geometry.page, null)
-  }, [near, pageOwner, pdf, page, scale, angle, geometry.page])
+  }, [textActive, pageOwner, pdf, page, scale, angle, geometry.page])
 
   useEffect(() => {
     if (!page || !loaded || loaded.owner !== pdf || !canvasHost.current || !near) return
@@ -248,7 +254,7 @@ export function Page(props: PageProps) {
   }, [near])
 
   useEffect(() => {
-    if (!near) { setNativeBoxes([]); return }
+    if (!textActive) { setNativeBoxes([]); return }
     if (!page || pageOwner !== pdf || !textHost.current) return
     const host = textHost.current
     host.replaceChildren()
@@ -265,7 +271,7 @@ export function Page(props: PageProps) {
       }))
     }).catch((error) => { if (active && error?.name !== 'AbortException') callbacks.current.onError(String(error)) })
     return () => { active = false; layer.cancel(); host.replaceChildren() }
-  }, [near, pageOwner, pdf, page, scale, angle, geometry.userUnit])
+  }, [textActive, pageOwner, pdf, page, scale, angle, geometry.userUnit])
 
   const pointer = (event: React.PointerEvent) => {
     const bounds = surface.current!.getBoundingClientRect()
@@ -276,16 +282,16 @@ export function Page(props: PageProps) {
   const hitAnnotation = useMemo(() => near && viewport ? createAnnotationHitTester(props.annotations, viewport) : undefined,
     [near, props.annotations, viewport])
   const keyboardLinks = useMemo(() => activeLinks.filter(actionableLink), [activeLinks])
-  const nativeIndex = useMemo(() => createRectHitIndex(near ? nativeBoxes.map(rect => ({ rect, value: rect })) : []), [near, nativeBoxes])
+  const nativeIndex = useMemo(() => createRectHitIndex(textActive ? nativeBoxes.map(rect => ({ rect, value: rect })) : []), [textActive, nativeBoxes])
   const visibleOcrWords = useMemo(() => {
-    if (!near || !viewport || !props.ocrWords?.length) return noOcrWords
+    if (!textActive || !viewport || !props.ocrWords?.length) return noOcrWords
     return props.ocrWords.filter(word => {
       if (!word.pdf) return false
       if (!nativeBoxes.length) return true
       const rect = pdfRectToViewport(viewport, word.pdf.rect)
       return !nativeIndex.intersect(rect).some(box => overlapFraction(rect, box) > 0.5)
     })
-  }, [near, viewport, props.ocrWords, nativeBoxes, nativeIndex])
+  }, [textActive, viewport, props.ocrWords, nativeBoxes, nativeIndex])
   useLayoutEffect(() => {
     const host = ocrHost.current
     if (!host) return
@@ -419,7 +425,7 @@ export function Page(props: PageProps) {
       </svg>}
       {!rendered && <div className="dsh-pdf-page-loading" role="status">{t('reader.loadingPage')}</div>}
       <div ref={textHost} className="textLayer dsh-pdf-text-layer" data-pdf-text="active" />
-      {near && !!visibleOcrWords.length && viewport && <div ref={ocrHost} className="dsh-pdf-ocr-layer" data-pdf-text="active">
+      {textActive && !!visibleOcrWords.length && viewport && <div ref={ocrHost} className="dsh-pdf-ocr-layer" data-pdf-text="active">
         {visibleOcrWords.map((word) => <OcrWord key={word.id} word={word} viewport={viewport} />)}
       </div>}
       {near && viewport && props.mode === 'text' && <div className="dsh-pdf-keyboard-links">

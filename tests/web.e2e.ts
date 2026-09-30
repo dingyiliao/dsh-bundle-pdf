@@ -18,6 +18,8 @@ const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
 const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'session.v3.jsonl')
 const EXPECTED = join(ROOT, 'tests', 'expected', 'web-pdf')
 const FILE_NAME = 'reader-e2e.pdf'
+const LARGE_FILE_NAME = 'reader-many-pages-e2e.pdf'
+const LARGE_PAGE_COUNT = 128
 const NOTE = 'Saved through the PDF reader browser UI'
 
 async function launchBrowser(): Promise<Browser> {
@@ -36,6 +38,19 @@ async function sourcePdf(): Promise<Uint8Array> {
   for (const label of ['Browser PDF page one', 'Browser PDF page two']) {
     const page = document.addPage([400, 560])
     page.drawText(label, { x: 50, y: 490, size: 18, font })
+  }
+  return document.save({ useObjectStreams: false })
+}
+
+/** Keep the large fixture small on disk while exercising a distant page. */
+async function manyPageSourcePdf(): Promise<Uint8Array> {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  for (let number = 1; number <= LARGE_PAGE_COUNT; number++) {
+    const page = document.addPage([400, 560])
+    if (number === 1 || number === 2 || number === LARGE_PAGE_COUNT) {
+      page.drawText(`Browser PDF page ${number}`, { x: 50, y: 490, size: 18, font })
+    }
   }
   return document.save({ useObjectStreams: false })
 }
@@ -171,3 +186,104 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await scaffold.close()
   }
 }, 120_000)
+
+it('keeps active pages bounded while navigating to a distant page through the installed Web plugin', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+  try {
+    const entry = [...scaffold.ctx.loader.entries()].find(row => row.options.name === '@local/dsh-pdf')
+    expect(entry?.fiber?.state).toBe(2)
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-many-pages-web-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF many pages test' })
+    await writeFile(join(scaffold.workspaceCwd, LARGE_FILE_NAME), await manyPageSourcePdf())
+
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-reader-many-pages-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await page.getByRole('treeitem').filter({ hasText: 'PDF many pages test' }).click()
+    const column = page.locator('[data-rightbar-col]')
+    await page.locator('[data-sidebar-right-expand]').click()
+    await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+    await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+    await column.locator('[data-files-reload]').click()
+    await column.locator('[data-files-entry="file"]').getByRole('button', { name: LARGE_FILE_NAME, exact: true }).click()
+
+    const reader = page.locator('.dsh-pdf-reader')
+    await reader.waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator('[data-pdf-page="1"] canvas').waitFor({ state: 'visible', timeout: 20_000 }).catch(async failure => {
+      throw new Error(`${String(failure)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
+    })
+    await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
+      .toContain('Browser PDF page 1')
+    expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
+
+    const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
+    const pageInput = toolbar.getByRole('textbox', { name: 'Page' })
+    await pageInput.fill(String(LARGE_PAGE_COUNT))
+    await pageInput.press('Enter')
+    await reader.locator(`[data-pdf-page="${LARGE_PAGE_COUNT}"] canvas`).waitFor({ state: 'visible', timeout: 20_000 })
+    await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
+      .toContain(`Browser PDF page ${LARGE_PAGE_COUNT}`)
+    expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
+    expect(await reader.locator('[data-pdf-page="1"]').count()).toBe(0)
+    await toolbar.getByRole('button', { name: '← Back', exact: true }).click()
+    await reader.locator('[data-pdf-page="1"] canvas').waitFor({ state: 'visible', timeout: 20_000 })
+    await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
+      .toContain('Browser PDF page 1')
+    expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
+
+    // Select across two real PDF.js text layers. A DOM Range avoids relying on
+    // platform-specific drag speed while exercising Reader's keyup capture path.
+    await expect.poll(() => reader.locator('[data-pdf-page="2"] [data-pdf-text="active"]').textContent())
+      .toContain('Browser PDF page 2')
+    const selectedText = await reader.evaluate(element => {
+      const first = element.querySelector('[data-pdf-page="1"] .dsh-pdf-text-layer span')?.firstChild
+      const second = element.querySelector('[data-pdf-page="2"] .dsh-pdf-text-layer span')?.firstChild
+      const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')
+      if (!first || !second || !scroll) throw new Error('Both PDF text layers must be mounted')
+      const range = document.createRange()
+      range.setStart(first, 0)
+      range.setEnd(second, second.textContent?.length ?? 0)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      scroll.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
+      return selection?.toString() ?? ''
+    })
+    expect(selectedText).toContain('Browser PDF page 1')
+    expect(selectedText).toContain('Browser PDF page 2')
+    const selectionToolbar = reader.getByRole('toolbar', { name: 'Selected text actions' })
+    await selectionToolbar.waitFor({ state: 'visible' })
+
+    // The selected pages leave the viewport but keep their live text nodes and
+    // native range; otherwise a cross-page selection is lost on virtualization.
+    await reader.locator('.dsh-pdf-scroll').evaluate(scroll => {
+      const destination = scroll.querySelector<HTMLElement>(':scope > [data-page-number="6"]')
+      if (!destination) throw new Error('Missing page-six scroll slot')
+      scroll.scrollTop = destination.offsetTop
+    })
+    await reader.locator('[data-pdf-page="6"]').waitFor({ state: 'attached' })
+    await expect.poll(() => reader.locator('[data-pdf-page="1"]').evaluate(element => {
+      const viewport = element.closest('.dsh-pdf-scroll')!.getBoundingClientRect()
+      return element.getBoundingClientRect().bottom < viewport.top
+    })).toBe(true)
+    expect(await reader.locator('[data-pdf-page="1"] [data-pdf-text="active"]').textContent())
+      .toContain('Browser PDF page 1')
+    expect(await reader.locator('[data-pdf-page="2"] [data-pdf-text="active"]').textContent())
+      .toContain('Browser PDF page 2')
+    const preservedText = await page.evaluate(() => window.getSelection()?.toString() ?? '')
+    expect(preservedText).toContain('Browser PDF page 1')
+    expect(preservedText).toContain('Browser PDF page 2')
+    expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
+
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await browser?.close()
+    await scaffold.close()
+  }
+}, 180_000)
