@@ -82,8 +82,13 @@ test('saves all supported annotations with Unicode comments and explicit native 
   for (let index = 4; index < array.size(); index++) {
     assert.ok(array.lookup(index, PDFDict).lookup(PDFName.of('AP'), PDFDict).get(PDFName.of('N')) instanceof PDFRef)
   }
-  assert.equal(output.context.lookup(unknown).toString(), source.context.lookup(unknown).toString())
-  assert.equal(output.context.lookup(link).toString(), source.context.lookup(link).toString())
+  const outputUnknown = output.context.lookup(unknown)
+  const sourceUnknown = source.context.lookup(unknown)
+  const outputLink = output.context.lookup(link)
+  const sourceLink = source.context.lookup(link)
+  assert.ok(outputUnknown && sourceUnknown && outputLink && sourceLink)
+  assert.equal(outputUnknown.toString(), sourceUnknown.toString())
+  assert.equal(outputLink.toString(), sourceLink.toString())
   assert.equal(output.catalog.lookup(PDFName.of('CustomData'), PDFDict).toString(), source.catalog.lookup(PDFName.of('CustomData'), PDFDict).toString())
   assert.equal(output.getPage(0).node.get(PDFName.of('Contents'))!.toString(), source.getPage(0).node.get(PDFName.of('Contents'))!.toString())
   assert.equal(output.getPageCount(), 2)

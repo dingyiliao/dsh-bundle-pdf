@@ -1,0 +1,6 @@
+- complementary:
+  - heading "Notes" [level=3]
+  - paragraph: Notes are native PDF annotations. Create a note with Tools → Note or from selected text.
+  - 'button "Page 1 · Note Saved through the PDF reader browser UI Created: {{date}}, {{clock}} Modified: {{date}}, {{clock}}"':
+    - strong: Page 1 · Note
+    - text: "Saved through the PDF reader browser UI Created: {{date}}, {{clock}} Modified: {{date}}, {{clock}}"

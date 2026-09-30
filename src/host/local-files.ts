@@ -51,21 +51,27 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
   }
   maxBytes()
   const queues = new Map<string, Promise<unknown>>()
-  const local = options.isLocalProvider ?? defaultLocalProvider
+  const local = options.isLocalProvider
   const roots = options.writableRoots ?? defaultWritableRoots
 
   async function locate(agent: PdfAgent, path: string, signal?: AbortSignal) {
     signal?.throwIfAborted()
-    if (!await local(ctx.fs)) fail('PDF_PROVIDER_UNSUPPORTED', 'This PDF operation requires the local filesystem provider')
+    if (local && !await local(ctx.fs)) fail('PDF_PROVIDER_UNSUPPORTED', 'This PDF operation requires the local filesystem provider')
     const policy = ctx.sandboxPolicy.resolve({ session: agent.session })
     if (!isAbsolute(policy.workspaceRoot)) fail('PDF_POLICY_UNAVAILABLE', 'The session has no absolute workspace root')
     if (typeof path !== 'string' || !path.trim() || path.includes('\0')) fail('PDF_INVALID_PATH', 'Invalid PDF path')
     const requestedPath = resolve(policy.workspaceRoot, path)
+    // The FS contract exposes this mapping only when its execution world shares
+    // the Host's path. Class identity is unreliable for separately installed plugins.
+    const mappedRequest = ctx.fs.processPathFromHostPath(requestedPath)
+    if (!mappedRequest || !isAbsolute(mappedRequest) || pathKey(mappedRequest) !== pathKey(requestedPath)) {
+      fail('PDF_PROVIDER_UNSUPPORTED', 'This PDF operation requires the local filesystem provider')
+    }
     await inspectPath(requestedPath, true)
     const target = await ctx.fs.resolve(path, { cwd: policy.workspaceRoot, signal })
     const hostPath = ctx.fs.processPath(target)
-    if (!isAbsolute(hostPath) || ctx.fs.processPathFromHostPath(hostPath) === undefined
-      || pathKey(ctx.fs.processPathFromHostPath(hostPath)!) !== pathKey(hostPath)) {
+    const mappedHostPath = isAbsolute(hostPath) ? ctx.fs.processPathFromHostPath(hostPath) : undefined
+    if (!mappedHostPath || !isAbsolute(mappedHostPath) || pathKey(mappedHostPath) !== pathKey(hostPath)) {
       fail('PDF_PROVIDER_UNSUPPORTED', 'The filesystem does not share this path with the PDF Host')
     }
     await inspectPath(hostPath, true)
@@ -228,11 +234,6 @@ function hash(bytes: Uint8Array): string { return `sha256:${createHash('sha256')
 function codeOf(error: unknown): unknown { return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined }
 function fail(code: string, message: string): never { throw new PdfFileError(code, message) }
 
-async function defaultLocalProvider(provider: FsProvider): Promise<boolean> {
-  const packageName = '@deepseek-ai/dsh-fs-local'
-  const module = await import(packageName)
-  return provider instanceof module.LocalFileSystem
-}
 async function defaultWritableRoots(policy: PdfFilePolicy): Promise<readonly string[]> {
   const packageName = '@deepseek-ai/dsh-sandbox'
   const module = await import(packageName)

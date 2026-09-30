@@ -56,7 +56,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   }
 
   function baselineKey(record: WorkspaceRecord): string {
-    return `base:${recordKey(record.sessionId, record.path)}:${record.sourceHash.slice(7)}`
+    return `base_${recordKey(record.sessionId, record.path)}_${record.sourceHash.slice(7)}`
   }
 
   function operationsThrough(record: WorkspaceRecord): { operations: PdfAnnotationOperation[]; dates: string[] } {
