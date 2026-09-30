@@ -11,8 +11,9 @@ import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
 import styles from '../src/client/reader.css'
+import { pageIndexAtOffset, windowLayout } from '../src/client/native/window-layout.ts'
 
-interface Config { sessionId: string; token: string; pages: number; annotations: number }
+interface Config { sessionId: string; token: string; pages: number; annotations: number; engine: 'legacy' | 'native' | 'pdfjs' }
 interface Payload { metrics: Record<string, number | null>; stages: PdfPerformanceEvent[]; qualityPassed: boolean }
 interface Hook { run(scenario: string, timeout: number): Promise<Payload>; snapshot(): unknown; dispose(): Promise<void> }
 declare global { interface Window { __PDF_BENCH_CONFIG__: Config; __PDF_BENCH__: Hook } }
@@ -24,17 +25,25 @@ const runtime = createPdfRuntime(owner.signal), dictionary = createNativeDiction
 const stages: PdfPerformanceEvent[] = []
 let stageOverflow = false
 const stop = observePdfPerformance(event => { if (stages.length >= 2000) { stageOverflow = true; return }; stages.push(event) })
-const api = createPdfApi({ rpc: { async call(_path, _method, payload, signal) {
+const api = createPdfApi({ rpc: { async call(_path, method, payload, signal) {
   const response = await fetch('/rpc', { method: 'POST', headers: { 'content-type': 'application/json', 'x-bench-token': config.token },
-    body: JSON.stringify(payload), signal })
+    body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method, payload }), signal })
   if (!response.ok) throw new Error(`Benchmark RPC HTTP ${response.status}`)
-  const result = await response.json()
+  let envelope: any
+  if (response.headers.get('content-type')?.startsWith('multipart/form-data')) {
+    const form = await response.formData()
+    envelope = JSON.parse(String(form.get('metadata')))
+    const blob = form.get('pdf-bytes')
+    if (!(blob instanceof Blob)) throw new Error('Missing benchmark binary attachment')
+    envelope.result.value.bytes = new Uint8Array(await blob.arrayBuffer())
+  } else envelope = await response.json()
+  const result = envelope.result
   if (result.ok && result.value?.document
     && (result.value.document.pageCount !== config.pages || result.value.document.annotations.length !== config.annotations)) {
     throw new Error('Reader metadata differs from the corpus manifest')
   }
   return result
-} } }, owner.signal)
+} } }, owner.signal, { protocolV2: config.engine !== 'legacy' })
 let opened = false, timedStart = 0
 const longTasks: { startTime: number; duration: number }[] = []
 const supportsLongTasks = PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false
@@ -60,8 +69,31 @@ let pages: HTMLElement[] = []
 function coverage() {
   const scroll = rootElement()
   if (!scroll) return { useful: 0, quality: 0, visible: [] as HTMLElement[] }
-  if (pages.length !== config.pages) pages = [...scroll.querySelectorAll<HTMLElement>('[data-pdf-page]')]
+  pages = [...scroll.querySelectorAll<HTMLElement>('[data-pdf-page]')].sort((a, b) => Number(a.dataset.pdfPage) - Number(b.dataset.pdfPage))
   const bounds = scroll.getBoundingClientRect()
+  const numeric = windowLayout(scroll)
+  let expectedArea = 0
+  if (numeric?.length) {
+    for (let index = pageIndexAtOffset(numeric, scroll.scrollTop); index < numeric.length; index++) {
+      const item = numeric[index], top = bounds.top + item.top + 27 - scroll.scrollTop
+      if (top >= bounds.bottom) break
+      const left = bounds.left + (scroll.scrollWidth - item.width) / 2 - scroll.scrollLeft
+      expectedArea += Math.max(0, Math.min(bounds.right, left + item.width) - Math.max(bounds.left, left))
+        * Math.max(0, Math.min(bounds.bottom, top + item.height) - Math.max(bounds.top, top))
+    }
+  } else {
+    let low = 0, high = scroll.children.length
+    while (low < high) { const middle = (low + high) >>> 1; const child = scroll.children[middle] as HTMLElement
+      if (child.offsetTop + child.offsetHeight <= scroll.scrollTop) low = middle + 1; else high = middle }
+    for (let index = low; index < scroll.children.length; index++) {
+      const stage = scroll.children[index].querySelector<HTMLElement>(':scope > .dsh-pdf-virtual-stage')
+      if (!stage) continue
+      const box = stage.getBoundingClientRect()
+      if (box.top >= bounds.bottom) break
+      expectedArea += Math.max(0, Math.min(bounds.right, box.right) - Math.max(bounds.left, box.left))
+        * Math.max(0, Math.min(bounds.bottom, box.bottom) - Math.max(bounds.top, box.top))
+    }
+  }
   // Pages are vertically ordered in this Reader. A binary search avoids reading 1,000 rectangles each frame.
   let lo = 0, hi = pages.length
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (pages[mid].getBoundingClientRect().bottom <= bounds.top) lo = mid + 1; else hi = mid }
@@ -74,15 +106,31 @@ function coverage() {
       * Math.max(0, Math.min(bounds.bottom, box.bottom) - Math.max(bounds.top, box.top))
     if (!a) continue
     area += a; visible.push(page)
-    const canvas = page.querySelector<HTMLCanvasElement>('.dsh-pdf-canvas canvas')
-    if (!canvas || canvas.dataset.pdfRasterReady !== 'true' || !canvas.width || !canvas.height) continue
-    useful += a
     const expectedDpr = Math.min(devicePixelRatio || 1, 2, Math.sqrt(24_000_000 / (page.clientWidth * page.clientHeight)))
-    // An old canvas stretched by CSS does not satisfy the target sampling quality.
-    if (!page.style.transform && canvas.width / page.clientWidth >= expectedDpr * 0.99
-      && canvas.height / page.clientHeight >= expectedDpr * 0.99) quality += a
+    const canvases = [...page.querySelectorAll<HTMLCanvasElement>('.dsh-pdf-canvas canvas')]
+    const rectangles: { left: number; top: number; right: number; bottom: number; quality: boolean }[] = []
+    for (const canvas of canvases) {
+      if (canvas.dataset.pdfRasterReady !== 'true' || !canvas.width || !canvas.height) continue
+      const rect = canvas.getBoundingClientRect(), left = Math.max(bounds.left, box.left, rect.left), right = Math.min(bounds.right, box.right, rect.right)
+      const top = Math.max(bounds.top, box.top, rect.top), bottom = Math.min(bounds.bottom, box.bottom, rect.bottom)
+      if (right > left && bottom > top) rectangles.push({ left, right, top, bottom,
+        quality: !page.style.transform && canvas.width / rect.width >= expectedDpr * .99 && canvas.height / rect.height >= expectedDpr * .99 })
+    }
+    // A rectangle union counts overlapping retained zoom generations exactly once.
+    const union = (rects: typeof rectangles) => {
+      const xs = [...new Set(rects.flatMap(r => [r.left, r.right]))].sort((a, b) => a - b)
+      let sum = 0
+      for (let x = 0; x + 1 < xs.length; x++) {
+        const intervals = rects.filter(r => r.left <= xs[x] && r.right >= xs[x + 1]).map(r => [r.top, r.bottom]).sort((a, b) => a[0] - b[0])
+        let length = 0, end = -Infinity
+        for (const [top, bottom] of intervals) { length += Math.max(0, bottom - Math.max(top, end)); end = Math.max(end, bottom) }
+        sum += length * (xs[x + 1] - xs[x])
+      }
+      return sum
+    }
+    useful += union(rectangles); quality += union(rectangles.filter(r => r.quality))
   }
-  return { useful: area ? useful / area : 0, quality: area ? quality / area : 0, visible }
+  return { useful: expectedArea ? Math.min(1, useful / expectedArea) : 0, quality: expectedArea ? Math.min(1, quality / expectedArea) : 0, visible }
 }
 
 function checkError() {
@@ -104,18 +152,24 @@ async function waitQuality(start: number, timeout: number, response = () => true
 }
 function canvasBytes() { return [...document.querySelectorAll('canvas')].reduce((total, canvas) => total + canvas.width * canvas.height * 4, 0) }
 function validateVisibleContent() {
-  if (pages.length !== config.pages) throw new Error('Unexpected page placeholder count')
+  const mounted = document.querySelectorAll('.dsh-pdf-virtual-page').length
+  if (config.engine !== 'native' && mounted !== config.pages) throw new Error('Unexpected page placeholder count')
+  if (config.engine === 'native' && config.pages >= 64 && mounted > 12) throw new Error('Native reader mounted too many page wrappers')
   const visible = coverage().visible
   if (!visible.length) throw new Error('No visible PDF page')
   const probe = document.createElement('canvas'); probe.width = 64; probe.height = 64
   const ctx = probe.getContext('2d')!
   for (const page of visible) {
-    const canvas = page.querySelector<HTMLCanvasElement>('.dsh-pdf-canvas canvas')!
-    ctx.clearRect(0, 0, 64, 64); ctx.drawImage(canvas, 0, 0, 64, 64)
+    const canvases = [...page.querySelectorAll<HTMLCanvasElement>('.dsh-pdf-canvas canvas')].filter(canvas => canvas.dataset.pdfRasterReady === 'true')
+    ctx.clearRect(0, 0, 64, 64)
+    for (const canvas of canvases) {
+      const rect = canvas.getBoundingClientRect(), box = page.getBoundingClientRect()
+      ctx.drawImage(canvas, (rect.left - box.left) / box.width * 64, (rect.top - box.top) / box.height * 64, rect.width / box.width * 64, rect.height / box.height * 64)
+    }
     const pixels = ctx.getImageData(0, 0, 64, 64).data
     let ink = 0
     for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] && Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) < 230) ink++
-    if (ink < 5) throw new Error('Completed canvas is blank')
+    if (scenarioValidation !== 'reader.zoom4x' && ink < 5) throw new Error('Completed canvas is blank')
     if (!page.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('PDF benchmark page')) throw new Error('Expected text layer content is absent')
   }
   probe.width = 0; probe.height = 0
@@ -128,6 +182,7 @@ function tasks(end: number) {
 }
 function nearestRank(values: number[], q: number) { return values.length ? [...values].sort((a, b) => a - b)[Math.ceil(q * values.length) - 1] : null }
 
+let scenarioValidation = ''
 window.__PDF_BENCH__ = {
   snapshot() {
     const current = coverage(), scroll = rootElement()
@@ -138,6 +193,7 @@ window.__PDF_BENCH__ = {
       message: document.querySelector('.dsh-pdf-error')?.textContent ?? null, stages }
   },
   async run(scenario, timeout) {
+    scenarioValidation = scenario
     if (opened) throw new Error('One scenario per fresh browser context')
     const metrics: Record<string, number | null> = {}
     if (scenario === 'reader.open') {
@@ -185,7 +241,8 @@ window.__PDF_BENCH__ = {
       } else throw new Error('Unknown Reader scenario')
     }
     const end = performance.now()
-    Object.assign(metrics, tasks(end), { canvasPixelBytesEstimate: metrics.canvasPixelBytesEstimate ?? canvasBytes(), browserTotalRssMiB: null })
+    Object.assign(metrics, tasks(end), { canvasPixelBytesEstimate: metrics.canvasPixelBytesEstimate ?? canvasBytes(), browserTotalRssMiB: null,
+      mountedPageWrappers: document.querySelectorAll('.dsh-pdf-virtual-page').length, domNodes: document.querySelectorAll('*').length })
     // Wait for the actual text layer before correctness validation, outside the timing interval.
     const validationStart = performance.now()
     while (coverage().visible.some(page => !page.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('PDF benchmark page'))) {

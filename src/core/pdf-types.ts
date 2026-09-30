@@ -20,6 +20,8 @@ export interface PdfAnnotation {
   popupObjectId?: string
   page: number
   subtype: string
+  /** Named navigation actions retained by Host inspection for the native reader. */
+  linkAction?: string
   rect?: PdfRect
   /** Eight numbers per quadrilateral: top-left, top-right, bottom-left, bottom-right. */
   quadPoints?: number[]

@@ -26,6 +26,11 @@ export interface SettingsProps {
 export const settingsLocales = {
   zh: {
     'settings.title': 'PDF',
+    'settings.readerEngine': '阅读引擎',
+    'settings.readerHelp': '自动模式优先使用原生引擎，遇到不兼容文件时回退。修改后重新打开 PDF 生效。',
+    'settings.readerAuto': '自动',
+    'settings.readerNative': '原生 PDFium',
+    'settings.readerPdfjs': '兼容 PDF.js',
     'settings.description': '配置扫描件文字识别、选中文字翻译、标注和阅读跳转。修改后手动保存。',
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
@@ -82,6 +87,11 @@ export const settingsLocales = {
   },
   en: {
     'settings.title': 'PDF',
+    'settings.readerEngine': 'Reader engine',
+    'settings.readerHelp': 'Auto prefers the native engine and falls back for incompatible files. Reopen the PDF after changing this setting.',
+    'settings.readerAuto': 'Auto',
+    'settings.readerNative': 'Native PDFium',
+    'settings.readerPdfjs': 'Compatibility PDF.js',
     'settings.description': 'Configure scanned text recognition, selected text translation, annotations, and reading navigation. Save changes manually.',
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
@@ -138,7 +148,7 @@ export const settingsLocales = {
   },
 } as const
 
-const fields = ['ocrEngine', 'ocrLanguages', 'ocrTimeoutMs', 'translationEngine', 'translationSourceLanguage',
+const fields = ['readerEngine', 'ocrEngine', 'ocrLanguages', 'ocrTimeoutMs', 'translationEngine', 'translationSourceLanguage',
   'translationTargetLanguage', 'translationTimeoutMs', 'defaultColor', 'historyCapacity', 'maxFileBytes'] as const
 type Field = typeof fields[number]
 type Draft = Record<Field, string>
@@ -231,6 +241,7 @@ export function Settings({ form, t, engines, translationEngines }: SettingsProps
     if (!/^#[0-9a-f]{6}$/i.test(editor.draft.defaultColor)) validation.defaultColor = tr('settings.invalidColor')
     if (!available.some(engine => engine.id === editor.draft.ocrEngine)) validation.ocrEngine = tr('settings.invalidEngine')
     if (!availableTranslations.some(engine => engine.id === editor.draft.translationEngine)) validation.translationEngine = tr('settings.invalidTranslationEngine')
+    if (!['auto', 'native', 'pdfjs'].includes(editor.draft.readerEngine)) validation.readerEngine = tr('settings.readerHelp')
   }
 
   function edit(field: Field, value: string) {
@@ -318,6 +329,9 @@ export function Settings({ form, t, engines, translationEngines }: SettingsProps
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><button type="button" disabled={disabled} style={buttonStyle} onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} style={buttonStyle} onClick={keepChanges}>{tr('settings.keep')}</button></div>
         <small style={{ display: 'block', marginTop: 8, opacity: 0.75 }}>{tr('settings.keepHint')}</small>
       </div>}
+      {fieldRow('readerEngine', 'settings.readerHelp', <select {...attributes('readerEngine')} value={editor.draft.readerEngine} onChange={event => edit('readerEngine', event.target.value)}>
+        <option value="auto">{tr('settings.readerAuto')}</option><option value="native">{tr('settings.readerNative')}</option><option value="pdfjs">{tr('settings.readerPdfjs')}</option>
+      </select>)}
       {fieldRow('ocrEngine', 'settings.ocrHelp', <select {...attributes('ocrEngine')} value={editor.draft.ocrEngine} onChange={event => edit('ocrEngine', event.target.value)}>
         {!available.some(engine => engine.id === editor.draft.ocrEngine) && <option value={editor.draft.ocrEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.ocrEngine}</option>}
         {available.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}

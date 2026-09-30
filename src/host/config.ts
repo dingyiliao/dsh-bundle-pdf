@@ -1,8 +1,9 @@
 import z from '@deepseek-ai/schemastery'
 import { defaultSettings, type PdfSettings } from '../shared/contracts.ts'
 
-export type HostConfig = { [K in keyof PdfSettings]: { get(): PdfSettings[K] } }
+export type HostConfig = { [K in keyof PdfSettings]-?: { get(): PdfSettings[K] } }
 export const Config = z.object({
+  readerEngine: z.string().pattern(/^(auto|pdfjs|native)$/).default('auto').volatile(),
   ocrEngine: z.string().default(defaultSettings.ocrEngine).volatile(),
   ocrLanguages: z.string().default(defaultSettings.ocrLanguages).volatile(),
   ocrTimeoutMs: z.natural().min(1000).max(600000).default(defaultSettings.ocrTimeoutMs).volatile(),
@@ -17,6 +18,7 @@ export const Config = z.object({
 
 export function readConfig(config: HostConfig): PdfSettings {
   return {
+    readerEngine: config.readerEngine?.get() ?? 'auto',
     ocrEngine: config.ocrEngine.get(), ocrLanguages: config.ocrLanguages.get(), ocrTimeoutMs: config.ocrTimeoutMs.get(),
     translationEngine: config.translationEngine.get(), translationSourceLanguage: config.translationSourceLanguage.get(),
     translationTargetLanguage: config.translationTargetLanguage.get(), translationTimeoutMs: config.translationTimeoutMs.get(),

@@ -23,6 +23,7 @@ const LARGE_PAGE_COUNT = 128
 const NOTE = 'Saved through the PDF reader browser UI'
 
 async function launchBrowser(): Promise<Browser> {
+  if (process.env.PDF_BENCH_CHROMIUM) return chromium.launch({ executablePath: process.env.PDF_BENCH_CHROMIUM })
   if (process.platform !== 'win32' || existsSync(chromium.executablePath())) return chromium.launch()
   try { return await chromium.launch({ channel: 'chrome' }) }
   catch (error) {
@@ -102,7 +103,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
 
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible', timeout: 20_000 })
-    await reader.locator('[data-pdf-page="1"] canvas').waitFor({ state: 'visible', timeout: 10_000 }).catch(async failure => {
+    await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(async failure => {
       throw new Error(`${String(failure)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
@@ -164,6 +165,39 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       webSnapshotMode(),
     )
 
+    // Exercise the same cropped native render path used to prepare OCR images.
+    const cropRequests: unknown[] = []
+    page.on('request', request => {
+      if (!request.url().endsWith('/api/pdf.native') || request.method() !== 'POST') return
+      const body = request.postDataJSON()
+      if (body.payload?.action === 'tile') cropRequests.push(body.payload.tile)
+    })
+    await toolbar.locator('summary').click()
+    await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
+    await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
+    // The region hint changes toolbar height; use the new page position.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    const shotText = await textSpan.boundingBox()
+    expect(shotText).not.toBeNull()
+    await page.mouse.move(shotText!.x - 3, shotText!.y - 3)
+    await page.mouse.down()
+    await page.mouse.move(shotText!.x + shotText!.width + 3, shotText!.y + shotText!.height + 3, { steps: 8 })
+    await page.mouse.up()
+    const preview = reader.getByRole('dialog', { name: 'Screenshot preview' })
+    await preview.waitFor({ state: 'visible' })
+    const screenshotInk = await preview.getByRole('img').evaluate(async element => {
+      const image = element as HTMLImageElement
+      await image.decode()
+      const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight
+      canvas.getContext('2d')!.drawImage(image, 0, 0)
+      const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data
+      let ink = 0
+      for (let index = 0; index < pixels.length; index += 4) if (pixels[index] < 120 && pixels[index + 1] < 120 && pixels[index + 2] < 120) ink++
+      canvas.width = 0; canvas.height = 0; return ink
+    })
+    expect(screenshotInk, JSON.stringify({ shotText, cropRequests, page: await reader.locator('[data-pdf-page="1"]').boundingBox() })).toBeGreaterThan(100)
+    await preview.getByRole('button', { name: 'Close', exact: true }).click()
+
     const firstPage = reader.locator('[data-pdf-page="1"]')
     const widthBeforePinch = await firstPage.evaluate(element => element.offsetWidth)
     await firstPage.evaluate(element => {
@@ -215,7 +249,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
 
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible', timeout: 20_000 })
-    await reader.locator('[data-pdf-page="1"] canvas').waitFor({ state: 'visible', timeout: 20_000 }).catch(async failure => {
+    await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 20_000 }).catch(async failure => {
       throw new Error(`${String(failure)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
@@ -226,13 +260,17 @@ it('keeps active pages bounded while navigating to a distant page through the in
     const pageInput = toolbar.getByRole('textbox', { name: 'Page' })
     await pageInput.fill(String(LARGE_PAGE_COUNT))
     await pageInput.press('Enter')
-    await reader.locator(`[data-pdf-page="${LARGE_PAGE_COUNT}"] canvas`).waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator(`[data-pdf-page="${LARGE_PAGE_COUNT}"] canvas`).first().waitFor({ state: 'visible', timeout: 20_000 })
+    if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1') {
+      expect(await reader.locator('.dsh-pdf-tile-surface').count()).toBeGreaterThan(0)
+      expect(await reader.locator('[data-page-number]').count()).toBeLessThan(20)
+    }
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
       .toContain(`Browser PDF page ${LARGE_PAGE_COUNT}`)
     expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
     expect(await reader.locator('[data-pdf-page="1"]').count()).toBe(0)
     await toolbar.getByRole('button', { name: '← Back', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"] canvas').waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 20_000 })
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
       .toContain('Browser PDF page 1')
     expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
@@ -262,11 +300,13 @@ it('keeps active pages bounded while navigating to a distant page through the in
 
     // The selected pages leave the viewport but keep their live text nodes and
     // native range; otherwise a cross-page selection is lost on virtualization.
-    await reader.locator('.dsh-pdf-scroll').evaluate(scroll => {
+    await reader.locator('.dsh-pdf-scroll').evaluate((scroll, count) => {
+      const windowed = scroll.querySelector<HTMLElement>('.dsh-pdf-windowed-pages')
+      if (windowed) { scroll.scrollTop = windowed.offsetHeight / count * 5; return }
       const destination = scroll.querySelector<HTMLElement>(':scope > [data-page-number="6"]')
       if (!destination) throw new Error('Missing page-six scroll slot')
       scroll.scrollTop = destination.offsetTop
-    })
+    }, LARGE_PAGE_COUNT)
     await reader.locator('[data-pdf-page="6"]').waitFor({ state: 'attached' })
     await expect.poll(() => reader.locator('[data-pdf-page="1"]').evaluate(element => {
       const viewport = element.closest('.dsh-pdf-scroll')!.getBoundingClientRect()

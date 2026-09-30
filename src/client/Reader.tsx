@@ -8,6 +8,9 @@ import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import type { ReaderProps } from './contracts.js'
 import { ReaderPage } from './ReaderPage.js'
 import { VirtualPages } from './experiment/VirtualPages.js'
+import { nativeDocument, openNativeDocument } from './native/document.ts'
+import { WindowedPages } from './native/WindowedPages.tsx'
+import { pageIndexAtOffset, windowLayout } from './native/window-layout.ts'
 import { pagePixelToPdfPoint } from './experiment/virtual-page-layout.js'
 import { startExperimentalPageWarmup, type PageWarmupHandle } from './experiment/page-warmup.js'
 import virtualPagesStyles from './experiment/virtual-pages.css'
@@ -218,7 +221,7 @@ export function Reader(props: ReaderProps) {
 
   useEffect(() => {
     if (!snapshot || !displayOwner || displayOwner.token !== ownerSequence.current) return
-    if (activePdf.current?.bytes === snapshot.bytes) {
+    if (activePdf.current?.bytes === snapshot.bytes && !!nativeDocument(activePdf.current.document) === (snapshot.reader?.engine === 'native')) {
       const latest = state.current.snapshot
       displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
       return
@@ -226,7 +229,10 @@ export function Reader(props: ReaderProps) {
     const controller = new AbortController()
     let accepted = false
     let cancelled = false
-    void callbacks.current.openPdf(snapshot.bytes, controller.signal).then(async (opened) => {
+    const opening = snapshot.reader?.engine === 'native' && api.native
+      ? openNativeDocument(snapshot, sessionId, api.native)
+      : callbacks.current.openPdf(snapshot.bytes, controller.signal)
+    void opening.then(async (opened) => {
       if (controller.signal.aborted || cancelled || displayOwner.token !== ownerSequence.current) { await opened.dispose(); return }
       accepted = true
       const previous = activePdf.current
@@ -243,10 +249,10 @@ export function Reader(props: ReaderProps) {
       if (!controller.signal.aborted && displayOwner.token === ownerSequence.current) { notifyError(failure); displayOwner.content.failed() }
     })
     return () => { cancelled = true; if (!accepted) controller.abort() }
-  }, [snapshot?.bytes, displayOwner?.token, notifyError])
+  }, [snapshot?.bytes, snapshot?.reader?.engine, snapshot?.reader?.bytesHash, displayOwner?.token, notifyError, api, sessionId])
 
   useEffect(() => {
-    if (!pdf || !snapshot || !scrollRoot || activePdf.current?.document !== pdf || activePdf.current.bytes !== snapshot.bytes) return
+    if (!pdf || nativeDocument(pdf) || !snapshot || !scrollRoot || activePdf.current?.document !== pdf || activePdf.current.bytes !== snapshot.bytes) return
     const milestone = new AbortController()
     const handle = startExperimentalPageWarmup({
       bytes: snapshot.bytes, pageCount: snapshot.document.pageCount, signal: tab.signal,
@@ -369,6 +375,18 @@ export function Reader(props: ReaderProps) {
     if (!pair) {
       // A fast scrollbar jump can precede mounting and loading the target page.
       // Capture that placeholder rather than a stale PageView from elsewhere.
+      const numeric = windowLayout(root)
+      if (numeric?.length) {
+        const item = numeric[pageIndexAtOffset(numeric, root.scrollTop + 40)]
+        const geometry = current.snapshot.document.pages[item.page - 1]
+        const pageLeft = outer.left + (root.scrollWidth - item.width) / 2 - root.scrollLeft
+        const pageTop = outer.top + item.top + 27 - root.scrollTop
+        const screenX = Math.max(outer.left, pageLeft), screenY = Math.max(outer.top, pageTop)
+        const [x, y] = pagePixelToPdfPoint(geometry, item.scale, current.rotation, screenX - pageLeft, screenY - pageTop)
+        return { documentVersion: current.snapshot.contentVersion, page: geometry.page, x, y,
+          rotation: current.rotation, fit: current.fit, scale: item.scale,
+          viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)), y: Math.max(0, Math.min(1, (screenY - outer.top) / outer.height)) } }
+      }
       const children = root.children, boundary = root.scrollTop + 40
       let low = 0, high = children.length
       while (low < high) {
@@ -422,9 +440,11 @@ export function Reader(props: ReaderProps) {
     await frame()
     signal.throwIfAborted()
     const root = state.current.scrollRoot
+    const numericPage = root && windowLayout(root)?.[position.page - 1]
     const placeholder = root?.querySelector<HTMLElement>(`[data-page-number="${position.page}"]`)
-    if (!root || !placeholder) throw new Error(callbacks.current.t('reader.invalidDestination'))
-    root.scrollTop += placeholder.getBoundingClientRect().top - root.getBoundingClientRect().top
+    if (!root || !placeholder && !numericPage) throw new Error(callbacks.current.t('reader.invalidDestination'))
+    if (numericPage) root.scrollTop = numericPage.top
+    else root.scrollTop += placeholder!.getBoundingClientRect().top - root.getBoundingClientRect().top
     let view: PageView | undefined
     for (let attempt = 0; attempt < 180; attempt++) {
       signal.throwIfAborted()
@@ -662,6 +682,7 @@ export function Reader(props: ReaderProps) {
             offset = index + Math.max(1, needle.length)
           }
         }
+        if (number % 8 === 0 && sequence === searchSequence.current) { setHits([...found]); await frame() }
         if (found.length >= 500) break
       }
       if (sequence === searchSequence.current) { setHits(found); setSearched(true) }
@@ -777,6 +798,12 @@ export function Reader(props: ReaderProps) {
       scrollFrame.current = undefined
       const root = state.current.scrollRoot
       if (!root || !state.current.snapshot) return
+      const numeric = windowLayout(root)
+      if (numeric?.length) {
+        const number = numeric[pageIndexAtOffset(numeric, root.scrollTop + 40)].page
+        if (number !== state.current.currentPage) { setCurrentPage(number); setPageInput(String(number)) }
+        return
+      }
       // Page wrappers are ordered direct children with exact DOM heights. Binary
       // search handles long documents and large scroll jumps without scanning P rects.
       const children = root.children
@@ -949,7 +976,8 @@ export function Reader(props: ReaderProps) {
     const pinnedPages = new Set(selectedPages)
     const selectedTextPages = selection?.kind === 'text' ? selectedPages : undefined
     if (selected) pinnedPages.add(selected.page)
-    return <VirtualPages key={`${snapshot.id}:${snapshot.contentVersion}`} pages={snapshot.document.pages}
+    const Pages = nativeDocument(pdf) ? WindowedPages : VirtualPages
+    return <Pages key={`${snapshot.id}:${snapshot.contentVersion}`} pages={snapshot.document.pages}
       rotation={rotation} zoom={zoom} fit={fit} size={size} scrollRoot={scrollRoot} t={t}
       scaleForPage={pageScale} hasOcrText={(page) => !!ocrPages.get(page)?.words.length}
       pinnedPages={pinnedPages} selectedTextPages={selectedTextPages} dragAnchorPage={draggingPage}

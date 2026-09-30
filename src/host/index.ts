@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { Config, readConfig, type HostConfig } from './config.ts'
 import { registerPdfTransport } from './transport.ts'
 import { createLocalFiles } from './local-files.ts'
 import { registerAssets } from './assets.ts'
 import { createWorkspaces } from './workspaces.ts'
+import { createPdfService } from './pdf-service.ts'
 import { draftSchema, type DraftRecord } from './validation.ts'
 import { createHostTranslations, type TranslationHostContext } from './translations.js'
 
@@ -51,6 +53,10 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     name: `pdf_drafts_${suffix}`, version: 1, layout: 'per-record', tables: { drafts: domainTable(draftSchema) },
   }))
   const workspaces = createWorkspaces(files, domain.table('drafts'))
+  const pdfService = createPdfService(workspaces, {
+    executable: process.env.DSH_PDF_NATIVE_HELPER ?? fileURLToPath(new URL(`./native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url)),
+    engine: () => config.readerEngine?.get() ?? 'auto',
+  })
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
   const disposers: (() => Promise<void>)[] = []
   let disposed: Promise<void> | undefined
@@ -63,6 +69,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     disposed = (async () => {
       const results = await Promise.allSettled(disposers.splice(0).reverse().map(close => close()))
       await drain
+      pdfService.dispose()
       await domain.close()
       const rejected = results.filter(result => result.status === 'rejected')
       if (rejected.length) throw new AggregateError(rejected.map(result => result.reason), 'Could not fully dispose PDF routes')
@@ -72,6 +79,8 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
   try {
     ctx.effect(() => {
       disposers.push(registerPdfTransport(ctx, workspaces.dispatch))
+      disposers.push(registerPdfTransport(ctx, pdfService.dispatch, { endpoint: 'pdf.dispatch.v2' }))
+      disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerAssets(ctx))
       // Settings bootstrap carries no file contents and works outside a session.
@@ -101,6 +110,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
+    ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
   } catch (error) {
     await dispose().catch(() => undefined)
     throw error

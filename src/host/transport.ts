@@ -28,6 +28,13 @@ export type PdfDispatch = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+const binaryTag = Symbol('pdf.binary-response')
+interface BinaryResult { [binaryTag]: true; value: Record<string, unknown>; bytes: Uint8Array; mime: string }
+/** Uses Connection's documented multipart attachment codec; never Base64 JSON. */
+export function binaryResult(value: Record<string, unknown>, bytes: Uint8Array, mime: string): BinaryResult {
+  return { [binaryTag]: true, value: { ...value, bytes: null }, bytes, mime }
+}
+
 /**
  * Register through Connection, which owns Web and shell authentication. The
  * existing Client call is connection.rpc.call('/api', PDF_ENDPOINT, input).
@@ -41,7 +48,7 @@ export function registerPdfTransport(
 ): () => Promise<void> {
   const maxBytes = options.maxRequestBytes ?? 16 * 1024 * 1024
   const endpoint = options.endpoint ?? PDF_ENDPOINT
-  if (!/^pdf\.[a-z.]+$/.test(endpoint)) throw new TypeError('Invalid PDF endpoint')
+  if (!/^pdf\.[a-z0-9.]+$/.test(endpoint)) throw new TypeError('Invalid PDF endpoint')
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError('Invalid PDF request limit')
   return ctx.connection.fetch.register({
     path: `/api/${endpoint}`,
@@ -80,7 +87,16 @@ export function registerPdfTransport(
         if (resolved.agent.session.id !== sessionId) {
           throw Object.assign(new Error('Session identity mismatch'), { code: 'pdf/session-mismatch' })
         }
-        result = { ok: true, value: await dispatch(sessionId, input, resolved.agent, request.signal) }
+        const value = await dispatch(sessionId, input, resolved.agent, request.signal)
+        if (isRecord(value) && binaryTag in value) {
+          const binary = value as unknown as BinaryResult
+          const body = new FormData()
+          body.set('metadata', JSON.stringify({ type: 'server-response', rpcId: envelope.rpcId,
+            result: { ok: true, value: binary.value }, attachments: [{ codec: 'bytes', part: 'pdf-bytes', path: ['bytes'] }] }))
+          body.set('pdf-bytes', new Blob([new Uint8Array(binary.bytes)], { type: binary.mime }), 'pdf-bytes')
+          return new Response(body, { headers })
+        }
+        result = { ok: true, value }
       } catch (error) {
         result = { ok: false, error: {
           code: request.signal.aborted ? 'pdf/cancelled' : errorCode(error),

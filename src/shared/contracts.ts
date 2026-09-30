@@ -1,6 +1,8 @@
 import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
+import type { NativeReaderApi, ReaderDescriptor, ReaderEngine } from './native.ts'
 
 export interface PdfSettings {
+  readerEngine?: ReaderEngine
   ocrEngine: string
   ocrLanguages: string
   ocrTimeoutMs: number
@@ -14,6 +16,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
+  readerEngine: 'auto',
   ocrEngine: 'none', ocrLanguages: 'eng+chi_sim', ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationSourceLanguage: 'auto', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   defaultColor: '#ffff00', historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
@@ -36,9 +39,11 @@ export interface WorkspaceSnapshot {
   /** Native annotations present in bytes before projecting unsaved operations. */
   baselineAnnotations?: PdfAnnotation[]
   bytes: Uint8Array
+  reader?: ReaderDescriptor
 }
 
 export interface PdfClientApi {
+  native?: NativeReaderApi
   open(sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   change(sessionId: string, id: string, revision: number, operations: PdfAnnotationOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>

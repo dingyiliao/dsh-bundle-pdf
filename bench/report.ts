@@ -74,7 +74,7 @@ export function summaryMarkdown(rows: readonly BenchmarkRow[]) {
   return `${lines.join('\n')}\n`
 }
 
-export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly BenchmarkRow[]) {
+export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly BenchmarkRow[], options: { allowBackendSwitch?: boolean } = {}) {
   uniformProvenance(before); uniformProvenance(after)
   const left = groups(before), right = groups(after)
   if (left.size !== right.size || [...left.keys()].some(key => !right.has(key))) throw new Error('Scenario/corpus/cache/quality/seed groups do not match')
@@ -84,7 +84,9 @@ export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |']
   for (const [key, a] of left) {
     const b = right.get(key)!
-    const environments = [...a, ...b].map(row => JSON.stringify(Object.entries(row.environment).sort(([x], [y]) => x.localeCompare(y))))
+    if (options.allowBackendSwitch && new Set([...a, ...b].map(row => row.environment.readerEngine)).size !== 2) throw new Error('Backend comparison requires two different recorded reader engines')
+    const environments = [...a, ...b].map(row => JSON.stringify(Object.entries(row.environment)
+      .filter(([key]) => !options.allowBackendSwitch || !['readerEngine', 'pdfiumBuild'].includes(key)).sort(([x], [y]) => x.localeCompare(y))))
     if (new Set(environments).size !== 1) throw new Error('Environment differs; same-device comparison required')
     if (new Set([...a, ...b].map(row => row.source.benchmarkVersion)).size !== 1) throw new Error('Benchmark definitions differ')
     if (new Set([...a, ...b].map(row => row.source.protocolSha256)).size !== 1) throw new Error('Benchmark protocol source differs; rebaseline with one frozen harness')
@@ -104,5 +106,6 @@ export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly
       lines.push(`| ${escape(a[0].scenario)} | ${escape(a[0].documentId)} | ${escape(name)} | ${av.length}/${a.length} | ${bv.length}/${b.length} | ${display(am)} | ${display(bm)} | ${reduction} | ${display(quantile(av, 0.95))} | ${display(quantile(bv, 0.95))} |`)
     }
   }
+  if (options.allowBackendSwitch) lines.splice(2, 0, `本报告比较同一实现中的引擎配置：${String(before[0].environment.readerEngine)} → ${String(after[0].environment.readerEngine)}。该比较不能单独代表相对于历史版本的全部升级收益。`, '')
   return `${lines.join('\n')}\n`
 }

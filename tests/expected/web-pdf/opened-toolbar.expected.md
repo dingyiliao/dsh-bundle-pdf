@@ -1,6 +1,6 @@
 - button "← Back" [disabled]
 - button "Previous page" [disabled]: ‹
-- textbox "Page": 1
+- textbox "Page": "1"
 - text: / 2
 - button "Next page": ›
 - combobox "Zoom":

@@ -14,7 +14,10 @@ import { finalizeRows } from './persist.ts'
 
 const { values } = parseArgs({ options: { suite: { type: 'string', default: 'smoke' },
   out: { type: 'string', default: 'bench-results/reader-smoke' }, corpus: { type: 'string', default: 'bench/.generated' },
-  repeats: { type: 'string' }, timeout: { type: 'string', default: '60000' }, document: { type: 'string' }, scenario: { type: 'string' } } })
+  repeats: { type: 'string' }, timeout: { type: 'string', default: '60000' }, document: { type: 'string' }, scenario: { type: 'string' },
+  engine: { type: 'string', default: 'legacy' } } })
+if (!['legacy', 'pdfjs', 'native'].includes(values.engine!)) throw new Error('engine must be legacy, pdfjs or native')
+const engine = values.engine as 'legacy' | 'pdfjs' | 'native'
 if (!['smoke', 'release'].includes(values.suite!)) throw new Error('suite must be smoke or release')
 const suite = values.suite as 'smoke' | 'release', repeats = Number(values.repeats ?? (suite === 'smoke' ? 3 : 20)), timeout = Number(values.timeout)
 if (!Number.isInteger(repeats) || repeats < 1 || !Number.isInteger(timeout) || timeout < 100) throw new Error('Invalid repeats/timeout')
@@ -38,9 +41,10 @@ await build({ absWorkingDir: ROOT, entryPoints: ['bench/web-entry.tsx'], outfile
   jsx: 'automatic', loader: { '.css': 'text' }, logOverride: { 'empty-import-meta': 'silent' },
   define: { 'process.env.NODE_ENV': JSON.stringify('production'), __PDF_PLUGIN_WORKER_SOURCE__: JSON.stringify(worker), __PDF_PLUGIN_BINARY_ASSETS__: JSON.stringify(assets) } })
 const bundle = await readFile(join(ROOT, 'bench/.web-build/app.js')), source = await sourceMetadata()
-const browser = await chromium.launch({ headless: true, channel: 'chromium' })
+const browser = await chromium.launch({ headless: true, ...(process.env.PDF_BENCH_CHROMIUM ? { executablePath: process.env.PDF_BENCH_CHROMIUM } : { channel: 'chromium' }) })
 const environment = { ...environmentMetadata(), chromium: browser.version(), browserChannel: 'chromium-new-headless', headless: true, viewportWidth: 1200, viewportHeight: 900, dpr: 2,
-  appBundleIncludedInTiming: false, browserLaunchIncludedInTiming: false, hostAdapter: 'synthetic-memory-files-and-drafts', scrollProtocol: '8000-csspx-over-1500ms' }
+  appBundleIncludedInTiming: false, browserLaunchIncludedInTiming: false, hostAdapter: 'synthetic-memory-files-and-drafts', scrollProtocol: '8000-csspx-over-1500ms',
+  readerEngine: engine, pdfiumBuild: engine === 'native' ? '156.0.8076.0' : 'unused', rpcByteScope: 'scenario-context-including-setup' }
 const rows: BenchmarkRow[] = []
 let failures = 0
 try {
@@ -52,11 +56,12 @@ try {
     for (const document of documents) for (const scenario of scenarios) {
       const bytes = new Uint8Array(await readFile(join(corpusDirectory, document.file)))
       if (sha256(bytes) !== document.sha256) throw new Error('Corpus digest changed')
-      const server = await startServer(bundle, bytes, document.pages, document.annotations)
+      const server = await startServer(bundle, bytes, document.pages, document.annotations, engine)
       const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 2 })
       const page = await context.newPage(); page.setDefaultTimeout(timeout)
       let payload: object = {}, timer: ReturnType<typeof setTimeout> | undefined
       const errors: string[] = []
+      let nativeStats = server.diagnostics()
       let browserFailure!: (error: Error) => void
       const failed = new Promise<never>((_, reject) => { browserFailure = reject })
       void failed.catch(() => undefined)
@@ -85,6 +90,7 @@ try {
         } catch { /* Retain the failure row even if evidence capture also fails. */ }
       } finally {
         if (timer) clearTimeout(timer)
+        nativeStats = server.diagnostics()
         await context.close(); await server.close()
       }
       const row = rowSchema.parse({ schemaVersion: 1, runId: randomUUID(), iteration, suite, measurementKind: 'reader-component', scenario,
@@ -92,6 +98,8 @@ try {
         documentId: document.id, documentSha256: document.sha256, pageCount: document.pages, annotationCount: document.annotations, seed: corpus.seed,
         cacheState: 'fresh-browser-context-host-workspace-app-bundle-ready', qualityMode: 'completed-raster-visible-area-and-sampling-with-text-ink-validation',
         environment, source, ...payload })
+      Object.assign(row.metrics, { rpcRequestCount: server.traffic.requests, rpcRequestBytes: server.traffic.requestBytes, rpcResponseBytes: server.traffic.responseBytes,
+        nativeTileCacheBytes: nativeStats.tileCacheBytes, nativeDocumentBytes: nativeStats.documentBytes })
       // Preserve separate Host/Client clock domains; startMs must not be subtracted across them.
       row.stages.push(...server.stages)
       rows.push(row); await appendFile(output, `${JSON.stringify(row)}\n`)

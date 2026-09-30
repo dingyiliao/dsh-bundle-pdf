@@ -378,32 +378,45 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       cursor: record.cursor + 1, revision: record.revision + 1 }, undefined, signal, document)
   }
 
+  async function execute(sessionId: string, input: Record<string, unknown>, agent: PdfAgent, signal: AbortSignal) {
+    if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
+    if (input.sessionId !== sessionId || sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
+    const before = queues.get(sessionId) ?? Promise.resolve()
+    const span = beginPdfSpan('host.dispatch')
+    const task = before.catch(() => undefined).then(() => { signal.throwIfAborted(); return run(input, agent, signal) })
+    queues.set(sessionId, task)
+    try {
+      const value = await task
+      return value
+    } catch (error) {
+      span.end(signal.aborted ? 'cancelled' : 'error')
+      throw error
+    } finally {
+      span.end()
+      if (queues.get(sessionId) === task) queues.delete(sessionId)
+    }
+  }
   return {
-    async dispatch(sessionId: string, input: Record<string, unknown>, agent: PdfAgent, signal: AbortSignal) {
+    execute,
+    readSnapshot(sessionId: string, id: string): WorkspaceSnapshot {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
-      if (input.sessionId !== sessionId || sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
-      const before = queues.get(sessionId) ?? Promise.resolve()
-      const span = beginPdfSpan('host.dispatch')
-      const task = before.catch(() => undefined).then(() => { signal.throwIfAborted(); return run(input, agent, signal) })
-      queues.set(sessionId, task)
-      try {
-        const value = await task
-        if (!('bytes' in value)) return value
-        const bytesHash = renderedHash(value.bytes)
-        if (input.knownBytesHash === bytesHash) return { ...value, bytes: undefined, bytesHash }
-        let wireBytes = encoded.get(value.bytes)
-        if (!wireBytes) {
-          wireBytes = base64(value.bytes)
-          if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
-        }
-        return { ...value, bytes: wireBytes, bytesHash }
-      } catch (error) {
-        span.end(signal.aborted ? 'cancelled' : 'error')
-        throw error
-      } finally {
-        span.end()
-        if (queues.get(sessionId) === task) queues.delete(sessionId)
+      const copy = copies.get(id)
+      if (!copy) fail('pdf/unknown-document', 'PDF working copy is unavailable; reopen it')
+      if (copy.record.sessionId !== sessionId) fail('pdf/session-mismatch', 'Working copy belongs to another session')
+      return copy.snapshot
+    },
+    bytesHash: renderedHash,
+    async dispatch(sessionId: string, input: Record<string, unknown>, agent: PdfAgent, signal: AbortSignal) {
+      const value = await execute(sessionId, input, agent, signal)
+      if (!('bytes' in value)) return value
+      const bytesHash = renderedHash(value.bytes)
+      if (input.knownBytesHash === bytesHash) return { ...value, bytes: undefined, bytesHash }
+      let wireBytes = encoded.get(value.bytes)
+      if (!wireBytes) {
+        wireBytes = base64(value.bytes)
+        if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
       }
+      return { ...value, bytes: wireBytes, bytesHash }
     },
     dispose(): Promise<void> {
       if (disposal) return disposal

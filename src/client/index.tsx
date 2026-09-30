@@ -95,7 +95,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const dictionary = createNativeDictionary()
   ctx.effect(() => () => dictionary.dispose(), 'pdf: native dictionary lifecycle')
   ctx.effect(() => ctx.reflect.provide('pdfDictionary', dictionary), 'pdf: native dictionary capability')
-  const api = createPdfApi(ctx.connection, lifetime.signal)
+  const api = createPdfApi(ctx.connection, lifetime.signal, { protocolV2: true })
   const sessionLifecycle = createPdfSessionLifecycle({
     currentSession: ctx.uiSession.adapter.current, sidebar: ctx.sidebarRight, api, signal: lifetime.signal,
     onError: error => { console.error('[pdf] Failed to discard PDFs after Session switch', error) },

@@ -150,6 +150,13 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
         modifiedAt: readString(get(doc, dictionary, 'M')),
         flags, supported, editable: !readOnlyReason, readOnlyReason,
       }
+      if (subtype === 'Link') {
+        const action = get(doc, dictionary, 'A')
+        if (action instanceof PDFDict && readName(get(doc, action, 'S')) === 'Named') {
+          const named = readName(get(doc, action, 'N'))
+          if (named && ['FirstPage', 'LastPage', 'NextPage', 'PrevPage'].includes(named)) model.linkAction = named
+        }
+      }
       entries.push({ value, dictionary, array, model })
     }
   })

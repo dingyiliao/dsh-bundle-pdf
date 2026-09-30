@@ -39,6 +39,9 @@
     "README.md",
     "SPEC.md",
     "PERFORMANCE.md",
+    "NATIVE_V1.md",
+    "native",
+    "scripts/build-native.mjs",
     "LICENSE"
   ],
   "icon": "./icon.svg",
@@ -49,6 +52,7 @@
     "bench:compare": "node --import tsx bench/compare.ts",
     "typecheck:bench": "tsc --noEmit --project tsconfig.bench.json",
     "build": "node scripts/build.mjs",
+    "native:build": "node scripts/build-native.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
     "test": "npm run build && tsx --test tests/*.test.ts",
