@@ -43,13 +43,18 @@
   ],
   "icon": "./icon.svg",
   "scripts": {
+    "bench": "node --import tsx bench/run.ts",
+    "bench:corpus": "node --import tsx bench/corpus.ts",
+    "bench:browser": "node --import tsx bench/browser.ts",
+    "bench:compare": "node --import tsx bench/compare.ts",
+    "typecheck:bench": "tsc --noEmit --project tsconfig.bench.json",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
     "test": "npm run build && tsx --test tests/*.test.ts",
     "test:web": "npm run build && vitest run --config vitest.web.config.ts",
     "prepare": "npm run build",
-    "check": "npm run typecheck && npm run typecheck:tests && npm test"
+    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test"
   },
   "dsh": {
     "bundle": {
@@ -111,7 +116,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
-    "playwright": "^1.49.0",
+    "playwright": "1.58.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tsx": "^4.22.4",

@@ -6,6 +6,7 @@ import type { PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.
 import { loadPdfForReading } from './pdf-inspection.ts'
 import type { WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
+import { beginPdfSpan } from '../shared/performance.ts'
 import { draftSchema, requestSchema, type DraftRecord } from './validation.ts'
 import type { createLocalFiles, PdfFileRead } from './local-files.ts'
 import type { PdfAgent } from './transport.ts'
@@ -382,6 +383,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
       if (input.sessionId !== sessionId || sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
       const before = queues.get(sessionId) ?? Promise.resolve()
+      const span = beginPdfSpan('host.dispatch')
       const task = before.catch(() => undefined).then(() => { signal.throwIfAborted(); return run(input, agent, signal) })
       queues.set(sessionId, task)
       try {
@@ -395,7 +397,13 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
           if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
         }
         return { ...value, bytes: wireBytes, bytesHash }
-      } finally { if (queues.get(sessionId) === task) queues.delete(sessionId) }
+      } catch (error) {
+        span.end(signal.aborted ? 'cancelled' : 'error')
+        throw error
+      } finally {
+        span.end()
+        if (queues.get(sessionId) === task) queues.delete(sessionId)
+      }
     },
     dispose(): Promise<void> {
       if (disposal) return disposal

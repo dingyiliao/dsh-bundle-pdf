@@ -1,4 +1,5 @@
 import { PDFString } from 'pdf-lib'
+import { measurePdfSync } from '../shared/performance.js'
 import {
   PdfDocumentError,
   type NewPdfAnnotation, type PdfAnnotation, type PdfAnnotationOperation,
@@ -57,6 +58,16 @@ function validateNew(annotation: NewPdfAnnotation, pageCount: number) {
 
 /** Project an atomic batch onto annotation metadata without reading or rewriting PDF bytes. */
 export function projectPdfOperations(
+  document: PdfDocumentInfo,
+  operations: readonly PdfAnnotationOperation[],
+  operationDates: string | readonly string[],
+): PdfDocumentInfo {
+  return measurePdfSync('host.project', { pageCount: document.pageCount,
+    annotationCount: document.annotations.length, operationCount: Array.isArray(operations) ? operations.length : 0 },
+  () => projectPdfOperationsImpl(document, operations, operationDates))
+}
+
+function projectPdfOperationsImpl(
   document: PdfDocumentInfo,
   operations: readonly PdfAnnotationOperation[],
   operationDates: string | readonly string[],

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { PdfClientApi, WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
+import { measurePdfAsync } from '../shared/performance.ts'
 
 export interface PdfConnection {
   rpc: { call(path: string, method: string, payload: object, signal?: AbortSignal): Promise<unknown> }
@@ -36,8 +37,8 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
   const byteIdentities = new Map<string, string>()
   lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear(); byteIdentities.clear() }, { once: true })
   const call = async (payload: object, signal?: AbortSignal) => {
-    const result = response.parse(await connection.rpc.call('/api', 'pdf.dispatch', payload,
-      signal ? AbortSignal.any([signal, lifetime]) : lifetime))
+    const result = response.parse(await measurePdfAsync('client.rpc', {}, () => connection.rpc.call('/api', 'pdf.dispatch', payload,
+      signal ? AbortSignal.any([signal, lifetime]) : lifetime)))
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
     return result.value
   }

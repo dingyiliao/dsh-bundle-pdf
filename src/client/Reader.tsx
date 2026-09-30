@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { beginPdfSpan } from '../shared/performance.js'
 import { AnnotationMode, type PDFDocumentProxy } from 'pdfjs-dist'
 import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
@@ -628,9 +629,10 @@ export function Reader(props: ReaderProps) {
     setSearching(true)
     setSearched(false)
     const found: SearchHit[] = []
+    const span = beginPdfSpan('client.search', { pageCount: pdf.numPages })
     try {
       for (let number = 1; number <= pdf.numPages; number++) {
-        if (sequence !== searchSequence.current || tab.signal.aborted) return
+        if (sequence !== searchSequence.current || tab.signal.aborted) { span.end('cancelled'); return }
         const ocr = ocrPages.get(number)
         if (ocr) {
           for (const word of ocr.words) if (word.text.toLocaleLowerCase().includes(needle) && word.pdf) {
@@ -663,8 +665,8 @@ export function Reader(props: ReaderProps) {
         if (found.length >= 500) break
       }
       if (sequence === searchSequence.current) { setHits(found); setSearched(true) }
-    } catch (failure) { if (sequence === searchSequence.current) notifyError(failure) }
-    finally { if (sequence === searchSequence.current) setSearching(false) }
+    } catch (failure) { span.end('error'); if (sequence === searchSequence.current) notifyError(failure) }
+    finally { span.end(sequence !== searchSequence.current || tab.signal.aborted ? 'cancelled' : 'ok', { resultCount: found.length }); if (sequence === searchSequence.current) setSearching(false) }
   }
 
   const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {

@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { beginPdfSpan } from '../shared/performance.js'
 import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist'
 import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
@@ -183,21 +184,30 @@ export function Page(props: PageProps) {
       current.style.width = canvas.style.width
       current.style.height = canvas.style.height
     }
-    const task = page.render({ canvas, viewport: nextViewport, transform: [ratio, 0, 0, ratio, 0, 0], annotationMode: AnnotationMode.ENABLE })
+    const span = beginPdfSpan('client.raster', { page: geometry.page, scale,
+      rasterWidth: canvas.width, rasterHeight: canvas.height, effectiveDpr: ratio })
+    let task: ReturnType<typeof page.render>
+    try { task = page.render({ canvas, viewport: nextViewport, transform: [ratio, 0, 0, ratio, 0, 0], annotationMode: AnnotationMode.ENABLE }) }
+    catch (error) { span.end('error'); throw error }
     // Render offscreen, retaining the visible page until its replacement is complete.
     void task.promise.then(() => {
       if (!active) return
       const previous = host.querySelector('canvas')
       host.replaceChildren(canvas)
+      canvas.dataset.pdfRasterReady = 'true'
+      canvas.dataset.pdfRasterScale = String(scale * ratio)
+      span.end()
       if (previous) { previous.width = 0; previous.height = 0 }
       setPaintedAnnotations(loaded.annotations)
       setRendered(true)
     }).catch((error) => {
+      span.end(error?.name === 'RenderingCancelledException' ? 'cancelled' : 'error')
       if (active && error?.name !== 'RenderingCancelledException') callbacks.current.onError(String(error))
     })
     return () => {
       active = false
       task.cancel()
+      span.end('cancelled')
       // The displayed canvas stays intact while a later render is preparing.
       if (canvas.parentNode !== host) { canvas.width = 0; canvas.height = 0 }
     }

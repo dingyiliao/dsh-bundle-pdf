@@ -3,6 +3,7 @@ import {
   PDFObject, PDFRef, PDFString, ParseSpeeds,
 } from 'pdf-lib'
 import { setAnnotationAppearance } from './pdf-appearance.js'
+import { measurePdfAsync } from '../shared/performance.js'
 import {
   PdfDocumentError,
   type EditableAnnotationType, type NewPdfAnnotation, type PdfAnnotation,
@@ -216,7 +217,7 @@ async function parse(bytes: Uint8Array): Promise<PDFDocument> {
 }
 
 export async function loadPdfDocument(bytes: Uint8Array): Promise<PdfDocumentInfo> {
-  return documentInfo(await parse(bytes))
+  return measurePdfAsync('host.inspect', { inputBytes: bytes.byteLength }, async () => documentInfo(await parse(bytes)))
 }
 
 function fail(message: string): never {
@@ -312,6 +313,15 @@ function removeQueuedAnnotations(doc: PDFDocument, removals: Map<PDFArray, Set<P
  * Keep baseline bytes + operation history for undo/redo. Rebase the baseline after manual save.
  */
 export async function applyPdfOperations(
+  bytes: Uint8Array,
+  operations: readonly PdfAnnotationOperation[],
+  operationDates?: readonly string[],
+): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
+  return measurePdfAsync('host.materialize', { inputBytes: bytes.byteLength, operationCount: Array.isArray(operations) ? operations.length : 0 },
+    () => applyPdfOperationsImpl(bytes, operations, operationDates))
+}
+
+async function applyPdfOperationsImpl(
   bytes: Uint8Array,
   operations: readonly PdfAnnotationOperation[],
   operationDates?: readonly string[],

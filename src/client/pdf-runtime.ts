@@ -1,4 +1,5 @@
 import { getDocument, PDFWorker, type PDFDocumentProxy } from 'pdfjs-dist'
+import { beginPdfSpan } from '../shared/performance.js'
 
 type AssetKind = 'cMapUrl' | 'standardFontDataUrl' | 'wasmUrl'
 type BinaryAssets = Readonly<Record<AssetKind, Readonly<Record<string, string>>>>
@@ -220,11 +221,14 @@ export function createPdfRuntime(ownerSignal?: AbortSignal) {
       })
       return task.promise
     }
+    const span = beginPdfSpan('client.worker-open', { inputBytes: bytes.byteLength })
     try {
       const document = await Promise.race([initialize(), failure.promise, worker.failure])
       stopped.throwIfAborted()
+      span.end('ok', { pageCount: document.numPages })
       return { document, dispose: disposeDocument }
     } catch (error) {
+      span.end(stopped.aborted ? 'cancelled' : 'error')
       await disposeDocument()
       throw error
     }
