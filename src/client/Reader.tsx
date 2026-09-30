@@ -85,6 +85,14 @@ export function Reader(props: ReaderProps) {
   const currentSelection = useRef(selection)
   currentSelection.current = selection
   const nativeSelectionRange = useRef<Range | null>(null)
+  const selectionCaptureFrame = useRef<number | null>(null)
+  const selectionCaptureGeneration = useRef(0)
+  const invalidateSelectionCapture = useCallback(() => {
+    selectionCaptureGeneration.current++
+    if (selectionCaptureFrame.current !== null) cancelAnimationFrame(selectionCaptureFrame.current)
+    selectionCaptureFrame.current = null
+  }, [])
+  useEffect(() => () => invalidateSelectionCapture(), [invalidateSelectionCapture])
   const translationService = useRef<TranslationService | null>(null)
   const translationOwner = useRef(translationSelection)
   translationOwner.current = translationSelection
@@ -120,6 +128,7 @@ export function Reader(props: ReaderProps) {
   useEffect(() => {
     const controller = new AbortController()
     const token = ++ownerSequence.current
+    invalidateSelectionCapture()
     const ownerContent = props.content
     screenshotController.current?.abort()
     translationService.current?.setSource(undefined)
@@ -223,11 +232,13 @@ export function Reader(props: ReaderProps) {
       lifetime.position = undefined
     }
     lifetime.contentVersion = snapshot.contentVersion
+    invalidateSelectionCapture()
     setSelection(null)
     nativeSelectionRange.current = null
     setHistoryRevision((n) => n + 1)
   }, [snapshot?.contentVersion])
   useEffect(() => {
+    invalidateSelectionCapture()
     setSelection(null)
     nativeSelectionRange.current = null
     setMode('text')
@@ -625,10 +636,11 @@ export function Reader(props: ReaderProps) {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
   }
   const clearSelection = useCallback(() => {
+    invalidateSelectionCapture()
     setSelection(null); nativeSelectionRange.current = null
     const browser = window.getSelection(), root = state.current.scrollRoot
     if (browser?.rangeCount && root?.contains(browser.getRangeAt(0).commonAncestorContainer)) browser.removeAllRanges()
-  }, [])
+  }, [invalidateSelectionCapture])
   const dismissContext = useCallback(() => {
     clearAnnotation(); clearSelection(); setComment(''); setMode('text')
   }, [clearAnnotation, clearSelection])
@@ -676,6 +688,20 @@ export function Reader(props: ReaderProps) {
     nativeSelectionRange.current = next && browserSelection?.rangeCount ? browserSelection.getRangeAt(0).cloneRange() : null
     setSelection(next)
     if (next) setSelectedAnnotation(undefined)
+  }
+  const scheduleCaptureSelection = () => {
+    if (selectionCaptureFrame.current !== null) cancelAnimationFrame(selectionCaptureFrame.current)
+    const generation = selectionCaptureGeneration.current
+    const owner = ownerSequence.current
+    const documentId = snapshot?.id, revision = snapshot?.revision
+    // Native drag and double-click selection may finish on mouseup, after
+    // pointerup. Read the settled range on the next frame.
+    selectionCaptureFrame.current = requestAnimationFrame(() => {
+      selectionCaptureFrame.current = null
+      if (generation !== selectionCaptureGeneration.current || owner !== ownerSequence.current
+        || state.current.snapshot?.id !== documentId || state.current.snapshot?.revision !== revision) return
+      captureSelection()
+    })
   }
   const beginTranslation = () => {
     if (!hasTextSelection || !selection || !snapshot || displayOwner?.token !== ownerSequence.current) return
@@ -988,7 +1014,7 @@ export function Reader(props: ReaderProps) {
           else clearSelection()
           clearAnnotation()
         }}
-        onPointerUp={captureSelection} onKeyUp={captureSelection}>
+        onPointerUp={scheduleCaptureSelection} onKeyUp={captureSelection}>
         {!pdf && <div className="dsh-pdf-empty" role="status">{error ? t('reader.cannotOpen') : t('reader.loading')}</div>}
         {pageElements}
       </div>

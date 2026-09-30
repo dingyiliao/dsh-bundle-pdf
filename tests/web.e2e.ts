@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, StandardFonts } from 'pdf-lib'
-import { chromium } from 'playwright'
+import { chromium, type Browser } from 'playwright'
 import { expect, it, onTestFailed } from 'vitest'
 import {
   assertFixtureInventory, captureStableAria, compareOrRefreshGolden, launchWebScaffold,
@@ -19,6 +19,15 @@ const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'session.v3
 const EXPECTED = join(ROOT, 'tests', 'expected', 'web-pdf')
 const FILE_NAME = 'reader-e2e.pdf'
 const NOTE = 'Saved through the PDF reader browser UI'
+
+async function launchBrowser(): Promise<Browser> {
+  if (process.platform !== 'win32' || existsSync(chromium.executablePath())) return chromium.launch()
+  try { return await chromium.launch({ channel: 'chrome' }) }
+  catch (error) {
+    if (!/executable doesn't exist|distribution 'chrome' is not found/i.test(String(error))) throw error
+    return chromium.launch({ channel: 'msedge' })
+  }
+}
 
 /** A stable, editable two-page file that is independent of the plugin's PDF writer. */
 async function sourcePdf(): Promise<Uint8Array> {
@@ -62,9 +71,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     const original = await sourcePdf()
     await writeFile(path, original)
 
-    browser = await chromium.launch(
-      process.platform === 'win32' && !existsSync(chromium.executablePath()) ? { channel: 'msedge' } : {},
-    )
+    browser = await launchBrowser()
     const page = await newEnglishPage(browser)
     const tripwire = watchConsole(page)
     onTestFailed(() => saveFailureShot(page, 'pdf-reader-browser'))
@@ -94,6 +101,26 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       webSnapshotMode(),
     )
 
+    // The desktop Mac shell uses this platform CSS and Electron app regions.
+    // Chromium here verifies the selectable text layer and deferred selection
+    // capture through the installed plugin; native macOS remains a separate check.
+    await page.evaluate(() => { document.documentElement.dataset.platform = 'darwin' })
+    const textSpan = reader.locator('.dsh-pdf-text-layer span').filter({ hasText: 'Browser PDF page one' }).first()
+    await textSpan.waitFor({ state: 'visible' })
+    expect(await textSpan.evaluate(element => getComputedStyle(element).getPropertyValue('-webkit-user-select'))).toBe('text')
+    expect(await reader.evaluate(element => getComputedStyle(element).getPropertyValue('-webkit-app-region'))).toBe('no-drag')
+    const textBox = await textSpan.boundingBox()
+    expect(textBox).not.toBeNull()
+    await page.mouse.move(textBox!.x + 8, textBox!.y + textBox!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(textBox!.x + textBox!.width * 0.75, textBox!.y + textBox!.height / 2, { steps: 8 })
+    await page.mouse.up()
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toMatch(/rowser PDF pag/)
+    const selectionToolbar = reader.getByRole('toolbar', { name: 'Selected text actions' })
+    await selectionToolbar.waitFor({ state: 'visible' })
+    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 8, y: 8 } })
+    await selectionToolbar.waitFor({ state: 'hidden' })
+
     await toolbar.locator('summary').click()
     await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
     await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
@@ -121,6 +148,20 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       savedNoteAria.replace(/\d{1,2}\/\d{1,2}\/\d{4}(?=, \{\{clock\}\})/g, '{{date}}'),
       webSnapshotMode(),
     )
+
+    const firstPage = reader.locator('[data-pdf-page="1"]')
+    const widthBeforePinch = await firstPage.evaluate(element => element.offsetWidth)
+    await firstPage.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      for (let index = 0; index < 24; index++) element.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, ctrlKey: true, deltaY: -7,
+        clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2,
+      }))
+    })
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+    expect(await firstPage.evaluate(element => (element as HTMLElement).style.transform)).toMatch(/^scale\(/)
+    await expect.poll(() => firstPage.evaluate(element => element.offsetWidth)).toBeGreaterThan(widthBeforePinch)
+    await expect.poll(() => firstPage.evaluate(element => (element as HTMLElement).style.transform)).toBe('')
     expect(tripwire.pageErrors).toEqual([])
     await assertFixtureInventory(EXPECTED, [
       'opened-toolbar.expected.md', 'dirty-toolbar.expected.md', 'saved-note.expected.md',

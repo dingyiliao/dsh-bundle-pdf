@@ -227,7 +227,7 @@ dist/assets/ocr/   本地 OCR worker、WASM 和中英文语言数据
 
 ## 测试
 
-提交前运行 `npm run check` 和 `npm run test:web`。前者执行源码与测试类型检查、构建、单元测试和构建入口 Loader 冒烟；后者使用相邻的 `../deepseek-harness` checkout 中的 Web 测试脚手架，以临时 Web profile 经 Loader 加载构建产物，再由 Chromium 打开、标注和保存真实 PDF。预期 ARIA 输出位于 `tests/expected/web-pdf/`。先在相邻 DSH 仓库执行 `pnpm install` 和 `pnpm run build`，并在本仓库执行 `npm ci`。缺少相邻 checkout 时 Web 测试会明确报错。Windows 上若 Playwright 缓存没有 Chromium，测试使用已安装的 Microsoft Edge Chromium。
+提交前运行 `npm run check` 和 `npm run test:web`。前者执行源码与测试类型检查、构建、单元测试和构建入口 Loader 冒烟；后者使用相邻的 `../deepseek-harness` checkout 中的 Web 测试脚手架，以临时 Web profile 经 Loader 加载构建产物，再由 Chromium 打开、标注和保存真实 PDF，并检查 Mac 样式下的文字选区与模拟触控板捏合事件。预期 ARIA 输出位于 `tests/expected/web-pdf/`。先在相邻 DSH 仓库执行 `pnpm install` 和 `pnpm run build`，并在本仓库执行 `npm ci`。缺少相邻 checkout 时 Web 测试会明确报错。Windows 上若 Playwright 缓存没有 Chromium，测试优先使用已安装的 Google Chrome，缺少 Chrome 时回退到 Microsoft Edge。模拟事件检查不能代替 macOS Electron 真机验收。
 
 ## 许可证
 
