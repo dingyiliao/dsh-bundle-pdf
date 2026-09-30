@@ -152,6 +152,18 @@ json text_content(Document& doc, const json& request) {
     const auto cp = FPDFText_GetUnicode(text_page, i);
     if (cp == '\r' || cp == '\n') { flush(true); continue; }
     if (!cp || cp < 32) continue;
+    // PDFium exposes supplementary characters as adjacent UTF-16 surrogates.
+    // Combine them before UTF-8 encoding, while including both character boxes
+    // in the text run's width and consuming both PDFium character indices.
+    uint32_t scalar = cp;
+    int last_char = i;
+    if (cp >= 0xd800 && cp <= 0xdbff && i + 1 < chars) {
+      const auto low = FPDFText_GetUnicode(text_page, i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        scalar = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+        last_char = i + 1;
+      }
+    }
     auto object = FPDFText_GetTextObject(text_page, i);
     double x = 0, y = 0, l = 0, r = 0, b = 0, t = 0;
     FS_MATRIX m{1, 0, 0, 1, 0, 0};
@@ -166,12 +178,17 @@ json text_content(Document& doc, const json& request) {
       transform = {m.a * size, m.b * size, m.c * size, m.d * size, x, y};
       owner = object;
     }
-    value += utf8(cp);
+    value += utf8(scalar);
     const double nx = transform[0], ny = transform[1], norm = std::hypot(nx, ny);
     if (norm > 0) {
       const auto projection = [&](double px, double py) { return ((px - transform[4]) * nx + (py - transform[5]) * ny) / norm; };
       width = std::max({width, projection(l,b), projection(l,t), projection(r,b), projection(r,t)});
+      if (last_char != i) {
+        FPDFText_GetCharBox(text_page, last_char, &l, &r, &b, &t);
+        width = std::max({width, projection(l,b), projection(l,t), projection(r,b), projection(r,t)});
+      }
     }
+    i = last_char;
     require(runs.size() < 10000, "Text page exceeds the text-run budget");
   }
   flush(false);

@@ -13,7 +13,7 @@ import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/p
 import styles from '../src/client/reader.css'
 import { pageIndexAtOffset, windowLayout } from '../src/client/native/window-layout.ts'
 
-interface Config { sessionId: string; token: string; pages: number; annotations: number; engine: 'legacy' | 'native' | 'pdfjs' }
+interface Config { sessionId: string; token: string; pages: number; annotations: number; engine: 'native' | 'pdfjs' }
 interface Payload { metrics: Record<string, number | null>; stages: PdfPerformanceEvent[]; qualityPassed: boolean }
 interface Hook { run(scenario: string, timeout: number): Promise<Payload>; snapshot(): unknown; dispose(): Promise<void> }
 declare global { interface Window { __PDF_BENCH_CONFIG__: Config; __PDF_BENCH__: Hook } }
@@ -43,7 +43,7 @@ const api = createPdfApi({ rpc: { async call(_path, method, payload, signal) {
     throw new Error('Reader metadata differs from the corpus manifest')
   }
   return result
-} } }, owner.signal, { protocolV2: config.engine !== 'legacy' })
+} } }, owner.signal)
 let opened = false, timedStart = 0
 const longTasks: { startTime: number; duration: number }[] = []
 const supportsLongTasks = PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false
@@ -80,18 +80,6 @@ function coverage() {
       const left = bounds.left + (scroll.scrollWidth - item.width) / 2 - scroll.scrollLeft
       expectedArea += Math.max(0, Math.min(bounds.right, left + item.width) - Math.max(bounds.left, left))
         * Math.max(0, Math.min(bounds.bottom, top + item.height) - Math.max(bounds.top, top))
-    }
-  } else {
-    let low = 0, high = scroll.children.length
-    while (low < high) { const middle = (low + high) >>> 1; const child = scroll.children[middle] as HTMLElement
-      if (child.offsetTop + child.offsetHeight <= scroll.scrollTop) low = middle + 1; else high = middle }
-    for (let index = low; index < scroll.children.length; index++) {
-      const stage = scroll.children[index].querySelector<HTMLElement>(':scope > .dsh-pdf-virtual-stage')
-      if (!stage) continue
-      const box = stage.getBoundingClientRect()
-      if (box.top >= bounds.bottom) break
-      expectedArea += Math.max(0, Math.min(bounds.right, box.right) - Math.max(bounds.left, box.left))
-        * Math.max(0, Math.min(bounds.bottom, box.bottom) - Math.max(bounds.top, box.top))
     }
   }
   // Pages are vertically ordered in this Reader. A binary search avoids reading 1,000 rectangles each frame.
@@ -152,9 +140,8 @@ async function waitQuality(start: number, timeout: number, response = () => true
 }
 function canvasBytes() { return [...document.querySelectorAll('canvas')].reduce((total, canvas) => total + canvas.width * canvas.height * 4, 0) }
 function validateVisibleContent() {
-  const mounted = document.querySelectorAll('.dsh-pdf-virtual-page').length
-  if (config.engine !== 'native' && mounted !== config.pages) throw new Error('Unexpected page placeholder count')
-  if (config.engine === 'native' && config.pages >= 64 && mounted > 12) throw new Error('Native reader mounted too many page wrappers')
+  const mounted = document.querySelectorAll('.dsh-pdf-windowed-page').length
+  if (config.pages >= 64 && mounted > 12) throw new Error('Reader mounted too many page wrappers')
   const visible = coverage().visible
   if (!visible.length) throw new Error('No visible PDF page')
   const probe = document.createElement('canvas'); probe.width = 64; probe.height = 64
@@ -242,7 +229,7 @@ window.__PDF_BENCH__ = {
     }
     const end = performance.now()
     Object.assign(metrics, tasks(end), { canvasPixelBytesEstimate: metrics.canvasPixelBytesEstimate ?? canvasBytes(), browserTotalRssMiB: null,
-      mountedPageWrappers: document.querySelectorAll('.dsh-pdf-virtual-page').length, domNodes: document.querySelectorAll('*').length })
+      mountedPageWrappers: document.querySelectorAll('.dsh-pdf-windowed-page').length, domNodes: document.querySelectorAll('*').length })
     // Wait for the actual text layer before correctness validation, outside the timing interval.
     const validationStart = performance.now()
     while (coverage().visible.some(page => !page.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('PDF benchmark page'))) {

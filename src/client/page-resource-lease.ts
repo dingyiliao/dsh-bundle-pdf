@@ -1,4 +1,4 @@
-import type { PDFPageProxy } from 'pdfjs-dist'
+import type { ReaderPage } from './reader-document.js'
 
 interface LeaseState {
   owners: number
@@ -6,10 +6,10 @@ interface LeaseState {
   attempts: number
 }
 
-const leases = new WeakMap<PDFPageProxy, LeaseState>()
+const leases = new WeakMap<ReaderPage, LeaseState>()
 
 /** Keep PDF.js operator lists and decoded page objects only while a view uses them. */
-export function leasePageResources(page: PDFPageProxy): () => void {
+export function leasePageResources(page: ReaderPage): () => void {
   let state = leases.get(page)
   if (!state) {
     state = { owners: 0, attempts: 0 }

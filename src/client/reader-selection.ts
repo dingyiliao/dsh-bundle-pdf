@@ -1,11 +1,11 @@
-import type { PDFPageProxy } from 'pdfjs-dist'
 import type { PdfRect } from '../core/pdf-types.js'
+import type { ReaderPage } from './reader-document.js'
 
-export type PageViewport = ReturnType<PDFPageProxy['getViewport']>
+export type PageViewport = ReturnType<ReaderPage['getViewport']>
 export interface PageView {
   element: HTMLElement
   viewport: PageViewport
-  page: PDFPageProxy
+  page: ReaderPage
 }
 export interface ReaderSelection {
   revision: number

@@ -15,9 +15,9 @@ import { finalizeRows } from './persist.ts'
 const { values } = parseArgs({ options: { suite: { type: 'string', default: 'smoke' },
   out: { type: 'string', default: 'bench-results/reader-smoke' }, corpus: { type: 'string', default: 'bench/.generated' },
   repeats: { type: 'string' }, timeout: { type: 'string', default: '60000' }, document: { type: 'string' }, scenario: { type: 'string' },
-  engine: { type: 'string', default: 'legacy' } } })
-if (!['legacy', 'pdfjs', 'native'].includes(values.engine!)) throw new Error('engine must be legacy, pdfjs or native')
-const engine = values.engine as 'legacy' | 'pdfjs' | 'native'
+  engine: { type: 'string', default: 'pdfjs' } } })
+if (!['pdfjs', 'native'].includes(values.engine!)) throw new Error('engine must be pdfjs or native')
+const engine = values.engine as 'pdfjs' | 'native'
 if (!['smoke', 'release'].includes(values.suite!)) throw new Error('suite must be smoke or release')
 const suite = values.suite as 'smoke' | 'release', repeats = Number(values.repeats ?? (suite === 'smoke' ? 3 : 20)), timeout = Number(values.timeout)
 if (!Number.isInteger(repeats) || repeats < 1 || !Number.isInteger(timeout) || timeout < 100) throw new Error('Invalid repeats/timeout')

@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createPdfApi } from '../src/client/api.ts'
 
 test('accepts encrypted read-only snapshots without inventing an unavailable MediaBox', async () => {
   const bytes = Uint8Array.from([37, 80, 68, 70, 45, 49, 46, 55])
-  const api = createPdfApi({ rpc: { async call() {
+  const bytesHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+  const api = createPdfApi({ rpc: { async call(path, method) {
+    assert.equal(path, '/api')
+    assert.equal(method, 'pdf.dispatch.v2')
     return { ok: true, value: {
       id: 'encrypted-pdf', path: 'D:/workspace/encrypted.pdf', sourceVersion: 'source', contentVersion: 'content',
       revision: 0, dirty: false, canUndo: false, canRedo: false, conflict: false,
-      bytes: Buffer.from(bytes).toString('base64'),
+      bytes, bytesHash, reader: { engine: 'pdfjs', bytesHash, generation: 0, protocolVersion: 1 },
       document: {
         pageCount: 1, signed: false, encrypted: true, readOnly: true, readOnlyReason: 'encrypted-document',
         pages: [{ page: 1, cropBox: [0, 0, 200, 300], rotation: 0, userUnit: 1 }],

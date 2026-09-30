@@ -1,0 +1,13 @@
+/* The windowed wrapper owns the label and page spacing. */
+.dsh-pdf-page-stage {
+  position: relative;
+  margin: 0 auto;
+}
+.dsh-pdf-page-stage > .dsh-pdf-page-wrap {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+}
+.dsh-pdf-page-stage > .dsh-pdf-page-wrap > .dsh-pdf-page-label {
+  display: none;
+}

@@ -1,9 +1,9 @@
 import type { PdfPageInfo } from '../../core/pdf-types.js'
 
 /** Initial window estimate; the mounted window uses the browser's actual label and gap height. */
-export const VIRTUAL_PAGE_CHROME_HEIGHT = 43
+export const PAGE_CHROME_HEIGHT = 43
 
-export interface VirtualPageGeometry {
+export interface PageGeometry {
   page: number
   top: number
   width: number
@@ -12,7 +12,7 @@ export interface VirtualPageGeometry {
   scale: number
 }
 
-export interface VirtualPageWindow {
+export interface PageWindow {
   /** Zero-based first mounted page index. */
   start: number
   /** Zero-based exclusive end of the mounted range. */
@@ -39,7 +39,7 @@ export function pagePixelToPdfPoint(
 /** Mirror Page's unloaded PDF viewport size without loading a PDF.js page. */
 export function buildPageLayout(
   pages: readonly PdfPageInfo[], getScale: (page: PdfPageInfo) => number, rotation: number,
-): VirtualPageGeometry[] {
+): PageGeometry[] {
   let top = 0
   return pages.map((geometry) => {
     const scale = getScale(geometry)
@@ -48,7 +48,7 @@ export function buildPageLayout(
     const baseHeight = (geometry.cropBox[3] - geometry.cropBox[1]) * geometry.userUnit
     const width = (quarterTurn ? baseHeight : baseWidth) * scale
     const height = (quarterTurn ? baseWidth : baseHeight) * scale
-    const outerHeight = height + VIRTUAL_PAGE_CHROME_HEIGHT
+    const outerHeight = height + PAGE_CHROME_HEIGHT
     const result = { page: geometry.page, top, width, height, outerHeight, scale }
     top += outerHeight
     return result
@@ -56,7 +56,7 @@ export function buildPageLayout(
 }
 
 /** Binary search the first page whose bottom extends beyond the offset. */
-function firstPageEndingAfter(layout: readonly VirtualPageGeometry[], offset: number): number {
+function firstPageEndingAfter(layout: readonly PageGeometry[], offset: number): number {
   let low = 0, high = layout.length
   while (low < high) {
     const middle = (low + high) >>> 1
@@ -68,8 +68,8 @@ function firstPageEndingAfter(layout: readonly VirtualPageGeometry[], offset: nu
 
 /** The visible pages and one viewport of overscan on both sides. */
 export function windowForViewport(
-  layout: readonly VirtualPageGeometry[], scrollTop: number, viewportHeight: number,
-): VirtualPageWindow {
+  layout: readonly PageGeometry[], scrollTop: number, viewportHeight: number,
+): PageWindow {
   if (!layout.length) return { start: 0, end: 0 }
   const height = Math.max(1, viewportHeight)
   const top = Math.max(0, scrollTop)

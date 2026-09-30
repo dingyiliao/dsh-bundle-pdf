@@ -52,7 +52,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const lifetime = new AbortController()
   ctx.effect(() => () => lifetime.abort(), 'pdf: client lifetime')
   const bootstrap = z.discriminatedUnion('ok', [
-    z.object({ ok: z.literal(true), value: z.object({ namespace: z.string(), settings: settingsSchema,
+    z.object({ ok: z.literal(true), value: z.object({ namespace: z.string(), settingsNamespace: z.string(), settings: settingsSchema,
       translationEngines: z.array(z.object({ id: z.string(), name: z.string(), version: z.string(),
         execution: z.enum(['disabled', 'local', 'remote']), maxInputCharacters: z.number().int().positive().optional() })) }) }),
     z.object({ ok: z.literal(false), error: z.object({ message: z.string() }) }),
@@ -62,7 +62,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   if (lifetime.signal.aborted || ctx.fiber?.uid === null) return
   if (!bootstrap.ok) throw new Error(bootstrap.error.message)
   const info = bootstrap.value
-  const form = ctx.configForms.get(info.namespace)
+  const form = ctx.configForms.get(info.settingsNamespace)
   const subscribeSettings = (listener: () => void) => form.subscribe(listener)
   const readSettings = () => form.getSnapshot()
   const ocr = createOcrRegistry({
@@ -95,7 +95,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const dictionary = createNativeDictionary()
   ctx.effect(() => () => dictionary.dispose(), 'pdf: native dictionary lifecycle')
   ctx.effect(() => ctx.reflect.provide('pdfDictionary', dictionary), 'pdf: native dictionary capability')
-  const api = createPdfApi(ctx.connection, lifetime.signal, { protocolV2: true })
+  const api = createPdfApi(ctx.connection, lifetime.signal)
   const sessionLifecycle = createPdfSessionLifecycle({
     currentSession: ctx.uiSession.adapter.current, sidebar: ctx.sidebarRight, api, signal: lifetime.signal,
     onError: error => { console.error('[pdf] Failed to discard PDFs after Session switch', error) },

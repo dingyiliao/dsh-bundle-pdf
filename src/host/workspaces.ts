@@ -26,8 +26,6 @@ type Files = ReturnType<typeof createLocalFiles>
 type RenderedPdf = Pick<WorkspaceSnapshot, 'bytes' | 'document'>
 type WorkspaceRecord = DraftRecord & { groupDates: string[] }
 
-const encodedCacheBytes = 4 * 1024 * 1024
-
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')
 }
@@ -46,7 +44,6 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   const byPath = new Map<string, string>()
   const queues = new Map<string, Promise<unknown>>()
   const hashes = new WeakMap<Uint8Array, string>()
-  const encoded = new WeakMap<Uint8Array, string>()
   let closing = false
   let disposal: Promise<void> | undefined
 
@@ -406,18 +403,6 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       return copy.snapshot
     },
     bytesHash: renderedHash,
-    async dispatch(sessionId: string, input: Record<string, unknown>, agent: PdfAgent, signal: AbortSignal) {
-      const value = await execute(sessionId, input, agent, signal)
-      if (!('bytes' in value)) return value
-      const bytesHash = renderedHash(value.bytes)
-      if (input.knownBytesHash === bytesHash) return { ...value, bytes: undefined, bytesHash }
-      let wireBytes = encoded.get(value.bytes)
-      if (!wireBytes) {
-        wireBytes = base64(value.bytes)
-        if (value.bytes.byteLength <= encodedCacheBytes) encoded.set(value.bytes, wireBytes)
-      }
-      return { ...value, bytes: wireBytes, bytesHash }
-    },
     dispose(): Promise<void> {
       if (disposal) return disposal
       closing = true

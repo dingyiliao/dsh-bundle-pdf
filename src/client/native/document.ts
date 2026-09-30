@@ -1,17 +1,14 @@
-import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
 import { ByteCache } from '../../engine/byte-cache.ts'
 import type { NativeReaderApi, NativeTextContent, NativeTileRequest } from '../../shared/native.ts'
 import type { WorkspaceSnapshot } from '../../shared/contracts.ts'
+import type { ReaderAnnotation, ReaderDocument, ReaderPage, ReaderRenderOptions } from '../reader-document.ts'
 import { NativeViewport } from './viewport.ts'
 
-const documents = new WeakMap<object, NativeDocument>()
-const pages = new WeakMap<object, NativePage>()
-export const nativeDocument = (document: PDFDocumentProxy): NativeDocument | undefined => documents.get(document)
-export const nativePage = (page: PDFPageProxy): NativePage | undefined => pages.get(page)
+export const nativeDocument = (document: ReaderDocument): NativeDocument | undefined => document instanceof NativeDocument ? document : undefined
+export const nativePage = (page: ReaderPage): NativePage | undefined => page instanceof NativePage ? page : undefined
 
 /** Only the public reader methods are adapted. No PDF.js parser or worker is opened. */
-export class NativeDocument {
-  readonly proxy: PDFDocumentProxy
+export class NativeDocument implements ReaderDocument {
   readonly numPages: number
   readonly lifetime = new AbortController()
   private pageCache = new Map<number, NativePage>()
@@ -19,16 +16,15 @@ export class NativeDocument {
   private bitmapCache = new ByteCache<ImageBitmap>(24 * 1024 * 1024, image => image.close())
   constructor(readonly snapshot: WorkspaceSnapshot, readonly sessionId: string, readonly api: NativeReaderApi) {
     this.numPages = snapshot.document.pageCount
-    this.proxy = this as unknown as PDFDocumentProxy; documents.set(this.proxy, this)
   }
-  async getPage(number: number): Promise<PDFPageProxy> {
+  async getPage(number: number): Promise<ReaderPage> {
     this.lifetime.signal.throwIfAborted()
     if (!Number.isInteger(number) || number < 1 || number > this.numPages) throw new RangeError('Page is outside the PDF')
     let page = this.pageCache.get(number)
     if (!page) page = new NativePage(this, number)
     this.pageCache.delete(number); this.pageCache.set(number, page)
     while (this.pageCache.size > 32) this.pageCache.delete(this.pageCache.keys().next().value!)
-    return page.proxy
+    return page
   }
   getDestination(name: string): Promise<unknown> {
     return this.api.destination(this.sessionId, this.snapshot.id, this.snapshot.reader!, name, this.lifetime.signal)
@@ -62,15 +58,13 @@ export class NativeDocument {
   async dispose(): Promise<void> { this.lifetime.abort(); this.bitmapCache.clear(); this.textCache.clear(); this.pageCache.clear() }
 }
 
-export class NativePage {
-  readonly proxy: PDFPageProxy
+export class NativePage implements ReaderPage {
   readonly rotate: number
   readonly userUnit: number
   readonly view: number[]
   constructor(readonly owner: NativeDocument, readonly pageNumber: number) {
     const geometry = owner.snapshot.document.pages[pageNumber - 1]
     this.rotate = geometry.rotation; this.userUnit = geometry.userUnit; this.view = [...geometry.cropBox]
-    this.proxy = this as unknown as PDFPageProxy; pages.set(this.proxy, this)
   }
   getViewport(options: { scale: number; rotation?: number; offsetX?: number; offsetY?: number; dontFlip?: boolean }): NativeViewport {
     return new NativeViewport(this.owner.snapshot.document.pages[this.pageNumber - 1], options.scale, options.rotation ?? this.rotate,
@@ -82,17 +76,17 @@ export class NativePage {
       try { controller.enqueue(await this.getTextContent()); controller.close() } catch (error) { controller.error(error) }
     } })
   }
-  async getAnnotations(): Promise<unknown[]> {
-    const links = await this.owner.api.links(this.owner.sessionId, this.owner.snapshot.id, this.owner.snapshot.reader!, this.pageNumber, this.owner.lifetime.signal)
+  async getAnnotations(): Promise<ReaderAnnotation[]> {
+    const links = await this.owner.api.links(this.owner.sessionId, this.owner.snapshot.id, this.owner.snapshot.reader!, this.pageNumber, this.owner.lifetime.signal) as ReaderAnnotation[]
     return [...links, ...this.owner.snapshot.document.annotations.filter(a => a.page === this.pageNumber && a.linkAction && a.rect)
-      .map(a => ({ id: a.id, subtype: 'Link', rect: a.rect, quadPoints: a.quadPoints, action: a.linkAction }))]
+      .map(a => ({ id: a.id, subtype: 'Link', rect: a.rect!, quadPoints: a.quadPoints, action: a.linkAction }))]
   }
   cleanup(): boolean { return true }
   tile(tile: Omit<NativeTileRequest, 'page'>, signal: AbortSignal): Promise<ImageBitmap> {
     return this.owner.bitmap({ ...tile, page: this.pageNumber }, signal)
   }
   /** Shared screenshot/OCR adapter: compose only the requested region, tile by tile. */
-  render(options: { canvas: HTMLCanvasElement; viewport: NativeViewport; transform?: number[]; annotationMode?: number }) {
+  render(options: ReaderRenderOptions) {
     const controller = new AbortController()
     const promise = (async () => {
       const { canvas, viewport } = options, t = options.transform ?? [1, 0, 0, 1, 0, 0]
@@ -117,5 +111,5 @@ export class NativePage {
 
 export async function openNativeDocument(snapshot: WorkspaceSnapshot, sessionId: string, api: NativeReaderApi) {
   const owner = new NativeDocument(snapshot, sessionId, api)
-  return { document: owner.proxy, dispose: () => owner.dispose() }
+  return { document: owner, dispose: () => owner.dispose() }
 }

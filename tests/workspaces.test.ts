@@ -73,7 +73,7 @@ function harness(initial: Uint8Array) {
 }
 
 async function snapshot(workspaces: ReturnType<typeof createWorkspaces>, input: Record<string, unknown>) {
-  const result = await workspaces.dispatch(sessionId, { sessionId, ...input }, agent, signal)
+  const result = await workspaces.execute(sessionId, { sessionId, ...input }, agent, signal)
   if (!('document' in result)) throw new Error('Expected a PDF workspace snapshot')
   return result
 }
@@ -90,7 +90,7 @@ test('edits and redo publish new annotation metadata while retaining the source 
     const opened = await snapshot(workspaces, { action: 'open', address })
     const edited = await snapshot(workspaces, edit(opened.id, opened.revision, note('first')))
     assert.equal(edited.bytes, opened.bytes)
-    assert.equal(edited.bytes, Buffer.from(bytes).toString('base64'))
+    assert.deepEqual(edited.bytes, bytes)
     assert.equal(edited.document.annotations.find(item => item.id === 'first')?.contents, 'first')
     assert.equal(edited.baselineAnnotations?.length, 0)
     assert.equal(edited.dirty, true)
@@ -140,7 +140,7 @@ test('a restarted workspace restores the draft and its undo and redo branch', as
   const recoveredWorkspaces = createWorkspaces(state.files, state.drafts)
   try {
     const recovered = await snapshot(recoveredWorkspaces, { action: 'open', address })
-    assert.equal(recovered.bytes, beforeRestart.bytes)
+    assert.deepEqual(Buffer.from(recovered.bytes), Buffer.from(beforeRestart.bytes))
     assert.deepEqual(recovered.document.annotations.map(item => item.id), ['first'])
     assert.equal(recovered.canUndo, true)
     assert.equal(recovered.canRedo, true)
@@ -175,7 +175,7 @@ test('save materializes valid PDF bytes and a failed write retains the draft', a
     const recovered = await snapshot(recoveredWorkspaces, { action: 'open', address })
     assert.equal(recovered.dirty, true)
     assert.equal(recovered.document.annotations[0].id, 'saved-note')
-    assert.equal(recovered.bytes, Buffer.from(bytes).toString('base64'))
+    assert.deepEqual(Buffer.from(recovered.bytes), Buffer.from(bytes))
     const saved = await snapshot(recoveredWorkspaces, {
       action: 'save', id: recovered.id, revision: recovered.revision, options: {},
     })

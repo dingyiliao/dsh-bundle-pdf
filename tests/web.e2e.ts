@@ -11,7 +11,7 @@ import {
   assertFixtureInventory, captureStableAria, compareOrRefreshGolden, launchWebScaffold,
   seedSession, watchConsole, webSnapshotMode,
 } from '../../deepseek-harness/apps/web/tests/scaffold.ts'
-import { newEnglishPage, saveFailureShot } from '../../deepseek-harness/apps/web/tests/support.ts'
+import { newEnglishPage, openSettings, saveFailureShot } from '../../deepseek-harness/apps/web/tests/support.ts'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
@@ -93,6 +93,15 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     onTestFailed(() => saveFailureShot(page, 'pdf-reader-browser'))
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await openSettings(page, 'en')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    const historyCapacity = settings.getByRole('spinbutton', { name: 'Navigation history capacity' })
+    await expect.poll(() => historyCapacity.isEnabled()).toBe(true)
+    await historyCapacity.fill('101')
+    await settings.getByRole('button', { name: 'Save settings' }).click()
+    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await page.keyboard.press('Escape')
     await page.getByRole('treeitem').filter({ hasText: 'PDF browser test' }).click()
     const column = page.locator('[data-rightbar-col]')
     await page.locator('[data-sidebar-right-expand]').click()
@@ -153,9 +162,32 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       webSnapshotMode(),
     )
 
+    await expect.poll(() => reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
+    await reader.evaluate(element => {
+      const owner = window as typeof window & { __pdfPaintWatch?: { blanks: number; frame: number; active: boolean } }
+      const watch = { blanks: 0, frame: 0, active: true }
+      owner.__pdfPaintWatch = watch
+      const sample = () => {
+        if (!watch.active) return
+        if (!element.querySelector('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]')) watch.blanks++
+        watch.frame = requestAnimationFrame(sample)
+      }
+      sample()
+    })
     await save.click()
     await expect.poll(() => save.isDisabled()).toBe(true)
     await expect.poll(() => savedNoteContents(path)).toEqual([NOTE])
+    await expect.poll(() => reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
+    const blankFrames = await page.evaluate(() => {
+      const owner = window as typeof window & { __pdfPaintWatch?: { blanks: number; frame: number; active: boolean } }
+      const watch = owner.__pdfPaintWatch
+      if (!watch) throw new Error('PDF paint watch was not installed')
+      watch.active = false
+      cancelAnimationFrame(watch.frame)
+      delete owner.__pdfPaintWatch
+      return watch.blanks
+    })
+    expect(blankFrames).toBe(0)
     expect(Buffer.from(await readFile(path)).equals(Buffer.from(original))).toBe(false)
     const savedNoteAria = await captureStableAria(page, '.dsh-pdf-notes', scaffold.workspaceCwd)
     expect(savedNoteAria).toMatch(/Created: \d{1,2}\/\d{1,2}\/\d{4}, \{\{clock\}\}/)
@@ -275,7 +307,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
       .toContain('Browser PDF page 1')
     expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
 
-    // Select across two real PDF.js text layers. A DOM Range avoids relying on
+    // Select across two visible PDF text layers. A DOM Range avoids relying on
     // platform-specific drag speed while exercising Reader's keyup capture path.
     await expect.poll(() => reader.locator('[data-pdf-page="2"] [data-pdf-text="active"]').textContent())
       .toContain('Browser PDF page 2')

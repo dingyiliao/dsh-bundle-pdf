@@ -28,7 +28,7 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
       }): () => Promise<void>
     }
   }
-  loader: { locate(): string | undefined }
+  loader: { locate(): string | undefined; resolve(id: string): { options: { id: string } } }
   effect(callback: () => (() => void | Promise<void>), label?: string): unknown
   storageDomain: {
     open(spec: ReturnType<typeof defineDomain>): Promise<{
@@ -45,6 +45,7 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
 export async function apply(ctx: HostContext, config: HostConfig): Promise<void> {
   const namespace = ctx.loader.locate()
   if (!namespace) throw new Error('PDF must be loaded as a configured plugin entry')
+  const settingsNamespace = ctx.loader.resolve(namespace).options.id
   const suffix = createHash('sha256').update(namespace).digest('hex').slice(0, 16)
   // One adapter owns every session's canonical-path save queue. Its limit is
   // read again at operation boundaries after settings change.
@@ -78,8 +79,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
   }
   try {
     ctx.effect(() => {
-      disposers.push(registerPdfTransport(ctx, workspaces.dispatch))
-      disposers.push(registerPdfTransport(ctx, pdfService.dispatch, { endpoint: 'pdf.dispatch.v2' }))
+      disposers.push(registerPdfTransport(ctx, pdfService.dispatch))
       disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerAssets(ctx))
@@ -103,7 +103,7 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
             return new Response('Invalid RPC', { status: 400, headers })
           }
           return Response.json({ type: 'server-response', rpcId: input.rpcId,
-            result: { ok: true, value: { namespace, settings: readConfig(config), translationEngines: translations.registry.list() } },
+            result: { ok: true, value: { namespace, settingsNamespace, settings: readConfig(config), translationEngines: translations.registry.list() } },
           }, { headers })
         },
       }))

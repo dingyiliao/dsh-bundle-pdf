@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PDFPageProxy } from 'pdfjs-dist'
-import { leasePageResources } from '../src/client/experiment/page-resource-lease.js'
+import { leasePageResources } from '../src/client/page-resource-lease.js'
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 async function within(done: Promise<void>): Promise<void> {

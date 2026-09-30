@@ -1,9 +1,9 @@
-import type { VirtualPageGeometry } from '../experiment/virtual-page-layout.ts'
-const roots = new WeakMap<HTMLElement, readonly VirtualPageGeometry[]>()
-export const setWindowLayout = (root: HTMLElement, layout: readonly VirtualPageGeometry[]) => roots.set(root, layout)
+import type { PageGeometry } from './page-layout.ts'
+const roots = new WeakMap<HTMLElement, readonly PageGeometry[]>()
+export const setWindowLayout = (root: HTMLElement, layout: readonly PageGeometry[]) => roots.set(root, layout)
 export const clearWindowLayout = (root: HTMLElement) => roots.delete(root)
 export const windowLayout = (root: HTMLElement) => roots.get(root)
-export function pageIndexAtOffset(layout: readonly VirtualPageGeometry[], offset: number): number {
+export function pageIndexAtOffset(layout: readonly PageGeometry[], offset: number): number {
   let low = 0, high = layout.length
   while (low < high) {
     const middle = (low + high) >>> 1

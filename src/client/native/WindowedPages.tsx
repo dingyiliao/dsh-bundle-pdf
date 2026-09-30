@@ -1,10 +1,26 @@
 import React, { useLayoutEffect, useMemo, useState } from 'react'
-import type { VirtualPagesProps } from '../experiment/VirtualPages.tsx'
-import { buildPageLayout, windowForViewport } from '../experiment/virtual-page-layout.ts'
+import type { PdfPageInfo } from '../../core/pdf-types.js'
+import { buildPageLayout, windowForViewport } from './page-layout.ts'
 import { clearWindowLayout, pageIndexAtOffset, setWindowLayout } from './window-layout.ts'
 
+export interface WindowedPagesProps {
+  pages: readonly PdfPageInfo[]
+  rotation: number
+  zoom: number
+  fit: 'custom' | 'width' | 'page'
+  size: { width: number; height: number }
+  scrollRoot: HTMLElement | null
+  t(key: string): string
+  scaleForPage(page: PdfPageInfo): number
+  hasOcrText(page: number): boolean
+  pinnedPages?: ReadonlySet<number>
+  selectedTextPages?: ReadonlySet<number>
+  dragAnchorPage?: number | null
+  renderPage(page: PdfPageInfo, retainTextLayer: boolean): React.ReactNode
+}
+
 /** Numeric geometry is O(P); DOM, text layers and canvases contain only active pages. */
-export function WindowedPages(props: VirtualPagesProps) {
+export function WindowedPages(props: WindowedPagesProps) {
   const { pages, scrollRoot, size, rotation, zoom, fit, scaleForPage } = props
   const layout = useMemo(() => buildPageLayout(pages, scaleForPage, rotation), [pages, scaleForPage, rotation, zoom, fit, size.width, size.height])
   const [position, setPosition] = useState(() => scrollRoot?.scrollTop ?? 0)
@@ -31,11 +47,11 @@ export function WindowedPages(props: VirtualPagesProps) {
       const item = layout[index]
       if (!item) return null
       const retainText = !!props.selectedTextPages?.has(item.page) || !!props.dragAnchorPage && index >= Math.min(props.dragAnchorPage - 1, visible) && index <= Math.max(props.dragAnchorPage - 1, visible)
-      return <div key={item.page} className="dsh-pdf-page-wrap dsh-pdf-virtual-page dsh-pdf-windowed-page"
-        data-page-number={item.page} data-virtual-page-active="true"
+      return <div key={item.page} className="dsh-pdf-page-wrap dsh-pdf-windowed-page"
+        data-page-number={item.page}
         style={{ position: 'absolute', top: item.top, left: 0, width: totalWidth, height: item.outerHeight }}>
         <div className="dsh-pdf-page-label" style={{ height: 27, boxSizing: 'border-box' }}>{props.t('reader.page')} {item.page}{props.hasOcrText(item.page) ? ` · ${props.t('reader.ocrText')}` : ''}</div>
-        <div className="dsh-pdf-virtual-stage" style={{ width: item.width, height: item.height }}>
+        <div className="dsh-pdf-page-stage" style={{ width: item.width, height: item.height }}>
           {props.renderPage(pages[index], retainText)}
         </div>
       </div>

@@ -72,21 +72,21 @@ test('workspaces publish original encrypted bytes and reject edits and saves bef
     save: async () => { writes++; throw new Error('Read-only inspection attempted a write') },
   } as unknown as Parameters<typeof createWorkspaces>[0]
   const drafts = { get: () => undefined, put: async () => undefined, delete: async () => undefined }
-  const agent = { session: { id: sessionId } } as Parameters<ReturnType<typeof createWorkspaces>['dispatch']>[2]
+  const agent = { session: { id: sessionId } } as Parameters<ReturnType<typeof createWorkspaces>['execute']>[2]
   const controller = new AbortController()
   const workspaces = createWorkspaces(files, drafts)
   try {
-    const opened = await workspaces.dispatch(sessionId, {
+    const opened = await workspaces.execute(sessionId, {
       action: 'open', sessionId, address: `dsh-resource://file/session/${sessionId}/D%3A/fixtures/encrypted.pdf`,
     }, agent, controller.signal)
     assert.ok('bytes' in opened)
     assert.equal(opened.document.readOnly, true)
-    assert.equal(opened.bytes, Buffer.from(bytes).toString('base64'))
+    assert.deepEqual(opened.bytes, bytes)
     for (const request of [
       { action: 'save', options: {} },
       { action: 'change', operations: [{ type: 'delete', id: opened.document.annotations[0].id }] },
     ]) {
-      await assert.rejects(workspaces.dispatch(sessionId, {
+      await assert.rejects(workspaces.execute(sessionId, {
         ...request, sessionId, id: opened.id, revision: opened.revision,
       }, agent, controller.signal), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'pdf/read-only')
     }

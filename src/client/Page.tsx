@@ -1,17 +1,18 @@
 import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { beginPdfSpan } from '../shared/performance.js'
-import { AnnotationMode, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist'
+import { AnnotationMode, TextLayer } from 'pdfjs-dist'
+import type { ReaderDocument, ReaderPage } from './reader-document.js'
 import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type PageViewport, type ReaderSelection } from './reader-selection.js'
 import { annotationAtPoint, annotationPatchBoxes, annotationPolygons, createAnnotationHitTester, createRectHitIndex, markupOverlappingPatches, pendingMarkupAnnotations, staleNativeAnnotations, visibleAnnotation, type AnnotationPoint } from './reader-annotations.js'
 import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from './reader-links.js'
-import { leasePageResources } from './experiment/page-resource-lease.js'
+import { leasePageResources } from './page-resource-lease.js'
 import { nativeDocument, nativePage } from './native/document.ts'
 import { TileSurface } from './native/TileSurface.tsx'
 
 export interface PageProps {
-  pdf: PDFDocumentProxy
+  pdf: ReaderDocument
   geometry: PdfPageInfo
   scale: number
   rotation: number
@@ -36,7 +37,7 @@ export interface PageProps {
   onError(message: string): void
 }
 
-interface LoadedPage { owner: PDFDocumentProxy; page: PDFPageProxy; annotations: PdfAnnotation[]; links?: PdfLink[] }
+interface LoadedPage { owner: ReaderDocument; page: ReaderPage; annotations: PdfAnnotation[]; links?: PdfLink[] }
 const noLinks: PdfLink[] = []
 const noAnnotations: PdfAnnotation[] = []
 const noOcrWords: PdfOcrTextPart[] = []
@@ -101,10 +102,11 @@ export function Page(props: PageProps) {
   const native = page ? nativePage(page) : undefined
   const [paintedAnnotations, setPaintedAnnotations] = useState<PdfAnnotation[]>([])
   const [barePage, setBarePage] = useState<{
-    owner: PDFDocumentProxy; page: PDFPageProxy; scale: number; angle: number; ratio: number; canvas: HTMLCanvasElement
+    owner: ReaderDocument; page: ReaderPage; scale: number; angle: number; ratio: number; canvas: HTMLCanvasElement
   } | null>(null)
   const [links, setLinks] = useState<PdfLink[]>([])
   const [rendered, setRendered] = useState(false)
+  const [displayedRasterOwner, setDisplayedRasterOwner] = useState<ReaderDocument | null>(null)
   const [nativeBoxes, setNativeBoxes] = useState<PdfRect[]>([])
   const [drag, setDrag] = useState<{ x: number; y: number; endX: number; endY: number } | null>(null)
   const dragPointer = useRef<{ element: HTMLElement; pointerId: number } | null>(null)
@@ -124,6 +126,10 @@ export function Page(props: PageProps) {
   const staleNative = useMemo(() => staleNativeAnnotations(props.annotations, sourceAnnotations), [props.annotations, sourceAnnotations])
   const patchBoxes = useMemo(() => viewport ? staleNative.flatMap(annotation => annotationPatchBoxes(annotation, viewport)) : [],
     [staleNative, viewport])
+  // A save replaces the native document before this page's new proxy arrives.
+  // Keep the old raster and its patch plan visible during that handoff.
+  const tilePatchBoxes = useRef<PdfRect[]>([])
+  if (pageOwner === pdf) tilePatchBoxes.current = patchBoxes
   // Preparing the clean page when an existing annotation is selected keeps the
   // following delete/color action responsive without changing the visible page.
   const needsBarePage = staleNative.length > 0 || sourceAnnotations.some(annotation => annotation.id === props.selectedAnnotation && annotation.editable)
@@ -198,10 +204,12 @@ export function Page(props: PageProps) {
       if (!active) return
       const previous = host.querySelector('canvas')
       host.replaceChildren(canvas)
+      if (displayedRasterOwner !== pdf) releaseCanvases(patchHost.current)
       canvas.dataset.pdfRasterReady = 'true'
       canvas.dataset.pdfRasterScale = String(scale * ratio)
       span.end()
       if (previous) { previous.width = 0; previous.height = 0 }
+      setDisplayedRasterOwner(pdf)
       setPaintedAnnotations(loaded.annotations)
       setRendered(true)
     }).catch((error) => {
@@ -237,6 +245,7 @@ export function Page(props: PageProps) {
   useEffect(() => {
     const host = patchHost.current
     if (!host) return
+    if (displayedRasterOwner !== pdf && near && !native) return
     releaseCanvases(host)
     if (!near || !viewport || !staleNative.length || !barePage || barePage.owner !== pdf || barePage.page !== page
       || barePage.scale !== scale || barePage.angle !== angle) return
@@ -253,8 +262,11 @@ export function Page(props: PageProps) {
         (right - left) * barePage.ratio, (bottom - top) * barePage.ratio, 0, 0, patch.width, patch.height)
       host.append(patch)
     }
+  }, [near, viewport, patchBoxes, staleNative.length, barePage, pdf, page, scale, angle, native, displayedRasterOwner])
+  useEffect(() => {
+    const host = patchHost.current
     return () => releaseCanvases(host)
-  }, [near, viewport, patchBoxes, staleNative.length, barePage, pdf, page, scale, angle])
+  }, [])
 
   useEffect(() => {
     if (nativeOwner) return
@@ -433,8 +445,9 @@ export function Page(props: PageProps) {
       onDoubleClick={cancelLinkClick} onPointerCancel={() => { clearDrag(); textPress.current = null; cancelLinkClick(); clearLinkCursor() }}
       onLostPointerCapture={(event) => { if (dragPointer.current?.pointerId === event.pointerId) clearDrag() }}>
       <div className="dsh-pdf-canvas" ref={canvasHost}>
-        {near && native && pageOwner === pdf && viewport && <TileSurface page={native} viewport={viewport} scrollRoot={props.scrollRoot} patchBoxes={patchBoxes}
-          onReady={() => { setPaintedAnnotations(sourceAnnotations); setRendered(true) }} onError={props.onError} />}
+        {near && native && viewport && <TileSurface page={native} viewport={viewport} scrollRoot={props.scrollRoot} patchBoxes={tilePatchBoxes.current}
+          onReady={() => { if (pageOwner !== pdf) return; setPaintedAnnotations(sourceAnnotations); setRendered(true) }}
+          onError={(message) => { if (pageOwner === pdf) props.onError(message) }} />}
       </div>
       <div className="dsh-pdf-annotation-patches" ref={patchHost} aria-hidden="true" />
       {near && viewport && (pending.length > 0 || overlapping.length > 0) && <svg className="dsh-pdf-annotation-overlay" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">

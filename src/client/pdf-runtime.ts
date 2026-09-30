@@ -1,5 +1,6 @@
 import { getDocument, PDFWorker, type PDFDocumentProxy } from 'pdfjs-dist'
 import { beginPdfSpan } from '../shared/performance.js'
+import type { ReaderDocument } from './reader-document.js'
 
 type AssetKind = 'cMapUrl' | 'standardFontDataUrl' | 'wasmUrl'
 type BinaryAssets = Readonly<Record<AssetKind, Readonly<Record<string, string>>>>
@@ -25,7 +26,7 @@ function deferred<T>() {
 }
 
 export interface OpenPdf {
-  document: PDFDocumentProxy
+  document: ReaderDocument
   dispose(): Promise<void>
 }
 

@@ -92,7 +92,7 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
     })))
     calls.push({ payload, value: result.value }); return result
   }
-  const api = createPdfApi({ rpc: { call: (_path, method, payload) => call(method, payload) } }, clientLifetime.signal, { protocolV2: true })
+  const api = createPdfApi({ rpc: { call: (_path, method, payload) => call(method, payload) } }, clientLifetime.signal)
   try {
     const opened = await api.open('native-test', 'dsh-resource://file/session/native-test//fixtures/native.pdf')
     assert.equal(opened.reader?.engine, 'native'); assert.equal(opened.bytes.length, 0)

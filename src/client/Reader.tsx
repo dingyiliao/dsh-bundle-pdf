@@ -1,22 +1,21 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { beginPdfSpan } from '../shared/performance.js'
-import { AnnotationMode, type PDFDocumentProxy } from 'pdfjs-dist'
+import { AnnotationMode } from 'pdfjs-dist'
 import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
 import { mapImageBoxToPdf, mapResultToPdf } from '../ocr/mapping.js'
 import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import type { ReaderProps } from './contracts.js'
+import type { ReaderDocument } from './reader-document.js'
 import { ReaderPage } from './ReaderPage.js'
-import { VirtualPages } from './experiment/VirtualPages.js'
 import { nativeDocument, openNativeDocument } from './native/document.ts'
 import { WindowedPages } from './native/WindowedPages.tsx'
 import { pageIndexAtOffset, windowLayout } from './native/window-layout.ts'
-import { pagePixelToPdfPoint } from './experiment/virtual-page-layout.js'
-import { startExperimentalPageWarmup, type PageWarmupHandle } from './experiment/page-warmup.js'
-import virtualPagesStyles from './experiment/virtual-pages.css'
+import { pagePixelToPdfPoint } from './native/page-layout.js'
+import windowedPagesStyles from './windowed-pages.css'
 import { captureTextSelection, colorFromHex, colorToHex, pdfRectToViewport, overlapFraction, type PageView, type ReaderSelection } from './reader-selection.js'
 import { readerLifetime, type OcrPage } from './reader-lifetime.js'
-import { joinSearchText } from './reader-search.js'
+import { joinSearchText, searchItemAtOffset, searchOffsetMap, searchResultExcerpt, SearchTextIndex } from './reader-search.js'
 import { formatAnnotationDate } from './reader-dates.js'
 import { FloatingToolbar, visibleReadingBounds } from './FloatingToolbar.js'
 import { OverlayScrollbars } from './OverlayScrollbar.js'
@@ -32,28 +31,6 @@ import { usePdfViewportSize } from './use-pdf-viewport-size.js'
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 const noAnnotations: PdfAnnotation[] = []
-function waitForForegroundCanvas(root: HTMLElement | null, signal: AbortSignal): Promise<void> {
-  if (!root || signal.aborted || root.querySelector('.dsh-pdf-canvas canvas')) return Promise.resolve()
-  return new Promise((resolve) => {
-    let finished = false
-    const finish = () => {
-      if (finished) return
-      finished = true
-      observer.disconnect()
-      clearTimeout(timeout)
-      signal.removeEventListener('abort', finish)
-      resolve()
-    }
-    const observer = new MutationObserver(() => {
-      if (root.querySelector('.dsh-pdf-canvas canvas')) finish()
-    })
-    // Rendering can fail or a hidden reader may never intersect the viewport.
-    const timeout = setTimeout(finish, 6000)
-    signal.addEventListener('abort', finish, { once: true })
-    observer.observe(root, { childList: true, subtree: true })
-    if (root.querySelector('.dsh-pdf-canvas canvas')) finish()
-  })
-}
 function groupAnnotations(annotations: readonly PdfAnnotation[]) {
   const grouped = new Map<number, PdfAnnotation[]>()
   for (const annotation of annotations) {
@@ -71,7 +48,7 @@ export function Reader(props: ReaderProps) {
   const lifetime = readerLifetime(sessionId, tab.id, tab.signal, settings.historyCapacity)
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null)
   const [displayOwner, setDisplayOwner] = useState<{ token: number; content: ReaderProps['content'] } | null>(null)
-  const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
+  const [pdf, setPdf] = useState<ReaderDocument | null>(null)
   const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -137,14 +114,10 @@ export function Reader(props: ReaderProps) {
   const navigationLock = useRef(false)
   const operationLock = useRef(false)
   const [navigating, setNavigating] = useState(false)
-  const activePdf = useRef<{ document: PDFDocumentProxy; bytes: Uint8Array; dispose(): Promise<void> } | null>(null)
-  const warmup = useRef<PageWarmupHandle | null>(null)
-  const previewListeners = useRef(new Set<() => void>())
-  const warmupResumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const warmupBusy = useRef(busy)
-  warmupBusy.current = busy
+  const activePdf = useRef<{ document: ReaderDocument; bytes: Uint8Array; dispose(): Promise<void> } | null>(null)
   const ocrController = useRef<AbortController | null>(null)
   const searchSequence = useRef(0)
+  const searchIndex = useRef<{ document: ReaderDocument; index: SearchTextIndex } | null>(null)
   const ownerSequence = useRef(0)
   const state = useRef({ snapshot, scrollRoot, rotation, zoom, fit, size, currentPage })
   state.current = { snapshot, scrollRoot, rotation, zoom, fit, size, currentPage }
@@ -152,28 +125,6 @@ export function Reader(props: ReaderProps) {
   callbacks.current = props
   void historyRevision
 
-  const subscribePreviews = useCallback((listener: () => void) => {
-    previewListeners.current.add(listener)
-    return () => { previewListeners.current.delete(listener) }
-  }, [])
-  const notifyPreviews = useCallback(() => {
-    for (const listener of previewListeners.current) listener()
-  }, [])
-  const pauseWarmupForInteraction = useCallback(() => {
-    warmup.current?.pause()
-    if (warmupResumeTimer.current) clearTimeout(warmupResumeTimer.current)
-    warmupResumeTimer.current = setTimeout(() => {
-      warmupResumeTimer.current = null
-      if (!warmupBusy.current) warmup.current?.resume()
-    }, 600)
-  }, [])
-  useEffect(() => () => {
-    if (warmupResumeTimer.current) clearTimeout(warmupResumeTimer.current)
-  }, [])
-  useEffect(() => {
-    if (busy) warmup.current?.pause()
-    else if (!warmupResumeTimer.current) warmup.current?.resume()
-  }, [busy])
   const showSidebar = useCallback((section: ReadingSidebarSection) => {
     setSidebarSection(section); setSidebarExpanded(true)
   }, [])
@@ -237,6 +188,9 @@ export function Reader(props: ReaderProps) {
       accepted = true
       const previous = activePdf.current
       activePdf.current = { ...opened, bytes: snapshot.bytes }
+      searchSequence.current++
+      setSearching(false)
+      searchIndex.current = null
       views.current.clear()
       setPdf(opened.document)
       setPdfAnnotations(snapshot.baselineAnnotations ?? snapshot.document.annotations)
@@ -250,25 +204,6 @@ export function Reader(props: ReaderProps) {
     })
     return () => { cancelled = true; if (!accepted) controller.abort() }
   }, [snapshot?.bytes, snapshot?.reader?.engine, snapshot?.reader?.bytesHash, displayOwner?.token, notifyError, api, sessionId])
-
-  useEffect(() => {
-    if (!pdf || nativeDocument(pdf) || !snapshot || !scrollRoot || activePdf.current?.document !== pdf || activePdf.current.bytes !== snapshot.bytes) return
-    const milestone = new AbortController()
-    const handle = startExperimentalPageWarmup({
-      bytes: snapshot.bytes, pageCount: snapshot.document.pageCount, signal: tab.signal,
-      initialPage: state.current.currentPage, renderPreviews: true,
-      startAfter: waitForForegroundCanvas(scrollRoot, milestone.signal),
-      onProgress: notifyPreviews,
-    })
-    warmup.current = handle
-    if (warmupBusy.current || warmupResumeTimer.current) handle.pause()
-    return () => {
-      milestone.abort()
-      if (warmup.current === handle) warmup.current = null
-      handle.cancel()
-      notifyPreviews()
-    }
-  }, [pdf, snapshot?.bytes, snapshot?.document.pageCount, scrollRoot, tab.signal, notifyPreviews])
 
   useEffect(() => {
     if (snapshot && displayOwner?.token === ownerSequence.current && activePdf.current?.bytes === snapshot.bytes) {
@@ -310,6 +245,7 @@ export function Reader(props: ReaderProps) {
       setHits([])
       setSearched(false)
       searchSequence.current++
+      setSearching(false)
       ocrController.current?.abort()
       lifetime.position = undefined
     }
@@ -374,7 +310,7 @@ export function Reader(props: ReaderProps) {
     })
     if (!pair) {
       // A fast scrollbar jump can precede mounting and loading the target page.
-      // Capture that placeholder rather than a stale PageView from elsewhere.
+      // Capture the numeric layout rather than a stale PageView from elsewhere.
       const numeric = windowLayout(root)
       if (numeric?.length) {
         const item = numeric[pageIndexAtOffset(numeric, root.scrollTop + 40)]
@@ -387,37 +323,10 @@ export function Reader(props: ReaderProps) {
           rotation: current.rotation, fit: current.fit, scale: item.scale,
           viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)), y: Math.max(0, Math.min(1, (screenY - outer.top) / outer.height)) } }
       }
-      const children = root.children, boundary = root.scrollTop + 40
-      let low = 0, high = children.length
-      while (low < high) {
-        const middle = (low + high) >>> 1
-        const element = children[middle] as HTMLElement
-        if (element.offsetTop + element.offsetHeight <= boundary) low = middle + 1
-        else high = middle
-      }
-      const placeholder = children[Math.min(low, children.length - 1)] as HTMLElement | undefined
-      const number = Number(placeholder?.dataset.pageNumber)
-      const geometry = current.snapshot.document.pages[(number || current.currentPage) - 1] ?? current.snapshot.document.pages[0]!
-      const stage = placeholder?.querySelector<HTMLElement>(':scope > .dsh-pdf-virtual-stage')
-      const stageBounds = stage?.getBoundingClientRect()
-      const scale = pageScale(geometry)
-      if (stageBounds && stageBounds.width > 0 && stageBounds.height > 0 &&
-        stageBounds.right > outer.left && stageBounds.left < outer.right &&
-        stageBounds.bottom > outer.top && stageBounds.top < outer.bottom) {
-        const screenX = Math.max(stageBounds.left, outer.left)
-        const screenY = Math.max(stageBounds.top, outer.top)
-        const [x, y] = pagePixelToPdfPoint(geometry, scale, current.rotation,
-          screenX - stageBounds.left, screenY - stageBounds.top)
-        return { documentVersion: current.snapshot.contentVersion, page: geometry.page,
-          x, y, rotation: current.rotation, fit: current.fit, scale,
-          viewportAnchor: {
-            x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)),
-            y: Math.max(0, Math.min(1, (screenY - outer.top) / outer.height)),
-          } }
-      }
+      const geometry = current.snapshot.document.pages[current.currentPage - 1] ?? current.snapshot.document.pages[0]!
       return { documentVersion: current.snapshot.contentVersion, page: geometry.page,
-      x: geometry.cropBox[0], y: geometry.cropBox[3], rotation: current.rotation, fit: current.fit,
-      scale, viewportAnchor: { x: 0, y: 0 } }
+        x: geometry.cropBox[0], y: geometry.cropBox[3], rotation: current.rotation, fit: current.fit,
+        scale: pageScale(geometry), viewportAnchor: { x: 0, y: 0 } }
     }
     const [page, view] = pair, box = view.element.getBoundingClientRect()
     const screenX = Math.max(box.left, outer.left), screenY = Math.max(box.top, outer.top)
@@ -441,10 +350,8 @@ export function Reader(props: ReaderProps) {
     signal.throwIfAborted()
     const root = state.current.scrollRoot
     const numericPage = root && windowLayout(root)?.[position.page - 1]
-    const placeholder = root?.querySelector<HTMLElement>(`[data-page-number="${position.page}"]`)
-    if (!root || !placeholder && !numericPage) throw new Error(callbacks.current.t('reader.invalidDestination'))
-    if (numericPage) root.scrollTop = numericPage.top
-    else root.scrollTop += placeholder!.getBoundingClientRect().top - root.getBoundingClientRect().top
+    if (!root || !numericPage) throw new Error(callbacks.current.t('reader.invalidDestination'))
+    root.scrollTop = numericPage.top
     let view: PageView | undefined
     for (let attempt = 0; attempt < 180; attempt++) {
       signal.throwIfAborted()
@@ -462,7 +369,6 @@ export function Reader(props: ReaderProps) {
     root.scrollTop += pageBounds.top + y - bounds.top - (position.viewportAnchor?.y ?? 0) * bounds.height
     setCurrentPage(position.page)
     setPageInput(String(position.page))
-    if (position.page !== origin.page) warmup.current?.prioritize(position.page)
     await frame()
     // Position is semantic; scroll clamping at page/document edges is expected.
     return { ...position, scale: view.viewport.scale }
@@ -646,6 +552,8 @@ export function Reader(props: ReaderProps) {
     if (!pdf || !snapshot || !query.trim()) return
     const sequence = ++searchSequence.current
     const needle = query.trim().toLocaleLowerCase()
+    if (searchIndex.current?.document !== pdf) searchIndex.current = { document: pdf, index: new SearchTextIndex() }
+    const textIndex = searchIndex.current.index
     setSearching(true)
     setSearched(false)
     const found: SearchHit[] = []
@@ -655,32 +563,38 @@ export function Reader(props: ReaderProps) {
         if (sequence !== searchSequence.current || tab.signal.aborted) { span.end('cancelled'); return }
         const ocr = ocrPages.get(number)
         if (ocr) {
-          for (const word of ocr.words) if (word.text.toLocaleLowerCase().includes(needle) && word.pdf) {
+          for (const word of ocr.words) if (found.length < 500 && word.text.toLocaleLowerCase().includes(needle) && word.pdf) {
             found.push({ page: number, text: word.text, x: word.pdf.rect[0], y: word.pdf.rect[3], source: 'ocr' })
           }
           // Phrase queries span OCR word boundaries; return a page-level match as well.
-          if (ocr.text.toLocaleLowerCase().includes(needle) && !found.some((hit) => hit.page === number)) {
+          const match = ocr.text.toLocaleLowerCase().indexOf(needle)
+          if (match >= 0 && found.length < 500 && !found.some((hit) => hit.page === number)) {
             const box = snapshot.document.pages[number - 1].cropBox
-            found.push({ page: number, text: ocr.text.slice(Math.max(0, ocr.text.toLocaleLowerCase().indexOf(needle) - 30), ocr.text.toLocaleLowerCase().indexOf(needle) + needle.length + 70), x: box[0], y: box[3], source: 'ocr' })
+            found.push({ page: number, text: searchResultExcerpt(ocr.text, match, needle.length), x: box[0], y: box[3], source: 'ocr' })
           }
         }
-        // The warmup cache can rule out native misses without loading that
-        // page. Hits still need TextContent for their PDF coordinates.
-        const indexedText = warmup.current?.getText(number)
-        if (indexedText === undefined || indexedText.toLocaleLowerCase().includes(needle)) {
-          const page = await pdf.getPage(number)
-          const content = await page.getTextContent()
-          const items = content.items.filter((item): item is Extract<typeof item, { str: string }> => 'str' in item)
-          const { text: combined, starts } = joinSearchText(items)
-          let offset = 0, index = -1
-          while ((index = combined.toLocaleLowerCase().indexOf(needle, offset)) >= 0 && found.length < 500) {
-            let itemIndex = starts.findIndex((start) => start > index) - 1
-            if (itemIndex < 0) itemIndex = items.length - 1
-            const transform = items[itemIndex]?.transform
-            const box = snapshot.document.pages[number - 1].cropBox
-            found.push({ page: number, text: combined.slice(Math.max(0, index - 30), index + needle.length + 70), x: transform?.[4] ?? box[0], y: transform?.[5] ?? box[3], source: 'native' })
-            offset = index + Math.max(1, needle.length)
-          }
+        if (found.length >= 500) break
+        if (!textIndex.mayContain(number, needle)) {
+          if (number % 8 === 0 && sequence === searchSequence.current) { setHits([...found]); await frame() }
+          continue
+        }
+        const page = await pdf.getPage(number)
+        const content = await page.getTextContent()
+        const items = content.items.filter((item): item is Extract<typeof item, { str: string }> => 'str' in item)
+        const { text: combined, starts } = joinSearchText(items)
+        const folded = textIndex.remember(number, combined)
+        let offset = 0, index = -1
+        let offsetMap: Uint32Array | undefined
+        while ((index = folded.indexOf(needle, offset)) >= 0 && found.length < 500) {
+          offsetMap ??= searchOffsetMap(combined, folded.length)
+          const sourceStart = offsetMap[index]
+          const mappedEnd = offsetMap[Math.min(folded.length, index + needle.length)]
+          const sourceEnd = mappedEnd > sourceStart ? mappedEnd : sourceStart + (combined.codePointAt(sourceStart)! > 0xffff ? 2 : 1)
+          const itemIndex = searchItemAtOffset(starts, sourceStart)
+          const transform = items[itemIndex]?.transform
+          const box = snapshot.document.pages[number - 1].cropBox
+          found.push({ page: number, text: searchResultExcerpt(combined, sourceStart, sourceEnd - sourceStart), x: transform?.[4] ?? box[0], y: transform?.[5] ?? box[3], source: 'native' })
+          offset = index + Math.max(1, needle.length)
         }
         if (number % 8 === 0 && sequence === searchSequence.current) { setHits([...found]); await frame() }
         if (found.length >= 500) break
@@ -792,36 +706,17 @@ export function Reader(props: ReaderProps) {
     return () => document.removeEventListener('pointerdown', dismissOutside)
   }, [dismissContext])
   const updateScrolledPage = useCallback(() => {
-    pauseWarmupForInteraction()
     if (scrollFrame.current !== undefined) return
     scrollFrame.current = requestAnimationFrame(() => {
       scrollFrame.current = undefined
       const root = state.current.scrollRoot
       if (!root || !state.current.snapshot) return
       const numeric = windowLayout(root)
-      if (numeric?.length) {
-        const number = numeric[pageIndexAtOffset(numeric, root.scrollTop + 40)].page
-        if (number !== state.current.currentPage) { setCurrentPage(number); setPageInput(String(number)) }
-        return
-      }
-      // Page wrappers are ordered direct children with exact DOM heights. Binary
-      // search handles long documents and large scroll jumps without scanning P rects.
-      const children = root.children
-      const boundary = root.scrollTop + 40
-      let low = 0, high = children.length
-      while (low < high) {
-        const middle = (low + high) >>> 1
-        const element = children[middle] as HTMLElement
-        if (element.offsetTop + element.offsetHeight <= boundary) low = middle + 1
-        else high = middle
-      }
-      const element = children[Math.min(low, children.length - 1)] as HTMLElement | undefined
-      const number = Number(element?.dataset.pageNumber)
-      if (number > 0 && number !== state.current.currentPage) {
-        setCurrentPage(number); setPageInput(String(number)); warmup.current?.prioritize(number)
-      }
+      if (!numeric?.length) return
+      const number = numeric[pageIndexAtOffset(numeric, root.scrollTop + 40)].page
+      if (number !== state.current.currentPage) { setCurrentPage(number); setPageInput(String(number)) }
     })
-  }, [pauseWarmupForInteraction])
+  }, [])
   const discardChanges = async () => {
     if (operationLock.current) return
     const next = await act(current => api.discard(sessionId, current.id, current.revision, tab.signal))
@@ -969,20 +864,16 @@ export function Reader(props: ReaderProps) {
   }, [])
   const pageNote = useCallback((page: number, point: number[]) => pageCallbacks.current.beginNote(page, point), [])
   const pageRegion = useCallback((page: number, region: Parameters<typeof takeScreenshot>[1]) => { void pageCallbacks.current.takeScreenshot(page, region) }, [])
-  const previewForPage = useCallback((page: number) => warmup.current?.getPreviewUrl(page), [])
   const pageElements = useMemo(() => {
     if (!pdf || !snapshot) return null
     const selectedPages = new Set(selection?.fragments.map(fragment => fragment.page))
     const pinnedPages = new Set(selectedPages)
     const selectedTextPages = selection?.kind === 'text' ? selectedPages : undefined
     if (selected) pinnedPages.add(selected.page)
-    const Pages = nativeDocument(pdf) ? WindowedPages : VirtualPages
-    return <Pages key={`${snapshot.id}:${snapshot.contentVersion}`} pages={snapshot.document.pages}
+    return <WindowedPages key={snapshot.id} pages={snapshot.document.pages}
       rotation={rotation} zoom={zoom} fit={fit} size={size} scrollRoot={scrollRoot} t={t}
       scaleForPage={pageScale} hasOcrText={(page) => !!ocrPages.get(page)?.words.length}
       pinnedPages={pinnedPages} selectedTextPages={selectedTextPages} dragAnchorPage={draggingPage}
-      previewForPage={rotation === 0 ? previewForPage : undefined}
-      subscribePreviews={subscribePreviews}
       renderPage={(geometry, retainTextLayer) => <ReaderPage key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
       scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
       retainTextLayer={retainTextLayer}
@@ -994,7 +885,6 @@ export function Reader(props: ReaderProps) {
       onAnnotation={selectAnnotation} onNote={pageNote} onRegion={pageRegion} onBackground={dismissContext} onError={notifyError} />} />
   }, [pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, rotation, mode, t, scrollRoot, annotationsByPage, renderedAnnotationsByPage,
     selected?.id, selected?.page, selection, draggingPage, ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
-    previewForPage, subscribePreviews,
     selectAnnotation, pageNote, pageRegion, dismissContext, notifyError])
 
   const wheelScale = useCallback((page: number) => {
@@ -1007,15 +897,6 @@ export function Reader(props: ReaderProps) {
   usePdfViewportSize({ root: scrollRoot, size, onSize: setSize,
     preserveAnchor: !!pdf && fit !== 'custom' && !navigating,
     ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${rotation}:${fit}` })
-  useEffect(() => {
-    if (!scrollRoot) return
-    const pauseOnZoom = (event: WheelEvent) => {
-      if (event.ctrlKey || event.metaKey) pauseWarmupForInteraction()
-    }
-    scrollRoot.addEventListener('wheel', pauseOnZoom, { passive: true })
-    return () => scrollRoot.removeEventListener('wheel', pauseOnZoom)
-  }, [scrollRoot, pauseWarmupForInteraction])
-
   const annotationLists = useMemo(() => {
     const annotations: React.ReactNode[] = [], notes: React.ReactNode[] = []
     for (const { annotation, created, modified } of commentItems) {
@@ -1078,7 +959,7 @@ export function Reader(props: ReaderProps) {
       if (toolsMenu.current) toolsMenu.current.open = false
     }
   }}>
-    <style>{virtualPagesStyles}</style>
+    <style>{windowedPagesStyles}</style>
     <div className="dsh-pdf-toolbar dsh-pdf-main-toolbar" role="toolbar" aria-label={t('reader.sidebar.toolbar')}>
       <details className="dsh-pdf-tools" ref={toolsMenu} onBlur={(event) => {
         if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false

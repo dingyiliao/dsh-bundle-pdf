@@ -1,5 +1,6 @@
-import { AnnotationMode, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist'
+import { AnnotationMode } from 'pdfjs-dist'
 import type { PdfAnnotation, PdfRect } from '../core/pdf-types.js'
+import type { ReaderDocument, ReaderRenderTask } from './reader-document.js'
 import { pdfRectToViewport } from './reader-selection.js'
 import { annotationPatchBoxes, markupOverlappingPatches, paintMarkupAnnotations, paintNoteMarkers, pendingMarkupAnnotations, staleNativeAnnotations } from './reader-annotations.js'
 
@@ -55,7 +56,7 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
  * operation changes are composed over the unannotated page only where needed.
  */
 export async function capturePdfRegion(
-  pdf: PDFDocumentProxy,
+  pdf: ReaderDocument,
   pageNumber: number,
   region: PdfRect,
   options: CapturePdfRegionOptions = {},
@@ -120,7 +121,7 @@ export async function capturePdfRegion(
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
-  let task: RenderTask | undefined
+  let task: ReaderRenderTask | undefined
   let renderFinished = false
   let cancelled = false
   const cancel = () => {

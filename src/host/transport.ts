@@ -1,5 +1,5 @@
 /** Carrier-neutral, authenticated PDF operations without generated core remotes. */
-export const PDF_ENDPOINT = 'pdf.dispatch'
+export const PDF_ENDPOINT = 'pdf.dispatch.v2'
 
 export interface PdfAgent {
   readonly session: { readonly id: string; readonly header: { readonly cwd?: string } }
