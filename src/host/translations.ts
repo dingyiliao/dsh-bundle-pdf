@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { createTranslationRegistry, TranslationError } from '../translation/index.js'
 import { createDshModelTranslationEngine, type DshTranslationModelRoute, type DshTranslationLlm } from './translation-model.js'
-import type { PdfSettings } from '../shared/contracts.js'
+import { effectiveTranslationEngine, translationSourceLanguage, translationTargetLanguages, type PdfSettings } from '../shared/contracts.js'
 import type { PdfAgent, PdfDispatch } from './transport.js'
 
 interface ModelSession {
@@ -16,8 +16,8 @@ export interface TranslationHostContext {
 
 const inputSchema = z.object({
   sessionId: z.string().min(1).max(512), engineId: z.string().min(1).max(200),
-  text: z.string().min(1).max(8192), sourceLanguage: z.string().trim().min(1).max(100),
-  targetLanguage: z.string().trim().min(1).max(100), timeoutMs: z.number().int().min(1000).max(600000),
+  text: z.string().min(1).max(8192), sourceLanguage: z.literal(translationSourceLanguage),
+  targetLanguage: z.enum(translationTargetLanguages), timeoutMs: z.number().int().min(1000).max(600000),
   context: z.object({ sessionId: z.string(), documentId: z.string().max(512).optional(),
     contentVersion: z.string().max(512).optional(), pages: z.array(z.number().int().positive()).max(200).optional() }).optional(),
 })
@@ -62,18 +62,19 @@ export function createHostTranslations(ctx: TranslationHostContext, namespace: s
       throw new TranslationError('invalid-request', 'Translation session identity mismatch.')
     }
     const settings = readSettings()
-    if (request.engineId !== settings.translationEngine) throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
-    const revision = JSON.stringify([settings.translationEngine, settings.translationSourceLanguage,
-      settings.translationTargetLanguage, settings.translationTimeoutMs])
-    registry.select({ id: `${namespace}/${settings.translationEngine}`, engineId: settings.translationEngine,
+    const engineId = effectiveTranslationEngine(settings.translationEngine)
+    if (request.engineId !== engineId) throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
+    const revision = JSON.stringify([engineId, settings.translationTargetLanguage,
+      settings.translationTimeoutMs])
+    registry.select({ id: `${namespace}/${engineId}`, engineId,
       configurationRevision: revision, config: {} })
-    const result = await registry.translate({ text: request.text, sourceLanguage: request.sourceLanguage, targetLanguage: request.targetLanguage,
+    const result = await registry.translate({ text: request.text, sourceLanguage: translationSourceLanguage, targetLanguage: request.targetLanguage,
       timeoutMs: Math.min(request.timeoutMs, settings.translationTimeoutMs), signal,
       context: { ...request.context, sessionId } })
     signal.throwIfAborted()
     const current = readSettings()
-    if (revision !== JSON.stringify([current.translationEngine, current.translationSourceLanguage,
-      current.translationTargetLanguage, current.translationTimeoutMs])) {
+    if (revision !== JSON.stringify([effectiveTranslationEngine(current.translationEngine), current.translationTargetLanguage,
+      current.translationTimeoutMs])) {
       throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
     }
     return result

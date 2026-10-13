@@ -1,5 +1,5 @@
 import { PDFDict, PDFDocument, PDFName, PDFNumber } from 'pdf-lib'
-import type { EditableAnnotationType, PdfColor, PdfRect } from './pdf-types.js'
+import { DEFAULT_HIGHLIGHT_OPACITY, type EditableAnnotationType, type PdfColor, type PdfRect } from './pdf-types.js'
 
 /** Explicit appearances keep saved annotations visible in readers without appearance synthesis. */
 export function setAnnotationAppearance(
@@ -14,10 +14,11 @@ export function setAnnotationAppearance(
   const width = right - left
   const height = top - bottom
   const opacityObject = dictionary.lookupMaybe(PDFName.of('CA'), PDFNumber)
-  const opacity = opacityObject?.asNumber() ?? (subtype === 'Highlight' ? 0.4 : 1)
+  const opacity = opacityObject?.asNumber() ?? (subtype === 'Highlight' ? DEFAULT_HIGHLIGHT_OPACITY : 1)
+  const alpha = Math.max(0, Math.min(1, opacity))
   const f = (value: number) => Number(value.toFixed(5)).toString()
   const at = (x: number, y: number) => `${f(x - left)} ${f(y - bottom)}`
-  const commands = ['q', '/GS0 gs', `${color.map(f).join(' ')} rg`, `${color.map(f).join(' ')} RG`]
+  const commands = [`${color.map(f).join(' ')} rg`, `${color.map(f).join(' ')} RG`]
   if (subtype === 'Text') {
     commands.push(`0.7 w 0.5 0.5 ${f(Math.max(0, width - 1))} ${f(Math.max(0, height - 1))} re B`)
     commands.push('0.2 0.2 0.2 RG')
@@ -41,18 +42,41 @@ export function setAnnotationAppearance(
       }
     }
   }
-  commands.push('Q')
+  if (subtype === 'Highlight') {
+    // Paint every quad opaquely into one transparency group. Applying alpha to
+    // each quad separately darkens the overlap between adjacent text runs.
+    const group = doc.context.flateStream(`q\n${commands.join('\n')}\nQ`, {
+      Type: 'XObject', Subtype: 'Form', FormType: 1,
+      BBox: [0, 0, width, height], Resources: doc.context.obj({}),
+      Group: { S: 'Transparency' },
+    })
+    const resources = doc.context.obj({
+      ExtGState: {
+        GS0: { Type: 'ExtGState', AIS: false, ca: alpha, CA: alpha },
+        GS1: { Type: 'ExtGState', AIS: false, BM: 'Multiply' },
+      },
+      XObject: { Mark: doc.context.register(group) },
+    })
+    const appearance = doc.context.flateStream('q\n/GS0 gs\n/GS1 gs\n/Mark Do\nQ', {
+      Type: 'XObject', Subtype: 'Form', FormType: 1,
+      BBox: [0, 0, width, height], Resources: resources,
+    })
+    dictionary.set(PDFName.of('CA'), PDFNumber.of(alpha))
+    dictionary.set(PDFName.of('AP'), doc.context.obj({ N: doc.context.register(appearance) }))
+    dictionary.delete(PDFName.of('AS'))
+    return
+  }
   const resources = doc.context.obj({
     ExtGState: {
       GS0: {
         Type: 'ExtGState',
-        ca: Math.max(0, Math.min(1, opacity)),
-        CA: Math.max(0, Math.min(1, opacity)),
-        BM: subtype === 'Highlight' ? 'Multiply' : 'Normal',
+        ca: alpha,
+        CA: alpha,
+        BM: 'Normal',
       },
     },
   })
-  const appearance = doc.context.flateStream(commands.join('\n'), {
+  const appearance = doc.context.flateStream(`q\n/GS0 gs\n${commands.join('\n')}\nQ`, {
     Type: 'XObject', Subtype: 'Form', FormType: 1,
     BBox: [0, 0, width, height], Resources: resources,
   })

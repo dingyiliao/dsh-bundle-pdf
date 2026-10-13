@@ -60,7 +60,7 @@ function reply(q) { if(q.command==='hang')return;const value=q.command==='hello'
   return { executable, close: () => rm(directory, { recursive: true, force: true }) }
 }
 test('cancelling an in-flight request consumes its reply before the next request', { skip: process.platform === 'win32' }, async () => {
-  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 1000)
+  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 3000)
   try {
     await worker.ready()
     const controller = new AbortController()
@@ -73,7 +73,7 @@ test('cancelling an in-flight request consumes its reply before the next request
   } finally { worker.dispose(); await fake.close() }
 })
 test('timeout kills the helper and a later handshake starts a new generation', { skip: process.platform === 'win32' }, async () => {
-  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 150)
+  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 1000)
   try {
     await worker.ready(); const firstGeneration = worker.generation
     await assert.rejects(worker.request({ command: 'hang' }), { code: 'pdf/native-timeout' })

@@ -12,7 +12,12 @@ export async function sourceMetadata() {
   const hash = createHash('sha256')
   const protocol = createHash('sha256')
   for (const path of files) {
-    const bytes = await readFile(join(ROOT, path))
+    let bytes: Buffer
+    try { bytes = await readFile(join(ROOT, path)) } catch (error) {
+      // `git ls-files --cached` also lists tracked files deleted by the working tree.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
     hash.update(path); hash.update('\0'); hash.update(bytes); hash.update('\0')
     if (path.startsWith('bench/') && /\.tsx?$/.test(path)) { protocol.update(path); protocol.update('\0'); protocol.update(bytes); protocol.update('\0') }
   }

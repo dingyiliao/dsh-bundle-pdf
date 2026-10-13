@@ -117,5 +117,5 @@ export function TileSurface(props: TileSurfaceProps) {
     const host = hostRef.current
     return () => { for (const canvas of host?.querySelectorAll('canvas') ?? []) { canvas.width = 0; canvas.height = 0 } }
   }, [])
-  return <div ref={hostRef} className="dsh-pdf-tile-surface" style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} data-reader-engine="native" />
+  return <div ref={hostRef} className="dsh-pdf-tile-surface" style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} />
 }

@@ -62,7 +62,7 @@ export function summaryMarkdown(rows: readonly BenchmarkRow[]) {
   }
   lines.push('', '## 测量边界', '',
     '- Host 组件计时不含输入文件读取及预先准备；hostMaxRssMiB 是该单次子进程全生命周期峰值，包含启动、准备和正确性验证。',
-    '- 浏览器组件直接使用仓库的 Reader、Page、PDF.js runtime 和 Host workspaces；文件/草稿适配器为测试内存实现，未经过 DSH 授权或真实持久写盘。',
+    '- 浏览器组件直接使用仓库的原生 Reader、Page 和 Host workspaces；文件/草稿适配器为测试内存实现，未经过 DSH 授权或真实持久写盘。',
     '- firstUsefulProxyMs/targetQualityProxyMs 以完成 raster 的 DOM、实际有效采样比例、覆盖面积和下一帧为代理；它们不是硬件呈现时刻。',
     '- 滚动 rAF 间隔是主线程回调代理；本工具不把它报告成真实呈现帧、丢帧率或 FPS。',
     '- canvasPixelBytesEstimate 为活跃画布估计，不能代替浏览器/GPU/native 总内存。',
@@ -74,7 +74,7 @@ export function summaryMarkdown(rows: readonly BenchmarkRow[]) {
   return `${lines.join('\n')}\n`
 }
 
-export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly BenchmarkRow[], options: { allowBackendSwitch?: boolean } = {}) {
+export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly BenchmarkRow[]) {
   uniformProvenance(before); uniformProvenance(after)
   const left = groups(before), right = groups(after)
   if (left.size !== right.size || [...left.keys()].some(key => !right.has(key))) throw new Error('Scenario/corpus/cache/quality/seed groups do not match')
@@ -84,9 +84,8 @@ export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |']
   for (const [key, a] of left) {
     const b = right.get(key)!
-    if (options.allowBackendSwitch && new Set([...a, ...b].map(row => row.environment.readerEngine)).size !== 2) throw new Error('Backend comparison requires two different recorded reader engines')
     const environments = [...a, ...b].map(row => JSON.stringify(Object.entries(row.environment)
-      .filter(([key]) => !options.allowBackendSwitch || !['readerEngine', 'pdfiumBuild'].includes(key)).sort(([x], [y]) => x.localeCompare(y))))
+      .sort(([x], [y]) => x.localeCompare(y))))
     if (new Set(environments).size !== 1) throw new Error('Environment differs; same-device comparison required')
     if (new Set([...a, ...b].map(row => row.source.benchmarkVersion)).size !== 1) throw new Error('Benchmark definitions differ')
     if (new Set([...a, ...b].map(row => row.source.protocolSha256)).size !== 1) throw new Error('Benchmark protocol source differs; rebaseline with one frozen harness')
@@ -106,6 +105,5 @@ export function compareMarkdown(before: readonly BenchmarkRow[], after: readonly
       lines.push(`| ${escape(a[0].scenario)} | ${escape(a[0].documentId)} | ${escape(name)} | ${av.length}/${a.length} | ${bv.length}/${b.length} | ${display(am)} | ${display(bm)} | ${reduction} | ${display(quantile(av, 0.95))} | ${display(quantile(bv, 0.95))} |`)
     }
   }
-  if (options.allowBackendSwitch) lines.splice(2, 0, `本报告比较同一实现中的引擎配置：${String(before[0].environment.readerEngine)} → ${String(after[0].environment.readerEngine)}。该比较不能单独代表相对于历史版本的全部升级收益。`, '')
   return `${lines.join('\n')}\n`
 }

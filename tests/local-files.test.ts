@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -31,7 +31,7 @@ function fileContext(root: string, mapHostPath: (path: string) => string | undef
 }
 
 test('host-shared filesystem capability permits local reads across package identities', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-pdf-local-files-'))
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'dsh-pdf-local-files-'))
   try {
     const path = join(root, 'example.pdf')
     const bytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55])
@@ -47,7 +47,7 @@ test('host-shared filesystem capability permits local reads across package ident
 })
 
 test('filesystem without a shared host path is rejected before reading a PDF', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-pdf-remote-files-'))
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'dsh-pdf-remote-files-'))
   try {
     const agent: PdfAgent = { session: { id: 'remote-files-test', header: { cwd: root } } }
     for (const map of [() => undefined, () => join(root, 'different.pdf')]) {

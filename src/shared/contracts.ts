@@ -1,25 +1,49 @@
 import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
-import type { NativeReaderApi, ReaderDescriptor, ReaderEngine } from './native.ts'
+import type { NativeReaderApi, ReaderDescriptor } from './native.ts'
+import type { NavigationPosition } from '../navigation/index.ts'
+
+/** User bookmark locations stay in plugin storage; they are not embedded in the PDF. */
+export type PdfBookmarkPosition = Omit<NavigationPosition, 'documentVersion'>
+export interface PdfUserBookmark {
+  id: string
+  title: string
+  position: PdfBookmarkPosition
+  stale: 'none' | 'content-changed' | 'page-missing'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PdfBookmarksApi {
+  list(sessionId: string, documentId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
+  add(sessionId: string, documentId: string, title: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<PdfUserBookmark[]>
+  rename(sessionId: string, documentId: string, bookmarkId: string, title: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
+  remove(sessionId: string, documentId: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
+}
+
+/** Targets available in both PDF settings and the per-selection translation panel. */
+export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] as const
+export const translationSourceLanguage = 'auto' as const
 
 export interface PdfSettings {
-  readerEngine?: ReaderEngine
   ocrEngine: string
   ocrLanguages: string
   ocrTimeoutMs: number
   translationEngine: string
-  translationSourceLanguage: string
   translationTargetLanguage: string
   translationTimeoutMs: number
-  defaultColor: string
   historyCapacity: number
   maxFileBytes: number
 }
 
 export const defaultSettings: PdfSettings = {
-  readerEngine: 'auto',
   ocrEngine: 'none', ocrLanguages: 'eng+chi_sim', ocrTimeoutMs: 120000,
-  translationEngine: 'dsh-model', translationSourceLanguage: 'auto', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
-  defaultColor: '#ffff00', historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
+  translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
+  historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
+}
+
+/** Older settings used `none` to disable translation; keep those profiles usable. */
+export function effectiveTranslationEngine(engineId: string): string {
+  return engineId === 'none' ? defaultSettings.translationEngine : engineId
 }
 
 export interface WorkspaceSnapshot {
@@ -38,12 +62,12 @@ export interface WorkspaceSnapshot {
   document: PdfDocumentInfo
   /** Native annotations present in bytes before projecting unsaved operations. */
   baselineAnnotations?: PdfAnnotation[]
-  bytes: Uint8Array
-  reader?: ReaderDescriptor
+  reader: ReaderDescriptor
 }
 
 export interface PdfClientApi {
-  native?: NativeReaderApi
+  native: NativeReaderApi
+  bookmarks: PdfBookmarksApi
   open(sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   change(sessionId: string, id: string, revision: number, operations: PdfAnnotationOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>

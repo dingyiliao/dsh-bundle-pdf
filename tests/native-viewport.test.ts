@@ -4,22 +4,36 @@ import { NativeViewport } from '../src/client/native/viewport.ts'
 import { loadPdfDocument } from '../src/core/pdf-document.ts'
 import { nativeFixture } from './native-fixture.ts'
 
-test('native UI viewports match PDF.js for crop, UserUnit, rotation, offsets and dontFlip', async () => {
+test('native UI viewports apply crop, UserUnit, rotation, offsets and dontFlip', async () => {
   const bytes = await nativeFixture(), info = await loadPdfDocument(bytes)
-  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
-  const task = getDocument({ data: bytes.slice(), disableFontFace: true, useSystemFonts: false })
-  try {
-    const reference = await task.promise
-    for (const geometry of info.pages) {
-      const page = await reference.getPage(geometry.page)
-      for (const rotation of [0, 90, 180, 270]) for (const dontFlip of [false, true]) {
-        const options = { scale: 1.25, rotation, offsetX: 17, offsetY: -9, dontFlip }
-        const native = new NativeViewport(geometry, options.scale, rotation, options.offsetX, options.offsetY, dontFlip)
-        const viewport = page.getViewport(options)
-        assert.deepEqual(native.transform, viewport.transform)
-        assert.equal(native.width, viewport.width); assert.equal(native.height, viewport.height)
-        for (const point of [[40, 50], [210, 270]]) assert.deepEqual(native.convertToViewportPoint(...point as [number, number]), viewport.convertToViewportPoint(...point as [number, number]))
+  const transforms: Record<number, number[]> = {
+    0: [1, 0, 0, -1, -30, 360],
+    90: [0, 1, 1, 0, -40, -30],
+    180: [-1, 0, 0, 1, 280, -40],
+    270: [0, -1, -1, 0, 360, 280],
+  }
+  const unflipped: Record<number, number[]> = {
+    0: [1, 0, 0, 1, -30, -40],
+    90: [0, 1, -1, 0, 360, -30],
+    180: [-1, 0, 0, -1, 280, 360],
+    270: [0, -1, 1, 0, -40, 280],
+  }
+  for (const geometry of info.pages) {
+    assert.deepEqual(geometry.cropBox, [30, 40, 280, 360])
+    for (const rotation of [0, 90, 180, 270]) for (const dontFlip of [false, true]) {
+      const scale = 1.25, offsetX = 17, offsetY = -9, factor = scale * geometry.userUnit
+      const viewport = new NativeViewport(geometry, scale, rotation, offsetX, offsetY, dontFlip)
+      const expected = (dontFlip ? unflipped : transforms)[rotation].map((value, index) => value * factor + (index === 4 ? offsetX : index === 5 ? offsetY : 0))
+      assert.equal(viewport.transform.length, expected.length)
+      for (let index = 0; index < expected.length; index++) assert.ok(Math.abs(viewport.transform[index] - expected[index]) < 1e-9)
+      assert.equal(viewport.width, (rotation % 180 ? 320 : 250) * factor)
+      assert.equal(viewport.height, (rotation % 180 ? 250 : 320) * factor)
+      for (const [x, y] of [[40, 50], [210, 270]]) {
+        const point: [number, number] = [expected[0] * x + expected[2] * y + expected[4], expected[1] * x + expected[3] * y + expected[5]]
+        assert.deepEqual(viewport.convertToViewportPoint(x, y), point)
+        const roundTrip = viewport.convertToPdfPoint(...point)
+        assert.ok(Math.abs(roundTrip[0] - x) < 1e-9 && Math.abs(roundTrip[1] - y) < 1e-9)
       }
     }
-  } finally { await task.destroy() }
+  }
 })

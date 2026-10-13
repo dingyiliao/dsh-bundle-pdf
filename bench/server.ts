@@ -9,7 +9,7 @@ import { createPdfService } from '../src/host/pdf-service.ts'
 import { registerPdfTransport } from '../src/host/transport.ts'
 import { resolve } from 'node:path'
 
-export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages: number, annotations: number, engine: 'pdfjs' | 'native' = 'pdfjs') {
+export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages: number, annotations: number) {
   const sessionId = `bench-${randomUUID()}`, token = randomUUID(), path = '/bench/fixture.pdf'
   let bytes = initial.slice(), version = `sha256:${sha256(bytes)}`, fsRevision = 1
   const records = new Map<string, DraftRecord>(), owner = new AbortController(), stages: PdfPerformanceEvent[] = []
@@ -28,14 +28,14 @@ export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages
   }
   const workspaces = createWorkspaces(files, { get: key => records.get(key),
     async put(key, value) { records.set(key, structuredClone(value)) }, async delete(key) { records.delete(key) } })
-  const service = createPdfService(workspaces, { executable: process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`), engine: () => engine === 'native' ? 'native' : 'pdfjs' })
+  const service = createPdfService(workspaces, { executable: process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`) })
   const routes = new Map<string, (request: Request) => Promise<Response>>()
   const context: Parameters<typeof registerPdfTransport>[0] = { connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return async () => { routes.delete(route.path) } } } },
     sessionController: { async resolveAgent(id) { return id === sessionId ? { agent: { session: { id, header: { cwd: '/bench' } } } } : { error: new Error('Unknown fixture session') } } } }
   registerPdfTransport(context, service.dispatch)
   registerPdfTransport(context, service.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 })
   const traffic = { requests: 0, requestBytes: 0, responseBytes: 0 }
-  const configuration = JSON.stringify({ sessionId, token, pages, annotations, engine })
+  const configuration = JSON.stringify({ sessionId, token, pages, annotations })
   const html = `<!doctype html><html lang="en"><meta charset="utf-8"><title>PDF M0 component benchmark</title>
     <style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}html{
     --dsw-alias-bg-base:#f4f5f7;--dsw-alias-bg-layer-1:#fff;--dsw-alias-bg-layer-2:#eee;

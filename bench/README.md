@@ -1,6 +1,6 @@
 # PDF M0：可重跑的组件基线
 
-本目录实现升级计划的 **M0 初始测量层**。直接调用现有 Host 解析/投影/保存物化，并在 Chromium 中运行仓库现有的 Reader、Page、PDF.js Worker。尚未接入 PDFium，没有执行完整 DSH 桌面 E2E 或与 Acrobat 的对比。数据可用于后续相同协议的组件回归，不能单独证明整个新设计已实现提速。
+本目录实现 **M0 组件测量层**。直接调用 Host 解析/投影/保存物化，并在 Chromium 中运行原生 PDFium Reader 和 Page。没有执行完整 DSH 桌面 E2E 或与 Acrobat 的对比。数据可用于后续相同协议的组件回归，不能单独证明整个设计已实现提速。
 
 ## 运行
 
@@ -9,15 +9,16 @@
 ```sh
 npm ci --ignore-scripts
 npx playwright install chromium
+npm run native:build
 npm run check
 npm run bench:corpus
 npm run bench -- --suite smoke --out bench-results/host-baseline
 npm run bench:browser -- --suite smoke --out bench-results/reader-baseline
 ```
 
-`--ignore-scripts` 跳过安装时的自动构建，`npm run check` 会执行正式构建和检查。若已有隔离的 Playwright 缓存，用 `PLAYWRIGHT_BROWSERS_PATH=/absolute/cache/path` 指定。运行浏览器基准需要 Chromium 的系统依赖以及本地 loopback 监听权限。
+`--ignore-scripts` 跳过安装时的自动构建，`npm run native:build` 准备匹配平台的 PDFium helper，`npm run check` 执行正式构建和检查。若已有隔离的 Playwright 缓存，用 `PLAYWRIGHT_BROWSERS_PATH=/absolute/cache/path` 指定。运行浏览器基准需要 Chromium 的系统依赖以及本地 loopback 监听权限。
 
-测试依赖固定为 Playwright 1.58.2 / Chromium 145；使用 `channel: chromium` 的新 headless 模式。初始实跑发现原锁文件的 Chromium 131 缺少 `Uint8Array.toHex`，Chromium 141 又缺少 `Map.getOrInsertComputed`，均不能完成当前 PDF.js modern build 的页面渲染。工具现在在计时前检查这些能力并记录失败。该结果是兼容性发现；没有向测试页面注入 polyfill 来隐藏它。目标 DSH/Electron 与 macOS Safari/WebKit 仍须独立验收，不能把 esbuild target 当作运行时 API 支持保证。
+测试依赖固定为 Playwright 1.58.2；使用 `channel: chromium` 的新 headless 模式。目标 DSH/Electron 与 macOS Safari/WebKit 仍须独立验收，不能把 esbuild target 当作运行时 API 支持保证。
 
 两个 runner 的 `--repeats` 默认 smoke=3、release=20；`--timeout` 单位毫秒，默认 60000。输出路径中的 `runs.jsonl` 必须不存在，避免覆盖基线。浏览器可用 `--document paper-12 --scenario reader.open` 先排查单场景。基准输出和生成 PDF 都被 Git 忽略。
 

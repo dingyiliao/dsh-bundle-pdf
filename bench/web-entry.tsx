@@ -3,9 +3,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { Reader } from '../src/client/Reader.tsx'
 import { createPdfApi } from '../src/client/api.ts'
-import { createPdfRuntime } from '../src/client/pdf-runtime.ts'
 import { readerLocales } from '../src/client/reader-locales.ts'
-import { createNativeDictionary } from '../src/client/native-dictionary.ts'
 import { createOcrRegistry } from '../src/ocr/index.ts'
 import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
@@ -13,7 +11,7 @@ import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/p
 import styles from '../src/client/reader.css'
 import { pageIndexAtOffset, windowLayout } from '../src/client/native/window-layout.ts'
 
-interface Config { sessionId: string; token: string; pages: number; annotations: number; engine: 'native' | 'pdfjs' }
+interface Config { sessionId: string; token: string; pages: number; annotations: number }
 interface Payload { metrics: Record<string, number | null>; stages: PdfPerformanceEvent[]; qualityPassed: boolean }
 interface Hook { run(scenario: string, timeout: number): Promise<Payload>; snapshot(): unknown; dispose(): Promise<void> }
 declare global { interface Window { __PDF_BENCH_CONFIG__: Config; __PDF_BENCH__: Hook } }
@@ -21,7 +19,6 @@ declare global { interface Window { __PDF_BENCH_CONFIG__: Config; __PDF_BENCH__:
 const config = window.__PDF_BENCH_CONFIG__
 const style = document.createElement('style'); style.textContent = styles; document.head.append(style)
 const owner = new AbortController(), root = createRoot(document.getElementById('root')!)
-const runtime = createPdfRuntime(owner.signal), dictionary = createNativeDictionary()
 const stages: PdfPerformanceEvent[] = []
 let stageOverflow = false
 const stop = observePdfPerformance(event => { if (stages.length >= 2000) { stageOverflow = true; return }; stages.push(event) })
@@ -59,9 +56,9 @@ function open() {
   opened = true
   root.render(<Reader resourceAddress={`dsh-resource://file/session/${config.sessionId}//bench/fixture.pdf`}
     sessionId={config.sessionId} content={{ kind: 'renderer', revision: 0, loaded() {}, failed() {}, reload() {} }}
-    scrollportRef={() => {}} useTabInfo={() => ({ tab: { id: config.sessionId, signal: owner.signal, actions: { openResource() {} } } })}
+    scrollportRef={() => {}} useTabInfo={() => ({ tab: { id: config.sessionId, visible: true, signal: owner.signal, actions: { openResource() {} } } })}
     t={t} api={api} ocr={createOcrRegistry()} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
-    dictionary={dictionary} settings={{ ...defaultSettings, translationEngine: 'none' }} openPdf={runtime.openPdf} />)
+    settings={defaultSettings} />)
 }
 
 function rootElement() { return document.querySelector<HTMLElement>('.dsh-pdf-scroll') }
@@ -240,5 +237,5 @@ window.__PDF_BENCH__ = {
     if (stageOverflow) throw new Error('Performance event collector overflow')
     return { metrics, stages: stages.filter(event => event.startMs >= timedStart && event.startMs < end), qualityPassed: true }
   },
-  async dispose() { root.unmount(); owner.abort(); stop(); longObserver?.disconnect(); dictionary.dispose(); await runtime.dispose() },
+  async dispose() { root.unmount(); owner.abort(); stop(); longObserver?.disconnect() },
 }

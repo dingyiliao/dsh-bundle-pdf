@@ -1,4 +1,3 @@
-import { AnnotationMode } from 'pdfjs-dist'
 import type { PdfAnnotation, PdfRect } from '../core/pdf-types.js'
 import type { ReaderDocument, ReaderRenderTask } from './reader-document.js'
 import { pdfRectToViewport } from './reader-selection.js'
@@ -51,7 +50,7 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 
 /**
  * Render a PDF-space rectangle directly into a clipped PNG canvas. The supplied
- * document/worker is shared with the reader; this never changes PDF data or frees
+ * native document is shared with the reader; this never changes PDF data or frees
  * shared page resources. Native appearances outside edited regions are retained;
  * operation changes are composed over the unannotated page only where needed.
  */
@@ -137,7 +136,7 @@ export async function capturePdfRegion(
       canvas,
       viewport,
       transform: [1, 0, 0, 1, -left, -top],
-      annotationMode: AnnotationMode.ENABLE,
+      annotations: true,
       background: '#ffffff',
     })
     await task.promise
@@ -152,7 +151,7 @@ export async function capturePdfRegion(
         clean.width = width
         clean.height = height
         const bare = page.render({ canvas: clean, viewport, transform: [1, 0, 0, 1, -left, -top],
-          annotationMode: AnnotationMode.DISABLE, background: '#ffffff' })
+          annotations: false, background: '#ffffff' })
         const cancelBare = () => bare.cancel()
         signal?.addEventListener('abort', cancelBare, { once: true })
         try {

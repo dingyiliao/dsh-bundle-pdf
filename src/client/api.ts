@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import type { PdfClientApi, WorkspaceSnapshot } from '../shared/contracts.ts'
+import type { PdfBookmarkPosition, PdfClientApi, PdfUserBookmark, WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import { measurePdfAsync } from '../shared/performance.ts'
-import type { NativeReaderApi, NativeTextContent } from '../shared/native.ts'
+import type { NativeOutlineItem, NativeReaderApi, NativeTextContent } from '../shared/native.ts'
+import type { PdfReadingContextUpdate } from './contracts.ts'
 
 export interface PdfConnection {
   rpc: { call(path: string, method: string, payload: object, signal?: AbortSignal): Promise<unknown> }
@@ -20,9 +21,9 @@ const wireAnnotation = z.object({
 const wireSnapshot = z.object({
   id: z.string(), path: z.string(), sourceVersion: z.string(), contentVersion: z.string(),
   revision: z.number().int(), dirty: z.boolean(), canUndo: z.boolean(), canRedo: z.boolean(), conflict: z.boolean(),
-  warning: z.string().optional(), bytes: z.instanceof(Uint8Array).optional(), bytesHash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
-  reader: z.object({ engine: z.enum(['native', 'pdfjs']), bytesHash: z.string(), generation: z.number().int(),
-    protocolVersion: z.literal(1), fallbackReason: z.string().optional() }).optional(),
+  warning: z.string().optional(),
+  reader: z.object({ bytesHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    generation: z.number().int(), protocolVersion: z.literal(1) }),
   annotationDelta: z.object({ fromRevision: z.number().int(), remove: z.array(z.string()), upsert: z.array(wireAnnotation) }).optional(),
   baselineAnnotations: z.array(wireAnnotation).optional(),
   document: z.object({
@@ -37,11 +38,35 @@ const response = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
 ])
 
+// A wall-clock prefix survives Client hot reload; the local increment orders
+// rapid page changes, hides and remounts across every Reader instance.
+let lastReadingContextSequence = Date.now() * 1000
+function nextReadingContextSequence(): number {
+  lastReadingContextSequence = Math.max(lastReadingContextSequence + 1, Date.now() * 1000)
+  return lastReadingContextSequence
+}
+
+/** Publish only transient PDF identity/page metadata through the authenticated RPC. */
+export function createReadingContextReporter(connection: PdfConnection, lifetime: AbortSignal):
+  (update: PdfReadingContextUpdate) => Promise<void> {
+  return async (update) => {
+    lifetime.throwIfAborted()
+    const result = response.parse(await connection.rpc.call('/api', 'pdf.readercontext',
+      { ...update, sequence: nextReadingContextSequence() }, lifetime))
+    if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+  }
+}
+const bookmarkPosition = z.object({ page: z.number().int().positive(), x: z.number().finite(), y: z.number().finite(),
+  scale: z.number().finite().positive(), fit: z.enum(['custom', 'width', 'page']),
+  viewportAnchor: z.object({ x: z.number().finite().min(0).max(1), y: z.number().finite().min(0).max(1) }).optional(),
+})
+const bookmarksResult = z.array(z.object({ id: z.string().uuid(), title: z.string(), position: bookmarkPosition,
+  stale: z.enum(['none', 'content-changed', 'page-missing']), createdAt: z.string(), updatedAt: z.string() })).max(1000)
+
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
   const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
   const latest = new Map<string, WorkspaceSnapshot>()
-  const byteIdentities = new Map<string, string>()
-  lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear(); byteIdentities.clear() }, { once: true })
+  lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear() }, { once: true })
   const call = async (payload: object, signal?: AbortSignal, endpoint = 'pdf.dispatch.v2') => {
     const result = response.parse(await measurePdfAsync('client.rpc', {}, () => connection.rpc.call('/api', endpoint, payload,
       signal ? AbortSignal.any([signal, lifetime]) : lifetime)))
@@ -51,9 +76,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
   const snapshot = async (payload: object, signal?: AbortSignal): Promise<WorkspaceSnapshot> => {
     const requestedId = 'id' in payload && typeof payload.id === 'string' ? payload.id : undefined
     const retained = requestedId ? latest.get(requestedId) : undefined
-    const knownBytesHash = requestedId && retained ? byteIdentities.get(requestedId) : undefined
-    const request = { ...payload, ...(knownBytesHash?.startsWith('sha256:') ? { knownBytesHash } : {}),
-      ...(retained ? { knownRevision: retained.revision, knownReaderEngine: retained.reader?.engine } : {}),
+    const request = { ...payload, ...(retained ? { knownBytesHash: retained.reader.bytesHash, knownRevision: retained.revision } : {}),
       ...('action' in payload && ['change', 'undo', 'redo', 'save', 'reload', 'discard'].includes(String(payload.action)) ? { mutationId: crypto.randomUUID() } : {}) }
     let reply: unknown
     try { reply = await call(request, signal) } catch (error) {
@@ -65,20 +88,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     lifetime.throwIfAborted(); signal?.throwIfAborted()
     const previous = latest.get(wire.id) ?? (wire.id === requestedId ? retained : undefined)
     if (previous && previous.revision > wire.revision) return previous
-    // Save/status changes retain their bytes, so the reader keeps its worker,
-    // canvases and text layers instead of opening the same document again.
-    let bytes: Uint8Array
-    const identity = wire.bytesHash
-    const previousIdentity = previous === retained ? knownBytesHash : byteIdentities.get(wire.id)
-    if (previous && identity && previousIdentity === identity && previous.reader?.engine === wire.reader?.engine) bytes = previous.bytes
-    else if (wire.reader?.engine === 'native') bytes = new Uint8Array()
-    else if (wire.bytes instanceof Uint8Array) bytes = wire.bytes
-    else throw new Error('PDF bytes changed without an available byte snapshot; reopen the PDF')
     // Annotation operations can change the projected metadata while retaining the
-    // original PDF bytes. Reuse the byte array, but never discard fresh metadata.
+    // same native document. Never discard fresh metadata from the Host.
     let document = wire.document
       ? previous?.contentVersion === wire.contentVersion ? { ...wire.document, pages: previous.document.pages } : wire.document
-      : previous && previousIdentity === identity ? previous.document : undefined
+      : previous && previous.reader.bytesHash === wire.reader.bytesHash ? previous.document : undefined
     if (!document) throw new Error('PDF metadata snapshot is unavailable; reopen the PDF')
     if (wire.annotationDelta) {
       if (!previous || wire.annotationDelta.fromRevision !== previous.revision) throw new Error('PDF annotation delta baseline is unavailable; reopen the PDF')
@@ -87,9 +101,8 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       for (const annotation of wire.annotationDelta.upsert) annotations.set(annotation.id, annotation)
       document = { ...document, annotations: [...annotations.values()] }
     }
-    const value: WorkspaceSnapshot = { ...wire, document, bytes }
-    if (!wire.baselineAnnotations && previous && previousIdentity === identity) value.baselineAnnotations = previous.baselineAnnotations
-    if (identity) byteIdentities.set(value.id, identity)
+    const value: WorkspaceSnapshot = { ...wire, document }
+    if (!wire.baselineAnnotations && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineAnnotations = previous.baselineAnnotations
     latest.set(value.id, value)
     for (const listener of listeners.get(value.id) ?? []) listener(value)
     return value
@@ -108,10 +121,25 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
         lang: z.string().nullable() }).parse(result) as NativeTextContent
     },
     async links(sessionId, id, reader, page, signal) { return z.array(z.unknown()).max(10000).parse(await call({ action: 'links', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')) },
+    async outline(sessionId, id, reader, signal) {
+      const item: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({ title: z.string().max(8191), dest: z.unknown().optional(),
+        url: z.string().max(32768).optional(), items: z.array(item).max(5000) }))
+      return z.array(item).max(5000).nullable().parse(await call({ action: 'outline', sessionId, id, bytesHash: reader.bytesHash }, signal, 'pdf.native'))
+    },
     destination: (sessionId, id, reader, name, signal) => call({ action: 'destination', sessionId, id, bytesHash: reader.bytesHash, name }, signal, 'pdf.native'),
   }
+  const bookmarks = {
+    list: async (sessionId: string, id: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
+      bookmarksResult.parse(await call({ action: 'list', sessionId, id }, signal, 'pdf.bookmarks')),
+    add: async (sessionId: string, id: string, title: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
+      bookmarksResult.parse(await call({ action: 'add', sessionId, id, title, position }, signal, 'pdf.bookmarks')),
+    rename: async (sessionId: string, id: string, bookmarkId: string, title: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
+      bookmarksResult.parse(await call({ action: 'rename', sessionId, id, bookmarkId, title }, signal, 'pdf.bookmarks')),
+    remove: async (sessionId: string, id: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
+      bookmarksResult.parse(await call({ action: 'remove', sessionId, id, bookmarkId }, signal, 'pdf.bookmarks')),
+  }
   return {
-    native,
+    native, bookmarks,
     open(sessionId, address, signal) {
       const addressed = sessionFile(address)
       if (addressed.sessionId !== sessionId) return Promise.reject(new Error('The PDF address belongs to another session'))
@@ -124,11 +152,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     discard: (sessionId, id, revision, signal) => snapshot({ action: 'discard', sessionId, id, revision }, signal),
     async discardMany(sessionId, ids, signal) {
       const value = z.object({ discarded: z.array(z.string()) }).parse(await call({ action: 'discardMany', sessionId, ids }, signal))
-      for (const id of value.discarded) { latest.delete(id); byteIdentities.delete(id); listeners.delete(id) }
+      for (const id of value.discarded) { latest.delete(id); listeners.delete(id) }
     },
     async discardAddresses(sessionId, addresses, signal) {
       const value = z.object({ discarded: z.array(z.string()) }).parse(await call({ action: 'discardAddresses', sessionId, addresses }, signal))
-      for (const id of value.discarded) { latest.delete(id); byteIdentities.delete(id); listeners.delete(id) }
+      for (const id of value.discarded) { latest.delete(id); listeners.delete(id) }
     },
     save: (sessionId, id, revision, options, signal) => snapshot({ action: 'save', sessionId, id, revision, options }, signal),
     inspectTarget: async (sessionId, path, signal) => z.object({ version: z.string().nullable() }).parse(await call({ action: 'inspectTarget', sessionId, path }, signal)),
@@ -136,7 +164,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       let set = listeners.get(id)
       if (!set) { set = new Set(); listeners.set(id, set) }
       set.add(callback)
-      return () => { set.delete(callback); if (!set.size) { listeners.delete(id); latest.delete(id); byteIdentities.delete(id) } }
+      return () => { set.delete(callback); if (!set.size) { listeners.delete(id); latest.delete(id) } }
     },
   }
 }

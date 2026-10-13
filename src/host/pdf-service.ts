@@ -4,10 +4,9 @@ import { z } from 'zod'
 import { NativeWorker } from '../engine/native-worker.ts'
 import { ByteCache } from '../engine/byte-cache.ts'
 import { encodePng } from '../engine/png.ts'
-import type { ReaderDescriptor, ReaderEngine } from '../shared/native.ts'
-import type { WorkspaceSnapshot } from '../shared/contracts.ts'
+import type { NativeTextContent, ReaderDescriptor } from '../shared/native.ts'
 import { binaryResult, type PdfAgent, type PdfDispatch } from './transport.ts'
-import type { createWorkspaces } from './workspaces.ts'
+import type { createWorkspaces, HostWorkspaceSnapshot } from './workspaces.ts'
 
 const id = z.string().min(1).max(512)
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -21,28 +20,39 @@ const nativeRequest = z.discriminatedUnion('action', [
   }).strict().refine(t => t.x + t.width <= t.rasterWidth + 2 && t.y + t.height <= t.rasterHeight + 2) }).strict(),
   z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000) }).strict(),
   z.object({ ...common, action: z.literal('links'), page: integer.min(1).max(100000) }).strict(),
+  z.object({ ...common, action: z.literal('outline') }).strict(),
   z.object({ ...common, action: z.literal('destination'), name: z.string().min(1).max(32768) }).strict(),
   z.object({ ...common, action: z.literal('inspect'), page: integer.min(1).max(100000), offset: integer.min(0), limit: integer.min(1).max(100) }).strict(),
 ])
-const hints = z.object({ knownRevision: integer.min(0).optional(), mutationId: z.string().uuid().optional(), knownReaderEngine: z.enum(['native', 'pdfjs']).optional() })
+const hints = z.object({ knownRevision: integer.min(0).optional(), mutationId: z.string().uuid().optional() })
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 interface Handle { hash: string; generation: number; bytes: number }
 
 /** Host authority is shared by UI dispatch, native reads and future Agent callers. */
 export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>, options: {
-  executable: string; engine: () => ReaderEngine; cacheBytes?: number; timeoutMs?: number
+  executable: string; cacheBytes?: number; timeoutMs?: number
 }) {
   const worker = new NativeWorker(options.executable, options.timeoutMs)
   const handles = new Map<string, Handle>()
   const openings = new Map<string, Promise<void>>()
   const tiles = new ByteCache<Buffer>(options.cacheBytes ?? 32 * 1024 * 1024)
-  const histories = new Map<string, WorkspaceSnapshot>()
+  const histories = new Map<string, HostWorkspaceSnapshot>()
   // An idempotency entry never retains PDF bytes or a full metadata reply.
   const mutations = new Map<string, { digest: string; task: Promise<string | undefined> }>()
   let handlesBytes = 0, closed = false
   let admission: Promise<unknown> = Promise.resolve()
+  let handleLease: Promise<unknown> = Promise.resolve()
 
-  async function ensure(snapshot: WorkspaceSnapshot, signal?: AbortSignal): Promise<void> {
+  // The native worker addresses a mutable document ID. Keep an ensure/read
+  // pair atomic with respect to other opens, closes and cache evictions.
+  function withHandleLease<T>(task: () => Promise<T>): Promise<T> {
+    const run = handleLease.catch(() => undefined).then(task)
+    // Keep only completion, not a possibly large tile or text reply.
+    handleLease = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  async function ensure(snapshot: HostWorkspaceSnapshot, signal?: AbortSignal): Promise<void> {
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     await worker.ready()
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
@@ -71,7 +81,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
       const value = z.object({ pageCount: integer, formType: integer, signatureCount: integer }).parse(reply.value)
       if (value.pageCount !== snapshot.document.pageCount || value.formType !== 0 || value.signatureCount > 0) {
         await worker.request({ command: 'close', documentId: snapshot.id })
-        fail('pdf/native-compatibility', 'PDF forms, signatures or inconsistent page geometry require the compatibility reader')
+        fail('pdf/native-unsupported', 'PDF forms, signatures or inconsistent page geometry are not supported by the native reader')
       }
       handles.set(snapshot.id, { hash: bytesHash, generation: worker.generation, bytes: snapshot.bytes.byteLength })
       handlesBytes += snapshot.bytes.byteLength
@@ -82,36 +92,22 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
     signal?.throwIfAborted()
   }
 
-  async function descriptor(snapshot: WorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
+  async function descriptor(snapshot: HostWorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
-    const base = { bytesHash, protocolVersion: 1 as const }
-    const engine = options.engine()
-    if (engine === 'pdfjs') return { ...base, engine: 'pdfjs', generation: 0 }
-    const reason = snapshot.document.encrypted ? 'Encrypted PDF requires the compatibility reader'
-      : snapshot.document.signed ? 'Signed PDF requires the compatibility reader'
-      : !existsSync(options.executable) ? 'Native helper is not installed; run npm run native:build' : undefined
-    if (reason) {
-      if (engine === 'native') fail('pdf/native-unavailable', reason)
-      return { ...base, engine: 'pdfjs', generation: 0, fallbackReason: reason }
-    }
-    try {
-      await ensure(snapshot, signal)
-      return { ...base, engine: 'native', generation: worker.generation }
-    } catch (error) {
-      signal.throwIfAborted()
-      if (engine === 'native') throw error
-      return { ...base, engine: 'pdfjs', generation: 0, fallbackReason: error instanceof Error ? error.message : 'Native reader unavailable' }
-    }
+    if (snapshot.document.encrypted) fail('pdf/native-unsupported', 'Encrypted PDFs are not supported by the native reader')
+    if (snapshot.document.signed) fail('pdf/native-unsupported', 'Signed PDFs are not supported by the native reader')
+    if (!existsSync(options.executable)) fail('pdf/native-unavailable', 'Native helper is unavailable; install the PDF package for this platform')
+    await ensure(snapshot, signal)
+    return { bytesHash, protocolVersion: 1, generation: worker.generation }
   }
 
-  async function wire(snapshot: WorkspaceSnapshot, raw: Record<string, unknown>, signal: AbortSignal) {
-    const reader = await descriptor(snapshot, signal)
+  async function wire(snapshot: HostWorkspaceSnapshot, raw: Record<string, unknown>, signal: AbortSignal) {
+    const reader = await withHandleLease(() => descriptor(snapshot, signal))
     const previous = histories.get(snapshot.id)
-    const sameBytes = raw.knownBytesHash === reader.bytesHash
-    const continuous = sameBytes && previous !== undefined && previous.revision === raw.knownRevision && previous.contentVersion === snapshot.contentVersion
+    const continuous = raw.knownBytesHash === reader.bytesHash && previous !== undefined && previous.revision === raw.knownRevision && previous.contentVersion === snapshot.contentVersion
       && workspaces.bytesHash(previous.bytes) === reader.bytesHash
     const { bytes: _bytes, document, baselineAnnotations, ...status } = snapshot
-    const value: Record<string, unknown> = { ...status, bytesHash: reader.bytesHash, reader }
+    const value: Record<string, unknown> = { ...status, reader }
     if (continuous) {
       const before = new Map(previous.document.annotations.map(a => [a.id, a]))
       value.annotationDelta = { fromRevision: previous.revision,
@@ -120,13 +116,12 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
     } else { value.document = document; value.baselineAnnotations = baselineAnnotations }
     histories.delete(snapshot.id); histories.set(snapshot.id, snapshot)
     while (histories.size > 32) histories.delete(histories.keys().next().value!)
-    if (reader.engine === 'native' || sameBytes && raw.knownReaderEngine === 'pdfjs') return value
-    return binaryResult(value, snapshot.bytes, 'application/pdf')
+    return value
   }
 
   const dispatch: PdfDispatch = async (sessionId, raw, agent, signal) => {
     const parsed = hints.parse(raw)
-    const { knownRevision: _revision, mutationId: _mutation, knownReaderEngine: _engine, ...input } = raw
+    const { knownRevision: _revision, mutationId: _mutation, ...input } = raw
     let result: Awaited<ReturnType<typeof workspaces.execute>>
     const mutating = ['change', 'undo', 'redo', 'save', 'reload', 'discard'].includes(String(input.action))
     if (parsed.mutationId && mutating) {
@@ -156,7 +151,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
     return wire(result, raw, signal)
   }
 
-  const native: PdfDispatch = async (sessionId, raw, agent, signal) => {
+  const native: PdfDispatch = async (sessionId, raw, agent, signal) => withHandleLease(async () => {
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     const input = nativeRequest.parse(raw)
     if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
@@ -180,12 +175,30 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
       signal.throwIfAborted()
       return binaryResult({ width: t.width, height: t.height, mime: 'image/png' }, png, 'image/png')
     }
-    const command = input.action === 'destination' ? { command: 'destination', name: input.name }
+    const command = input.action === 'outline' ? { command: 'outline' }
+      : input.action === 'destination' ? { command: 'destination', name: input.name }
       : { command: input.action, pageIndex: input.page - 1, ...(input.action === 'inspect' ? { offset: input.offset, limit: input.limit } : {}) }
     const reply = await worker.request({ ...command, documentId: input.id }, undefined, signal, -5)
     return reply.value
-  }
-  return { dispatch, native, diagnostics: () => ({ generation: worker.generation, workerPid: worker.pid, documents: handles.size, documentBytes: handlesBytes,
+  })
+  async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
+    snapshot: HostWorkspaceSnapshot; content: NativeTextContent
+  }> { return withHandleLease(async () => {
+    signal.throwIfAborted()
+    const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
+      fail('pdf/invalid-page', 'Page is outside the document')
+    }
+    await descriptor(snapshot, signal)
+    const reply = await worker.request({ command: 'text', documentId, pageIndex: page - 1 }, undefined, signal, -5)
+    signal.throwIfAborted()
+    const content = z.object({ items: z.array(z.object({ str: z.string(), transform: z.array(z.number()),
+      width: z.number(), height: z.number(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean() })),
+      styles: z.record(z.string(), z.object({ fontFamily: z.string(), ascent: z.number(), descent: z.number(), vertical: z.boolean() })),
+      lang: z.string().nullable() }).parse(reply.value)
+    return { snapshot, content }
+  }) }
+  return { dispatch, native, readPageText, diagnostics: () => ({ generation: worker.generation, workerPid: worker.pid, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
     dispose() { closed = true; worker.dispose(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0 } }
 }

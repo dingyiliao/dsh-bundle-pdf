@@ -5,11 +5,11 @@ import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { NativeWorker } from '../src/engine/native-worker.ts'
 import { NativeViewport } from '../src/client/native/viewport.ts'
-import { loadPdfDocument } from '../src/core/pdf-document.ts'
+import { applyPdfOperations, loadPdfDocument } from '../src/core/pdf-document.ts'
 import { createPdfService } from '../src/host/pdf-service.ts'
 import { registerPdfTransport } from '../src/host/transport.ts'
 import { createPdfApi } from '../src/client/api.ts'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, PDFHexString, PDFName, rgb } from 'pdf-lib'
 import { memoryWorkspace, nativeFixture } from './native-fixture.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
@@ -50,6 +50,106 @@ test('guttered tiles agree with a whole-page render at all internal seams', { sk
     assert.ok(differences / tested < 0.0005, `seam differing-byte ratio=${differences / tested}`)
   } finally { worker.dispose() }
 })
+
+test('PDFium gives existing and newly authored highlights the same color on white and gray paper', { skip }, async () => {
+  const pdf = await PDFDocument.create(), page = pdf.addPage([440, 220])
+  const color: [number, number, number] = [1, 0.38431, 0]
+  const left = 20, right = 160, direct = 300, bottom = 100, width = 100, height = 40
+  const quads = (x: number) => [
+    x, bottom + height, x + 65, bottom + height, x, bottom, x + 65, bottom,
+    x + 35, bottom + height, x + width, bottom + height, x + 35, bottom, x + width, bottom,
+  ]
+  // The two halves have the same white/gray paper, so the sampled pixels
+  // distinguish annotation compositing from differences in page content.
+  for (const x of [left, right, direct]) page.drawRectangle({ x, y: 120, width, height: 20, color: rgb(0.75, 0.75, 0.75) })
+
+  // An external-reader appearance has three levels: color in a plain Form,
+  // a transparency group wrapping it, and an outer Form applying .4 alpha
+  // plus Multiply. It deliberately does not use the writer under test.
+  const oldInk = pdf.context.register(pdf.context.flateStream(
+    `${color.join(' ')} rg 0 0 65 ${height} re f 35 0 65 ${height} re f`, {
+      Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
+    },
+  ))
+  const oldGroup = pdf.context.register(pdf.context.flateStream('/Ink Do', {
+    Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
+    Group: pdf.context.obj({ S: 'Transparency' }),
+    Resources: pdf.context.obj({ XObject: { Ink: oldInk } }),
+  }))
+  const oldAppearance = pdf.context.register(pdf.context.flateStream('/R0 gs /R1 gs /Group Do', {
+    Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
+    Resources: pdf.context.obj({
+      ExtGState: {
+        R0: { Type: 'ExtGState', ca: 0.4, CA: 0.4 },
+        R1: { Type: 'ExtGState', BM: 'Multiply' },
+      },
+      XObject: { Group: oldGroup },
+    }),
+  }))
+  const oldAnnotation = pdf.context.register(pdf.context.obj({
+    Type: 'Annot', Subtype: 'Highlight', P: page.ref, F: 4,
+    Rect: [left, bottom, left + width, bottom + height],
+    QuadPoints: quads(left),
+    C: color, CA: 0.4, AP: { N: oldAppearance },
+  }))
+  // Negative control: the previous writer's direct, per-quad alpha paints
+  // overlapping quads twice. It must visibly differ at the overlap pixel.
+  const directAppearance = pdf.context.register(pdf.context.flateStream(
+    `q /GS0 gs ${color.join(' ')} rg 0 0 65 ${height} re f 35 0 65 ${height} re f Q`, {
+      Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
+      Resources: pdf.context.obj({ ExtGState: { GS0: { Type: 'ExtGState', ca: 0.4, CA: 0.4, BM: 'Multiply' } } }),
+    },
+  ))
+  const directAnnotation = pdf.context.register(pdf.context.obj({
+    Type: 'Annot', Subtype: 'Highlight', P: page.ref, F: 4,
+    Rect: [direct, bottom, direct + width, bottom + height], QuadPoints: quads(direct),
+    C: color, AP: { N: directAppearance },
+  }))
+  page.node.set(PDFName.of('Annots'), pdf.context.obj([oldAnnotation, directAnnotation]))
+  const source = await pdf.save({ useObjectStreams: false })
+  const authored = await applyPdfOperations(source, [{
+    type: 'add', annotation: {
+      id: 'new-matching-highlight', page: 1, subtype: 'Highlight',
+      rect: [right, bottom, right + width, bottom + height],
+      quadPoints: quads(right),
+      color,
+    },
+  }])
+  const worker = new NativeWorker(executable)
+  const sample = (pixels: Uint8Array, x: number, pdfY: number): number[] => {
+    const rasterX = x * 2, rasterY = (220 - pdfY) * 2
+    return [...pixels.subarray((rasterY * 880 + rasterX) * 4, (rasterY * 880 + rasterX) * 4 + 3)]
+  }
+  try {
+    await worker.request({ command: 'open', documentId: 'highlight-compositing' }, authored.bytes)
+    const base = { command: 'render', documentId: 'highlight-compositing', pageIndex: 0,
+      rotation: 0, rasterWidth: 880, rasterHeight: 440, x: 0, y: 0, width: 880, height: 440 }
+    const plain = (await worker.request({ ...base, annotations: false })).bytes
+    const painted = (await worker.request({ ...base, annotations: true })).bytes
+    for (const pdfY of [110, 130]) {
+      const singleOld = sample(painted, left + 20, pdfY)
+      const overlapOld = sample(painted, left + 50, pdfY)
+      for (const x of [20, 50, 80]) {
+        const paper = sample(plain, left + x, pdfY)
+        const oldColor = sample(painted, left + x, pdfY)
+        const newColor = sample(painted, right + x, pdfY)
+        assert.deepEqual(sample(plain, right + x, pdfY), paper, `Unequal paper at x=${x} y=${pdfY}`)
+        assert.ok(oldColor.some((channel, index) => Math.abs(channel - paper[index]) > 15),
+          `Fixture's legacy appearance did not render at x=${x} y=${pdfY}: ${oldColor}`)
+        for (let channel = 0; channel < 3; channel++) {
+          assert.ok(Math.abs(oldColor[channel] - newColor[channel]) <= 4,
+            `Different ${['red', 'green', 'blue'][channel]} at x=${x} y=${pdfY}: old=${oldColor}, new=${newColor}`)
+        }
+      }
+      assert.ok(overlapOld.every((channel, index) => Math.abs(channel - singleOld[index]) <= 4),
+        `Legacy fixture darkens overlapping quads at y=${pdfY}: single=${singleOld}, overlap=${overlapOld}`)
+      const directSingle = sample(painted, direct + 20, pdfY)
+      const directOverlap = sample(painted, direct + 50, pdfY)
+      assert.ok(directOverlap.some((channel, index) => Math.abs(channel - directSingle[index]) > 8),
+        `Pre-fix appearance unexpectedly hides its double alpha at y=${pdfY}: single=${directSingle}, overlap=${directOverlap}`)
+    }
+  } finally { worker.dispose() }
+})
 test('PDFium exposes searchable text, URI/internal destinations and bounded object inspection', { skip }, async () => {
   const worker = new NativeWorker(executable)
   try {
@@ -65,7 +165,33 @@ test('PDFium exposes searchable text, URI/internal destinations and bounded obje
   } finally { worker.dispose() }
 })
 
-/** Decode the public Connection multipart contract, including its metadata attachment path. */
+test('PDFium reads a nested Unicode outline with a working page destination', { skip }, async () => {
+  const pdf = await PDFDocument.create()
+  pdf.addPage([300, 400])
+  const target = pdf.addPage([300, 400])
+  const root = pdf.context.obj({ Type: 'Outlines', Count: 2 })
+  const rootRef = pdf.context.register(root)
+  const chapter = pdf.context.obj({ Title: PDFHexString.fromText('Chapter 1'), Parent: rootRef, Count: 1,
+    Dest: [target.ref, PDFName.of('Fit')] })
+  const chapterRef = pdf.context.register(chapter)
+  const section = pdf.context.obj({ Title: PDFHexString.fromText('第二节'), Parent: chapterRef,
+    Dest: [target.ref, PDFName.of('Fit')] })
+  const sectionRef = pdf.context.register(section)
+  chapter.set(PDFName.of('First'), sectionRef); chapter.set(PDFName.of('Last'), sectionRef)
+  root.set(PDFName.of('First'), chapterRef); root.set(PDFName.of('Last'), chapterRef)
+  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
+  const worker = new NativeWorker(executable)
+  try {
+    await worker.request({ command: 'open', documentId: 'outline' }, await pdf.save({ useObjectStreams: false }))
+    assert.deepEqual((await worker.request({ command: 'outline', documentId: 'outline' })).value, [{
+      title: 'Chapter 1', dest: [1, { name: 'Fit' }], items: [
+        { title: '第二节', dest: [1, { name: 'Fit' }], items: [] },
+      ],
+    }])
+  } finally { worker.dispose() }
+})
+
+/** Decode the public Connection contract, including native PNG tile attachments. */
 async function decode(response: Response): Promise<unknown> {
   if (response.headers.get('content-type')?.startsWith('multipart/form-data')) {
     const form = await response.formData(), envelope = JSON.parse(String(form.get('metadata')))
@@ -77,7 +203,7 @@ async function decode(response: Response): Promise<unknown> {
   return (await response.json()).result
 }
 test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen and raw PNG attachments', { skip }, async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable, engine: () => 'native' })
+  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable })
   const routes = new Map<string, (request: Request) => Promise<Response>>()
   const context: Parameters<typeof registerPdfTransport>[0] = {
     connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return async () => { routes.delete(route.path) } } } },
@@ -95,7 +221,7 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
   const api = createPdfApi({ rpc: { call: (_path, method, payload) => call(method, payload) } }, clientLifetime.signal)
   try {
     const opened = await api.open('native-test', 'dsh-resource://file/session/native-test//fixtures/native.pdf')
-    assert.equal(opened.reader?.engine, 'native'); assert.equal(opened.bytes.length, 0)
+    assert.equal(opened.reader.protocolVersion, 1); assert.equal('bytes' in opened, false)
     assert.equal(opened.document.annotations.find(a => a.linkAction)?.linkAction, 'NextPage')
     const changed = await api.change('native-test', opened.id, opened.revision, [{ type: 'add', annotation: { id: 'v1-note', page: 1, subtype: 'Text', rect: [80, 80, 100, 100], contents: 'Native note' } }])
     assert.equal(changed.dirty, true); assert.ok(changed.document.annotations.some(a => a.id === 'v1-note'))
@@ -105,7 +231,7 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
     assert.ok(pid)
     process.kill(pid, 'SIGKILL')
     await new Promise(resolve => setTimeout(resolve, 20))
-    const recoveredText = await api.native!.text('native-test', changed.id, changed.reader!, 1)
+    const recoveredText = await api.native.text('native-test', changed.id, changed.reader, 1)
     assert.equal(recoveredText.items.map(item => item.str).join(''), 'Native PDF test page 1')
     assert.equal(service.diagnostics().generation, generation + 1)
     assert.equal(state.workspaces.readSnapshot('native-test', changed.id).dirty, true)
@@ -113,31 +239,28 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
     const undone = await api.undo('native-test', changed.id, changed.revision); assert.ok(!undone.document.annotations.some(a => a.id === 'v1-note'))
     const redone = await api.redo('native-test', changed.id, undone.revision); assert.ok(redone.document.annotations.some(a => a.id === 'v1-note'))
     const saved = await api.save('native-test', changed.id, redone.revision, {})
-    assert.equal(saved.dirty, false); assert.equal(state.writes(), 1); assert.notEqual(saved.reader!.bytesHash, opened.reader!.bytesHash)
+    assert.equal(saved.dirty, false); assert.equal(state.writes(), 1); assert.notEqual(saved.reader.bytesHash, opened.reader.bytesHash)
     assert.ok((await loadPdfDocument(state.current())).annotations.some(a => a.id === 'v1-note'))
-    const tile = await api.native!.tile('native-test', saved.id, saved.reader!, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true })
+    const tile = await api.native.tile('native-test', saved.id, saved.reader, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true })
     assert.equal(tile.mime, 'image/png'); assert.deepEqual([...tile.bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
-    await assert.rejects(api.native!.tile('native-test', saved.id, opened.reader!, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true }), { code: 'pdf/stale-reader' })
+    await assert.rejects(api.native.tile('native-test', saved.id, opened.reader, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true }), { code: 'pdf/stale-reader' })
     const attacker = { session: { id: 'another-session', header: {} } }
-    await assert.rejects(service.native('another-session', { action: 'text', sessionId: 'another-session', id: saved.id, bytesHash: saved.reader!.bytesHash, page: 1 }, attacker, signal), { code: 'pdf/session-mismatch' })
+    await assert.rejects(service.native('another-session', { action: 'text', sessionId: 'another-session', id: saved.id, bytesHash: saved.reader.bytesHash, page: 1 }, attacker, signal), { code: 'pdf/session-mismatch' })
     assert.ok(service.diagnostics().tileCacheBytes <= 32 * 1024 * 1024)
   } finally { clientLifetime.abort(); service.dispose(); await state.workspaces.dispose() }
 })
-test('auto engine falls back with binary PDF bytes when the native helper is absent', async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable: '/missing/helper', engine: () => 'auto' })
+test('opening fails explicitly when the native helper is absent', async () => {
+  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable: '/missing/helper' })
   try {
-    const value: any = await service.dispatch('fallback', { action: 'open', sessionId: 'fallback', address: 'dsh-resource://file/session/fallback//fixtures/native.pdf' }, { session: { id: 'fallback', header: {} } }, signal)
-    assert.equal(value.value.reader.engine, 'pdfjs'); assert.match(value.value.reader.fallbackReason, /not installed/)
-    assert.ok(value.bytes instanceof Uint8Array); assert.equal(value.value.bytes, null)
+    await assert.rejects(service.dispatch('missing-helper', { action: 'open', sessionId: 'missing-helper', address: 'dsh-resource://file/session/missing-helper//fixtures/native.pdf' }, { session: { id: 'missing-helper', header: {} } }, signal), { code: 'pdf/native-unavailable' })
   } finally { service.dispose(); await state.workspaces.dispose() }
 })
-test('PDF forms select the compatibility reader rather than an incomplete native appearance', { skip }, async () => {
+test('PDF forms fail explicitly rather than showing an incomplete native appearance', { skip }, async () => {
   const document = await PDFDocument.create(), page = document.addPage([300, 400])
   document.getForm().createTextField('field').addToPage(page, { x: 30, y: 100, width: 150, height: 30 })
-  const state = memoryWorkspace(await document.save()), service = createPdfService(state.workspaces, { executable, engine: () => 'auto' })
+  const state = memoryWorkspace(await document.save()), service = createPdfService(state.workspaces, { executable })
   try {
-    const result: any = await service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal)
-    assert.equal(result.value.reader.engine, 'pdfjs'); assert.match(result.value.reader.fallbackReason, /forms/)
+    await assert.rejects(service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal), { code: 'pdf/native-unsupported' })
     assert.equal(service.diagnostics().documents, 0)
   } finally { service.dispose(); await state.workspaces.dispose() }
 })

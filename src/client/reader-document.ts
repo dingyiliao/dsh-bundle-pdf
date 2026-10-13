@@ -1,15 +1,21 @@
-import type { PDFDocumentProxy, PageViewport } from 'pdfjs-dist'
+import type { NativeTextContent, NativeTileRequest } from '../shared/native.ts'
+import type { NativeViewport } from './native/viewport.ts'
 
-/** The document operations shared by PDF.js and the native reader. */
+/** Document operations used by the native reader and its UI. */
 export interface ReaderDocument {
   readonly numPages: number
   getPage(number: number): Promise<ReaderPage>
+  getOutline(): Promise<ReaderOutlineItem[] | null>
   getDestination(name: string): Promise<unknown>
-  getPageIndex(ref: Parameters<PDFDocumentProxy['getPageIndex']>[0]): Promise<number>
+  getPageIndex(ref: unknown): Promise<number>
 }
 
-export interface ReaderTextContent {
-  items: ({ str: string; transform: number[]; width: number; height: number; hasEOL: boolean } | { type: string })[]
+/** Document bookmarks, including their nested children and optional navigation target. */
+export interface ReaderOutlineItem {
+  title: string
+  dest?: unknown
+  url?: string | null
+  items: ReaderOutlineItem[]
 }
 
 export interface ReaderAnnotation {
@@ -24,9 +30,9 @@ export interface ReaderAnnotation {
 
 export interface ReaderRenderOptions {
   canvas: HTMLCanvasElement
-  viewport: PageViewport
+  viewport: NativeViewport
   transform?: number[]
-  annotationMode?: number
+  annotations?: boolean
   background?: string
 }
 
@@ -35,16 +41,15 @@ export interface ReaderRenderTask {
   cancel(): void
 }
 
-/** Only page operations used by the reader, selection and screenshot surfaces. */
+/** Only native page operations used by the reader, selection and screenshot surfaces. */
 export interface ReaderPage {
   readonly pageNumber: number
   readonly rotate: number
   readonly userUnit: number
   readonly view: number[]
-  getViewport(options: { scale: number; rotation?: number; offsetX?: number; offsetY?: number; dontFlip?: boolean }): PageViewport
-  getTextContent(): Promise<ReaderTextContent>
-  streamTextContent(): ReadableStream
+  getViewport(options: { scale: number; rotation?: number; offsetX?: number; offsetY?: number; dontFlip?: boolean }): NativeViewport
+  getTextContent(): Promise<NativeTextContent>
   getAnnotations(options?: { intent?: string }): Promise<ReaderAnnotation[]>
+  tile(tile: Omit<NativeTileRequest, 'page'>, signal: AbortSignal): Promise<ImageBitmap>
   render(options: ReaderRenderOptions): ReaderRenderTask
-  cleanup(): boolean
 }

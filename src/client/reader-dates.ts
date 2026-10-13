@@ -1,4 +1,4 @@
-import { PDFDateString } from 'pdfjs-dist'
+import { parseDate } from 'pdf-lib'
 
 const localDateTime = new Intl.DateTimeFormat(undefined, {
   year: 'numeric', month: '2-digit', day: '2-digit',
@@ -7,6 +7,6 @@ const localDateTime = new Intl.DateTimeFormat(undefined, {
 
 /** PDF dates use D:YYYYMMDDHHmmSS with a UTC/offset suffix, not ISO syntax. */
 export function formatAnnotationDate(value: string): string {
-  const date = value.startsWith('D:') ? PDFDateString.toDateObject(value) : new Date(value)
+  const date = value.startsWith('D:') ? parseDate(value) : new Date(value)
   return date && Number.isFinite(date.getTime()) ? localDateTime.format(date) : '—'
 }

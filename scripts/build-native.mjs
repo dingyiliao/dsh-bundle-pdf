@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const lock = JSON.parse(await readFile(join(root, 'native/dependencies.json'), 'utf8'))
 const platform = `${process.platform}-${process.arch}`
 const checksum = lock.pdfium.assets[platform]
-if (!checksum) throw new Error(`No pinned PDFium SDK for ${platform}; use PDF.js on this platform`)
+if (!checksum) throw new Error(`No pinned PDFium SDK for ${platform}; native PDF reading is unavailable on this platform`)
 const cache = join(root, 'native/.deps')
 const sdk = process.env.DSH_PDFIUM_ROOT ? resolve(process.env.DSH_PDFIUM_ROOT) : join(cache, 'pdfium')
 const jsonDir = process.env.DSH_PDF_JSON_DIR ? resolve(process.env.DSH_PDF_JSON_DIR) : join(cache, 'json')
@@ -67,6 +67,17 @@ if (spawnSync('cmake', ['--version'], { stdio: 'ignore', windowsHide: true }).st
     `-I${jsonDir}`, join(root, 'native/pdfium-worker.cpp'), `-L${join(sdk, 'lib')}`, '-lpdfium',
     `-Wl,-rpath,${process.platform === 'darwin' ? '@loader_path' : '$ORIGIN'}`, '-o', join(out, executableName)])
 } else throw new Error('Install CMake and the Visual Studio C++ build tools, then rerun npm run native:build')
+if (process.platform === 'darwin') {
+  const executable = join(out, executableName)
+  const linked = spawnSync('otool', ['-L', executable], { encoding: 'utf8' })
+  if (linked.status !== 0) throw new Error(`Could not inspect native PDFium linkage: ${linked.stderr}`)
+  const library = linked.stdout.match(/^\s+(\S*libpdfium\.dylib)\s+\(/m)?.[1]
+  if (!library) throw new Error('Native PDFium library is not linked')
+  if (library !== '@loader_path/libpdfium.dylib') {
+    await run('install_name_tool', ['-change', library, '@loader_path/libpdfium.dylib', executable])
+    await run('codesign', ['--force', '--sign', '-', executable])
+  }
+}
 const library = process.platform === 'win32' ? join(sdk, 'bin/pdfium.dll')
   : join(sdk, 'lib', process.platform === 'darwin' ? 'libpdfium.dylib' : 'libpdfium.so')
 await copyFile(library, join(out, library.split(/[\\/]/).at(-1)))

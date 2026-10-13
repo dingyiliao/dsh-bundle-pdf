@@ -2,6 +2,7 @@
 export type PdfRect = [number, number, number, number]
 export type PdfColor = [number, number, number]
 export type EditableAnnotationType = 'Highlight' | 'Underline' | 'StrikeOut' | 'Text'
+export const DEFAULT_HIGHLIGHT_OPACITY = 0.4
 
 export interface PdfPageInfo {
   page: number

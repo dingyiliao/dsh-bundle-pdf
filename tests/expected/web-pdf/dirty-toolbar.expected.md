@@ -1,8 +1,4 @@
 - button "← Back" [disabled]
-- button "Previous page" [disabled]: ‹
-- textbox "Page": "1"
-- text: / 2
-- button "Next page": ›
 - combobox "Zoom":
   - option "Fit width" [selected]
   - option "Fit page"
@@ -13,7 +9,6 @@
   - option "150%"
   - option "200%"
   - option "300%"
-- button "↻"
 - button "↶"
 - button "↷" [disabled]
 - button "Save"

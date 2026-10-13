@@ -4,11 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "json.hpp"
 #include "fpdfview.h"
@@ -130,6 +132,53 @@ json destination(FPDF_DOCUMENT doc, FPDF_DEST dest) {
   return result;
 }
 
+json outline(FPDF_DOCUMENT doc) {
+  auto first = FPDFBookmark_GetFirstChild(doc, nullptr);
+  if (!first) return nullptr;
+  std::unordered_set<FPDF_BOOKMARK> visited;
+  size_t count = 0;
+  std::function<json(FPDF_BOOKMARK, int)> walk = [&](FPDF_BOOKMARK current, int depth) -> json {
+    require(depth <= 64, "Bookmark nesting exceeds its budget");
+    json items = json::array();
+    while (current) {
+      // Malformed PDFs can make the next/child pointers circular.
+      if (!visited.insert(current).second) break;
+      require(++count <= 5000, "Bookmark count exceeds its budget");
+      const auto length = FPDFBookmark_GetTitle(current, nullptr, 0);
+      require(length <= 16384 && length % 2 == 0, "Bookmark title exceeds its budget");
+      std::vector<uint16_t> units(length / 2);
+      if (length) FPDFBookmark_GetTitle(current, units.data(), length);
+      std::string title;
+      for (size_t i = 0; i + 1 < units.size(); i++) {
+        uint32_t scalar = units[i];
+        if (scalar >= 0xd800 && scalar <= 0xdbff && i + 2 < units.size()
+            && units[i + 1] >= 0xdc00 && units[i + 1] <= 0xdfff) {
+          scalar = 0x10000 + ((scalar - 0xd800) << 10) + (units[++i] - 0xdc00);
+        }
+        title += utf8(scalar);
+      }
+      json item = {{"title", title}};
+      auto action = FPDFBookmark_GetAction(current);
+      auto dest = FPDFBookmark_GetDest(doc, current);
+      if (!dest && action && FPDFAction_GetType(action) == PDFACTION_GOTO) dest = FPDFAction_GetDest(doc, action);
+      if (dest) item["dest"] = destination(doc, dest);
+      if (action && FPDFAction_GetType(action) == PDFACTION_URI) {
+        const auto url_length = FPDFAction_GetURIPath(doc, action, nullptr, 0);
+        if (url_length > 0 && url_length <= 32768) {
+          std::vector<char> url(url_length);
+          FPDFAction_GetURIPath(doc, action, url.data(), url_length);
+          item["url"] = std::string(url.data(), url_length - 1);
+        }
+      }
+      item["items"] = walk(FPDFBookmark_GetFirstChild(doc, current), depth + 1);
+      items.push_back(std::move(item));
+      current = FPDFBookmark_GetNextSibling(doc, current);
+    }
+    return items;
+  };
+  return walk(first, 0);
+}
+
 json text_content(Document& doc, const json& request) {
   const int index = integer(request, "pageIndex", 0, doc.count - 1);
   auto page = doc.page(index);
@@ -217,6 +266,7 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
   if (command == "close") { documents.erase(id_for(request, "documentId")); return {{"closed", true}}; }
   auto& doc = doc_for(request);
   if (command == "text") return text_content(doc, request);
+  if (command == "outline") return outline(doc.handle);
   if (command == "destination") return destination(doc.handle, FPDF_GetNamedDestByName(doc.handle, request.at("name").get<std::string>().c_str()));
   const int index = integer(request, "pageIndex", 0, doc.count - 1);
   auto page = doc.page(index);
@@ -280,8 +330,8 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
   const float sy = float((rotation % 180 ? full_w : full_h) / page_h);
   FS_MATRIX matrix{};
   // PDFium first applies its intrinsic crop/rotation/display matrix. This is
-  // an additional transform in that normalized top-left page space, not a
-  // second PDF.js Y flip (see pinned fpdf_view.cpp, WithMatrix implementation).
+  // an additional transform in that normalized top-left page space, without
+  // a second Y flip (see pinned fpdf_view.cpp, WithMatrix implementation).
   if (rotation == 0) matrix = {sx,0,0,sy,float(-x),float(-y)};
   else if (rotation == 90) matrix = {0,sx,-sy,0,float(full_w-x),float(-y)};
   else if (rotation == 180) matrix = {-sx,0,0,-sy,float(full_w-x),float(full_h-y)};

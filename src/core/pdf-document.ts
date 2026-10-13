@@ -5,7 +5,7 @@ import {
 import { setAnnotationAppearance } from './pdf-appearance.js'
 import { measurePdfAsync } from '../shared/performance.js'
 import {
-  PdfDocumentError,
+  DEFAULT_HIGHLIGHT_OPACITY, PdfDocumentError,
   type EditableAnnotationType, type NewPdfAnnotation, type PdfAnnotation,
   type PdfAnnotationOperation, type PdfColor, type PdfDocumentInfo, type PdfRect,
 } from './pdf-types.js'
@@ -274,6 +274,7 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation, when: Dat
   const dictionary = doc.context.obj({
     Type: 'Annot', Subtype: annotation.subtype, P: page.ref,
     Rect: annotation.rect, C: color, F: 4,
+    ...(annotation.subtype === 'Highlight' ? { CA: DEFAULT_HIGHLIGHT_OPACITY } : {}),
     NM: PDFHexString.fromText(annotation.id), DSHPDFId: PDFHexString.fromText(annotation.id),
     CreationDate: timestamp, M: timestamp,
   })
@@ -292,6 +293,7 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation, when: Dat
     value, dictionary, array,
     model: {
       ...annotation, rect: [...annotation.rect], quadPoints: annotation.quadPoints?.slice(), color: [...color],
+      ...(annotation.subtype === 'Highlight' ? { opacity: DEFAULT_HIGHLIGHT_OPACITY } : {}),
       createdAt: timestamp.decodeText(), modifiedAt: timestamp.decodeText(),
       flags: 4, supported: true, editable: true, sourceObjectId: `dsh-new:${annotation.id}`,
     },

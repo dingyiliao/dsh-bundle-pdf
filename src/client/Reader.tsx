@@ -1,14 +1,12 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { beginPdfSpan } from '../shared/performance.js'
-import { AnnotationMode } from 'pdfjs-dist'
 import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
 import { mapImageBoxToPdf, mapResultToPdf } from '../ocr/mapping.js'
 import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import type { ReaderProps } from './contracts.js'
-import type { ReaderDocument } from './reader-document.js'
 import { ReaderPage } from './ReaderPage.js'
-import { nativeDocument, openNativeDocument } from './native/document.ts'
+import { NativeDocument, openNativeDocument } from './native/document.ts'
 import { WindowedPages } from './native/WindowedPages.tsx'
 import { pageIndexAtOffset, windowLayout } from './native/window-layout.ts'
 import { pagePixelToPdfPoint } from './native/page-layout.js'
@@ -18,6 +16,7 @@ import { readerLifetime, type OcrPage } from './reader-lifetime.js'
 import { joinSearchText, searchItemAtOffset, searchOffsetMap, searchResultExcerpt, SearchTextIndex } from './reader-search.js'
 import { formatAnnotationDate } from './reader-dates.js'
 import { FloatingToolbar, visibleReadingBounds } from './FloatingToolbar.js'
+import { HighlightColorBar } from './HighlightColorBar.js'
 import { OverlayScrollbars } from './OverlayScrollbar.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 import { capturePdfRegion, type PdfRegionScreenshot } from './reader-screenshot.js'
@@ -27,10 +26,17 @@ import { TranslationService, TranslationError, type TranslationRequest } from '.
 import { ReadingSidebar, type ReadingSidebarSection } from './ReadingSidebar.js'
 import { usePdfWheelZoom } from './use-pdf-wheel-zoom.js'
 import { usePdfViewportSize } from './use-pdf-viewport-size.js'
+import { waitForReaderState } from './wait-for-reader-state.js'
+import { OCR_AVAILABLE } from './ocr-availability.js'
 
 interface SearchHit { page: number; text: string; x: number; y: number; source: 'native' | 'ocr' }
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+const navigationTimeoutMs = 45_000
+const isAbortError = (value: unknown) => value instanceof Error && value.name === 'AbortError'
+const isStalePdf = (value: unknown) => value instanceof Error && 'code' in value && value.code === 'PDF_STALE_VERSION'
 const noAnnotations: PdfAnnotation[] = []
+const initialAnnotationColor = '#ffff00'
+const readerIdentity = (snapshot: WorkspaceSnapshot) => `${snapshot.id}:${snapshot.reader.bytesHash}:${snapshot.reader.generation}`
 function groupAnnotations(annotations: readonly PdfAnnotation[]) {
   const grouped = new Map<number, PdfAnnotation[]>()
   for (const annotation of annotations) {
@@ -44,11 +50,10 @@ function groupAnnotations(annotations: readonly PdfAnnotation[]) {
 export function Reader(props: ReaderProps) {
   const { api, t, settings, sessionId } = props
   const { tab } = props.useTabInfo()
-  const dictionary = useSyncExternalStore(props.dictionary.subscribe, props.dictionary.getSnapshot, props.dictionary.getSnapshot)
   const lifetime = readerLifetime(sessionId, tab.id, tab.signal, settings.historyCapacity)
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null)
   const [displayOwner, setDisplayOwner] = useState<{ token: number; content: ReaderProps['content'] } | null>(null)
-  const [pdf, setPdf] = useState<ReaderDocument | null>(null)
+  const [pdf, setPdf] = useState<NativeDocument | null>(null)
   const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -58,7 +63,6 @@ export function Reader(props: ReaderProps) {
   const [pageInput, setPageInput] = useState('1')
   const [zoom, setZoom] = useState(1)
   const [fit, setFit] = useState<'custom' | 'width' | 'page'>('width')
-  const [rotation, setRotation] = useState(0)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [mode, setMode] = useState<'text' | 'region' | 'note'>('text')
   const [selection, setSelection] = useState<ReaderSelection | null>(null)
@@ -69,21 +73,27 @@ export function Reader(props: ReaderProps) {
   const [translationSelection, setTranslationSelection] = useState<(TranslationPanelProps['selection'] & {
     owner: number; documentId: string; contentVersion: string
   }) | null>(null)
-  const [color, setColor] = useState(settings.defaultColor)
+  const [color, setColor] = useState(initialAnnotationColor)
+  const [highlightColorsOpen, setHighlightColorsOpen] = useState(false)
+  const highlightColorsId = useId()
   const [sidebarSection, setSidebarSection] = useState<ReadingSidebarSection>('annotations')
   const [sidebarExpanded, setSidebarExpanded] = useState(true)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
+  const selectedAnnotationRef = useRef(selectedAnnotation)
+  selectedAnnotationRef.current = selectedAnnotation
   const [pendingAnnotations, setPendingAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [pendingNote, setPendingNote] = useState<NewPdfAnnotation | null>(null)
   const [comment, setComment] = useState('')
-  const [commentColor, setCommentColor] = useState(settings.defaultColor)
+  const [commentColor, setCommentColor] = useState(initialAnnotationColor)
+  const [colorPending, setColorPending] = useState(false)
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searched, setSearched] = useState(false)
-  const [ocrPages, setOcrPages] = useState<Map<number, OcrPage>>(() => lifetime.ocrPages)
+  const [ocrPages, setOcrPages] = useState<Map<number, OcrPage>>(() => OCR_AVAILABLE ? lifetime.ocrPages : new Map())
   const [ocrProgress, setOcrProgress] = useState<string | null>(null)
   const [saveAsOpen, setSaveAsOpen] = useState(false)
+  const [saveAsPicking, setSaveAsPicking] = useState(false)
   const [savePath, setSavePath] = useState('')
   const [overwrite, setOverwrite] = useState(false)
   const [target, setTarget] = useState<{ path: string; version: string | null } | null>(null)
@@ -92,7 +102,6 @@ export function Reader(props: ReaderProps) {
   const views = useRef(new Map<number, PageView>())
   const currentSelection = useRef(selection)
   currentSelection.current = selection
-  const nativeSelectionRange = useRef<Range | null>(null)
   const selectionCaptureFrame = useRef<number | null>(null)
   const selectionCaptureGeneration = useRef(0)
   const invalidateSelectionCapture = useCallback(() => {
@@ -112,15 +121,26 @@ export function Reader(props: ReaderProps) {
   const captureLatest = useRef<(() => NavigationPosition) | undefined>(undefined)
   const restored = useRef(false)
   const navigationLock = useRef(false)
+  const activeNavigation = useRef<AbortController | null>(null)
+  const pendingJump = useRef<{ page: number; options: Partial<NavigationPosition>; remember: boolean } | null>(null)
+  const documentNavigation = useRef(new AbortController())
   const operationLock = useRef(false)
+  const saveAsPickerLock = useRef(false)
+  const colorChanges = useRef(new Map<string, { owner: number; documentId: string; annotationId: string; color: string }>())
+  const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const colorFlush = useRef<() => Promise<void>>(async () => {})
+  const lastColorWrite = useRef(0)
   const [navigating, setNavigating] = useState(false)
-  const activePdf = useRef<{ document: ReaderDocument; bytes: Uint8Array; dispose(): Promise<void> } | null>(null)
+  const [navigationTarget, setNavigationTarget] = useState<{ page: number } | null>(null)
+  const activePdf = useRef<{ document: NativeDocument; identity: string; dispose(): Promise<void> } | null>(null)
+  const publishedReadingContext = useRef<{ tabId: string; documentId: string; contentVersion: string;
+    page: number; leaseId: string } | null>(null)
   const ocrController = useRef<AbortController | null>(null)
   const searchSequence = useRef(0)
-  const searchIndex = useRef<{ document: ReaderDocument; index: SearchTextIndex } | null>(null)
+  const searchIndex = useRef<{ document: NativeDocument; index: SearchTextIndex } | null>(null)
   const ownerSequence = useRef(0)
-  const state = useRef({ snapshot, scrollRoot, rotation, zoom, fit, size, currentPage })
-  state.current = { snapshot, scrollRoot, rotation, zoom, fit, size, currentPage }
+  const state = useRef({ snapshot, scrollRoot, zoom, fit, size, currentPage })
+  state.current = { snapshot, scrollRoot, zoom, fit, size, currentPage }
   const callbacks = useRef(props)
   callbacks.current = props
   void historyRevision
@@ -143,7 +163,6 @@ export function Reader(props: ReaderProps) {
     screenshotController.current?.abort()
     translationService.current?.setSource(undefined)
     setTranslationSelection(null)
-    nativeSelectionRange.current = null
     setScreenshot(null)
     setSelection(null)
     setDraggingPage(null)
@@ -153,6 +172,11 @@ export function Reader(props: ReaderProps) {
     setPendingNote(null)
     setPendingAnnotations(noAnnotations)
     setComment('')
+    colorChanges.current.clear()
+    if (colorTimer.current !== null) clearTimeout(colorTimer.current)
+    colorTimer.current = null
+    lastColorWrite.current = 0
+    setColorPending(false)
     const stop = () => controller.abort()
     tab.signal.addEventListener('abort', stop, { once: true })
     if (tab.signal.aborted) controller.abort()
@@ -172,22 +196,21 @@ export function Reader(props: ReaderProps) {
 
   useEffect(() => {
     if (!snapshot || !displayOwner || displayOwner.token !== ownerSequence.current) return
-    if (activePdf.current?.bytes === snapshot.bytes && !!nativeDocument(activePdf.current.document) === (snapshot.reader?.engine === 'native')) {
+    const identity = readerIdentity(snapshot)
+    if (activePdf.current?.identity === identity) {
       const latest = state.current.snapshot
-      displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
+      displayOwner.content.loaded(latest && readerIdentity(latest) === identity ? latest.sourceVersion : snapshot.sourceVersion)
       return
     }
     const controller = new AbortController()
     let accepted = false
     let cancelled = false
-    const opening = snapshot.reader?.engine === 'native' && api.native
-      ? openNativeDocument(snapshot, sessionId, api.native)
-      : callbacks.current.openPdf(snapshot.bytes, controller.signal)
+    const opening = openNativeDocument(snapshot, sessionId, api.native)
     void opening.then(async (opened) => {
       if (controller.signal.aborted || cancelled || displayOwner.token !== ownerSequence.current) { await opened.dispose(); return }
       accepted = true
       const previous = activePdf.current
-      activePdf.current = { ...opened, bytes: snapshot.bytes }
+      activePdf.current = { ...opened, identity }
       searchSequence.current++
       setSearching(false)
       searchIndex.current = null
@@ -195,21 +218,78 @@ export function Reader(props: ReaderProps) {
       setPdf(opened.document)
       setPdfAnnotations(snapshot.baselineAnnotations ?? snapshot.document.annotations)
       const latest = state.current.snapshot
-      displayOwner.content.loaded(latest?.bytes === snapshot.bytes ? latest.sourceVersion : snapshot.sourceVersion)
-      // Give React a frame to cancel the previous canvas/text-layer work.
+      displayOwner.content.loaded(latest && readerIdentity(latest) === identity ? latest.sourceVersion : snapshot.sourceVersion)
+      // Give React a frame to cancel the previous tile and text-layer work.
       await frame()
       await previous?.dispose()
     }).catch((failure) => {
       if (!controller.signal.aborted && displayOwner.token === ownerSequence.current) { notifyError(failure); displayOwner.content.failed() }
     })
     return () => { cancelled = true; if (!accepted) controller.abort() }
-  }, [snapshot?.bytes, snapshot?.reader?.engine, snapshot?.reader?.bytesHash, displayOwner?.token, notifyError, api, sessionId])
+  }, [snapshot?.id, snapshot?.reader.bytesHash, snapshot?.reader.generation, displayOwner?.token, notifyError, api, sessionId])
 
   useEffect(() => {
-    if (snapshot && displayOwner?.token === ownerSequence.current && activePdf.current?.bytes === snapshot.bytes) {
+    if (snapshot && displayOwner?.token === ownerSequence.current && activePdf.current?.identity === readerIdentity(snapshot)) {
       displayOwner.content.loaded(snapshot.sourceVersion)
     }
   }, [snapshot?.sourceVersion])
+
+  const reportReadingContext = useCallback((update: Parameters<NonNullable<ReaderProps['reportReadingContext']>>[0]) => {
+    const report = callbacks.current.reportReadingContext
+    if (!report) return
+    void report(update).catch((failure) => {
+      if (!isAbortError(failure)) console.warn('[pdf] Could not synchronize the active reading page', failure)
+    })
+  }, [])
+  const clearPublishedReadingContext = useCallback(() => {
+    const previous = publishedReadingContext.current
+    if (!previous) return
+    publishedReadingContext.current = null
+    reportReadingContext({ action: 'clear', sessionId, tabId: previous.tabId, leaseId: previous.leaseId })
+  }, [reportReadingContext, sessionId])
+
+  useEffect(() => {
+    const ready = props.allowReadingContext && props.reportReadingContext && tab.visible && !tab.signal.aborted
+      && snapshot && pdf && activePdf.current?.identity === readerIdentity(snapshot)
+      && currentPage >= 1 && currentPage <= snapshot.document.pageCount
+    if (!ready) { clearPublishedReadingContext(); return }
+    const previous = publishedReadingContext.current
+    if (previous && previous.tabId === tab.id && previous.documentId === snapshot.id
+      && previous.contentVersion === snapshot.contentVersion) {
+      if (previous.page !== currentPage) {
+        previous.page = currentPage
+        reportReadingContext({ action: 'set', sessionId, tabId: tab.id, leaseId: previous.leaseId,
+          documentId: snapshot.id, contentVersion: snapshot.contentVersion, page: currentPage })
+      }
+      return
+    }
+    clearPublishedReadingContext()
+    const next = { tabId: tab.id, documentId: snapshot.id, contentVersion: snapshot.contentVersion,
+      page: currentPage, leaseId: crypto.randomUUID() }
+    publishedReadingContext.current = next
+    reportReadingContext({ action: 'set', sessionId, ...next })
+  }, [props.allowReadingContext, props.reportReadingContext, tab.id, tab.visible, tab.signal,
+    snapshot?.id, snapshot?.contentVersion, snapshot?.reader.bytesHash, snapshot?.reader.generation,
+    snapshot?.document.pageCount, pdf, currentPage, sessionId, clearPublishedReadingContext, reportReadingContext])
+
+  useEffect(() => {
+    if (!tab.visible) return
+    // Reassert an unchanged page so a transient disconnect does not leave the
+    // Host's deliberately short-lived context expired during a long read.
+    const timer = setInterval(() => {
+      const current = publishedReadingContext.current
+      if (current) reportReadingContext({ action: 'set', sessionId, ...current })
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [tab.visible, reportReadingContext, sessionId])
+
+  useEffect(() => {
+    tab.signal.addEventListener('abort', clearPublishedReadingContext, { once: true })
+    return () => {
+      tab.signal.removeEventListener('abort', clearPublishedReadingContext)
+      clearPublishedReadingContext()
+    }
+  }, [tab.signal, clearPublishedReadingContext])
 
   useLayoutEffect(() => () => {
     // Layout cleanup captures geometry before React detaches the page elements.
@@ -232,8 +312,6 @@ export function Reader(props: ReaderProps) {
       lifetime.ocrConfiguration = configuration
     }
   }, [settings.ocrEngine, settings.ocrLanguages, lifetime])
-  useEffect(() => { setColor(settings.defaultColor) }, [settings.defaultColor])
-
   useEffect(() => {
     if (!snapshot) return
     if (history.current.resetForDocument(snapshot.contentVersion)) {
@@ -252,13 +330,19 @@ export function Reader(props: ReaderProps) {
     lifetime.contentVersion = snapshot.contentVersion
     invalidateSelectionCapture()
     setSelection(null)
-    nativeSelectionRange.current = null
     setHistoryRevision((n) => n + 1)
   }, [snapshot?.contentVersion])
   useEffect(() => {
+    pendingJump.current = null
+    activeNavigation.current?.abort()
+    documentNavigation.current.abort()
+    const controller = new AbortController()
+    documentNavigation.current = controller
+    return () => controller.abort()
+  }, [snapshot?.id, snapshot?.contentVersion, props.content.revision, pdf])
+  useEffect(() => {
     invalidateSelectionCapture()
     setSelection(null)
-    nativeSelectionRange.current = null
     setMode('text')
     screenshotController.current?.abort()
     setScreenshot(null)
@@ -266,7 +350,7 @@ export function Reader(props: ReaderProps) {
   useEffect(() => {
     translationService.current?.cancel()
     setTranslationSelection(null)
-  }, [settings.translationEngine, settings.translationSourceLanguage, settings.translationTargetLanguage, settings.translationTimeoutMs])
+  }, [settings.translationEngine, settings.translationTargetLanguage, settings.translationTimeoutMs])
   useEffect(() => {
     if (!textCopied) return
     const timer = setTimeout(() => setTextCopied(false), 1500)
@@ -283,15 +367,15 @@ export function Reader(props: ReaderProps) {
   useEffect(() => { history.current.setCapacity(settings.historyCapacity); setHistoryRevision((n) => n + 1) }, [settings.historyCapacity])
 
   useEffect(() => {
-    if (!snapshot?.dirty) return
+    if (!snapshot?.dirty && !colorPending) return
     const leave = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', leave)
     return () => window.removeEventListener('beforeunload', leave)
-  }, [snapshot?.dirty])
+  }, [snapshot?.dirty, colorPending])
 
-  const pageScale = useCallback((page: PdfPageInfo, chosenFit = state.current.fit, chosenZoom = state.current.zoom, chosenRotation = state.current.rotation) => {
+  const pageScale = useCallback((page: PdfPageInfo, chosenFit = state.current.fit, chosenZoom = state.current.zoom) => {
     if (chosenFit === 'custom') return chosenZoom
-    const rotated = (page.rotation + chosenRotation) % 180 !== 0
+    const rotated = page.rotation % 180 !== 0
     const width = (page.cropBox[2] - page.cropBox[0]) * page.userUnit
     const height = (page.cropBox[3] - page.cropBox[1]) * page.userUnit
     const available = state.current.size
@@ -318,81 +402,120 @@ export function Reader(props: ReaderProps) {
         const pageLeft = outer.left + (root.scrollWidth - item.width) / 2 - root.scrollLeft
         const pageTop = outer.top + item.top + 27 - root.scrollTop
         const screenX = Math.max(outer.left, pageLeft), screenY = Math.max(outer.top, pageTop)
-        const [x, y] = pagePixelToPdfPoint(geometry, item.scale, current.rotation, screenX - pageLeft, screenY - pageTop)
+        const [x, y] = pagePixelToPdfPoint(geometry, item.scale, 0, screenX - pageLeft, screenY - pageTop)
         return { documentVersion: current.snapshot.contentVersion, page: geometry.page, x, y,
-          rotation: current.rotation, fit: current.fit, scale: item.scale,
+          fit: current.fit, scale: item.scale,
           viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)), y: Math.max(0, Math.min(1, (screenY - outer.top) / outer.height)) } }
       }
       const geometry = current.snapshot.document.pages[current.currentPage - 1] ?? current.snapshot.document.pages[0]!
       return { documentVersion: current.snapshot.contentVersion, page: geometry.page,
-        x: geometry.cropBox[0], y: geometry.cropBox[3], rotation: current.rotation, fit: current.fit,
+        x: geometry.cropBox[0], y: geometry.cropBox[3], fit: current.fit,
         scale: pageScale(geometry), viewportAnchor: { x: 0, y: 0 } }
     }
     const [page, view] = pair, box = view.element.getBoundingClientRect()
     const screenX = Math.max(box.left, outer.left), screenY = Math.max(box.top, outer.top)
     const [x, y] = view.viewport.convertToPdfPoint(screenX - box.left, screenY - box.top)
-    return { documentVersion: current.snapshot.contentVersion, page, x, y, rotation: current.rotation,
+    return { documentVersion: current.snapshot.contentVersion, page, x, y,
       scale: view.viewport.scale, fit: current.fit,
       viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)), y: Math.max(0, Math.min(1, (screenY - outer.top) / outer.height)) } }
   }, [pageScale])
 
   const applyPosition = useCallback(async (position: NavigationPosition, signal: AbortSignal) => {
     const current = state.current
-    if (!current.snapshot || position.documentVersion !== current.snapshot.contentVersion || !current.snapshot.document.pages[position.page - 1]) throw new Error(callbacks.current.t('reader.invalidDestination'))
-    const origin = { rotation: current.rotation, zoom: current.zoom, fit: current.fit, page: current.currentPage,
+    if (!pdf || !current.snapshot || position.documentVersion !== current.snapshot.contentVersion || !current.snapshot.document.pages[position.page - 1]) throw new Error(callbacks.current.t('reader.invalidDestination'))
+    const originDocument = current.snapshot
+    const documentSignal = documentNavigation.current.signal
+    const operationSignal = AbortSignal.any([signal, documentSignal])
+    const origin = { zoom: current.zoom, fit: current.fit, page: current.currentPage,
       left: current.scrollRoot?.scrollLeft ?? 0, top: current.scrollRoot?.scrollTop ?? 0 }
+    const target = { page: position.page }
+    setNavigationTarget(target)
     try {
-    setRotation(position.rotation)
-    setZoom(position.scale)
-    setFit(position.fit)
-    await frame()
-    await frame()
-    signal.throwIfAborted()
-    const root = state.current.scrollRoot
-    const numericPage = root && windowLayout(root)?.[position.page - 1]
-    if (!root || !numericPage) throw new Error(callbacks.current.t('reader.invalidDestination'))
-    root.scrollTop = numericPage.top
-    let view: PageView | undefined
-    for (let attempt = 0; attempt < 180; attempt++) {
-      signal.throwIfAborted()
-      view = views.current.get(position.page)
-      const geometry = state.current.snapshot!.document.pages[position.page - 1]
-      const expected = pageScale(geometry, position.fit, position.scale, position.rotation)
-      if (view && Math.abs(view.viewport.scale - expected) < 0.001 && view.viewport.rotation === ((geometry.rotation + position.rotation) % 360 + 360) % 360) break
-      view = undefined
+      // Fit modes derive their scale from the viewport. Writing the captured
+      // effective scale into zoom needlessly rebuilds the layout mid-jump.
+      if (position.fit === 'custom') setZoom(position.scale)
+      setFit(position.fit)
       await frame()
-    }
-    if (!view) throw new Error(callbacks.current.t('reader.notReady'))
-    const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
-    const bounds = root.getBoundingClientRect(), pageBounds = view.element.getBoundingClientRect()
-    root.scrollLeft += pageBounds.left + x - bounds.left - (position.viewportAnchor?.x ?? 0) * bounds.width
-    root.scrollTop += pageBounds.top + y - bounds.top - (position.viewportAnchor?.y ?? 0) * bounds.height
-    setCurrentPage(position.page)
-    setPageInput(String(position.page))
-    await frame()
-    // Position is semantic; scroll clamping at page/document edges is expected.
-    return { ...position, scale: view.viewport.scale }
+      await frame()
+      operationSignal.throwIfAborted()
+      const root = state.current.scrollRoot
+      if (!root) throw new Error(callbacks.current.t('reader.invalidDestination'))
+      const geometry = originDocument.document.pages[position.page - 1]!
+      const deadline = performance.now() + navigationTimeoutMs
+      const remaining = () => Math.max(0, deadline - performance.now())
+      const numericPage = await waitForReaderState(root, 'pdflayoutchange', () => {
+        const page = windowLayout(root)?.[position.page - 1]
+        return page?.page === position.page && Math.abs(page.scale - pageScale(geometry, position.fit, position.scale)) < 0.001
+          ? page : undefined
+      }, operationSignal, remaining())
+      // A narrow page can be centered outside the horizontal viewport when
+      // another page makes the document wide. Reveal it before waiting for its
+      // PageView: the page proxy is only mounted after IntersectionObserver sees it.
+      const targetLeft = (root.scrollWidth - numericPage.width) / 2
+      if (targetLeft + numericPage.width <= root.scrollLeft || targetLeft >= root.scrollLeft + root.clientWidth) {
+        root.scrollLeft = Math.max(0, (root.scrollWidth - root.clientWidth) / 2)
+      }
+      root.scrollTop = numericPage.top
+      let pageLoadFailure: unknown
+      let pageLoadFailed = false
+      // Page also requests this proxy when its virtualized slot mounts. Asking
+      // here lets a real getPage failure end navigation immediately.
+      void pdf.getPage(position.page).catch((failure) => {
+        pageLoadFailure = failure instanceof Error ? failure : new Error(String(failure))
+        pageLoadFailed = true
+        root.dispatchEvent(new Event('pdfviewchange'))
+      })
+      // WindowedPages mounts distant pages after the scroll, and Page registers a
+      // viewport only after its PDF page proxy resolves. Wait for that signal,
+      // not for an arbitrary number of animation frames.
+      const view = await waitForReaderState(root, 'pdfviewchange', () => {
+        if (pageLoadFailed) throw pageLoadFailure
+        const candidate = views.current.get(position.page)
+        const expected = pageScale(geometry, position.fit, position.scale)
+        return candidate && Math.abs(candidate.viewport.scale - expected) < 0.001
+          && candidate.viewport.rotation === ((geometry.rotation % 360) + 360) % 360 ? candidate : undefined
+      }, operationSignal, remaining())
+      operationSignal.throwIfAborted()
+      const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
+      const bounds = root.getBoundingClientRect(), pageBounds = view.element.getBoundingClientRect()
+      root.scrollLeft += pageBounds.left + x - bounds.left - (position.viewportAnchor?.x ?? 0) * bounds.width
+      root.scrollTop += pageBounds.top + y - bounds.top - (position.viewportAnchor?.y ?? 0) * bounds.height
+      setCurrentPage(position.page)
+      setPageInput(String(position.page))
+      await frame()
+      // Position is semantic; scroll clamping at page/document edges is expected.
+      return { ...position, scale: view.viewport.scale }
     } catch (failure) {
-      // A failed destination must not strand the reader at its loading placeholder.
-      setRotation(origin.rotation); setZoom(origin.zoom); setFit(origin.fit)
-      await frame(); await frame()
-      if (state.current.scrollRoot) { state.current.scrollRoot.scrollLeft = origin.left; state.current.scrollRoot.scrollTop = origin.top }
+      // An obsolete navigation must never restore the scroll position of a new document.
+      const canRestore = () => !tab.signal.aborted && !documentSignal.aborted
+        && originDocument.id === state.current.snapshot?.id
+        && originDocument.contentVersion === state.current.snapshot?.contentVersion
+      if (canRestore()) {
+        setZoom(origin.zoom); setFit(origin.fit)
+        await frame(); await frame()
+        if (canRestore() && state.current.scrollRoot) {
+          state.current.scrollRoot.scrollLeft = origin.left
+          state.current.scrollRoot.scrollTop = origin.top
+        }
+      }
+      operationSignal.throwIfAborted()
+      if (failure instanceof Error && failure.name === 'TimeoutError') throw new Error(callbacks.current.t('reader.pageLoadTimeout'), { cause: failure })
       throw failure
+    } finally {
+      setNavigationTarget((active) => active === target ? null : active)
     }
-  }, [pageScale])
+  }, [pageScale, pdf, tab.signal])
   captureLatest.current = capture
 
-  useEffect(() => {
-    if (!pdf || !snapshot || restored.current) return
-    restored.current = true
-    const saved = lifetime.position
-    if (saved && saved.documentVersion === snapshot.contentVersion) {
-      void applyPosition(saved, tab.signal).catch((failure) => { if (!tab.signal.aborted) notifyError(failure) })
+  const jump = useCallback(async (page: number, options: Partial<NavigationPosition> = {}, remember = true): Promise<void> => {
+    if (navigationLock.current) {
+      // A later bookmark/search/page request supersedes a slow page load.
+      pendingJump.current = { page, options, remember }
+      activeNavigation.current?.abort()
+      return
     }
-  }, [pdf, snapshot?.id, applyPosition, lifetime, tab.signal, notifyError])
-
-  const jump = useCallback(async (page: number, options: Partial<NavigationPosition> = {}, remember = true) => {
-    if (navigationLock.current) return
+    const controller = new AbortController()
+    activeNavigation.current = controller
     navigationLock.current = true
     setNavigating(true)
     try {
@@ -400,12 +523,31 @@ export function Reader(props: ReaderProps) {
       const geometry = current.snapshot?.document.pages[page - 1]
       if (!geometry) throw new Error(callbacks.current.t('reader.invalidDestination'))
       const target: NavigationPosition = { ...capture(), page, x: geometry.cropBox[0], y: geometry.cropBox[3], viewportAnchor: { x: 0, y: 0 }, ...options }
-      if (remember) await history.current.jump(target, { capture, apply: applyPosition }, tab.signal)
-      else await applyPosition(target, tab.signal)
+      const signal = AbortSignal.any([tab.signal, controller.signal])
+      if (remember) await history.current.jump(target, { capture, apply: applyPosition }, signal)
+      else await applyPosition(target, signal)
       setHistoryRevision((n) => n + 1)
-    } catch (failure) { if (!tab.signal.aborted) notifyError(failure) }
-    finally { navigationLock.current = false; setNavigating(false) }
+    } catch (failure) { if (!tab.signal.aborted && !isAbortError(failure)) notifyError(failure) }
+    finally {
+      if (activeNavigation.current === controller) activeNavigation.current = null
+      navigationLock.current = false
+      const next = pendingJump.current
+      pendingJump.current = null
+      if (next && !tab.signal.aborted) void jump(next.page, next.options, next.remember)
+      else setNavigating(false)
+    }
   }, [capture, applyPosition, notifyError, tab.signal])
+
+  useEffect(() => {
+    if (!pdf || !snapshot || !scrollRoot || restored.current) return
+    restored.current = true
+    const saved = lifetime.position
+    if (saved && saved.documentVersion === snapshot.contentVersion) {
+      // Restoring a tab is navigation too: it must share the jump lock and be
+      // superseded by a later user request rather than racing that request.
+      void jump(saved.page, saved, false)
+    }
+  }, [pdf, snapshot?.id, scrollRoot, jump, lifetime])
 
   const destination = useCallback(async (value: unknown) => {
     try {
@@ -424,14 +566,14 @@ export function Reader(props: ReaderProps) {
       else if (kind === 'FitV' || kind === 'FitBV') {
         const geometry = state.current.snapshot!.document.pages[pageIndex]
         const page = await pdf.getPage(pageIndex + 1)
-        const base = page.getViewport({ scale: 1, rotation: (geometry.rotation + state.current.rotation) % 360 })
+        const base = page.getViewport({ scale: 1, rotation: geometry.rotation })
         options.fit = 'custom'; options.scale = Math.max(0.1, (state.current.size.height - 56) / base.height)
         if (typeof resolved[2] === 'number') options.x = resolved[2]
       } else if (kind === 'FitR') {
         if (![resolved[2], resolved[3], resolved[4], resolved[5]].every(Number.isFinite)) throw new Error(t('reader.invalidDestination'))
         const geometry = state.current.snapshot!.document.pages[pageIndex]
         const page = await pdf.getPage(pageIndex + 1)
-        const base = page.getViewport({ scale: 1, rotation: (geometry.rotation + state.current.rotation) % 360 })
+        const base = page.getViewport({ scale: 1, rotation: geometry.rotation })
         const box = pdfRectToViewport(base, [resolved[2], resolved[3], resolved[4], resolved[5]])
         if (box[2] <= box[0] || box[3] <= box[1]) throw new Error(t('reader.invalidDestination'))
         options.fit = 'custom'; options.scale = Math.max(0.1, Math.min((state.current.size.width - 32) / (box[2] - box[0]), (state.current.size.height - 56) / (box[3] - box[1])))
@@ -441,26 +583,86 @@ export function Reader(props: ReaderProps) {
     } catch (failure) { notifyError(failure) }
   }, [pdf, jump, notifyError, t])
 
-  const act = async (operation: (current: WorkspaceSnapshot) => Promise<WorkspaceSnapshot>) => {
-    if (!snapshot || operationLock.current) return
+  const act = async (operation: (current: WorkspaceSnapshot) => Promise<WorkspaceSnapshot>, conflictOnStaleSave = false) => {
+    const current = state.current.snapshot
+    if (!current || operationLock.current) return
     const owner = ownerSequence.current
     operationLock.current = true
     setBusy(true)
     setError('')
     try {
-      const next = await operation(snapshot)
+      const next = await operation(current)
       if (owner !== ownerSequence.current || tab.signal.aborted) return
+      state.current.snapshot = next
       setSnapshot(next)
       return next
     }
-    catch (failure) { if (owner === ownerSequence.current && !tab.signal.aborted) notifyError(failure) }
+    catch (failure) {
+      if (owner !== ownerSequence.current || tab.signal.aborted) return
+      if (conflictOnStaleSave && isStalePdf(failure)) {
+        // A stale source is one conflict, not both an error banner and a conflict banner.
+        const latest = state.current.snapshot
+        if (latest?.id === current.id) {
+          const conflicted = { ...latest, conflict: true }
+          state.current.snapshot = conflicted
+          setSnapshot(conflicted)
+        }
+      } else notifyError(failure)
+    }
     finally { operationLock.current = false; setBusy(false) }
   }
   const change = (operations: PdfAnnotationOperation[]) => act((current) => api.change(sessionId, current.id, current.revision, operations, tab.signal))
-  const save = async (path?: string) => {
-    if (path && target?.path !== path) { setError(t('reader.targetUnchecked')); return }
-    const originalPath = snapshot?.path
-    const result = await act((current) => api.save(sessionId, current.id, current.revision, path ? { path, overwrite, expectedTargetVersion: target!.version } : {}, tab.signal))
+  const scheduleColorFlush = (delay: number) => {
+    if (colorTimer.current !== null) clearTimeout(colorTimer.current)
+    colorTimer.current = setTimeout(() => { colorTimer.current = null; void colorFlush.current() }, delay)
+  }
+  colorFlush.current = async () => {
+    if (operationLock.current) { scheduleColorFlush(50); return }
+    const entry = colorChanges.current.entries().next().value
+    if (!entry) return
+    const [key, queued] = entry
+    const current = state.current.snapshot
+    const annotation = current?.document.annotations.find((item) => item.id === queued.annotationId)
+    if (queued.owner !== ownerSequence.current || current?.id !== queued.documentId || !annotation?.editable) {
+      colorChanges.current.delete(key)
+    } else if (colorToHex(annotation.color) === queued.color) {
+      colorChanges.current.delete(key)
+    } else {
+      const appliedColor = queued.color
+      lastColorWrite.current = Date.now()
+      const next = await change([{ type: 'update', id: queued.annotationId, patch: { color: colorFromHex(appliedColor) } }])
+      if (!next) {
+        if (colorChanges.current.get(key) === queued) {
+          colorChanges.current.delete(key)
+          if (selectedAnnotationRef.current === queued.annotationId && queued.owner === ownerSequence.current
+            && state.current.snapshot?.id === queued.documentId) setCommentColor(colorToHex(annotation.color))
+        }
+      } else if (colorChanges.current.get(key)?.color === appliedColor) {
+        colorChanges.current.delete(key)
+      }
+    }
+    setColorPending(colorChanges.current.size > 0)
+    if (colorChanges.current.size) scheduleColorFlush(200)
+  }
+  const updateAnnotationColor = (nextColor: string) => {
+    if (!selected || !snapshot || snapshot.document.readOnly || !selected.editable) return
+    setCommentColor(nextColor)
+    const firstChange = colorChanges.current.size === 0
+    const key = `${ownerSequence.current}:${snapshot.id}:${selected.id}`
+    colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id, annotationId: selected.id, color: nextColor })
+    setColorPending(true)
+    scheduleColorFlush(firstChange && Date.now() - lastColorWrite.current > 300 ? 0 : 200)
+  }
+  useEffect(() => () => {
+    if (colorTimer.current !== null) clearTimeout(colorTimer.current)
+  }, [])
+  const save = async (path?: string, confirmedTarget?: { version: string | null; overwrite: boolean }) => {
+    const checkedTarget = confirmedTarget ?? (target && target.path === path ? { version: target.version, overwrite } : undefined)
+    if (path && !checkedTarget) { setError(t('reader.targetUnchecked')); return }
+    const originalPath = state.current.snapshot?.path
+    const result = await act((current) => api.save(sessionId, current.id, current.revision,
+      path ? { path, overwrite: checkedTarget!.overwrite, expectedTargetVersion: checkedTarget!.version } : {}, tab.signal),
+    !path || path === originalPath)
     if (result) {
       setSaveAsOpen(false); setOverwrite(false)
       if (path && result.path !== originalPath) {
@@ -468,6 +670,30 @@ export function Reader(props: ReaderProps) {
         const normalized = result.path.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
         tab.actions.openResource(`dsh-resource://file/session/${encode(sessionId)}/${normalized.split('/').map(encode).join('/')}`, { replaceTab: true })
       }
+    }
+  }
+
+  const beginSaveAs = async () => {
+    const current = state.current.snapshot
+    if (!current || operationLock.current || saveAsPickerLock.current) return
+    const defaultPath = /\.pdf$/i.test(current.path) ? current.path.replace(/\.pdf$/i, '-annotated.pdf') : `${current.path}-annotated.pdf`
+    if (!props.pickSavePath) { setSavePath(defaultPath); setSaveAsOpen(true); return }
+    const owner = ownerSequence.current
+    saveAsPickerLock.current = true
+    setSaveAsPicking(true)
+    try {
+      const path = await props.pickSavePath(defaultPath)
+      if (!path || owner !== ownerSequence.current || tab.signal.aborted) return
+      setError('')
+      const inspected = await api.inspectTarget(sessionId, path, tab.signal)
+      if (owner !== ownerSequence.current || tab.signal.aborted) return
+      // The OS confirms replacement; the Host still checks this observed version at write time.
+      await save(path, { version: inspected.version, overwrite: inspected.version !== null })
+    } catch (failure) {
+      if (owner === ownerSequence.current && !tab.signal.aborted && !isAbortError(failure)) notifyError(failure)
+    } finally {
+      saveAsPickerLock.current = false
+      if (!tab.signal.aborted) setSaveAsPicking(false)
     }
   }
 
@@ -503,8 +729,13 @@ export function Reader(props: ReaderProps) {
   useEffect(() => {
     if (!selected) return
     setComment(selected.contents ?? '')
+  }, [selected?.id, selected?.contents])
+  useEffect(() => {
+    if (!selected) return
+    const key = `${ownerSequence.current}:${snapshot?.id}:${selected.id}`
+    if (colorChanges.current.has(key)) return
     setCommentColor(colorToHex(selected.color))
-  }, [selected?.id, selected?.contents, selected?.color?.join(',')])
+  }, [selected?.id, selected?.color?.join(',')])
   useEffect(() => {
     if (selectedAnnotation && snapshot && !selected) setSelectedAnnotation(undefined)
   }, [snapshot, selected, selectedAnnotation])
@@ -512,11 +743,11 @@ export function Reader(props: ReaderProps) {
   const annotationsByPage = useMemo(() => groupAnnotations(displayAnnotations), [displayAnnotations])
   const renderedAnnotationsByPage = useMemo(() => groupAnnotations(pdfAnnotations), [pdfAnnotations])
 
-  const mark = async (subtype: 'Highlight' | 'Underline' | 'StrikeOut') => {
+  const mark = async (subtype: 'Highlight' | 'Underline' | 'StrikeOut', selectedColor = color) => {
     if (!snapshot || operationLock.current || snapshot.document.readOnly || !selection || selection.revision !== snapshot.revision || selection.kind !== 'text') return
     const annotations: NewPdfAnnotation[] = selection.fragments.map((fragment) => ({
       id: crypto.randomUUID(), page: fragment.page, subtype, rect: fragment.rect,
-      quadPoints: fragment.quadPoints, color: colorFromHex(color),
+      quadPoints: fragment.quadPoints, color: colorFromHex(selectedColor),
     }))
     const operations: PdfAnnotationOperation[] = annotations.map((annotation) => ({ type: 'add', annotation }))
     // Give visible feedback immediately while the Host persists the edit.
@@ -531,6 +762,10 @@ export function Reader(props: ReaderProps) {
       setPendingNote(null)
       if (operations[0]?.type === 'add') setSelectedAnnotation(operations[0].annotation.id)
     }
+  }
+  const applyHighlightColor = (next: string) => {
+    setColor(next)
+    void mark('Highlight', next)
   }
 
   const beginNote = (page: number, point: number[]) => {
@@ -605,7 +840,7 @@ export function Reader(props: ReaderProps) {
   }
 
   const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {
-    if (!pdf || !snapshot || ocrController.current) return
+    if (!OCR_AVAILABLE || !pdf || !snapshot || ocrController.current) return
     const controller = new AbortController()
     ocrController.current = controller
     const version = snapshot.contentVersion
@@ -625,7 +860,7 @@ export function Reader(props: ReaderProps) {
       const full = document.createElement('canvas')
       canvases.push(full)
       full.width = Math.ceil(viewport.width); full.height = Math.ceil(viewport.height)
-      const render = page.render({ canvas: full, viewport, annotationMode: AnnotationMode.DISABLE })
+      const render = page.render({ canvas: full, viewport, annotations: false })
       const cancelRender = () => render.cancel()
       controller.signal.addEventListener('abort', cancelRender, { once: true })
       try { await render.promise } finally { controller.signal.removeEventListener('abort', cancelRender) }
@@ -667,9 +902,12 @@ export function Reader(props: ReaderProps) {
     finally { for (const canvas of canvases) { canvas.width = 0; canvas.height = 0 }; tab.signal.removeEventListener('abort', stop); ocrController.current = null; setOcrProgress(null) }
   }
 
-  const editable = !!snapshot && !snapshot.document.readOnly && !busy
-  const hasUnappliedComment = !!pendingNote || (!!selected && (comment !== (selected.contents ?? '') || commentColor !== colorToHex(selected.color)))
+  const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
+  const hasUnappliedComment = !!pendingNote || (!!selected && comment !== (selected.contents ?? ''))
   const hasTextSelection = selection?.kind === 'text' && selection.revision === snapshot?.revision
+  useEffect(() => {
+    if (!hasTextSelection) setHighlightColorsOpen(false)
+  }, [hasTextSelection])
   const registerView = useCallback((number: number, view: PageView | null) => {
     if (view) views.current.set(number, view); else views.current.delete(number)
     state.current.scrollRoot?.dispatchEvent(new Event('pdfviewchange'))
@@ -688,7 +926,7 @@ export function Reader(props: ReaderProps) {
   }
   const clearSelection = useCallback(() => {
     invalidateSelectionCapture()
-    setSelection(null); nativeSelectionRange.current = null
+    setSelection(null)
     const browser = window.getSelection(), root = state.current.scrollRoot
     if (browser?.rangeCount && root?.contains(browser.getRangeAt(0).commonAncestorContainer)) browser.removeAllRanges()
   }, [invalidateSelectionCapture])
@@ -725,9 +963,8 @@ export function Reader(props: ReaderProps) {
   const captureSelection = () => {
     if (mode !== 'text' || !scrollRoot || !snapshot) return
     const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
-    const browserSelection = window.getSelection()
-    nativeSelectionRange.current = next && browserSelection?.rangeCount ? browserSelection.getRangeAt(0).cloneRange() : null
     setSelection(next)
+    setHighlightColorsOpen(false)
     if (next) setSelectedAnnotation(undefined)
   }
   const scheduleCaptureSelection = () => {
@@ -750,7 +987,7 @@ export function Reader(props: ReaderProps) {
     translationService.current?.cancel()
     showSidebar('translation')
     setTranslationSelection({ text: selection.text, pages: selection.fragments.map(fragment => fragment.page),
-      sourceLanguage: settings.translationSourceLanguage, targetLanguage: settings.translationTargetLanguage,
+      targetLanguage: settings.translationTargetLanguage,
       owner: ownerSequence.current, documentId: snapshot.id, contentVersion: snapshot.contentVersion })
   }
   const translateSelection = useCallback(async (request: TranslationRequest) => {
@@ -766,18 +1003,6 @@ export function Reader(props: ReaderProps) {
       context: { sessionId, documentId: source.documentId, contentVersion: source.contentVersion, pages: source.pages } })
   }, [props.translation, sessionId, tab.signal])
   const closeTranslation = () => { translationService.current?.cancel(); setTranslationSelection(null) }
-  const lookupSelection = async () => {
-    const range = nativeSelectionRange.current
-    if (!range || range.collapsed || !range.startContainer.isConnected || !range.endContainer.isConnected) {
-      notifyError(new Error(t('reader.dictionarySelectionUnavailable')))
-      return
-    }
-    const browserSelection = window.getSelection()
-    browserSelection?.removeAllRanges()
-    browserSelection?.addRange(range.cloneRange())
-    try { await props.dictionary.lookupSelection() }
-    catch { notifyError(new Error(t('reader.dictionaryUnavailable'))) }
-  }
   const cancelScreenshot = () => {
     screenshotController.current?.abort()
     setScreenshot(null)
@@ -796,7 +1021,7 @@ export function Reader(props: ReaderProps) {
     // Screenshot mode is a single action. Text selection resumes immediately.
     setMode('text')
     if (!pdf || !snapshot || screenshotController.current) return
-    if (!displayOwner || displayOwner.token !== ownerSequence.current || activePdf.current?.bytes !== snapshot.bytes) { notifyError(new Error(t('reader.notReady'))); return }
+    if (!displayOwner || displayOwner.token !== ownerSequence.current || activePdf.current?.identity !== readerIdentity(snapshot)) { notifyError(new Error(t('reader.notReady'))); return }
     const revision = snapshot.revision
     const owner = displayOwner.token
     const controller = new AbortController()
@@ -809,7 +1034,7 @@ export function Reader(props: ReaderProps) {
     setError('')
     try {
       const image = await capturePdfRegion(pdf, page, region.rect, {
-        rotation, signal: controller.signal,
+        signal: controller.signal,
         annotations: snapshot.document.annotations.filter(annotation => annotation.page === page),
         sourceAnnotations: pdfAnnotations.filter(annotation => annotation.page === page),
       })
@@ -868,14 +1093,21 @@ export function Reader(props: ReaderProps) {
     if (!pdf || !snapshot) return null
     const selectedPages = new Set(selection?.fragments.map(fragment => fragment.page))
     const pinnedPages = new Set(selectedPages)
-    const selectedTextPages = selection?.kind === 'text' ? selectedPages : undefined
+    const selectedTextPages = new Set(selection?.kind === 'text' ? selectedPages : [])
     if (selected) pinnedPages.add(selected.page)
+    // A distant destination must register its PageView even before the
+    // IntersectionObserver sees it; the jump uses that view to finish scrolling.
+    if (navigationTarget) {
+      pinnedPages.add(navigationTarget.page)
+      selectedTextPages.add(navigationTarget.page)
+    }
     return <WindowedPages key={snapshot.id} pages={snapshot.document.pages}
-      rotation={rotation} zoom={zoom} fit={fit} size={size} scrollRoot={scrollRoot} t={t}
+      rotation={0} zoom={zoom} fit={fit} size={size} scrollRoot={scrollRoot} t={t}
       scaleForPage={pageScale} hasOcrText={(page) => !!ocrPages.get(page)?.words.length}
       pinnedPages={pinnedPages} selectedTextPages={selectedTextPages} dragAnchorPage={draggingPage}
+      preserveAnchor={!navigationTarget}
       renderPage={(geometry, retainTextLayer) => <ReaderPage key={`${snapshot.id}:${geometry.page}`} pdf={pdf} geometry={geometry}
-      scale={pageScale(geometry)} rotation={rotation} mode={mode} t={t} scrollRoot={scrollRoot}
+      scale={pageScale(geometry)} rotation={0} mode={mode} t={t} scrollRoot={scrollRoot}
       retainTextLayer={retainTextLayer}
       annotations={annotationsByPage.get(geometry.page) ?? noAnnotations}
       renderedAnnotations={renderedAnnotationsByPage.get(geometry.page) ?? noAnnotations}
@@ -883,8 +1115,8 @@ export function Reader(props: ReaderProps) {
       selection={selectedPages.has(geometry.page) ? selection : null} ocrWords={ocrPages.get(geometry.page)?.words}
       onView={registerView} onDestination={pageDestination} onAction={pageAction}
       onAnnotation={selectAnnotation} onNote={pageNote} onRegion={pageRegion} onBackground={dismissContext} onError={notifyError} />} />
-  }, [pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, rotation, mode, t, scrollRoot, annotationsByPage, renderedAnnotationsByPage,
-    selected?.id, selected?.page, selection, draggingPage, ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
+  }, [pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, mode, t, scrollRoot, annotationsByPage, renderedAnnotationsByPage,
+    selected?.id, selected?.page, selection, draggingPage, navigationTarget, ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
     selectAnnotation, pageNote, pageRegion, dismissContext, notifyError])
 
   const wheelScale = useCallback((page: number) => {
@@ -893,10 +1125,10 @@ export function Reader(props: ReaderProps) {
   }, [pageScale])
   const applyWheelScale = useCallback((scale: number) => { setFit('custom'); setZoom(scale) }, [])
   usePdfWheelZoom({ root: scrollRoot, enabled: !!pdf && !busy && !navigating, views: views.current,
-    getScale: wheelScale, onScale: applyWheelScale, ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${rotation}` })
+    getScale: wheelScale, onScale: applyWheelScale, ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}` })
   usePdfViewportSize({ root: scrollRoot, size, onSize: setSize,
     preserveAnchor: !!pdf && fit !== 'custom' && !navigating,
-    ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${rotation}:${fit}` })
+    ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${fit}` })
   const annotationLists = useMemo(() => {
     const annotations: React.ReactNode[] = [], notes: React.ReactNode[] = []
     for (const { annotation, created, modified } of commentItems) {
@@ -916,7 +1148,7 @@ export function Reader(props: ReaderProps) {
 
   const renderCommentEditor = () => <div className="dsh-pdf-comment-editor">
     <label>{t('reader.commentText')}<textarea value={comment} disabled={!!selected && !selected.editable} onChange={(event) => setComment(event.target.value)} rows={5} /></label>
-    <label>{t('reader.color')}<input type="color" value={commentColor} disabled={!!selected && !selected.editable} onChange={(event) => setCommentColor(event.target.value)} /></label>
+    <label>{t('reader.color')}<input type="color" value={commentColor} disabled={!!selected && (!!snapshot?.document.readOnly || !selected.editable)} onChange={(event) => selected ? updateAnnotationColor(event.target.value) : setCommentColor(event.target.value)} /></label>
     {selected?.readOnlyReason && <p className="dsh-pdf-muted">{t(`reader.reason.${selected.readOnlyReason}`)}</p>}
     <button disabled={!editable || (!!selected && !selected.editable)} onClick={async () => {
       const patch = { contents: comment, color: colorFromHex(commentColor) }
@@ -971,11 +1203,11 @@ export function Reader(props: ReaderProps) {
             clearSelection(); clearAnnotation(); setMode('note')
             if (toolsMenu.current) toolsMenu.current.open = false
           }}>{t('reader.note')}</button>
-          <button disabled={!pdf || !!ocrProgress} onClick={() => {
+          {OCR_AVAILABLE && <button disabled={!pdf || !!ocrProgress} onClick={() => {
             setMode('text'); void recognize()
             if (toolsMenu.current) toolsMenu.current.open = false
-          }}>{t('reader.ocrPage')}</button>
-          <button disabled={!snapshot || busy} onClick={() => {
+          }}>{t('reader.ocrPage')}</button>}
+          <button disabled={!snapshot || busy || colorPending} onClick={() => {
             if (snapshot?.dirty || snapshot?.canRedo) setReloadConfirm(true)
             else void act(current => api.reload(sessionId, current.id, current.revision, tab.signal))
             if (toolsMenu.current) toolsMenu.current.open = false
@@ -985,15 +1217,21 @@ export function Reader(props: ReaderProps) {
       <div className="dsh-pdf-toolbar-controls">
       <button disabled={!history.current.canGoBack || busy || navigating} title={`${t('reader.back')} ${history.current.peek()?.page ?? ''}`} onClick={() => {
         if (navigationLock.current) return
+        const controller = new AbortController()
+        activeNavigation.current = controller
         navigationLock.current = true; setNavigating(true)
-        void history.current.back({ apply: applyPosition }, tab.signal).then(() => setHistoryRevision((n) => n + 1)).catch(notifyError).finally(() => { navigationLock.current = false; setNavigating(false) })
+        void history.current.back({ apply: applyPosition }, AbortSignal.any([tab.signal, controller.signal]))
+          .then(() => setHistoryRevision((n) => n + 1))
+          .catch((failure) => { if (!tab.signal.aborted && !isAbortError(failure)) notifyError(failure) })
+          .finally(() => {
+            if (activeNavigation.current === controller) activeNavigation.current = null
+            navigationLock.current = false
+            const next = pendingJump.current
+            pendingJump.current = null
+            if (next && !tab.signal.aborted) void jump(next.page, next.options, next.remember)
+            else setNavigating(false)
+          })
       }}>← {t('reader.back')}</button>
-      <button title={t('reader.previous')} aria-label={t('reader.previous')} disabled={!pdf || navigating || currentPage <= 1} onClick={() => void jump(currentPage - 1, {}, false)}>‹</button>
-      <form className="dsh-pdf-page-form" onSubmit={(event) => { event.preventDefault(); void jump(Number(pageInput)) }}>
-        <input aria-label={t('reader.page')} inputMode="numeric" value={pageInput} onChange={(event) => setPageInput(event.target.value)} />
-        <span>/ {snapshot?.document.pageCount ?? '—'}</span>
-      </form>
-      <button title={t('reader.next')} aria-label={t('reader.next')} disabled={!pdf || navigating || currentPage >= pdf.numPages} onClick={() => void jump(currentPage + 1, {}, false)}>›</button>
       <select disabled={navigating} aria-label={t('reader.zoom')} value={fit === 'custom' ? String(zoom) : fit} onChange={(event) => {
         if (event.target.value === 'width' || event.target.value === 'page') setFit(event.target.value)
         else { setFit('custom'); setZoom(Number(event.target.value)) }
@@ -1002,24 +1240,25 @@ export function Reader(props: ReaderProps) {
         {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((value) => <option value={value} key={value}>{Math.round(value * 100)}%</option>)}
         {fit === 'custom' && ![0.5, 0.75, 1, 1.25, 1.5, 2, 3].includes(zoom) && <option value={zoom}>{Math.round(zoom * 100)}%</option>}
       </select>
-      <button onClick={() => setRotation((value) => (value + 90) % 360)} disabled={!pdf || navigating} title={t('reader.rotate')}>↻</button>
       <span className="dsh-pdf-toolbar-divider" aria-hidden="true" />
-      <button disabled={!snapshot?.canUndo || busy} onClick={() => void act((current) => api.undo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.undo')}>↶</button>
-      <button disabled={!snapshot?.canRedo || busy} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
+      <button disabled={!snapshot?.canUndo || busy || colorPending} onClick={() => void act((current) => api.undo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.undo')}>↶</button>
+      <button disabled={!snapshot?.canRedo || busy || colorPending} onClick={() => void act((current) => api.redo(sessionId, current.id, current.revision, tab.signal))} title={t('reader.redo')}>↷</button>
       <button className="dsh-pdf-primary" disabled={!editable || !snapshot?.dirty} onClick={() => void save()}>{t('reader.save')}</button>
-      <button disabled={!editable} onClick={() => { setSavePath(snapshot?.path.replace(/\.pdf$/i, '-annotated.pdf') ?? ''); setSaveAsOpen(true) }}>{t('reader.saveAs')}</button>
-      <button disabled={!snapshot || busy || (!snapshot.dirty && !snapshot.canRedo && !hasUnappliedComment)} title={t('reader.discardHelp')} onClick={() => void discardChanges()}>{t('reader.discard')}</button>
+      <button disabled={!editable} onClick={() => void beginSaveAs()}>{t('reader.saveAs')}</button>
+      <button disabled={!snapshot || busy || saveAsPicking || colorPending || (!snapshot.dirty && !snapshot.conflict && !snapshot.canRedo && !hasUnappliedComment)} title={t('reader.discardHelp')} onClick={() => void discardChanges()}>{t('reader.discard')}</button>
       </div>
       <span className={snapshot?.dirty ? 'dsh-pdf-status is-dirty' : 'dsh-pdf-status'} title={snapshot?.path} role="status">{busy ? t('reader.working') : snapshot?.document.readOnly ? t('reader.readOnly') : snapshot?.dirty ? t('reader.unsaved') : snapshot ? t('reader.saved') : ''}</span>
     </div>
     {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
       <button onClick={() => void copyText()}>{t(textCopied ? 'reader.textCopied' : 'reader.copyText')}</button>
       <button onClick={beginTranslation}>{t('reader.translateSelection')}</button>
-      {dictionary.platform === 'darwin' && <button disabled={!dictionary.available}
-        title={t(dictionary.available ? 'reader.dictionaryLookupHelp' : 'reader.dictionaryUnavailable')}
-        onClick={() => void lookupSelection()}>{t('reader.dictionaryLookup')}</button>}
-      <input type="color" aria-label={t('reader.color')} value={color} disabled={!editable} onChange={(event) => setColor(event.target.value)} />
-      <button disabled={!editable} onClick={() => void mark('Highlight')}>{t('reader.highlight')}</button>
+      <button className="dsh-pdf-highlight-toggle" type="button" disabled={!editable}
+        aria-expanded={highlightColorsOpen} aria-controls={highlightColorsOpen ? highlightColorsId : undefined}
+        onClick={() => setHighlightColorsOpen((open) => !open)}>{t('reader.highlight')}</button>
+      {highlightColorsOpen && <div id={highlightColorsId} className="dsh-pdf-highlight-expanded">
+        <HighlightColorBar value={color} disabled={!editable} label={t('reader.color')} t={t}
+          onQuickColor={applyHighlightColor} onPaletteColor={applyHighlightColor} />
+      </div>}
       <button disabled={!editable} onClick={() => void mark('Underline')}>{t('reader.underline')}</button>
       <button disabled={!editable} onClick={() => void mark('StrikeOut')}>{t('reader.strike')}</button>
       <button disabled={!editable} onClick={() => {
@@ -1030,8 +1269,11 @@ export function Reader(props: ReaderProps) {
     </FloatingToolbar>}
     {selected && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.selectedAnnotation')}>
       <span>{t('reader.selectedAnnotation')} · {selected.supported ? t(`reader.type.${selected.subtype}`) : selected.subtype}</span>
-      <input type="color" aria-label={t('reader.annotationColor')} value={commentColor} disabled={!editable || !selected.editable} onChange={(event) => setCommentColor(event.target.value)} />
-      <button disabled={!editable || !selected.editable || commentColor === colorToHex(selected.color)} onClick={() => void change([{ type: 'update', id: selected.id, patch: { color: colorFromHex(commentColor) } }])}>{t('reader.applyColor')}</button>
+      {selected.subtype === 'Highlight'
+        ? <HighlightColorBar value={commentColor} disabled={!!snapshot?.document.readOnly || !selected.editable}
+          label={t('reader.annotationColor')} t={t} onQuickColor={updateAnnotationColor} onPaletteColor={updateAnnotationColor} />
+        : <input type="color" aria-label={t('reader.annotationColor')} value={commentColor}
+          disabled={!!snapshot?.document.readOnly || !selected.editable} onChange={(event) => updateAnnotationColor(event.target.value)} />}
       <button disabled={!editable || !selected.editable} onClick={() => void deleteAnnotation()}>{t('reader.delete')}</button>
       <button onClick={() => showSidebar(selected.subtype === 'Text' ? 'notes' : 'annotations')}>{t('reader.commentText')}</button>
       <button onClick={clearAnnotation}>{t('reader.deselectAnnotation')}</button>
@@ -1042,8 +1284,8 @@ export function Reader(props: ReaderProps) {
     {screenshotBusy && <div className="dsh-pdf-notice" role="status">{t('reader.screenshotPreparing')}<button onClick={cancelScreenshot}>{t('reader.cancel')}</button></div>}
     {error && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
     {snapshot?.warning && <div className="dsh-pdf-notice" role="status">{snapshot.warning}</div>}
-    {snapshot?.conflict && <div className="dsh-pdf-notice">{t('reader.conflict')}<button onClick={() => setSaveAsOpen(true)}>{t('reader.saveAs')}</button></div>}
-    {ocrProgress && <div className="dsh-pdf-notice" role="status">{ocrProgress}<button onClick={() => ocrController.current?.abort()}>{t('reader.cancel')}</button></div>}
+    {snapshot?.conflict && <div className="dsh-pdf-notice" role="status">{t('reader.conflict')}<button disabled={!editable} onClick={() => void beginSaveAs()}>{t('reader.saveAs')}</button></div>}
+    {OCR_AVAILABLE && ocrProgress && <div className="dsh-pdf-notice" role="status">{ocrProgress}<button onClick={() => ocrController.current?.abort()}>{t('reader.cancel')}</button></div>}
     {saveAsOpen && <form className="dsh-pdf-dialog" onSubmit={(event) => { event.preventDefault(); void save(savePath) }}>
       <label>{t('reader.savePath')}<input value={savePath} required onChange={(event) => setSavePath(event.target.value)} /></label>
       <p>{targetChecking ? t('reader.targetChecking') : target?.version ? t('reader.targetExists') : target ? t('reader.targetNew') : t('reader.targetUnchecked')}</p>
@@ -1062,7 +1304,7 @@ export function Reader(props: ReaderProps) {
           setDraggingPage(wrapper ? Number(wrapper.dataset.pageNumber) : null)
           // Remove the old native Range before browser default selection starts;
           // otherwise pointerup can recapture it after clicking page whitespace.
-          if (event.shiftKey) { setSelection(null); nativeSelectionRange.current = null }
+          if (event.shiftKey) setSelection(null)
           else clearSelection()
           clearAnnotation()
         }}
@@ -1073,6 +1315,23 @@ export function Reader(props: ReaderProps) {
       <OverlayScrollbars target={scrollRoot} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
       </div>
       <ReadingSidebar activeSection={sidebarSection} onSectionChange={showSidebar} expanded={sidebarExpanded}
+        pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
+        onPageInputChange={setPageInput}
+        onPageInputSubmit={() => {
+          const raw = pageInput.trim()
+          const page = /^\d+$/.test(raw) ? Number(raw) : NaN
+          if (!pdf || !Number.isSafeInteger(page) || page < 1 || page > pdf.numPages) {
+            setPageInput(String(currentPage))
+            return
+          }
+          setPageInput(String(page))
+          if (page !== currentPage) void jump(page)
+        }}
+        onPageInputReset={() => setPageInput(String(currentPage))}
+        onNavigatePage={page => { void jump(page) }}
+        onStepPage={page => { void jump(page, {}, false) }} onNavigateDestination={value => { void destination(value) }}
+        bookmarks={pdf && snapshot ? { api, sessionId, documentId: snapshot.id,
+          capturePosition: capture, onNavigatePosition: position => { void jump(position.page, position) } } : undefined}
         onExpandedChange={setSidebarExpanded} t={t} panels={{
           annotations: annotationPanels(false), notes: annotationPanels(true),
           search: <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
@@ -1095,7 +1354,7 @@ export function Reader(props: ReaderProps) {
         }} />
     </div>
     {screenshot && <ScreenshotPreview image={screenshot} t={t} onError={notifyError} onClose={() => { setScreenshot(null); clearSelection() }}
-      onOcr={ocrProgress ? undefined : () => void recognize({ page: screenshot.page, rect: screenshot.region })} />}
+      onOcr={OCR_AVAILABLE && !ocrProgress ? () => void recognize({ page: screenshot.page, rect: screenshot.region }) : undefined} />}
   </div>
 }
 

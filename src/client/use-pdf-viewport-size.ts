@@ -56,7 +56,7 @@ export function usePdfViewportSize(options: PdfViewportSizeOptions): void {
       if (!current) return
       if (!root.contains(current.element) || !root.clientWidth || !root.clientHeight) { reset(); return }
       // A fallback frame can precede React's commit. Wait for the size which
-      // pageScale actually consumed, without polling canvas or PDF.js PageView.
+      // pageScale actually consumed, without polling the native tile surface.
       if (!sameSize(settings.size, current.size)) return
       const bounds = current.element.getBoundingClientRect(), outer = root.getBoundingClientRect()
       root.scrollLeft += bounds.left + current.fraction[0] * bounds.width - outer.left - root.clientLeft - current.pointer[0]

@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
-import { applyPdfOperations } from '../core/pdf-document.ts'
+import { applyPdfOperations, loadPdfDocument } from '../core/pdf-document.ts'
 import { projectPdfOperations } from '../core/pdf-operation-projection.ts'
 import type { PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
-import { loadPdfForReading } from './pdf-inspection.ts'
 import type { WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import { beginPdfSpan } from '../shared/performance.ts'
@@ -20,10 +19,11 @@ interface WorkingCopy {
   id: string
   record: WorkspaceRecord
   baseline: PdfDocumentInfo
-  snapshot: WorkspaceSnapshot
+  snapshot: HostWorkspaceSnapshot
 }
 type Files = ReturnType<typeof createLocalFiles>
-type RenderedPdf = Pick<WorkspaceSnapshot, 'bytes' | 'document'>
+export type HostWorkspaceSnapshot = Omit<WorkspaceSnapshot, 'reader'> & { bytes: Uint8Array }
+type RenderedPdf = Pick<HostWorkspaceSnapshot, 'bytes' | 'document'>
 type WorkspaceRecord = DraftRecord & { groupDates: string[] }
 
 function base64(bytes: Uint8Array): string {
@@ -76,7 +76,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   }
 
   function snapshotFor(id: string, record: WorkspaceRecord, baseline: PdfDocumentInfo,
-    bytes: Uint8Array, document: PdfDocumentInfo, conflict: boolean): WorkspaceSnapshot {
+    bytes: Uint8Array, document: PdfDocumentInfo, conflict: boolean): HostWorkspaceSnapshot {
     return {
       id, path: record.path, sourceVersion: record.sourceVersion, contentVersion: record.contentVersion,
       revision: record.revision, dirty: record.cursor > 0,
@@ -101,7 +101,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     if (base64(bytes) !== record.original || renderedHash(bytes) !== record.sourceHash) {
       fail('pdf/draft-damaged', 'Saved draft source bytes failed their integrity check')
     }
-    return { bytes, document: await loadPdfForReading(bytes) }
+    return { bytes, document: await loadPdfDocument(bytes) }
   }
 
   function fresh(sessionId: string, source: PdfFileRead, revision = 0, contentVersion: string = randomUUID()): WorkspaceRecord {
@@ -114,7 +114,28 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     // The file adapter has already checked the digest. A fresh working copy can
     // inspect those exact bytes without encoding, decoding and hashing another copy.
     hashes.set(source.bytes, source.version)
-    return { bytes: source.bytes, document: await loadPdfForReading(source.bytes) }
+    return { bytes: source.bytes, document: await loadPdfDocument(source.bytes) }
+  }
+
+  async function recoverCommitted(copy: WorkingCopy, source: PdfFileRead, signal?: AbortSignal): Promise<HostWorkspaceSnapshot> {
+    const previous = copy.record
+    const committed = await sourcePdf(source)
+    signal?.throwIfAborted()
+    const next = fresh(previous.sessionId, source, previous.revision + 1, previous.contentVersion)
+    const snapshot = snapshotFor(copy.id, next, committed.document, committed.bytes, committed.document, false)
+    // The on-disk digest proves the materialized draft was published. Make the
+    // live copy clean before attempting storage cleanup, which may fail again.
+    copy.record = next
+    copy.baseline = committed.document
+    copy.snapshot = snapshot
+    const key = recordKey(previous.sessionId, previous.path)
+    const cleanupFailures: string[] = []
+    try { await drafts.delete(key) } catch (error) { cleanupFailures.push(errorText(error)) }
+    try { await deleteBaseline(previous) } catch (error) { cleanupFailures.push(errorText(error)) }
+    if (cleanupFailures.length) {
+      copy.snapshot = { ...snapshot, warning: `PDF saved to ${source.path}, but draft cleanup failed: ${cleanupFailures.join('; ')}` }
+    }
+    return copy.snapshot
   }
 
   async function persist(record: WorkspaceRecord, sourceKey: string, baselineBytes: Uint8Array,
@@ -173,6 +194,10 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     const existingId = byPath.get(key)
     if (existingId) {
       const copy = copies.get(existingId)!
+      if (source && copy.record.renderedHash && copy.record.renderedHash !== copy.record.sourceHash
+        && copy.record.renderedHash === source.version) {
+        return recoverCommitted(copy, source, signal)
+      }
       const conflict = copy.record.sourceHash !== source?.version
       if (source && !conflict && copy.record.sourceVersion !== source.fsVersion) {
         // A touch or byte-identical external replacement updates the preview
@@ -199,7 +224,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       && stored.renderedHash === source.version
     let record: WorkspaceRecord
     let baseline: RenderedPdf
-    let snapshot: WorkspaceSnapshot
+    let snapshot: HostWorkspaceSnapshot
     if (stored && source && (stored.groups.length === 0 || alreadySaved)) {
       record = fresh(sessionId, source, stored.revision + 1,
         alreadySaved ? stored.contentVersion : randomUUID())
@@ -289,9 +314,15 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     if (copy.record.revision !== input.revision) fail('pdf/stale-revision', 'The working copy changed in another tab; reopen it to load the latest draft')
     const record = copy.record
     if (input.action === 'discard') {
-      // The baseline survives external file removal and includes a successful
-      // manual save. Drop both undo and redo; never touch the source file.
-      return publish(copy, { ...record, groups: [], groupDates: [], cursor: 0, revision: record.revision + 1 }, undefined, signal)
+      // Discard the draft against the current source, not the stale baseline.
+      // A missing/unreadable source leaves the draft intact so it can be saved
+      // elsewhere instead of silently appearing to resolve a conflict.
+      const source = await files.read(agent, record.path, signal)
+      if (source.version !== record.sourceHash) {
+        return publish(copy, fresh(input.sessionId, source, record.revision + 1), false, signal, undefined, await sourcePdf(source))
+      }
+      return publish(copy, { ...record, sourceVersion: source.fsVersion,
+        groups: [], groupDates: [], cursor: 0, revision: record.revision + 1 }, false, signal)
     }
     if (input.action === 'reload') {
       const source = await files.read(agent, record.path, signal)
@@ -304,7 +335,16 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       const targetKey = recordKey(input.sessionId, target)
       if (!same && byPath.has(targetKey)) fail('pdf/target-open', 'The destination already has a working copy; choose another path')
       if (!same && drafts.get(targetKey)?.groups.length) fail('pdf/target-draft', 'The destination has a saved draft; open it first or choose another path')
-      const expected = same ? record.sourceHash : input.options.expectedTargetVersion ?? null
+      let expected = same ? record.sourceHash : input.options.expectedTargetVersion ?? null
+      if (same && input.options.path !== undefined && input.options.overwrite === true) {
+        // Save As may explicitly replace an externally changed source. It must
+        // name the version the user inspected; the file adapter still enforces
+        // compare-and-swap before publication. Plain Save never bypasses it.
+        if (!input.options.expectedTargetVersion) {
+          fail('pdf/overwrite-required', 'Observe the current PDF version before replacing it')
+        }
+        expected = input.options.expectedTargetVersion
+      }
       if (!same && expected !== null && input.options.overwrite !== true) fail('pdf/overwrite-required', 'Explicit replacement confirmation is required')
       // Materialize the active operation prefix once, only at the save boundary.
       const { operations, dates } = operationsThrough(record)
@@ -326,7 +366,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         const saved = await files.save(agent, target, committedBytes, expected, { overwrite: input.options.overwrite, signal })
         const source = { ...saved, bytes: committedBytes }
         const next = fresh(input.sessionId, source, record.revision + 1, record.contentVersion)
-        const snapshot: WorkspaceSnapshot = {
+        const snapshot: HostWorkspaceSnapshot = {
           id: copy.id, path: next.path, sourceVersion: next.sourceVersion, contentVersion: next.contentVersion,
           revision: next.revision, dirty: false, canUndo: false, canRedo: false, conflict: false,
           document, baselineAnnotations: document.annotations, bytes: committedBytes,
@@ -350,6 +390,14 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         return copy.snapshot
       } catch (error) {
         if (error instanceof Error && 'code' in error && (error.code === 'PDF_STALE_VERSION' || error.code === 'PDF_SAVE_UNCERTAIN') && same) {
+          // A post-rename verification failure is not proof that the write
+          // failed. Check the exact committed digest before showing a conflict.
+          try {
+            const source = await files.read(agent, target, signal)
+            if (copy.record.renderedHash && copy.record.renderedHash === source.version) {
+              return await recoverCommitted(copy, source, signal)
+            }
+          } catch { /* A later open can retry recovery from the durable marker. */ }
           copy.snapshot = { ...copy.snapshot, conflict: true }
         }
         throw error
@@ -395,7 +443,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   }
   return {
     execute,
-    readSnapshot(sessionId: string, id: string): WorkspaceSnapshot {
+    readSnapshot(sessionId: string, id: string): HostWorkspaceSnapshot {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
       const copy = copies.get(id)
       if (!copy) fail('pdf/unknown-document', 'PDF working copy is unavailable; reopen it')

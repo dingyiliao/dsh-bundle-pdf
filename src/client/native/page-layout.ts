@@ -19,7 +19,7 @@ export interface PageWindow {
   end: number
 }
 
-/** Invert PDF.js PageViewport's default (vertically flipped) transform. */
+/** Invert the native viewport's vertically flipped page transform. */
 export function pagePixelToPdfPoint(
   page: PdfPageInfo, scale: number, rotation: number, pixelX: number, pixelY: number,
 ): [number, number] {
@@ -36,7 +36,7 @@ export function pagePixelToPdfPoint(
   }
 }
 
-/** Mirror Page's unloaded PDF viewport size without loading a PDF.js page. */
+/** Estimate Page's unloaded native viewport size without loading a page. */
 export function buildPageLayout(
   pages: readonly PdfPageInfo[], getScale: (page: PdfPageInfo) => number, rotation: number,
 ): PageGeometry[] {

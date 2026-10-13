@@ -1,7 +1,7 @@
 import { PDFString } from 'pdf-lib'
 import { measurePdfSync } from '../shared/performance.js'
 import {
-  PdfDocumentError,
+  DEFAULT_HIGHLIGHT_OPACITY, PdfDocumentError,
   type NewPdfAnnotation, type PdfAnnotation, type PdfAnnotationOperation,
   type PdfColor, type PdfDocumentInfo, type PdfRect,
 } from './pdf-types.js'
@@ -112,6 +112,7 @@ function projectPdfOperationsImpl(
         rect: [...operation.annotation.rect],
         quadPoints: operation.annotation.quadPoints?.slice(),
         color: operation.annotation.color ? [...operation.annotation.color] : [...defaultColor],
+        ...(operation.annotation.subtype === 'Highlight' ? { opacity: DEFAULT_HIGHLIGHT_OPACITY } : {}),
         flags: 4, supported: true, editable: true,
         createdAt: pdfDate, modifiedAt: pdfDate,
         sourceObjectId: `dsh-new:${operation.annotation.id}`,
