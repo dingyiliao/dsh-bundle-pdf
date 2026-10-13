@@ -4,9 +4,26 @@
 
 ## 原生第一版
 
-新分支接入了 PDFium worker、真正有界的页面 DOM、视口分块和标注增量。Reader 使用 `WindowedPages`，不进行后台全页预热；Client 不打开整份 PDF，高倍页面仅请求可见分块，旧原生标注的无标注修补也按分块进行。Host 初次检查和保存仍使用原有实现，操作投影仍有随标注数增长的成本。完整功能、测量口径与边界见 [NATIVE_V1.md](./NATIVE_V1.md)。
+当前 `0.1.0` 实现接入了 PDFium worker、有界页面 DOM、视口分块和标注增量。Reader 使用 `WindowedPages`，不进行后台全页预热；Client 不打开整份 PDF，高倍页面仅请求可见分块，旧原生标注的无标注修补也按分块进行。Host 初次检查和保存仍使用原有实现，操作投影仍有随标注数增长的成本。完整功能、测量口径与边界见 [NATIVE_V1.md](./NATIVE_V1.md)。
 
 原生 helper 按需返回可见分块。阅读 RPC 使用 `pdf.dispatch.v2`。当前 `bench:browser` 只运行原生阅读器；`bench:compare` 用于同一协议下的版本对照，不再支持引擎 A/B。[历史基准目录](docs/benchmarks/native-v1-20260930/README.md)保留旧实现的冻结记录，不能当作当前代码的性能结果。浏览器 RSS 不可用时应明确标记 unavailable。
+
+## 2026-10-14 合成组件基准
+
+基于包版本 `0.1.0`、功能代码提交 `0edd1f1`，在 Apple M5 Pro / macOS arm64 / Node 26.7.0 上运行 `release` 套件（每个场景 20 次）。Reader 使用本机 Chrome 155.0.8059.40 的无头模式，因为本机缺少 Playwright 1.58.2 对应的默认 Chromium；PDFium 版本为 156.0.8076.0。Host 与 Reader 的成功运行记录具有相同的源码树及协议摘要；源码树因本地未提交改动标记为 dirty，结果不能当作干净发布构建的基线。完整 JSONL 原始记录和复跑元数据见 [基准归档](docs/benchmarks/native-v1-20261014/README.md)；本机运行目录 `bench-results/` 被 Git 忽略。
+
+| 场景与合成语料 | 指标 | p50 | p95 | 成功/总数 |
+| --- | --- | ---: | ---: | ---: |
+| Host 打开检查 · 1000 页 | `durationMs` | 65.1 ms | 67.6 ms | 20/20 |
+| Host 保存物化 · 1000 页 | `durationMs` | 64.7 ms | 70.9 ms | 20/20 |
+| Reader 首屏 · 1000 页 | `targetQualityProxyMs` | 185.2 ms | 217.6 ms | 20/20 |
+| Reader 滚动后恢复清晰 · 1000 页 | `scrollSettleProxyMs` | 33.2 ms | 33.6 ms | 20/20 |
+| Reader 缩放至 4 倍 · 1000 页 | `targetQualityProxyMs` | 234.2 ms | 250.8 ms | 20/20 |
+| Reader 首屏 · 1000 个标注 | `targetQualityProxyMs` | 356.4 ms | 407.0 ms | 20/20 |
+
+首次 Host `release` 运行的 240 条记录中有 1 条 `text-1000` 打开检查达到默认 60 秒超时；改用 120 秒上限完整复跑后为 240/240 通过，Reader 为 180/180 通过。单次超时的原因尚未查明，不能仅据复跑认定已修复。表中 Host 数字来自第二次运行。`release` 只是重复次数设置，不代表发布验收通过。
+
+这些数字不含完整 DSH Desktop 启动、授权链、真实文件持久写盘或浏览器启动；合成语料也不覆盖扫描件、复杂字体和真实千页文档。Reader 时间是 DOM/raster 质量代理，滚动恢复时间不包含预设的 1500 ms 滚动过程；浏览器及原生 helper 合计峰值 RSS 未采集。没有同协议的旧版运行，因此不能从历史数据计算加速比例。详细协议与指标解释见 [bench/README.md](bench/README.md)。
 
 ## 阅读与编辑路径的实现审查
 
@@ -54,4 +71,4 @@ Host 以源 PDF 字节、分组操作日志和标注投影表示未保存工作�
 
 新增或修改标注直接叠加预览。删除或改色原有标注时，原生路径对相交分块请求无标注图像，再按旧标注区域局部修补，保留未受影响的原生 appearance。区域截图采用同一操作投影；OCR 故意读取无标注基础页面，避免标注干扰文字识别。修补区域与未知标注或自定义 appearance 重叠时，其交叠部分仍可能被覆盖；对这些 PDF 的显示互操作性需要代表样本验收。
 
-下一步需重新测量当前代码在长文档、多标注 PDF 上的首屏、远页跳转、滚动、编辑、截图和保存耗时，以及浏览器、Host 和 helper 的峰值内存，并核对图像质量。本文的复杂度分析不能代替实际加速比例。
+下一步需在完整 DSH Desktop 和代表性真实 PDF 上测量首屏、远页跳转、滚动、编辑、截图和保存耗时，以及浏览器、Host 和 helper 的峰值内存，并核对图像质量。合成组件基准和复杂度分析都不能代替实际加速比例。

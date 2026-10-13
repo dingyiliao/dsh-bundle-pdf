@@ -29,8 +29,9 @@ await build({ absWorkingDir: ROOT, entryPoints: ['bench/web-entry.tsx'], outfile
   jsx: 'automatic', loader: { '.css': 'text' },
   define: { 'process.env.NODE_ENV': JSON.stringify('production') } })
 const bundle = await readFile(join(ROOT, 'bench/.web-build/app.js')), source = await sourceMetadata()
-const browser = await chromium.launch({ headless: true, ...(process.env.PDF_BENCH_CHROMIUM ? { executablePath: process.env.PDF_BENCH_CHROMIUM } : { channel: 'chromium' }) })
-const environment = { ...environmentMetadata(), chromium: browser.version(), browserChannel: 'chromium-new-headless', headless: true, viewportWidth: 1200, viewportHeight: 900, dpr: 2,
+const customChromium = process.env.PDF_BENCH_CHROMIUM
+const browser = await chromium.launch({ headless: true, ...(customChromium ? { executablePath: customChromium } : { channel: 'chromium' }) })
+const environment = { ...environmentMetadata(), chromium: browser.version(), browserChannel: customChromium ? 'custom-executable' : 'chromium-new-headless', headless: true, viewportWidth: 1200, viewportHeight: 900, dpr: 2,
   appBundleIncludedInTiming: false, browserLaunchIncludedInTiming: false, hostAdapter: 'synthetic-memory-files-and-drafts', scrollProtocol: '8000-csspx-over-1500ms',
   readerEngine: 'native', pdfiumBuild: '156.0.8076.0', rpcByteScope: 'scenario-context-including-setup' }
 const rows: BenchmarkRow[] = []

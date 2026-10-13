@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "PDF reader, annotations, navigation and pluggable OCR for DeepSeek Harness",
+  "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
   "license": "MIT",
   "repository": {
     "type": "git",

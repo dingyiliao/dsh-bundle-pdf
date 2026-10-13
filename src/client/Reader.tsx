@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { beginPdfSpan } from '../shared/performance.js'
 import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfPageInfo, PdfRect } from '../core/pdf-types.js'
 import type { NavigationPosition } from '../navigation/index.js'
@@ -74,8 +74,6 @@ export function Reader(props: ReaderProps) {
     owner: number; documentId: string; contentVersion: string
   }) | null>(null)
   const [color, setColor] = useState(initialAnnotationColor)
-  const [highlightColorsOpen, setHighlightColorsOpen] = useState(false)
-  const highlightColorsId = useId()
   const [sidebarSection, setSidebarSection] = useState<ReadingSidebarSection>('annotations')
   const [sidebarExpanded, setSidebarExpanded] = useState(true)
   const [selectedAnnotation, setSelectedAnnotation] = useState<string>()
@@ -647,6 +645,7 @@ export function Reader(props: ReaderProps) {
   const updateAnnotationColor = (nextColor: string) => {
     if (!selected || !snapshot || snapshot.document.readOnly || !selected.editable) return
     setCommentColor(nextColor)
+    setColor(nextColor)
     const firstChange = colorChanges.current.size === 0
     const key = `${ownerSequence.current}:${snapshot.id}:${selected.id}`
     colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id, annotationId: selected.id, color: nextColor })
@@ -763,11 +762,6 @@ export function Reader(props: ReaderProps) {
       if (operations[0]?.type === 'add') setSelectedAnnotation(operations[0].annotation.id)
     }
   }
-  const applyHighlightColor = (next: string) => {
-    setColor(next)
-    void mark('Highlight', next)
-  }
-
   const beginNote = (page: number, point: number[]) => {
     if (!snapshot || snapshot.document.readOnly) return
     const bounds = snapshot.document.pages[page - 1].cropBox
@@ -905,9 +899,6 @@ export function Reader(props: ReaderProps) {
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
   const hasUnappliedComment = !!pendingNote || (!!selected && comment !== (selected.contents ?? ''))
   const hasTextSelection = selection?.kind === 'text' && selection.revision === snapshot?.revision
-  useEffect(() => {
-    if (!hasTextSelection) setHighlightColorsOpen(false)
-  }, [hasTextSelection])
   const registerView = useCallback((number: number, view: PageView | null) => {
     if (view) views.current.set(number, view); else views.current.delete(number)
     state.current.scrollRoot?.dispatchEvent(new Event('pdfviewchange'))
@@ -964,7 +955,6 @@ export function Reader(props: ReaderProps) {
     if (mode !== 'text' || !scrollRoot || !snapshot) return
     const next = captureTextSelection(scrollRoot, views.current, snapshot.revision)
     setSelection(next)
-    setHighlightColorsOpen(false)
     if (next) setSelectedAnnotation(undefined)
   }
   const scheduleCaptureSelection = () => {
@@ -1252,13 +1242,7 @@ export function Reader(props: ReaderProps) {
     {hasTextSelection && mode === 'text' && <FloatingToolbar viewport={scrollRoot} getAnchor={contextualAnchor} label={t('reader.textActions')}>
       <button onClick={() => void copyText()}>{t(textCopied ? 'reader.textCopied' : 'reader.copyText')}</button>
       <button onClick={beginTranslation}>{t('reader.translateSelection')}</button>
-      <button className="dsh-pdf-highlight-toggle" type="button" disabled={!editable}
-        aria-expanded={highlightColorsOpen} aria-controls={highlightColorsOpen ? highlightColorsId : undefined}
-        onClick={() => setHighlightColorsOpen((open) => !open)}>{t('reader.highlight')}</button>
-      {highlightColorsOpen && <div id={highlightColorsId} className="dsh-pdf-highlight-expanded">
-        <HighlightColorBar value={color} disabled={!editable} label={t('reader.color')} t={t}
-          onQuickColor={applyHighlightColor} onPaletteColor={applyHighlightColor} />
-      </div>}
+      <button type="button" disabled={!editable} onClick={() => void mark('Highlight')}>{t('reader.highlight')}</button>
       <button disabled={!editable} onClick={() => void mark('Underline')}>{t('reader.underline')}</button>
       <button disabled={!editable} onClick={() => void mark('StrikeOut')}>{t('reader.strike')}</button>
       <button disabled={!editable} onClick={() => {

@@ -20,7 +20,7 @@ export interface PdfBookmarksApi {
   remove(sessionId: string, documentId: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
 }
 
-/** Targets available in both PDF settings and the per-selection translation panel. */
+/** Target languages offered by the per-selection translation panel. */
 export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] as const
 export const translationSourceLanguage = 'auto' as const
 

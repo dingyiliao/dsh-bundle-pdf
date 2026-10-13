@@ -16,19 +16,29 @@ npm run bench -- --suite smoke --out bench-results/host-baseline
 npm run bench:browser -- --suite smoke --out bench-results/reader-baseline
 ```
 
-`--ignore-scripts` 跳过安装时的自动构建，`npm run native:build` 准备匹配平台的 PDFium helper，`npm run check` 执行正式构建和检查。若已有隔离的 Playwright 缓存，用 `PLAYWRIGHT_BROWSERS_PATH=/absolute/cache/path` 指定。运行浏览器基准需要 Chromium 的系统依赖以及本地 loopback 监听权限。
+`--ignore-scripts` 跳过安装时的自动构建，`npm run native:build` 准备匹配平台的 PDFium helper，`npm run check` 执行正式构建和检查。若已有隔离的 Playwright 缓存，用 `PLAYWRIGHT_BROWSERS_PATH=/absolute/cache/path` 指定；也可用 `PDF_BENCH_CHROMIUM=/absolute/path/to/chromium` 指定已有的 Chromium 可执行文件，前后对照须固定其版本。运行浏览器基准需要 Chromium 的系统依赖以及本地 loopback 监听权限。
 
-测试依赖固定为 Playwright 1.58.2；使用 `channel: chromium` 的新 headless 模式。目标 DSH/Electron 与 macOS Safari/WebKit 仍须独立验收，不能把 esbuild target 当作运行时 API 支持保证。
+测试依赖固定为 Playwright 1.58.2；默认使用 `channel: chromium` 的新 headless 模式，指定 `PDF_BENCH_CHROMIUM` 时改用该可执行文件。目标 DSH/Electron 与 macOS Safari/WebKit 仍须独立验收，不能把 esbuild target 当作运行时 API 支持保证。
 
 两个 runner 的 `--repeats` 默认 smoke=3、release=20；`--timeout` 单位毫秒，默认 60000。输出路径中的 `runs.jsonl` 必须不存在，避免覆盖基线。浏览器可用 `--document paper-12 --scenario reader.open` 先排查单场景。基准输出和生成 PDF 都被 Git 忽略。
 
+版本对照应在旧源码修订先运行 release 基线：
+
 ```sh
-npm run bench -- --suite release --repeats 20 --out bench-results/host-candidate
-npm run bench:browser -- --suite release --repeats 20 --out bench-results/reader-candidate
-npm run bench:compare -- --before bench-results/host-baseline/runs.jsonl --after bench-results/host-candidate/runs.jsonl --out bench-results/host-comparison.md
+npm run bench -- --suite release --repeats 20 --out bench-results/host-before
+npm run bench:browser -- --suite release --repeats 20 --out bench-results/reader-before
 ```
 
-前后必须采用同一个 suite、次数、语料、环境和协议；上面 smoke 与 release 的示例代表不同运行模式，不能混合比较。**release 参数只扩大重复次数，不等同于发布验收通过**；仍需完成计划中的真实 PDF、平台矩阵、端到端持久化与独立画质验收。相同源树默认拒绝比较；`--allow-identical` 仅用于验证报告工具。
+更新到待测的新源码修订后，使用相同的基准协议、语料和环境运行候选，再分别比较 Host 与 Reader：
+
+```sh
+npm run bench -- --suite release --repeats 20 --out bench-results/host-after
+npm run bench:browser -- --suite release --repeats 20 --out bench-results/reader-after
+npm run bench:compare -- --before bench-results/host-before/runs.jsonl --after bench-results/host-after/runs.jsonl --out bench-results/host-comparison.md
+npm run bench:compare -- --before bench-results/reader-before/runs.jsonl --after bench-results/reader-after/runs.jsonl --out bench-results/reader-comparison.md
+```
+
+前后必须采用同一个 suite、次数、语料、浏览器版本、环境和协议；前面的 smoke 结果不能与这里的 release 结果混合比较。**release 参数只扩大重复次数，不等同于发布验收通过**；仍需完成计划中的真实 PDF、平台矩阵、端到端持久化与独立画质验收。相同源树默认拒绝比较；`--allow-identical` 仅用于验证报告工具。
 
 ## 固定语料
 

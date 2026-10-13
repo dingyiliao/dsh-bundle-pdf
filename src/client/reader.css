@@ -124,8 +124,6 @@
 .dsh-pdf-panel-heading h3 { margin: 0; font-size: 13px; }
 .dsh-pdf-context-toolbar { position: absolute; visibility: hidden; z-index: 8; width: max-content; max-width: calc(100% - 16px); padding: 5px 7px; background: var(--pdf-panel); border: 1px solid var(--pdf-border); border-radius: 6px; box-shadow: var(--dsw-elevation-prominent); }
 .dsh-pdf-context-toolbar > span { color: var(--pdf-muted); font-size: 12px; }
-.dsh-pdf-reader .dsh-pdf-highlight-toggle[aria-expanded="true"] { border-color: var(--pdf-accent); background: var(--dsw-alias-interactive-bg-hover); }
-.dsh-pdf-highlight-expanded { display: inline-flex; align-items: center; }
 .dsh-pdf-highlight-colors { display: inline-flex; align-items: center; flex: none; gap: 4px; min-height: 27px; }
 .dsh-pdf-highlight-swatches { display: inline-flex; align-items: center; gap: 3px; }
 .dsh-pdf-highlight-swatch-wrap { position: relative; display: inline-flex; }
