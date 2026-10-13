@@ -37,11 +37,6 @@ jobs:
       - run: npm run check
         env:
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
-      - name: Reader smoke
-        if: matrix.target == 'linux-x64'
-        run: |
-          npx playwright install --with-deps chromium
-          npm run bench:browser -- --engine native --document text-1000 --repeats 1 --out bench-results/ci-native
       - name: Pack complete platform-specific npm package without build scripts
         run: npm pack --ignore-scripts
       - name: Verify and name installable npm package
@@ -52,6 +47,11 @@ jobs:
           name: dsh-pdf-npm-package-${{ matrix.target }}
           path: artifacts/*-${{ matrix.target }}-npm-package.tgz
           if-no-files-found: error
+      - name: Reader smoke
+        if: matrix.target == 'linux-x64'
+        run: |
+          npx playwright install --with-deps chromium
+          npm run bench:browser -- --document text-1000 --repeats 1 --out bench-results/ci-native
       - name: Upload Linux reader smoke results
         uses: actions/upload-artifact@v4
         if: always() && matrix.target == 'linux-x64'
