@@ -10,7 +10,6 @@ const project = fileURLToPath(new URL('../', import.meta.url))
 const dist = join(project, 'dist')
 const require = createRequire(import.meta.url)
 const packageRoot = (name) => dirname(require.resolve(`${name}/package.json`))
-const pdfRoot = packageRoot('pdfjs-dist')
 const tesseractRoot = packageRoot('tesseract.js')
 const coreRoot = packageRoot('tesseract.js-core')
 
@@ -25,14 +24,6 @@ await new Promise((resolveBuild, rejectBuild) => {
   child.once('error', rejectBuild)
   child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`OCR declaration build exited with status ${code}`)))
 })
-
-const binaryAssets = {}
-for (const [kind, directory] of [['cMapUrl', 'cmaps'], ['standardFontDataUrl', 'standard_fonts'], ['wasmUrl', 'wasm']]) {
-  const source = join(pdfRoot, directory)
-  const files = (await readdir(source, { withFileTypes: true })).filter((file) => file.isFile() && !file.name.startsWith('LICENSE')).sort((a, b) => a.name.localeCompare(b.name))
-  binaryAssets[kind] = Object.fromEntries(await Promise.all(files.map(async (file) => [file.name, (await readFile(join(source, file.name))).toString('base64')])))
-}
-const workerSource = await readFile(join(pdfRoot, 'build/pdf.worker.min.mjs'), 'utf8')
 
 const common = {
   absWorkingDir: project,
@@ -52,8 +43,12 @@ const browser = {
 // Host imports belong to the installed Harness profile, not to a second bundled runtime.
 const hostBuild = await build({
   ...common, entryPoints: ['src/host/index.ts'], outfile: 'dist/index.js',
-  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*', 'pdfjs-dist/*'],
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
+})
+const nativeProviderBuild = await build({
+  ...common, entryPoints: ['src/host/native-provider.ts'], outfile: 'dist/native-provider.js',
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 
 // The Harness client loader supplies the shared React and Cordis module instances.
@@ -61,13 +56,6 @@ const clientBuild = await build({
   ...browser, entryPoints: ['src/client/index.tsx'], outfile: 'dist/client.js',
   write: false, format: 'cjs', external: ['react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/*'],
   jsx: 'automatic', loader: { '.css': 'text' },
-  define: {
-    ...browser.define,
-    __PDF_PLUGIN_WORKER_SOURCE__: JSON.stringify(workerSource),
-    __PDF_PLUGIN_BINARY_ASSETS__: JSON.stringify(binaryAssets),
-  },
-  // PDF.js contains import.meta.url only in its unused Node/fake-worker branches.
-  logOverride: { 'empty-import-meta': 'silent' },
 })
 const clientCode = clientBuild.outputFiles.find((file) => file.path.endsWith('client.js'))?.text
 if (!clientCode) throw new Error('The PDF client build did not produce JavaScript.')
@@ -78,9 +66,6 @@ const ocrBuild = await build({
 })
 const translationBuild = await build({
   ...browser, entryPoints: ['src/translation/index.ts'], outfile: 'dist/translation.js', format: 'esm',
-})
-const dictionaryBuild = await build({
-  ...browser, entryPoints: ['src/client/native-dictionary.ts'], outfile: 'dist/native-dictionary.js', format: 'esm',
 })
 const bridgeBuild = await build({
   ...browser, entryPoints: ['src/ocr/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
@@ -108,9 +93,9 @@ const manifestFiles = await Promise.all(assetFiles.sort().map(async (path) => {
 }))
 await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version: 1, files: manifestFiles }, null, 2)}\n`, 'utf8')
 
-// Keep bundled dependency notices with the distributable, including embedded font/WASM assets.
-const roots = new Set([pdfRoot, tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, clientBuild, ocrBuild, translationBuild, dictionaryBuild, bridgeBuild]) {
+// Keep bundled dependency notices with the distributable, including OCR assets.
+const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
+for (const result of [hostBuild, nativeProviderBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -122,9 +107,8 @@ for (const root of [...roots].sort()) {
   let metadata
   try { metadata = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) } catch { continue }
   notices.push(`## ${metadata.name} ${metadata.version}`, '', `License: ${typeof metadata.license === 'string' ? metadata.license : JSON.stringify(metadata.license ?? 'See dependency source')}`, '')
-  const directories = root === pdfRoot ? ['', 'cmaps', 'standard_fonts', 'wasm'] : ['']
   let included = false
-  for (const directory of directories) {
+  for (const directory of ['']) {
     const location = join(root, directory)
     const files = (await readdir(location, { withFileTypes: true })).filter((file) => file.isFile() && /^(?:licen[cs]e|notice|copying)(?:$|[._-])/i.test(file.name)).sort((a, b) => a.name.localeCompare(b.name))
     for (const file of files) {
@@ -135,4 +119,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, Harness Client, OCR/translation/dictionary SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)

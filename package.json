@@ -15,6 +15,7 @@
   },
   "exports": {
     ".": "./dist/index.js",
+    "./native": "./dist/native-provider.js",
     "./client": "./dist/client.js",
     "./ocr": {
       "types": "./dist/types/ocr/index.d.ts",
@@ -23,10 +24,6 @@
     "./translation": {
       "types": "./dist/types/translation/index.d.ts",
       "import": "./dist/translation.js"
-    },
-    "./native-dictionary": {
-      "types": "./dist/types/client/native-dictionary.d.ts",
-      "import": "./dist/native-dictionary.js"
     },
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
@@ -39,17 +36,23 @@
     "README.md",
     "SPEC.md",
     "PERFORMANCE.md",
+    "NATIVE_V1.md",
     "LICENSE"
   ],
   "icon": "./icon.svg",
   "scripts": {
+    "bench": "node --import tsx bench/run.ts",
+    "bench:corpus": "node --import tsx bench/corpus.ts",
+    "bench:browser": "node --import tsx bench/browser.ts",
+    "bench:compare": "node --import tsx bench/compare.ts",
+    "typecheck:bench": "tsc --noEmit --project tsconfig.bench.json",
     "build": "node scripts/build.mjs",
+    "native:build": "node scripts/build-native.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
-    "test": "npm run build && tsx --test tests/*.test.ts",
+    "test": "npm run build && node --import tsx --test --test-concurrency=1 \"tests/*.test.ts\"",
     "test:web": "npm run build && vitest run --config vitest.web.config.ts",
-    "prepare": "npm run build",
-    "check": "npm run typecheck && npm run typecheck:tests && npm test"
+    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test"
   },
   "dsh": {
     "bundle": {
@@ -69,9 +72,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-fs-local": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-fs-local": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
@@ -95,7 +98,6 @@
     "@tesseract.js-data/chi_sim": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
     "pdf-lib": "1.17.1",
-    "pdfjs-dist": "6.3.289",
     "tesseract.js": "7.0.0",
     "tesseract.js-core": "7.0.0",
     "zod": "^4.3.0"
@@ -111,7 +113,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
-    "playwright": "^1.49.0",
+    "playwright": "1.58.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tsx": "^4.22.4",

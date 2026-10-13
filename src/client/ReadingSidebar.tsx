@@ -1,6 +1,9 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
+import type { ReaderDocument } from './reader-document.js'
+import { BookmarkPanel, type BookmarkAccess } from './BookmarkPanel.js'
+import { PageThumbnailPanel } from './PageThumbnailPanel.js'
 
-export type ReadingSidebarSection = 'translation' | 'annotations' | 'notes' | 'search' | 'bookmarks'
+export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'notes' | 'search'
 
 export interface ReadingSidebarProps {
   activeSection: ReadingSidebarSection
@@ -8,17 +11,29 @@ export interface ReadingSidebarProps {
   expanded: boolean
   onExpandedChange: (expanded: boolean) => void
   panels: Partial<Record<ReadingSidebarSection, React.ReactNode>>
+  pdf: ReaderDocument | null
+  currentPage: number
+  pageInput: string
+  navigating: boolean
+  onPageInputChange: (value: string) => void
+  onPageInputSubmit: () => void
+  onPageInputReset: () => void
+  onNavigatePage: (page: number) => void
+  onStepPage: (page: number) => void
+  onNavigateDestination: (destination: unknown) => void
+  bookmarks?: BookmarkAccess
   t: (key: string) => string
 }
 
-const sections: readonly ReadingSidebarSection[] = ['translation', 'annotations', 'notes', 'search', 'bookmarks']
-const availableSections = sections.filter(section => section !== 'bookmarks')
+const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'notes', 'search', 'translation']
 const railWidth = 44
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
   return <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
     strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    {section === 'translation' ? <>
+    {section === 'pages' ? <>
+      <rect x="5" y="3" width="11" height="14" rx="1" /><path d="M9 7h4M9 10h4M9 13h3M8 20h11V7" />
+    </> : section === 'translation' ? <>
       <path d="M3 5h12M9 3v2M6 5c.7 4.1 3 7.2 7 9M13 5c-.9 4.4-4 8.1-9 10M14 21l4-10 4 10M15.2 18h5.6" />
     </> : section === 'annotations' ? <>
       <path d="m5 15 9-10 4 4-9 10H5v-4ZM12.5 6.5l4 4M4 22h16" />
@@ -30,8 +45,31 @@ function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
   </svg>
 }
 
+function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPageInputChange,
+  onPageInputSubmit, onPageInputReset, onStepPage, t }: Pick<ReadingSidebarProps,
+  'pdf' | 'currentPage' | 'pageInput' | 'navigating' | 'onPageInputChange' | 'onPageInputSubmit' | 'onPageInputReset' | 'onStepPage' | 't'> & { compact: boolean }) {
+  const count = pdf?.numPages
+  return <div className={`dsh-pdf-sidebar-page-nav${compact ? ' is-compact' : ''}`}
+    role="group" aria-label={t('reader.navigation')}>
+    <button type="button" aria-label={t('reader.previous')} title={t('reader.previous')}
+      disabled={!pdf || navigating || currentPage <= 1} onClick={() => onStepPage(currentPage - 1)}>‹</button>
+    <form className="dsh-pdf-page-form" onSubmit={event => { event.preventDefault(); onPageInputSubmit() }}>
+      <input aria-label={t('reader.page')} inputMode="numeric" autoComplete="off"
+        title={`${currentPage} / ${count ?? '—'}`} value={pageInput} disabled={!pdf || navigating}
+        onChange={event => onPageInputChange(event.target.value)}
+        onFocus={event => event.currentTarget.select()} onBlur={onPageInputReset}
+        onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onPageInputReset(); event.currentTarget.blur() } }} />
+      <span>/ {count ?? '—'}</span>
+    </form>
+    <button type="button" aria-label={t('reader.next')} title={t('reader.next')}
+      disabled={!pdf || navigating || currentPage >= (count ?? 0)} onClick={() => onStepPage(currentPage + 1)}>›</button>
+  </div>
+}
+
 /** A persistent panel keeps in-flight translation and results alive across section changes. */
-export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExpandedChange, panels, t }: ReadingSidebarProps) {
+export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExpandedChange, panels,
+  pdf, currentPage, pageInput, navigating, onPageInputChange, onPageInputSubmit, onPageInputReset,
+  onNavigatePage, onStepPage, onNavigateDestination, bookmarks, t }: ReadingSidebarProps) {
   const root = useRef<HTMLElement>(null)
   const divider = useRef<HTMLDivElement>(null)
   const tabs = useRef(new Map<ReadingSidebarSection, HTMLButtonElement>())
@@ -80,7 +118,6 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   }
 
   const select = (section: ReadingSidebarSection) => {
-    if (section === 'bookmarks') return
     onSectionChange(section)
     onExpandedChange(true)
   }
@@ -117,12 +154,22 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           resize(event.key === 'Home' ? minimumWidth : maximumWidth)
         }
       }} />
-    <div className="dsh-pdf-sidebar-panels" id={panelId} hidden={!expanded}>
-      {sections.map(section => <div key={section} className="dsh-pdf-sidebar-panel"
-        id={`${panelId}-${section}`} role="tabpanel" aria-labelledby={`${panelId}-tab-${section}`}
-        hidden={activeSection !== section}>
-        {panels[section]}
-      </div>)}
+    <div className="dsh-pdf-sidebar-main" hidden={!expanded}>
+      <div className="dsh-pdf-sidebar-panels" id={panelId}>
+        {sections.map(section => <div key={section} className="dsh-pdf-sidebar-panel"
+          id={`${panelId}-${section}`} role="tabpanel" aria-labelledby={`${panelId}-tab-${section}`}
+          hidden={activeSection !== section}>
+          {section === 'pages' ? <PageThumbnailPanel pdf={pdf} active={expanded && activeSection === section}
+            currentPage={currentPage} onNavigatePage={onNavigatePage} t={t} />
+            : section === 'bookmarks' ? <BookmarkPanel pdf={pdf} active={expanded && activeSection === section}
+              bookmarks={bookmarks} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
+        </div>)}
+      </div>
+      <div className="dsh-pdf-sidebar-footer">
+        <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
+          compact={false} onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
+          onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />
+      </div>
     </div>
     <div className="dsh-pdf-sidebar-rail">
       <button type="button" className="dsh-pdf-sidebar-toggle" aria-controls={panelId} aria-expanded={expanded}
@@ -139,18 +186,17 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           className={`dsh-pdf-sidebar-tab${activeSection === section && expanded ? ' is-active' : ''}`}
           aria-label={t(`reader.sidebar.${section}`)} aria-selected={activeSection === section}
           aria-controls={`${panelId}-${section}`} tabIndex={activeSection === section ? 0 : -1}
-          title={t(section === 'bookmarks' ? 'reader.sidebar.bookmarksLater' : `reader.sidebar.${section}`)}
-          disabled={section === 'bookmarks'} onClick={() => select(section)} onKeyDown={event => {
-            if (section === 'bookmarks') return
-            const current = availableSections.indexOf(section)
+          title={t(`reader.sidebar.${section}`)}
+          onClick={() => select(section)} onKeyDown={event => {
+            const current = sections.indexOf(section)
             let next = current
-            if (event.key === 'ArrowDown') next = (current + 1) % availableSections.length
-            else if (event.key === 'ArrowUp') next = (current + availableSections.length - 1) % availableSections.length
+            if (event.key === 'ArrowDown') next = (current + 1) % sections.length
+            else if (event.key === 'ArrowUp') next = (current + sections.length - 1) % sections.length
             else if (event.key === 'Home') next = 0
-            else if (event.key === 'End') next = availableSections.length - 1
+            else if (event.key === 'End') next = sections.length - 1
             else return
             event.preventDefault()
-            const target = availableSections[next]
+            const target = sections[next]
             select(target)
             tabs.current.get(target)?.focus()
           }}>
@@ -158,6 +204,9 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           <span className="dsh-pdf-visually-hidden">{t(`reader.sidebar.${section}`)}</span>
         </button>)}
       </div>
+      {!expanded && <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
+        compact onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
+        onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />}
     </div>
   </aside>
 }

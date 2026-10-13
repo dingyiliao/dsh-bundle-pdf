@@ -5,16 +5,23 @@ import { registerPdfTransport } from './transport.ts'
 import { createLocalFiles } from './local-files.ts'
 import { registerAssets } from './assets.ts'
 import { createWorkspaces } from './workspaces.ts'
+import { createPdfService } from './pdf-service.ts'
+import { createReaderContexts } from './reader-contexts.ts'
+import { registerPdfAgentTools } from './agent-tools.ts'
+import { bookmarkRecordSchema, createBookmarkService, type BookmarkRecord } from './bookmarks.ts'
 import { draftSchema, type DraftRecord } from './validation.ts'
 import { createHostTranslations, type TranslationHostContext } from './translations.js'
+import type { PdfNativeService } from './native-provider.ts'
 
 export { Config }
 export const name = 'pdf-reader'
-export const inject = ['connection', 'sessionController', 'fs', 'sandboxPolicy', 'storageDomain', 'loader']
+export const inject = ['connection', 'sessionController', 'fs', 'sandboxPolicy', 'storageDomain', 'loader', 'tools', 'pdfNative']
 
 type TransportContext = Parameters<typeof registerPdfTransport>[0]
 type LocalContext = Parameters<typeof createLocalFiles>[0]
 interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext, TranslationHostContext {
+  pdfNative: PdfNativeService
+  tools: Parameters<typeof registerPdfAgentTools>[0]['tools']
   reflect: { provide(key: string, value: unknown): () => void }
   connection: {
     fetch: {
@@ -26,13 +33,18 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
       }): () => Promise<void>
     }
   }
-  loader: { locate(): string | undefined }
+  loader: { locate(): string | undefined; resolve(id: string): { options: { id: string } } }
   effect(callback: () => (() => void | Promise<void>), label?: string): unknown
   storageDomain: {
     open(spec: ReturnType<typeof defineDomain>): Promise<{
       table(name: 'drafts'): {
         get(key: string): DraftRecord | undefined
         put(key: string, value: DraftRecord): Promise<void>
+        delete(key: string): Promise<unknown>
+      }
+      table(name: 'bookmarks'): {
+        get(key: string): BookmarkRecord | undefined
+        put(key: string, value: BookmarkRecord): Promise<void>
         delete(key: string): Promise<unknown>
       }
       close(): Promise<void>
@@ -43,6 +55,7 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
 export async function apply(ctx: HostContext, config: HostConfig): Promise<void> {
   const namespace = ctx.loader.locate()
   if (!namespace) throw new Error('PDF must be loaded as a configured plugin entry')
+  const settingsNamespace = ctx.loader.resolve(namespace).options.id
   const suffix = createHash('sha256').update(namespace).digest('hex').slice(0, 16)
   // One adapter owns every session's canonical-path save queue. Its limit is
   // read again at operation boundaries after settings change.
@@ -50,7 +63,16 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
   const domain = await ctx.storageDomain.open(defineDomain({
     name: `pdf_drafts_${suffix}`, version: 1, layout: 'per-record', tables: { drafts: domainTable(draftSchema) },
   }))
+  // A separate domain preserves all version-1 annotation drafts unchanged.
+  const bookmarkDomain = await ctx.storageDomain.open(defineDomain({
+    name: `pdf_bookmarks_${suffix}`, version: 1, layout: 'per-record', tables: { bookmarks: domainTable(bookmarkRecordSchema) },
+  })).catch(async error => { await domain.close(); throw error })
   const workspaces = createWorkspaces(files, domain.table('drafts'))
+  const bookmarks = createBookmarkService(workspaces, bookmarkDomain.table('bookmarks'))
+  const pdfService = createPdfService(workspaces, {
+    executable: ctx.pdfNative.executable,
+  })
+  const readerContexts = createReaderContexts(workspaces)
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
   const disposers: (() => Promise<void>)[] = []
   let disposed: Promise<void> | undefined
@@ -60,9 +82,13 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     // writes remain available until every already-admitted operation settles.
     const drain = workspaces.dispose()
     translations.registry.dispose()
+    readerContexts.dispose()
     disposed = (async () => {
       const results = await Promise.allSettled(disposers.splice(0).reverse().map(close => close()))
       await drain
+      await bookmarks.dispose()
+      pdfService.dispose()
+      await bookmarkDomain.close()
       await domain.close()
       const rejected = results.filter(result => result.status === 'rejected')
       if (rejected.length) throw new AggregateError(rejected.map(result => result.reason), 'Could not fully dispose PDF routes')
@@ -71,8 +97,12 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
   }
   try {
     ctx.effect(() => {
-      disposers.push(registerPdfTransport(ctx, workspaces.dispatch))
+      disposers.push(registerPdfTransport(ctx, pdfService.dispatch))
+      disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
+      disposers.push(registerPdfTransport(ctx, bookmarks.dispatch, { endpoint: 'pdf.bookmarks', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
+      disposers.push(registerPdfTransport(ctx, async (sessionId, input) => readerContexts.update(sessionId, input),
+        { endpoint: 'pdf.readercontext', maxRequestBytes: 4096 }))
       disposers.push(registerAssets(ctx))
       // Settings bootstrap carries no file contents and works outside a session.
       disposers.push(ctx.connection.fetch.register({
@@ -94,13 +124,16 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
             return new Response('Invalid RPC', { status: 400, headers })
           }
           return Response.json({ type: 'server-response', rpcId: input.rpcId,
-            result: { ok: true, value: { namespace, settings: readConfig(config), translationEngines: translations.registry.list() } },
+            result: { ok: true, value: { namespace, settingsNamespace, settings: readConfig(config), translationEngines: translations.registry.list() } },
           }, { headers })
         },
       }))
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
+    ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
+    // ToolRuntime binds registrations to this plugin Fiber and removes them on unload.
+    registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts)
   } catch (error) {
     await dispose().catch(() => undefined)
     throw error

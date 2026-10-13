@@ -2,6 +2,7 @@
 export type PdfRect = [number, number, number, number]
 export type PdfColor = [number, number, number]
 export type EditableAnnotationType = 'Highlight' | 'Underline' | 'StrikeOut' | 'Text'
+export const DEFAULT_HIGHLIGHT_OPACITY = 0.4
 
 export interface PdfPageInfo {
   page: number
@@ -20,6 +21,8 @@ export interface PdfAnnotation {
   popupObjectId?: string
   page: number
   subtype: string
+  /** Named navigation actions retained by Host inspection for the native reader. */
+  linkAction?: string
   rect?: PdfRect
   /** Eight numbers per quadrilateral: top-left, top-right, bottom-left, bottom-right. */
   quadPoints?: number[]

@@ -213,7 +213,7 @@ test('mapping image boxes transforms all four corners, including rotated PDF pag
 })
 
 const position = (page: number, y = 700): NavigationPosition => ({
-  documentVersion: 'v1', page, x: 0, y, scale: 1.2, rotation: 0, fit: 'custom',
+  documentVersion: 'v1', page, x: 0, y, scale: 1.2, fit: 'custom',
 })
 
 test('nested jumps restore the positions at departure in LIFO order; scrolling is not recorded', async () => {
@@ -222,7 +222,7 @@ test('nested jumps restore the positions at departure in LIFO order; scrolling i
   const adapter = { capture: () => current, apply: (target: NavigationPosition) => (current = target) }
   await history.jump(position(7), adapter)
   current = position(7, 210)
-  await history.jump({ ...position(9), scale: 2, rotation: 90, fit: 'width' }, adapter)
+  await history.jump({ ...position(9), scale: 2, fit: 'width' }, adapter)
   assert.equal(history.size, 2)
   await history.back(adapter)
   assert.deepEqual(current, position(7, 210))

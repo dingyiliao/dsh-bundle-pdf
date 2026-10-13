@@ -19,6 +19,8 @@ export interface PdfWheelZoomOptions {
 
 interface ZoomAnchor {
   element: HTMLElement
+  previewTarget: HTMLElement
+  previewOrigin: readonly [number, number]
   view?: PageView
   point: readonly number[]
   fraction: readonly [number, number]
@@ -61,21 +63,14 @@ export function usePdfWheelZoom(options: PdfWheelZoomOptions): void {
     const preview = () => {
       const current = anchor, scale = pendingScale
       if (!current || scale === undefined || committedScale !== undefined) return
-      const settings = latest.current
-      const changes: { element: HTMLElement; ratio: number; origin: string }[] = []
-      for (const [page, view] of settings.views) {
-        const element = view.element
-        if (!root.contains(element)) continue
-        const baseScale = settings.getScale(page)
-        if (!(baseScale > 0 && Number.isFinite(baseScale))) continue
-        changes.push({ element, ratio: scale / baseScale, origin: element === current.element
-          ? `${current.fraction[0] * element.offsetWidth}px ${current.fraction[1] * element.offsetHeight}px` : '50% 0' })
-      }
-      for (const { element, ratio, origin } of changes) {
-        if (!previewed.has(element)) previewed.set(element, { transform: element.style.transform, origin: element.style.transformOrigin })
-        element.style.transformOrigin = origin
-        element.style.transform = `scale(${ratio})`
-      }
+      // Transform the whole virtual page layout. Scaling individual surfaces
+      // leaves their absolute slots at the old size, so neighbouring pages
+      // visually overlap during a continuous pinch.
+      const { previewTarget: element, previewOrigin } = current
+      if (!root.contains(element)) return
+      if (!previewed.has(element)) previewed.set(element, { transform: element.style.transform, origin: element.style.transformOrigin })
+      element.style.transformOrigin = `${previewOrigin[0]}px ${previewOrigin[1]}px`
+      element.style.transform = `scale(${scale / current.initialScale})`
     }
     const queuePreview = () => {
       if (!previewFrame) previewFrame = requestAnimationFrame(() => { previewFrame = 0; preview() })
@@ -98,7 +93,7 @@ export function usePdfWheelZoom(options: PdfWheelZoomOptions): void {
       const scale = committedScale
       if (!current || scale === undefined) return
       if (!latest.current.enabled || !Object.is(latest.current.ownerKey, ownerKey) || !root.contains(current.element)) { reset(); return }
-      // The PDF.js PageView is registered in a passive effect. The DOM already
+      // The native page view is registered in a passive effect. The DOM already
       // has its new dimensions after React commits, so derive the new viewport
       // synchronously from the captured PDF page without waiting for canvas.
       const viewport = current.view?.page.getViewport({ scale, rotation: current.view.viewport.rotation })
@@ -157,8 +152,10 @@ export function usePdfWheelZoom(options: PdfWheelZoomOptions): void {
         if (!(actualScale > 0 && Number.isFinite(actualScale))) return
         const fraction: [number, number] = [(event.clientX - bounds.left) / bounds.width, (event.clientY - bounds.top) / bounds.height]
         const outer = root.getBoundingClientRect()
+        const previewTarget = element.closest<HTMLElement>('.dsh-pdf-windowed-pages') ?? element
+        const previewBounds = previewTarget.getBoundingClientRect()
         anchor = {
-          element, view, fraction,
+          element, previewTarget, previewOrigin: [event.clientX - previewBounds.left, event.clientY - previewBounds.top], view, fraction,
           point: view ? view.viewport.convertToPdfPoint(fraction[0] * view.viewport.width, fraction[1] * view.viewport.height) : fraction,
           pointer: [event.clientX - outer.left - root.clientLeft, event.clientY - outer.top - root.clientTop],
           initialScale: actualScale, initialWidth: bounds.width, initialHeight: bounds.height,

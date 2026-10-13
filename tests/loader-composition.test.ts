@@ -10,13 +10,18 @@ const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, im
 
 interface EntryReport {
   resolvedEntry: string
+  nativeResolvedEntry: string
   exportNames: string[]
+  nativeExportNames: string[]
   hasDefaultExport: boolean
   unwrappedSameModule: boolean
   name: string
   inject: string[]
   applyType: string
   configPresent: boolean
+  nativeName: string
+  nativeProvide: string
+  nativeApplyType: string
 }
 
 test('Loader resolves the published PDF Host entry from its built export', { timeout: 45_000 }, async () => {
@@ -36,13 +41,18 @@ test('Loader resolves the published PDF Host entry from its built export', { tim
 
   assert.ok(report)
   assert.equal(report.resolvedEntry, pathToFileURL(join(root, 'dist', 'index.js')).href)
+  assert.equal(report.nativeResolvedEntry, pathToFileURL(join(root, 'dist', 'native-provider.js')).href)
   assert.equal(report.hasDefaultExport, false)
   assert.ok(report.exportNames.includes('inject'))
+  assert.ok(report.nativeExportNames.includes('provide'))
   assert.equal(report.unwrappedSameModule, true)
   assert.equal(report.name, 'pdf-reader')
   assert.deepEqual(report.inject, [
-    'connection', 'sessionController', 'fs', 'sandboxPolicy', 'storageDomain', 'loader',
+    'connection', 'sessionController', 'fs', 'sandboxPolicy', 'storageDomain', 'loader', 'tools', 'pdfNative',
   ])
   assert.equal(report.applyType, 'function')
   assert.equal(report.configPresent, true)
+  assert.equal(report.nativeName, 'pdf-native')
+  assert.equal(report.nativeProvide, 'pdfNative')
+  assert.equal(report.nativeApplyType, 'function')
 })

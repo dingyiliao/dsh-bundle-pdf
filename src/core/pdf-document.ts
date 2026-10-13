@@ -3,8 +3,9 @@ import {
   PDFObject, PDFRef, PDFString, ParseSpeeds,
 } from 'pdf-lib'
 import { setAnnotationAppearance } from './pdf-appearance.js'
+import { measurePdfAsync } from '../shared/performance.js'
 import {
-  PdfDocumentError,
+  DEFAULT_HIGHLIGHT_OPACITY, PdfDocumentError,
   type EditableAnnotationType, type NewPdfAnnotation, type PdfAnnotation,
   type PdfAnnotationOperation, type PdfColor, type PdfDocumentInfo, type PdfRect,
 } from './pdf-types.js'
@@ -149,6 +150,13 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
         modifiedAt: readString(get(doc, dictionary, 'M')),
         flags, supported, editable: !readOnlyReason, readOnlyReason,
       }
+      if (subtype === 'Link') {
+        const action = get(doc, dictionary, 'A')
+        if (action instanceof PDFDict && readName(get(doc, action, 'S')) === 'Named') {
+          const named = readName(get(doc, action, 'N'))
+          if (named && ['FirstPage', 'LastPage', 'NextPage', 'PrevPage'].includes(named)) model.linkAction = named
+        }
+      }
       entries.push({ value, dictionary, array, model })
     }
   })
@@ -216,7 +224,7 @@ async function parse(bytes: Uint8Array): Promise<PDFDocument> {
 }
 
 export async function loadPdfDocument(bytes: Uint8Array): Promise<PdfDocumentInfo> {
-  return documentInfo(await parse(bytes))
+  return measurePdfAsync('host.inspect', { inputBytes: bytes.byteLength }, async () => documentInfo(await parse(bytes)))
 }
 
 function fail(message: string): never {
@@ -266,6 +274,7 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation, when: Dat
   const dictionary = doc.context.obj({
     Type: 'Annot', Subtype: annotation.subtype, P: page.ref,
     Rect: annotation.rect, C: color, F: 4,
+    ...(annotation.subtype === 'Highlight' ? { CA: DEFAULT_HIGHLIGHT_OPACITY } : {}),
     NM: PDFHexString.fromText(annotation.id), DSHPDFId: PDFHexString.fromText(annotation.id),
     CreationDate: timestamp, M: timestamp,
   })
@@ -284,6 +293,7 @@ function addAnnotation(doc: PDFDocument, annotation: NewPdfAnnotation, when: Dat
     value, dictionary, array,
     model: {
       ...annotation, rect: [...annotation.rect], quadPoints: annotation.quadPoints?.slice(), color: [...color],
+      ...(annotation.subtype === 'Highlight' ? { opacity: DEFAULT_HIGHLIGHT_OPACITY } : {}),
       createdAt: timestamp.decodeText(), modifiedAt: timestamp.decodeText(),
       flags: 4, supported: true, editable: true, sourceObjectId: `dsh-new:${annotation.id}`,
     },
@@ -312,6 +322,15 @@ function removeQueuedAnnotations(doc: PDFDocument, removals: Map<PDFArray, Set<P
  * Keep baseline bytes + operation history for undo/redo. Rebase the baseline after manual save.
  */
 export async function applyPdfOperations(
+  bytes: Uint8Array,
+  operations: readonly PdfAnnotationOperation[],
+  operationDates?: readonly string[],
+): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
+  return measurePdfAsync('host.materialize', { inputBytes: bytes.byteLength, operationCount: Array.isArray(operations) ? operations.length : 0 },
+    () => applyPdfOperationsImpl(bytes, operations, operationDates))
+}
+
+async function applyPdfOperationsImpl(
   bytes: Uint8Array,
   operations: readonly PdfAnnotationOperation[],
   operationDates?: readonly string[],

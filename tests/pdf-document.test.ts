@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRef, PDFString, degrees } from 'pdf-lib'
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, degrees } from 'pdf-lib'
 import { applyPdfOperations, loadPdfDocument, PdfDocumentError, type NewPdfAnnotation } from '../src/core/pdf-document.js'
 
 async function fixture() {
@@ -82,6 +82,16 @@ test('saves all supported annotations with Unicode comments and explicit native 
   for (let index = 4; index < array.size(); index++) {
     assert.ok(array.lookup(index, PDFDict).lookup(PDFName.of('AP'), PDFDict).get(PDFName.of('N')) instanceof PDFRef)
   }
+  const createdHighlight = array.lookup(4, PDFDict)
+  assert.equal(createdHighlight.lookup(PDFName.of('CA'), PDFNumber).asNumber(), 0.4)
+  const appearance = output.context.lookup(createdHighlight.lookup(PDFName.of('AP'), PDFDict).get(PDFName.of('N')))
+  assert.ok(appearance instanceof PDFRawStream)
+  const mark = appearance.dict.lookup(PDFName.of('Resources'), PDFDict).lookup(PDFName.of('XObject'), PDFDict).get(PDFName.of('Mark'))
+  assert.ok(mark instanceof PDFRef)
+  const form = output.context.lookup(mark)
+  assert.ok(form instanceof PDFRawStream)
+  const group = form.dict.lookup(PDFName.of('Group'), PDFDict)
+  assert.equal(group.lookup(PDFName.of('S'), PDFName).toString(), '/Transparency')
   const outputUnknown = output.context.lookup(unknown)
   const sourceUnknown = source.context.lookup(unknown)
   const outputLink = output.context.lookup(link)

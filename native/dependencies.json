@@ -1,0 +1,19 @@
+{
+  "pdfium": {
+    "tag": "chromium/8076",
+    "version": "156.0.8076.0",
+    "source": "https://github.com/bblanchon/pdfium-binaries/releases/tag/chromium/8076",
+    "assets": {
+      "linux-x64": "d9d67bc40af03aef4fe28a60b19b1086f28ace019c8c9caf19cb7fe3d14ceca3",
+      "linux-arm64": "d7247b33ae5545615a5e877235dd97afc879e3a8805689684f528cae3339d352",
+      "darwin-x64": "40865f34642c34d82cc336132df9e0347133f4692cd46776647af160f9a5cca9",
+      "darwin-arm64": "0d6781fe08906baff3d82c90953e519fbc4eb253fe76431e5ed53b157763b97c",
+      "win32-x64": "808d36da9bc5a3104315fb307c80998121f565ee53953633bf33e80d7429e5ac"
+    }
+  },
+  "json": {
+    "version": "3.12.0",
+    "headerSha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63",
+    "licenseSha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
+  }
+}

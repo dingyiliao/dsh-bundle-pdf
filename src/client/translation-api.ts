@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { TranslationError, type TranslationEngine, type TranslationEngineDescriptor } from '../translation/index.js'
+import { translationSourceLanguage } from '../shared/contracts.js'
 import type { PdfConnection } from './api.js'
 
 const wireResult = z.object({
@@ -22,7 +23,7 @@ export function createHostTranslationEngine(connection: PdfConnection, lifetime:
       if (!request.context?.sessionId) throw new TranslationError('invalid-request', 'Translation requires a PDF session.')
       const result = response.parse(await connection.rpc.call('/api', 'pdf.translation', {
         sessionId: request.context.sessionId, engineId: descriptor.id,
-        text: request.text, sourceLanguage: request.sourceLanguage ?? 'auto', targetLanguage: request.targetLanguage,
+        text: request.text, sourceLanguage: translationSourceLanguage, targetLanguage: request.targetLanguage,
         timeoutMs: request.timeoutMs, context: request.context,
       }, AbortSignal.any([lifetime, request.signal])))
       if (!result.ok) {

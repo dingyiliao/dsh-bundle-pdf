@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { TranslationError, type TranslationRequest, type TranslationResult } from '../translation/index.js'
+import { translationSourceLanguage, translationTargetLanguages } from '../shared/contracts.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 
 export interface TranslationPanelProps {
   selection: {
     text: string
     pages: readonly number[]
-    sourceLanguage: string
     targetLanguage: string
   }
   engineName: string
@@ -15,7 +15,6 @@ export interface TranslationPanelProps {
   t: (key: string) => string
 }
 
-const targetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] as const
 const errorKeys: Readonly<Record<TranslationError['code'], string>> = {
   disabled: 'errorDisabled',
   'not-configured': 'errorNotConfigured',
@@ -78,7 +77,7 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
       try {
         const value = await translateSelection({
           text: source.text,
-          sourceLanguage: source.sourceLanguage,
+          sourceLanguage: translationSourceLanguage,
           targetLanguage: target,
           signal: controller.signal,
         })
@@ -150,10 +149,8 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
   }
 
   const label = (key: string) => t(`reader.translation.${key}`)
-  const languageName = (language: string) => language === 'auto' || targetLanguages.some(value => value === language)
+  const languageName = (language: string) => language === 'auto' || translationTargetLanguages.some(value => value === language)
     ? label(`language.${language}`) : language
-  const languages: readonly string[] = targetLanguages.some(value => value === selection.targetLanguage)
-    ? targetLanguages : [...targetLanguages, selection.targetLanguage]
   const pages = [...new Set(selection.pages)].join(', ')
   const loading = status === 'loading'
 
@@ -178,7 +175,7 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
       <div className="dsh-pdf-translation-controls">
         <label htmlFor={targetId}>{label('targetLanguage')}</label>
         <select id={targetId} value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>
-          {languages.map(language => <option key={language} value={language}>{languageName(language)}</option>)}
+          {translationTargetLanguages.map(language => <option key={language} value={language}>{languageName(language)}</option>)}
         </select>
         <button type="button" disabled={loading} onClick={() => startTranslation(selection, targetLanguage)}>
           {label(status === 'error' || status === 'cancelled' ? 'retry' : 'translate')}
@@ -186,7 +183,7 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
         {loading && <button type="button" onClick={cancel}>{label('cancel')}</button>}
       </div>
       <details className="dsh-pdf-translation-original">
-        <summary>{label('original')} · {languageName(selection.sourceLanguage)}</summary>
+        <summary>{label('original')}</summary>
         <div className="dsh-pdf-translation-text" dir="auto">{selection.text}</div>
       </details>
       <div className="dsh-pdf-translation-status" role="status" aria-live="polite">

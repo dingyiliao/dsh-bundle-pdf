@@ -1,4 +1,4 @@
-import type { PdfAnnotation } from '../core/pdf-types.js'
+import { DEFAULT_HIGHLIGHT_OPACITY, type PdfAnnotation } from '../core/pdf-types.js'
 import type { PageViewport } from './reader-selection.js'
 
 export type AnnotationPoint = [number, number]
@@ -147,7 +147,7 @@ export function pendingMarkupAnnotations(current: readonly PdfAnnotation[], pain
   })
 }
 
-/** Native appearances are immutable inside a PDF.js document. Identify only the old
+/** Native appearances are immutable inside an open PDFium document. Identify only the old
  * appearances that an operation removed or changed; additions need no repair. */
 export function staleNativeAnnotations(current: readonly PdfAnnotation[], source: readonly PdfAnnotation[]): PdfAnnotation[] {
   const next = new Map(current.map((annotation) => [annotation.id, annotation]))
@@ -203,14 +203,13 @@ export function paintMarkupAnnotations(
     context.save()
     context.strokeStyle = color
     context.fillStyle = color
-    context.globalAlpha = annotation.opacity ?? (annotation.subtype === 'Highlight' ? 0.4 : 1)
+    context.globalAlpha = annotation.opacity ?? (annotation.subtype === 'Highlight' ? DEFAULT_HIGHLIGHT_OPACITY : 1)
     if (annotation.subtype === 'Highlight') context.globalCompositeOperation = 'multiply'
+    if (annotation.subtype === 'Highlight') context.beginPath()
     for (const points of polygons) {
       if (annotation.subtype === 'Highlight') {
-        context.beginPath()
         points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y))
         context.closePath()
-        context.fill()
       } else {
         const ratio = annotation.subtype === 'StrikeOut' ? 0.5 : 0.06
         const interpolate = (bottom: AnnotationPoint, top: AnnotationPoint): AnnotationPoint =>
@@ -223,6 +222,7 @@ export function paintMarkupAnnotations(
         context.stroke()
       }
     }
+    if (annotation.subtype === 'Highlight') context.fill()
     context.restore()
   }
   context.restore()

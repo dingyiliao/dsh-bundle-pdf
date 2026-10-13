@@ -5,7 +5,6 @@ export interface NavigationPosition {
   x: number
   y: number
   scale: number
-  rotation: number
   fit: 'custom' | 'width' | 'page'
   /** Where the PDF anchor sits in the viewport, as fractions of width/height. */
   viewportAnchor?: { x: number; y: number }
@@ -29,8 +28,8 @@ function copy(position: NavigationPosition): NavigationPosition {
 
 function validate(position: NavigationPosition): void {
   if (!position.documentVersion || !Number.isInteger(position.page) || position.page < 1
-    || ![position.x, position.y, position.scale, position.rotation].every(Number.isFinite)
-    || position.scale <= 0 || position.rotation % 90 !== 0
+    || ![position.x, position.y, position.scale].every(Number.isFinite)
+    || position.scale <= 0
     || !['custom', 'width', 'page'].includes(position.fit)
     || (position.viewportAnchor && ![position.viewportAnchor.x, position.viewportAnchor.y].every((n) => Number.isFinite(n) && n >= 0 && n <= 1))) {
     throw new RangeError('Invalid PDF navigation position.')
@@ -41,7 +40,7 @@ export function sameNavigationPosition(left: NavigationPosition, right: Navigati
   const near = (a: number, b: number) => Math.abs(a - b) < 0.001
   return left.documentVersion === right.documentVersion && left.page === right.page
     && near(left.x, right.x) && near(left.y, right.y) && near(left.scale, right.scale)
-    && ((left.rotation - right.rotation) % 360 === 0) && left.fit === right.fit
+    && left.fit === right.fit
     && near(left.viewportAnchor?.x ?? 0, right.viewportAnchor?.x ?? 0)
     && near(left.viewportAnchor?.y ?? 0, right.viewportAnchor?.y ?? 0)
 }
