@@ -175,7 +175,7 @@ async function manyPageSourcePdf(): Promise<Uint8Array> {
   const font = await document.embedFont(StandardFonts.Helvetica)
   for (let number = 1; number <= LARGE_PAGE_COUNT; number++) {
     const page = document.addPage([400, 560])
-    if (number === 1 || number === 2 || number === LARGE_PAGE_COUNT) {
+    if (number === 1 || number === 2 || number === 115 || number === LARGE_PAGE_COUNT) {
       page.drawText(`Browser PDF page ${number}`, { x: 50, y: 490, size: 18, font })
     }
   }
@@ -317,8 +317,41 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await reader.getByRole('button', { name: 'Delete?', exact: true }).click()
     await reader.getByText('No personal bookmarks yet.', { exact: true }).waitFor({ state: 'visible' })
     await reader.getByRole('tab', { name: 'Annotations' }).click()
+    expect(await reader.getByRole('tab', { name: 'Notes', exact: true }).count()).toBe(0)
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
     const save = toolbar.getByRole('button', { name: 'Save', exact: true })
+    const content = reader.locator('.dsh-pdf-content')
+    const [toolbarBox, contentBox] = await Promise.all([toolbar.boundingBox(), content.boundingBox()])
+    expect(toolbarBox).not.toBeNull()
+    expect(contentBox).not.toBeNull()
+    expect(Math.abs(toolbarBox!.x + toolbarBox!.width / 2 - contentBox!.x - contentBox!.width / 2)).toBeLessThanOrEqual(2)
+    expect(Math.abs(toolbarBox!.y - contentBox!.y - 12)).toBeLessThanOrEqual(2)
+    expect(toolbarBox!.x).toBeGreaterThanOrEqual(contentBox!.x + 11)
+    expect(toolbarBox!.x + toolbarBox!.width).toBeLessThanOrEqual(contentBox!.x + contentBox!.width - 11)
+    const firstPageBox = await reader.locator('[data-pdf-page="1"]').boundingBox()
+    expect(firstPageBox).not.toBeNull()
+    expect(firstPageBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y + toolbarBox!.height + 8)
+    const material = await toolbar.evaluate(element => {
+      const surface = getComputedStyle(element, '::before')
+      return { backgroundImage: surface.backgroundImage, backdropFilter: surface.backdropFilter,
+        containerBackdropFilter: getComputedStyle(element).backdropFilter }
+    })
+    expect(material.backgroundImage).toContain('linear-gradient')
+    expect(material.backdropFilter).toContain('blur(24px)')
+    expect(material.containerBackdropFilter).toBe('none')
+    await page.emulateMedia({ contrast: 'more' })
+    expect(await toolbar.evaluate(element => getComputedStyle(element, '::before').backdropFilter)).toBe('none')
+    await page.emulateMedia({ contrast: 'no-preference' })
+    expect(await toolbar.locator('summary').evaluate(element => getComputedStyle(element).whiteSpace)).toBe('nowrap')
+    const zoomControl = toolbar.getByRole('combobox', { name: 'Zoom' })
+    const zoomIdleBackground = await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)
+    await zoomControl.hover()
+    expect(await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(zoomIdleBackground)
+    expect(await zoomControl.evaluate(element => getComputedStyle(element).cursor)).toBe('pointer')
+    await page.mouse.move(0, 0)
+    const saveFeedback = reader.locator('.dsh-pdf-save-feedback')
+    expect(await saveFeedback.getAttribute('data-visible')).toBe('false')
+    expect(await saveFeedback.locator('[role="status"]').count()).toBe(1)
     expect(await save.isDisabled()).toBe(true)
     await compareOrRefreshGolden(
       join(EXPECTED, 'opened-toolbar.expected.md'),
@@ -343,6 +376,9 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toMatch(/rowser PDF pag/)
     const selectionToolbar = reader.getByRole('toolbar', { name: 'Selected text actions' })
     await selectionToolbar.waitFor({ state: 'visible' })
+    const selectionToolbarBox = await selectionToolbar.boundingBox()
+    expect(selectionToolbarBox).not.toBeNull()
+    expect(selectionToolbarBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y + toolbarBox!.height + 8)
     await selectionToolbar.getByRole('button', { name: 'Translate', exact: true }).click()
     const translationPanel = reader.locator('.dsh-pdf-translation-panel')
     const panelTargetLanguage = translationPanel.getByRole('combobox', { name: 'Target language' })
@@ -354,11 +390,39 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await selectionToolbar.waitFor({ state: 'hidden' })
 
     await toolbar.locator('summary').click()
-    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
+    const toolsMenu = toolbar.locator('.dsh-pdf-tools-menu')
+    const noteTool = toolsMenu.getByRole('button', { name: 'Note', exact: true })
+    const menuMaterial = await toolsMenu.evaluate(element => {
+      const toolbar = element.closest('.dsh-pdf-main-toolbar')!
+      const menu = getComputedStyle(element), surface = getComputedStyle(toolbar, '::before')
+      return { backgroundImage: menu.backgroundImage, backdropFilter: menu.backdropFilter,
+        toolbarBackgroundImage: surface.backgroundImage, toolbarBackdropFilter: surface.backdropFilter }
+    })
+    expect(menuMaterial.backgroundImage).toBe(menuMaterial.toolbarBackgroundImage)
+    expect(menuMaterial.backdropFilter).toBe(menuMaterial.toolbarBackdropFilter)
+    expect(await toolsMenu.evaluate(element => getComputedStyle(element).borderRadius)).toBe('12px')
+    expect(await noteTool.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px')
+    const noteIdleBackground = await noteTool.evaluate(element => getComputedStyle(element).backgroundColor)
+    await noteTool.hover()
+    expect(await noteTool.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(noteIdleBackground)
+    await noteTool.click()
     await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
-    const notePanel = reader.locator('.dsh-pdf-notes')
+    await expect.poll(() => reader.getByRole('tab', { name: 'Annotations' }).getAttribute('aria-selected')).toBe('true')
+    const notePanel = reader.locator('.dsh-pdf-comments')
     await notePanel.getByRole('textbox', { name: 'Comment' }).fill(NOTE)
     await notePanel.getByRole('button', { name: 'Apply', exact: true }).click()
+    await notePanel.locator('.dsh-pdf-comment-item').filter({ hasText: NOTE }).waitFor({ state: 'visible' })
+    await expect.poll(() => saveFeedback.getAttribute('data-kind')).toBe('unsaved')
+    expect(await saveFeedback.locator('[role="status"]').innerText()).toBe('Unsaved changes')
+    const [feedbackBox, feedbackContentBox, feedbackToolbarBox] = await Promise.all([
+      saveFeedback.boundingBox(), content.boundingBox(), toolbar.boundingBox(),
+    ])
+    expect(feedbackBox).not.toBeNull()
+    expect(feedbackContentBox).not.toBeNull()
+    expect(feedbackToolbarBox).not.toBeNull()
+    expect(Math.abs(feedbackBox!.x + feedbackBox!.width - feedbackContentBox!.x - feedbackContentBox!.width + 12)).toBeLessThanOrEqual(2)
+    if (feedbackContentBox!.width > 760) expect(Math.abs(feedbackBox!.y - feedbackToolbarBox!.y)).toBeLessThanOrEqual(2)
+    else expect(feedbackBox!.y - feedbackToolbarBox!.y - feedbackToolbarBox!.height).toBeGreaterThanOrEqual(8)
     await expect.poll(() => save.isEnabled()).toBe(true).catch(async failure => {
       throw new Error(`${String(failure)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
@@ -381,8 +445,46 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       }
       sample()
     })
+    await saveFeedback.evaluate(element => {
+      const owner = window as typeof window & {
+        __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null; at: number }[]
+        __pdfSaveFeedbackObserver?: MutationObserver
+      }
+      owner.__pdfSaveFeedbackStates = []
+      const record = () => owner.__pdfSaveFeedbackStates!.push({
+        kind: element.getAttribute('data-kind'), visible: element.getAttribute('data-visible'), at: performance.now(),
+      })
+      owner.__pdfSaveFeedbackObserver = new MutationObserver(record)
+      owner.__pdfSaveFeedbackObserver.observe(element, { attributes: true, attributeFilter: ['data-kind', 'data-visible'] })
+    })
     await save.click()
+    await expect.poll(() => page.evaluate(() => {
+      const owner = window as typeof window & { __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null }[] }
+      return owner.__pdfSaveFeedbackStates?.some(state => state.kind === 'saved' && state.visible === 'true') ?? false
+    }), { timeout: 5000 }).toBe(true).catch(async failure => {
+      const states = await page.evaluate(() => {
+        const owner = window as typeof window & { __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null }[] }
+        return owner.__pdfSaveFeedbackStates
+      })
+      throw new Error(`${String(failure)}\nFeedback states: ${JSON.stringify(states)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
+    })
     await expect.poll(() => save.isDisabled()).toBe(true)
+    await expect.poll(() => saveFeedback.getAttribute('data-visible'), { timeout: 5000 }).toBe('false')
+    const feedbackStates = await page.evaluate(() => {
+      const owner = window as typeof window & {
+        __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null; at: number }[]
+        __pdfSaveFeedbackObserver?: MutationObserver
+      }
+      owner.__pdfSaveFeedbackObserver?.disconnect()
+      const states = owner.__pdfSaveFeedbackStates ?? []
+      delete owner.__pdfSaveFeedbackStates
+      delete owner.__pdfSaveFeedbackObserver
+      return states
+    })
+    const savedAt = feedbackStates.find(state => state.kind === 'saved' && state.visible === 'true')?.at
+    const hiddenAt = feedbackStates.find(state => savedAt !== undefined && state.at > savedAt && state.visible === 'false')?.at
+    expect(savedAt).toBeDefined()
+    expect(hiddenAt! - savedAt!).toBeGreaterThanOrEqual(2400)
     await expect.poll(() => savedNoteContents(path)).toEqual([NOTE])
     await expect.poll(() => reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
     const blankFrames = await page.evaluate(() => {
@@ -396,7 +498,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     })
     expect(blankFrames).toBe(0)
     expect(Buffer.from(await readFile(path)).equals(Buffer.from(original))).toBe(false)
-    const savedNoteAria = await captureStableAria(page, '.dsh-pdf-notes', scaffold.workspaceCwd)
+    const savedNoteAria = await captureStableAria(page, '.dsh-pdf-comments', scaffold.workspaceCwd)
     expect(savedNoteAria).toMatch(/Created: \d{1,2}\/\d{1,2}\/\d{4}, \{\{clock\}\}/)
     await compareOrRefreshGolden(
       join(EXPECTED, 'saved-note.expected.md'),
@@ -437,14 +539,33 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     // The region hint changes toolbar height; use the new page position.
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     await textSpan.scrollIntoViewIfNeeded()
+    // scrollIntoViewIfNeeded regards text behind the fixed floating toolbar as
+    // visible; move it below the toolbar before starting a pointer drag.
+    const obscuredText = await textSpan.boundingBox()
+    const activeToolbar = await toolbar.boundingBox()
+    if (obscuredText && activeToolbar && obscuredText.y - 3 < activeToolbar.y + activeToolbar.height + 8) {
+      const clearance = activeToolbar.y + activeToolbar.height + 12 - (obscuredText.y - 3)
+      await reader.locator('.dsh-pdf-scroll').evaluate((element, delta) => { element.scrollTop -= delta }, clearance)
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    }
     const shotText = await textSpan.boundingBox()
     expect(shotText).not.toBeNull()
+    expect(shotText!.y - 3).toBeGreaterThanOrEqual(activeToolbar!.y + activeToolbar!.height + 8)
     await page.mouse.move(shotText!.x - 3, shotText!.y - 3)
     await page.mouse.down()
     await page.mouse.move(shotText!.x + shotText!.width + 3, shotText!.y + shotText!.height + 3, { steps: 8 })
     await page.mouse.up()
     const preview = reader.getByRole('dialog', { name: 'Screenshot preview' })
-    await preview.waitFor({ state: 'visible' })
+    await preview.waitFor({ state: 'visible', timeout: 5000 }).catch(async failure => {
+      const dragStart = await page.evaluate(({ x, y }) => {
+        const target = document.elementFromPoint(x, y)
+        const root = document.querySelector('.dsh-pdf-scroll')
+        return { target: target?.outerHTML.slice(0, 250), rootScrollTop: root?.scrollTop,
+          mode: document.querySelector('.dsh-pdf-mode-region')?.getAttribute('class') }
+      }, { x: shotText!.x - 3, y: shotText!.y - 3 })
+      throw new Error(`${String(failure)}\nScreenshot drag: ${JSON.stringify({ shotText, dragStart,
+        toolbar: await toolbar.boundingBox(), page: await reader.locator('[data-pdf-page="1"]').boundingBox() })}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
+    })
     expect(await preview.getByRole('button', { name: 'Recognize region' }).count()).toBe(0)
     const screenshotInk = await preview.getByRole('img').evaluate(async element => {
       const image = element as HTMLImageElement
@@ -536,7 +657,7 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     await toolbar.locator('summary').click()
     await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
     await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
-    const notePanel = reader.locator('.dsh-pdf-notes')
+    const notePanel = reader.locator('.dsh-pdf-comments')
     await notePanel.getByRole('textbox', { name: 'Comment' }).fill(NOTE)
     await notePanel.getByRole('button', { name: 'Apply', exact: true }).click()
     await expect.poll(() => save.isEnabled()).toBe(true)
@@ -550,7 +671,7 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     }, copyPath)
     await saveAs.click()
     await expect.poll(() => savedNoteContents(copyPath)).toEqual([NOTE])
-    await expect.poll(() => reader.locator('.dsh-pdf-status').getAttribute('title')).toBe(copyPath)
+    await expect.poll(() => reader.locator('.dsh-pdf-save-feedback').getAttribute('title')).toBe(copyPath)
     const pickerDefaults = await page.evaluate(() =>
       (window as typeof window & { __pdfPickerDefaults?: string[] }).__pdfPickerDefaults)
     expect(pickerDefaults).toEqual([sourcePath.replace(/\.pdf$/i, '-annotated.pdf'), sourcePath.replace(/\.pdf$/i, '-annotated.pdf')])
@@ -685,8 +806,8 @@ it('renders a distant note page when a wide PDF leaves it outside the horizontal
     await expect.poll(() => scroll.evaluate(root => root.scrollWidth)).toBeGreaterThan(3000)
     await scroll.evaluate(root => { root.scrollTop = 0; root.scrollLeft = 0 })
     await reader.locator('[data-pdf-page="1"]').waitFor({ state: 'attached' })
-    await reader.getByRole('tab', { name: 'Notes' }).click()
-    const note = reader.locator('.dsh-pdf-notes .dsh-pdf-comment-item').filter({ hasText: 'Narrow-page note' })
+    await reader.getByRole('tab', { name: 'Annotations' }).click()
+    const note = reader.locator('.dsh-pdf-comments .dsh-pdf-comment-item').filter({ hasText: 'Narrow-page note' })
     await note.waitFor({ state: 'visible' })
     await note.click()
 
@@ -936,6 +1057,22 @@ it('keeps active pages bounded while navigating to a distant page through the in
     const pageInput = sidebar.getByRole('textbox', { name: 'Page' })
     expect(await pageInput.isVisible()).toBe(true)
     expect(await toolbar.getByRole('textbox', { name: 'Page' }).count()).toBe(0)
+    await reader.getByRole('tab', { name: 'Pages' }).click()
+    await pageInput.fill('115')
+    await pageInput.press('Enter')
+    await reader.locator('[data-pdf-page="115"] canvas[data-pdf-raster-ready="true"]').first()
+      .waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator('.dsh-pdf-scroll').evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    }))
+    expect(await pageInput.inputValue()).toBe('115')
+    await expect.poll(() => reader.getByRole('button', { name: `Page 115 / ${LARGE_PAGE_COUNT}` }).getAttribute('aria-current'))
+      .toBe('page')
+    await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
+      .toContain('Browser PDF page 115')
+    await toolbar.getByRole('button', { name: '← Back', exact: true }).click()
+    await expect.poll(() => pageInput.inputValue()).toBe('1')
+
     await pageInput.fill(String(LARGE_PAGE_COUNT))
     await pageInput.press('Enter')
     await reader.locator(`[data-pdf-page="${LARGE_PAGE_COUNT}"] canvas`).first().waitFor({ state: 'visible', timeout: 20_000 })
@@ -1106,6 +1243,16 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     await reader.locator('[data-pdf-page="1"] .dsh-pdf-annotation-overlay').waitFor({ state: 'detached' })
     await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible' })
     expectUniformHighlight(await highlightPixels(page))
+    const annotations = reader.locator('.dsh-pdf-comments')
+    await expect.poll(() => annotations.locator('.dsh-pdf-comment-item').count()).toBe(1)
+    await toolbar.locator('summary').click()
+    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
+    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 185, y: 90 } })
+    await annotations.getByRole('textbox', { name: 'Comment' }).fill('Point-anchored note')
+    await annotations.getByRole('button', { name: 'Apply', exact: true }).click()
+    await expect.poll(() => annotations.locator('.dsh-pdf-comment-item').count()).toBe(2)
+    expect(await annotations.locator('.dsh-pdf-comment-item').first().innerText()).toContain('Highlight')
+    expect(await annotations.locator('.dsh-pdf-comment-item').last().innerText()).toContain('Point-anchored note')
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()

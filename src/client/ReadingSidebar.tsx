@@ -3,7 +3,7 @@ import type { ReaderDocument } from './reader-document.js'
 import { BookmarkPanel, type BookmarkAccess } from './BookmarkPanel.js'
 import { PageThumbnailPanel } from './PageThumbnailPanel.js'
 
-export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'notes' | 'search'
+export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'search'
 
 export interface ReadingSidebarProps {
   activeSection: ReadingSidebarSection
@@ -25,7 +25,7 @@ export interface ReadingSidebarProps {
   t: (key: string) => string
 }
 
-const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'notes', 'search', 'translation']
+const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'search', 'translation']
 const railWidth = 44
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
@@ -37,8 +37,6 @@ function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
       <path d="M3 5h12M9 3v2M6 5c.7 4.1 3 7.2 7 9M13 5c-.9 4.4-4 8.1-9 10M14 21l4-10 4 10M15.2 18h5.6" />
     </> : section === 'annotations' ? <>
       <path d="m5 15 9-10 4 4-9 10H5v-4ZM12.5 6.5l4 4M4 22h16" />
-    </> : section === 'notes' ? <>
-      <path d="M5 3h14v12l-6 6H5V3ZM13 21v-6h6M8 7h8M8 11h8" />
     </> : section === 'search' ? <>
       <circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" />
     </> : <path d="M6 3h12v18l-6-4-6 4V3Z" />}

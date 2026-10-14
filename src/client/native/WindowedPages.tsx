@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPageInfo } from '../../core/pdf-types.js'
-import { buildPageLayout, windowForViewport, type PageGeometry } from './page-layout.ts'
+import { buildPageLayout, READING_TOP_INSET, readingPageProbe, windowForViewport, type PageGeometry } from './page-layout.ts'
 import { clearWindowLayout, pageIndexAtOffset, setWindowLayout } from './window-layout.ts'
 
 export interface WindowedPagesProps {
@@ -23,7 +23,7 @@ export interface WindowedPagesProps {
 /** Numeric geometry is O(P); DOM, text layers and canvases contain only active pages. */
 export function WindowedPages(props: WindowedPagesProps) {
   const { pages, scrollRoot, size, rotation, zoom, fit, scaleForPage } = props
-  const layout = useMemo(() => buildPageLayout(pages, scaleForPage, rotation), [pages, scaleForPage, rotation, zoom, fit, size.width, size.height])
+  const layout = useMemo(() => buildPageLayout(pages, scaleForPage, rotation, READING_TOP_INSET), [pages, scaleForPage, rotation, zoom, fit, size.width, size.height])
   const [position, setPosition] = useState(() => scrollRoot?.scrollTop ?? 0)
   const totalWidth = layout.reduce((width, item) => Math.max(width, item.width + 32), size.width)
   const previous = useRef<{ root: HTMLElement | null; layout: readonly PageGeometry[]; width: number } | null>(null)
@@ -67,7 +67,7 @@ export function WindowedPages(props: WindowedPagesProps) {
   const active = new Set<number>()
   for (let index = range.start; index < range.end; index++) active.add(index)
   for (const page of props.pinnedPages ?? []) if (page >= 1 && page <= pages.length) active.add(page - 1)
-  const visible = pageIndexAtOffset(layout, position + 40)
+  const visible = pageIndexAtOffset(layout, position + readingPageProbe(scrollRoot?.clientHeight || size.height))
   if (props.dragAnchorPage) for (let index = Math.min(props.dragAnchorPage - 1, visible); index <= Math.max(props.dragAnchorPage - 1, visible); index++) active.add(index)
   const last = layout.at(-1)
   return <div className="dsh-pdf-windowed-pages" data-windowed-page-count={active.size}

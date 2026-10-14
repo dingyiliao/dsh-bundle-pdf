@@ -2,6 +2,12 @@ import type { PdfPageInfo } from '../../core/pdf-types.js'
 
 /** Initial window estimate; the mounted window uses the browser's actual label and gap height. */
 export const PAGE_CHROME_HEIGHT = 43
+/** Space above the first page for the floating reader controls. */
+export const READING_TOP_INSET = 72
+
+/** Keep page detection below the floating controls, including in short viewports. */
+export const readingSafeTop = (viewportHeight: number): number => Math.min(READING_TOP_INSET, viewportHeight / 3)
+export const readingPageProbe = (viewportHeight: number): number => readingSafeTop(viewportHeight) + 1
 
 export interface PageGeometry {
   page: number
@@ -38,9 +44,9 @@ export function pagePixelToPdfPoint(
 
 /** Estimate Page's unloaded native viewport size without loading a page. */
 export function buildPageLayout(
-  pages: readonly PdfPageInfo[], getScale: (page: PdfPageInfo) => number, rotation: number,
+  pages: readonly PdfPageInfo[], getScale: (page: PdfPageInfo) => number, rotation: number, topInset = 0,
 ): PageGeometry[] {
-  let top = 0
+  let top = topInset
   return pages.map((geometry) => {
     const scale = getScale(geometry)
     const quarterTurn = ((geometry.rotation + rotation) % 180 + 180) % 180 !== 0

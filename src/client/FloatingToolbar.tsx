@@ -34,12 +34,18 @@ export function FloatingToolbar({ viewport, getAnchor, label, children }: Floati
         return
       }
       const inset = 8, gap = 7
+      const mainToolbar = parent.querySelector<HTMLElement>('.dsh-pdf-main-toolbar')
+      const safeTop = Math.max(bounds.top + inset, (mainToolbar?.getBoundingClientRect().bottom ?? bounds.top) + inset)
       element.style.maxWidth = `${Math.max(0, bounds.width - inset * 2)}px`
       const width = element.offsetWidth, height = element.offsetHeight
+      if (safeTop + height > bounds.bottom - inset) {
+        element.style.visibility = 'hidden'
+        return
+      }
       const left = Math.max(bounds.left + inset, Math.min(bounds.right - width - inset, selection.left))
       let top = selection.bottom + gap
       if (top + height > bounds.bottom - inset) top = selection.top - gap - height
-      top = Math.max(bounds.top + inset, Math.min(bounds.bottom - height - inset, top))
+      top = Math.max(safeTop, Math.min(bounds.bottom - height - inset, top))
       element.style.left = `${left - origin.left}px`
       element.style.top = `${top - origin.top}px`
       element.style.visibility = 'visible'

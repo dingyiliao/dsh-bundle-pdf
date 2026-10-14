@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfPageInfo } from '../src/core/pdf-types.js'
 import {
-  buildPageLayout, pagePixelToPdfPoint, PAGE_CHROME_HEIGHT, windowForViewport,
+  buildPageLayout, pagePixelToPdfPoint, PAGE_CHROME_HEIGHT, READING_TOP_INSET,
+  readingPageProbe, readingSafeTop, windowForViewport,
 } from '../src/client/native/page-layout.js'
+import { pageIndexAtOffset } from '../src/client/native/window-layout.js'
 
 test('placeholder pixel points round-trip to PDF space at every right-angle rotation', () => {
   const page: PdfPageInfo = { page: 1, cropBox: [10, 20, 210, 420], rotation: 0, userUnit: 2 }
@@ -32,6 +34,21 @@ test('virtual layout preserves mixed page geometry and rotation without loading 
   ])
   const rotated = buildPageLayout(pages, () => 1, 90)
   assert.deepEqual([rotated[0].width, rotated[0].height, rotated[1].width, rotated[1].height], [400, 200, 400, 800])
+  const inset = buildPageLayout(pages, () => 1, 0, READING_TOP_INSET)
+  assert.deepEqual(inset.map(page => page.top), [READING_TOP_INSET, READING_TOP_INSET + 400 + PAGE_CHROME_HEIGHT])
+})
+
+test('a page aligned below the floating toolbar remains the detected current page', () => {
+  const pages: PdfPageInfo[] = Array.from({ length: 128 }, (_, index) => ({
+    page: index + 1, cropBox: [0, 0, 400, 560], rotation: 0, userUnit: 1,
+  }))
+  const layout = buildPageLayout(pages, () => 1, 0, READING_TOP_INSET)
+  const viewportHeight = 700
+  const target = layout[114]!
+  // Navigation aligns the page stage (27px below its slot) with the safe top.
+  const scrollTop = target.top + 27 - readingSafeTop(viewportHeight)
+  assert.equal(layout[pageIndexAtOffset(layout, scrollTop + readingPageProbe(viewportHeight))]!.page, 115)
+  assert.equal(layout[pageIndexAtOffset(layout, scrollTop + 40)]!.page, 114)
 })
 
 test('a 1001-page layout keeps distant viewport windows small and indexed correctly', () => {
