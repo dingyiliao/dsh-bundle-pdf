@@ -9,8 +9,10 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include "json.hpp"
 #include "fpdfview.h"
@@ -27,6 +29,7 @@
 using json = nlohmann::json;
 constexpr uint32_t max_json = 2 * 1024 * 1024;
 constexpr uint32_t max_payload = 256 * 1024 * 1024;
+constexpr uint32_t max_reply_payload = 8 * 1024 * 1024;
 constexpr int max_tile = 1026;
 struct Failure : std::runtime_error {
   std::string code;
@@ -52,6 +55,13 @@ struct Page {
   uint64_t used = 0;
   explicit Page(FPDF_PAGE value) : handle(value) {}
   ~Page() { if (handle) FPDF_ClosePage(handle); }
+};
+struct Bitmap {
+  FPDF_BITMAP handle;
+  explicit Bitmap(FPDF_BITMAP value) : handle(value) {}
+  Bitmap(const Bitmap&) = delete;
+  Bitmap& operator=(const Bitmap&) = delete;
+  ~Bitmap() { if (handle) FPDFBitmap_Destroy(handle); }
 };
 struct Document {
   std::vector<unsigned char> bytes;
@@ -92,7 +102,8 @@ void write_u32(unsigned char* p, uint32_t n) {
 }
 void reply(const json& value, const std::vector<unsigned char>& payload = {}) {
   auto text = value.dump();
-  if (text.size() > max_json || payload.size() > 8 * 1024 * 1024) throw std::runtime_error("Native reply exceeds protocol limit");
+  if (text.size() > max_json || payload.size() > max_reply_payload)
+    throw Failure("pdf/native-reply-too-large", "Native reply exceeds protocol limit");
   unsigned char prefix[8];
   write_u32(prefix, static_cast<uint32_t>(text.size()));
   write_u32(prefix + 4, static_cast<uint32_t>(payload.size()));
@@ -245,10 +256,108 @@ json text_content(Document& doc, const json& request) {
     {"descent", -0.2}, {"vertical", false}}}}}, {"lang", nullptr}};
 }
 
+json page_links(Document& doc, const json& request) {
+  const int index = integer(request, "pageIndex", 0, doc.count - 1);
+  auto page = doc.page(index);
+  json links = json::array();
+  int pos = 0; FPDF_LINK link = nullptr;
+  while (FPDFLink_Enumerate(page, &pos, &link)) {
+    require(links.size() < 10000, "Link page exceeds its budget");
+    FS_RECTF rect{};
+    if (!FPDFLink_GetAnnotRect(link, &rect)) continue;
+    json item = {{"id", "native-link-" + std::to_string(index) + "-" + std::to_string(pos)}, {"subtype", "Link"},
+      {"rect", {std::min(rect.left,rect.right), std::min(rect.top,rect.bottom), std::max(rect.left,rect.right), std::max(rect.top,rect.bottom)}}};
+    const int count = FPDFLink_CountQuadPoints(link);
+    require(count >= 0 && count <= 4000, "Link quadrilaterals exceed their budget");
+    if (count) {
+      json quads = json::array();
+      for (int q = 0; q < count; q++) {
+        FS_QUADPOINTSF points{};
+        if (FPDFLink_GetQuadPoints(link,q,&points)) for (auto n : {points.x1,points.y1,points.x2,points.y2,points.x3,points.y3,points.x4,points.y4}) quads.push_back(n);
+      }
+      if (!quads.empty()) item["quadPoints"] = std::move(quads);
+    }
+    auto dest = FPDFLink_GetDest(doc.handle, link);
+    auto action = FPDFLink_GetAction(link);
+    if (!dest && action && FPDFAction_GetType(action) == PDFACTION_GOTO) dest = FPDFAction_GetDest(doc.handle, action);
+    if (dest) item["dest"] = destination(doc.handle, dest);
+    if (action && FPDFAction_GetType(action) == PDFACTION_URI) {
+      auto length = FPDFAction_GetURIPath(doc.handle, action, nullptr, 0);
+      if (length > 0 && length <= 32768) {
+        std::vector<char> url(length); FPDFAction_GetURIPath(doc.handle, action, url.data(), length);
+        item["url"] = std::string(url.data(), length-1);
+      }
+    }
+    links.push_back(item);
+  }
+  return links;
+}
+
+json inspect_page(Document& doc, const json& request) {
+  const int index = integer(request, "pageIndex", 0, doc.count - 1);
+  auto page = doc.page(index);
+  const int count = FPDFPage_CountObjects(page);
+  const int offset = integer(request, "offset", 0, std::max(0,count));
+  const int limit = integer(request, "limit", 1, 100);
+  json objects = json::array();
+  for (int i = offset; i < count && i < offset + limit; i++) {
+    auto object = FPDFPage_GetObject(page,i);
+    float left=0,bottom=0,right=0,top=0;
+    FPDFPageObj_GetBounds(object,&left,&bottom,&right,&top);
+    objects.push_back({{"index",i},{"type",FPDFPageObj_GetType(object)},{"bounds",{left,bottom,right,top}},
+      {"editable",false}});
+  }
+  return {{"objects",objects},{"nextOffset",offset+limit < count ? json(offset+limit) : json(nullptr)}};
+}
+
+json render_tile(Document& doc, const json& request, std::vector<unsigned char>& out) {
+  const int index = integer(request, "pageIndex", 0, doc.count - 1);
+  auto page = doc.page(index);
+  const int w = integer(request,"width",1,max_tile), h = integer(request,"height",1,max_tile);
+  const int full_w = integer(request,"rasterWidth",1,1048576), full_h = integer(request,"rasterHeight",1,1048576);
+  const int x = integer(request,"x",-2,full_w), y = integer(request,"y",-2,full_h);
+  const int rotation = integer(request,"rotation",0,270);
+  require(rotation % 90 == 0 && x+w <= full_w+2 && y+h <= full_h+2, "Invalid native tile coordinates");
+  require(!request.contains("annotations") || request["annotations"].is_boolean(), "Annotation flag must be boolean");
+  const int flags = FPDF_REVERSE_BYTE_ORDER | (request.value("annotations",true) ? FPDF_ANNOT : 0);
+  const double page_w = FPDF_GetPageWidthF(page), page_h = FPDF_GetPageHeightF(page);
+  require(page_w > 0 && page_h > 0, "Native page geometry is invalid");
+  const float sx = float((rotation % 180 ? full_h : full_w) / page_w);
+  const float sy = float((rotation % 180 ? full_w : full_h) / page_h);
+  FS_MATRIX matrix{};
+  // PDFium first applies its intrinsic crop/rotation/display matrix. This is
+  // an additional transform in that normalized top-left page space, without
+  // a second Y flip (see pinned fpdf_view.cpp, WithMatrix implementation).
+  if (rotation == 0) matrix = {sx,0,0,sy,float(-x),float(-y)};
+  else if (rotation == 90) matrix = {0,sx,-sy,0,float(full_w-x),float(-y)};
+  else if (rotation == 180) matrix = {-sx,0,0,-sy,float(full_w-x),float(full_h-y)};
+  else matrix = {0,-sx,sy,0,float(-x),float(full_h-y)};
+  out.assign(size_t(w)*h*4,255);
+  Bitmap bitmap{FPDFBitmap_CreateEx(w,h,FPDFBitmap_BGRA,out.data(),w*4)};
+  if (!bitmap.handle) throw Failure("pdf/native-bitmap", "PDFium bitmap allocation failed");
+  FS_RECTF clip{0,0,float(w),float(h)};
+  FPDF_RenderPageBitmapWithMatrix(bitmap.handle,page,&matrix,&clip,flags);
+  return {{"width",w},{"height",h},{"format","rgba"}};
+}
+
+enum class Command { hello, open, close, text, outline, destination, links, inspect, render };
+
+Command command_for(const json& request) {
+  const auto name = request.at("command").get<std::string>();
+  static constexpr std::array<std::pair<std::string_view, Command>, 9> commands{{
+    {"hello", Command::hello}, {"open", Command::open}, {"close", Command::close},
+    {"text", Command::text}, {"outline", Command::outline}, {"destination", Command::destination},
+    {"links", Command::links}, {"inspect", Command::inspect}, {"render", Command::render},
+  }};
+  for (const auto& [label, command] : commands) if (label == name) return command;
+  throw Failure("pdf/native-request", "Unknown native command");
+}
+
 json run(const json& request, std::vector<unsigned char>& payload, std::vector<unsigned char>& out) {
-  auto command = request.at("command").get<std::string>();
-  if (command == "hello") return {{"protocolVersion", 1}, {"engine", "pdfium"}, {"build", "156.0.8076.0"}};
-  if (command == "open") {
+  switch (command_for(request)) {
+  case Command::hello:
+    return {{"protocolVersion", 1}, {"engine", "pdfium"}, {"build", "156.0.8076.0"}};
+  case Command::open: {
     const auto id = id_for(request, "documentId");
     require(documents.size() < 32 || documents.count(id), "Native document limit reached");
     require(!payload.empty(), "PDF input bytes are required");
@@ -263,88 +372,25 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
     documents[id] = std::move(doc);
     return result;
   }
-  if (command == "close") { documents.erase(id_for(request, "documentId")); return {{"closed", true}}; }
-  auto& doc = doc_for(request);
-  if (command == "text") return text_content(doc, request);
-  if (command == "outline") return outline(doc.handle);
-  if (command == "destination") return destination(doc.handle, FPDF_GetNamedDestByName(doc.handle, request.at("name").get<std::string>().c_str()));
-  const int index = integer(request, "pageIndex", 0, doc.count - 1);
-  auto page = doc.page(index);
-  if (command == "links") {
-    json links = json::array();
-    int pos = 0; FPDF_LINK link = nullptr;
-    while (FPDFLink_Enumerate(page, &pos, &link)) {
-      require(links.size() < 10000, "Link page exceeds its budget");
-      FS_RECTF rect{};
-      if (!FPDFLink_GetAnnotRect(link, &rect)) continue;
-      json item = {{"id", "native-link-" + std::to_string(index) + "-" + std::to_string(pos)}, {"subtype", "Link"},
-        {"rect", {std::min(rect.left,rect.right), std::min(rect.top,rect.bottom), std::max(rect.left,rect.right), std::max(rect.top,rect.bottom)}}};
-      const int count = FPDFLink_CountQuadPoints(link);
-      require(count >= 0 && count <= 4000, "Link quadrilaterals exceed their budget");
-      if (count) {
-        json quads = json::array();
-        for (int q = 0; q < count; q++) {
-          FS_QUADPOINTSF points{};
-          if (FPDFLink_GetQuadPoints(link,q,&points)) for (auto n : {points.x1,points.y1,points.x2,points.y2,points.x3,points.y3,points.x4,points.y4}) quads.push_back(n);
-        }
-        if (!quads.empty()) item["quadPoints"] = std::move(quads);
-      }
-      auto dest = FPDFLink_GetDest(doc.handle, link);
-      auto action = FPDFLink_GetAction(link);
-      if (!dest && action && FPDFAction_GetType(action) == PDFACTION_GOTO) dest = FPDFAction_GetDest(doc.handle, action);
-      if (dest) item["dest"] = destination(doc.handle, dest);
-      if (action && FPDFAction_GetType(action) == PDFACTION_URI) {
-        auto length = FPDFAction_GetURIPath(doc.handle, action, nullptr, 0);
-        if (length > 0 && length <= 32768) {
-          std::vector<char> url(length); FPDFAction_GetURIPath(doc.handle, action, url.data(), length);
-          item["url"] = std::string(url.data(), length-1);
-        }
-      }
-      links.push_back(item);
-    }
-    return links;
+  case Command::close:
+    documents.erase(id_for(request, "documentId"));
+    return {{"closed", true}};
+  case Command::text:
+    return text_content(doc_for(request), request);
+  case Command::outline:
+    return outline(doc_for(request).handle);
+  case Command::destination: {
+    auto& doc = doc_for(request);
+    return destination(doc.handle, FPDF_GetNamedDestByName(doc.handle, request.at("name").get<std::string>().c_str()));
   }
-  if (command == "inspect") {
-    const int count = FPDFPage_CountObjects(page);
-    const int offset = integer(request, "offset", 0, std::max(0,count));
-    const int limit = integer(request, "limit", 1, 100);
-    json objects = json::array();
-    for (int i = offset; i < count && i < offset + limit; i++) {
-      auto object = FPDFPage_GetObject(page,i);
-      float left=0,bottom=0,right=0,top=0;
-      FPDFPageObj_GetBounds(object,&left,&bottom,&right,&top);
-      objects.push_back({{"index",i},{"type",FPDFPageObj_GetType(object)},{"bounds",{left,bottom,right,top}},
-        {"editable",false}});
-    }
-    return {{"objects",objects},{"nextOffset",offset+limit < count ? json(offset+limit) : json(nullptr)}};
+  case Command::links:
+    return page_links(doc_for(request), request);
+  case Command::inspect:
+    return inspect_page(doc_for(request), request);
+  case Command::render:
+    return render_tile(doc_for(request), request, out);
   }
-  require(command == "render", "Unknown native command");
-  const int w = integer(request,"width",1,max_tile), h = integer(request,"height",1,max_tile);
-  const int full_w = integer(request,"rasterWidth",1,1048576), full_h = integer(request,"rasterHeight",1,1048576);
-  const int x = integer(request,"x",-2,full_w), y = integer(request,"y",-2,full_h);
-  const int rotation = integer(request,"rotation",0,270);
-  require(rotation % 90 == 0 && x+w <= full_w+2 && y+h <= full_h+2, "Invalid native tile coordinates");
-  const double page_w = FPDF_GetPageWidthF(page), page_h = FPDF_GetPageHeightF(page);
-  require(page_w > 0 && page_h > 0, "Native page geometry is invalid");
-  const float sx = float((rotation % 180 ? full_h : full_w) / page_w);
-  const float sy = float((rotation % 180 ? full_w : full_h) / page_h);
-  FS_MATRIX matrix{};
-  // PDFium first applies its intrinsic crop/rotation/display matrix. This is
-  // an additional transform in that normalized top-left page space, without
-  // a second Y flip (see pinned fpdf_view.cpp, WithMatrix implementation).
-  if (rotation == 0) matrix = {sx,0,0,sy,float(-x),float(-y)};
-  else if (rotation == 90) matrix = {0,sx,-sy,0,float(full_w-x),float(-y)};
-  else if (rotation == 180) matrix = {-sx,0,0,-sy,float(full_w-x),float(full_h-y)};
-  else matrix = {0,-sx,sy,0,float(-x),float(full_h-y)};
-  out.assign(size_t(w)*h*4,255);
-  auto bitmap = FPDFBitmap_CreateEx(w,h,FPDFBitmap_BGRA,out.data(),w*4);
-  if (!bitmap) throw Failure("pdf/native-bitmap", "PDFium bitmap allocation failed");
-  FPDFBitmap_FillRect(bitmap,0,0,w,h,0xffffffff);
-  FS_RECTF clip{0,0,float(w),float(h)};
-  const int flags = FPDF_REVERSE_BYTE_ORDER | (request.value("annotations",true) ? FPDF_ANNOT : 0);
-  FPDF_RenderPageBitmapWithMatrix(bitmap,page,&matrix,&clip,flags);
-  FPDFBitmap_Destroy(bitmap);
-  return {{"width",w},{"height",h},{"format","rgba"}};
+  throw Failure("pdf/native-request", "Unknown native command");
 }
 
 int main() {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, link, open, realpath, rename, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path'
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { PdfAgent } from './transport.ts'
 
 interface FsTarget { targetKey: unknown; displayPath: string }
@@ -14,10 +15,7 @@ interface FsProvider {
   stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined>
   readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
 }
-export interface PdfFilePolicy {
-  mode: 'read-only' | 'workspace-write' | 'danger-full-access'
-  workspaceRoot: string
-}
+export type PdfFilePolicy = Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot'>
 interface FileContext {
   fs: FsProvider
   sandboxPolicy: { resolve(request: { session: PdfAgent['session'] }): PdfFilePolicy }

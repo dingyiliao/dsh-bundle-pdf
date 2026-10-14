@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { NativeWorker } from '../engine/native-worker.ts'
 import { ByteCache } from '../engine/byte-cache.ts'
 import { encodePng } from '../engine/png.ts'
-import type { NativeTextContent, ReaderDescriptor } from '../shared/native.ts'
+import { NativeViewport } from '../client/native/viewport.ts'
+import type { NativeOutlineItem, NativeTextContent, ReaderDescriptor } from '../shared/native.ts'
 import { binaryResult, type PdfAgent, type PdfDispatch } from './transport.ts'
 import type { createWorkspaces, HostWorkspaceSnapshot } from './workspaces.ts'
 
@@ -121,7 +122,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
 
   const dispatch: PdfDispatch = async (sessionId, raw, agent, signal) => {
     const parsed = hints.parse(raw)
-    const { knownRevision: _revision, mutationId: _mutation, ...input } = raw
+    const { knownRevision: _revision, mutationId: _mutation, ...requested } = raw
+    // The public Client transport must never claim Agent ownership. Only the
+    // in-process pdf_open tool may create a reclaimable background copy.
+    const input = requested.action === 'open' ? { ...requested, owner: 'ui' } : requested
     let result: Awaited<ReturnType<typeof workspaces.execute>>
     const mutating = ['change', 'undo', 'redo', 'save', 'reload', 'discard'].includes(String(input.action))
     if (parsed.mutationId && mutating) {
@@ -198,7 +202,142 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
       lang: z.string().nullable() }).parse(reply.value)
     return { snapshot, content }
   }) }
-  return { dispatch, native, readPageText, diagnostics: () => ({ generation: worker.generation, workerPid: worker.pid, documents: handles.size, documentBytes: handlesBytes,
+  async function readOutline(sessionId: string, documentId: string, signal: AbortSignal): Promise<{
+    snapshot: HostWorkspaceSnapshot; items: NativeOutlineItem[] | null
+  }> { return withHandleLease(async () => {
+    signal.throwIfAborted()
+    const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    await descriptor(snapshot, signal)
+    const reply = await worker.request({ command: 'outline', documentId }, undefined, signal, -5)
+    signal.throwIfAborted()
+    const itemSchema: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({
+      title: z.string().max(8191), dest: z.unknown().optional(), url: z.string().max(32768).optional(),
+      items: z.array(itemSchema),
+    }))
+    return { snapshot, items: z.array(itemSchema).nullable().parse(reply.value) }
+  }) }
+  /** Render one bounded full-page PNG from the native source, without any Client/UI dependency. */
+  async function renderPage(sessionId: string, documentId: string, page: number, maxEdge: number,
+    signal: AbortSignal): Promise<{ snapshot: HostWorkspaceSnapshot; png: Buffer; width: number; height: number }> {
+    return withHandleLease(async () => {
+      signal.throwIfAborted()
+      const snapshot = workspaces.readSnapshot(sessionId, documentId)
+      if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
+        fail('pdf/invalid-page', 'Page is outside the document')
+      }
+      if (!Number.isSafeInteger(maxEdge) || maxEdge < 256 || maxEdge > 1024) {
+        fail('pdf/invalid-render-size', 'Page render size must be between 256 and 1024 pixels')
+      }
+      const geometry = snapshot.document.pages[page - 1]
+      if (!geometry) fail('pdf/invalid-page', 'Page geometry is unavailable')
+      const [left, bottom, right, top] = geometry.cropBox
+      let pageWidth = Math.abs(right - left) * geometry.userUnit
+      let pageHeight = Math.abs(top - bottom) * geometry.userUnit
+      if (Math.abs(geometry.rotation) % 180 === 90) [pageWidth, pageHeight] = [pageHeight, pageWidth]
+      if (!Number.isFinite(pageWidth) || !Number.isFinite(pageHeight) || pageWidth <= 0 || pageHeight <= 0) {
+        fail('pdf/invalid-page', 'Page geometry is invalid')
+      }
+      const factor = maxEdge / Math.max(pageWidth, pageHeight)
+      const width = Math.max(1, Math.min(1024, Math.round(pageWidth * factor)))
+      const height = Math.max(1, Math.min(1024, Math.round(pageHeight * factor)))
+      await descriptor(snapshot, signal)
+      const reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
+        rotation: 0, rasterWidth: width, rasterHeight: height,
+        x: 0, y: 0, width, height, annotations: true }, undefined, signal, 10)
+      const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
+      if (value.width !== width || value.height !== height) fail('pdf/native-protocol', 'Native page dimensions do not match')
+      const png = await encodePng(reply.bytes, width, height)
+      signal.throwIfAborted()
+      const latest = workspaces.readSnapshot(sessionId, documentId)
+      if (latest.contentVersion !== snapshot.contentVersion || latest.revision !== snapshot.revision) {
+        fail('pdf/stale-reader', 'PDF changed during page render; retry')
+      }
+      return { snapshot, png, width, height }
+    })
+  }
+  /** Render an unannotated page or PDF-space region for OCR without transporting image bytes from Client. */
+  async function renderOcrImage(sessionId: string, documentId: string, page: number,
+    region: readonly [number, number, number, number] | undefined, maxEdge: number,
+    signal: AbortSignal): Promise<{ snapshot: HostWorkspaceSnapshot; png: Buffer; width: number; height: number;
+      pdfRegion: [number, number, number, number] }> {
+    return withHandleLease(async () => {
+      signal.throwIfAborted()
+      const snapshot = workspaces.readSnapshot(sessionId, documentId)
+      if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
+        fail('pdf/invalid-page', 'Page is outside the document')
+      }
+      if (!Number.isSafeInteger(maxEdge) || maxEdge < 256 || maxEdge > 1024) {
+        fail('pdf/invalid-render-size', 'OCR render size must be between 256 and 1024 pixels')
+      }
+      const geometry = snapshot.document.pages[page - 1]
+      if (!geometry) fail('pdf/invalid-page', 'Page geometry is unavailable')
+      const [pageLeft, pageBottom, pageRight, pageTop] = geometry.cropBox
+      const pdfRegion: [number, number, number, number] = region
+        ? [Math.max(pageLeft, region[0]), Math.max(pageBottom, region[1]),
+          Math.min(pageRight, region[2]), Math.min(pageTop, region[3])]
+        : [pageLeft, pageBottom, pageRight, pageTop]
+      if (region && (region.length !== 4 || !region.every(Number.isFinite)
+        || region[2] <= region[0] || region[3] <= region[1])) {
+        fail('pdf/invalid-region', 'OCR region must be a finite, ordered PDF rectangle')
+      }
+      if (pdfRegion[2] <= pdfRegion[0] || pdfRegion[3] <= pdfRegion[1]) {
+        fail('pdf/invalid-region', 'OCR region does not intersect the PDF page')
+      }
+      const viewport = new NativeViewport(geometry, 1)
+      const first = viewport.convertToViewportPoint(pdfRegion[0], pdfRegion[1])
+      const second = viewport.convertToViewportPoint(pdfRegion[2], pdfRegion[3])
+      const left = Math.min(first[0], second[0]), right = Math.max(first[0], second[0])
+      const top = Math.min(first[1], second[1]), bottom = Math.max(first[1], second[1])
+      const span = Math.max(right - left, bottom - top)
+      if (![viewport.width, viewport.height, left, right, top, bottom, span].every(Number.isFinite)
+        || !(viewport.width > 0 && viewport.height > 0 && span > 0)) {
+        fail('pdf/invalid-page', 'PDF page geometry is invalid')
+      }
+      // The native worker only allocates the clipped tile, but its virtual page
+      // raster must remain within the worker's coordinate range. Cap density to
+      // avoid extreme virtual dimensions for a microscopic selected region.
+      const density = Math.min(4, maxEdge / span, 1_048_575 / viewport.width, 1_048_575 / viewport.height)
+      if (!(density > 0)) fail('pdf/invalid-region', 'OCR region cannot be rendered at a usable size')
+      const rasterWidth = Math.max(1, Math.ceil(viewport.width * density))
+      const rasterHeight = Math.max(1, Math.ceil(viewport.height * density))
+      // PDFium scales the two integer raster axes independently; use their
+      // actual ratios so crop pixels match the worker's effective transform.
+      const sx = rasterWidth / viewport.width, sy = rasterHeight / viewport.height
+      const x = Math.max(0, Math.floor(left * sx)), y = Math.max(0, Math.floor(top * sy))
+      const endX = Math.min(rasterWidth, Math.ceil(right * sx))
+      const endY = Math.min(rasterHeight, Math.ceil(bottom * sy))
+      const width = endX - x, height = endY - y
+      if (width < 1 || height < 1 || width > 1026 || height > 1026) {
+        fail('pdf/invalid-region', 'OCR region exceeds the native tile size')
+      }
+      await descriptor(snapshot, signal)
+      const reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
+        rotation: 0, rasterWidth, rasterHeight, x, y, width, height, annotations: false }, undefined, signal, 10)
+      const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
+      if (value.width !== width || value.height !== height) fail('pdf/native-protocol', 'Native OCR image dimensions do not match')
+      const png = await encodePng(reply.bytes, width, height)
+      signal.throwIfAborted()
+      const latest = workspaces.readSnapshot(sessionId, documentId)
+      if (latest.contentVersion !== snapshot.contentVersion || latest.revision !== snapshot.revision) {
+        fail('pdf/stale-reader', 'PDF changed during OCR image render; retry')
+      }
+      return { snapshot, png, width, height, pdfRegion }
+    })
+  }
+  /** Release only the native state of a working copy already removed by Workspaces. */
+  async function releaseDocument(documentId: string): Promise<void> {
+    await withHandleLease(async () => {
+      histories.delete(documentId)
+      const handle = handles.get(documentId)
+      if (!handle) return
+      handles.delete(documentId)
+      handlesBytes -= handle.bytes
+      if (!closed && handle.generation === worker.generation) {
+        await worker.request({ command: 'close', documentId }).catch(() => undefined)
+      }
+    })
+  }
+  return { dispatch, native, readPageText, readOutline, renderPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, workerPid: worker.pid, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
     dispose() { closed = true; worker.dispose(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0 } }
 }

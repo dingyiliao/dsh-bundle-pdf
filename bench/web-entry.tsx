@@ -4,7 +4,6 @@ import { createRoot } from 'react-dom/client'
 import { Reader } from '../src/client/Reader.tsx'
 import { createPdfApi } from '../src/client/api.ts'
 import { readerLocales } from '../src/client/reader-locales.ts'
-import { createOcrRegistry } from '../src/ocr/index.ts'
 import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
@@ -57,7 +56,10 @@ function open() {
   root.render(<Reader resourceAddress={`dsh-resource://file/session/${config.sessionId}//bench/fixture.pdf`}
     sessionId={config.sessionId} content={{ kind: 'renderer', revision: 0, loaded() {}, failed() {}, reload() {} }}
     scrollportRef={() => {}} useTabInfo={() => ({ tab: { id: config.sessionId, visible: true, signal: owner.signal, actions: { openResource() {} } } })}
-    t={t} api={api} ocr={createOcrRegistry()} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
+    t={t} api={api} hostOcr={{
+      availability: async () => ({ status: 'unavailable', reason: 'OCR is outside the reader benchmark.' }),
+      recognize: async () => { throw new Error('OCR is outside the reader benchmark.') },
+    }} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
     settings={defaultSettings} />)
 }
 

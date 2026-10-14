@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Context } from '@deepseek-ai/cordis'
 
 export interface PdfNativeService { executable: string }
 
@@ -10,10 +11,6 @@ interface NativeManifest {
   platform: string
   executableSha256: string
   librarySha256: string
-}
-
-interface NativeContext {
-  provide(name: 'pdfNative', value: PdfNativeService): () => void
 }
 
 export const name = 'pdf-native'
@@ -47,7 +44,7 @@ export async function verifyNativeDistribution(directory: string, platform = `${
   return { executable }
 }
 
-export async function apply(ctx: NativeContext): Promise<void> {
+export async function apply(ctx: Pick<Context, 'provide'>): Promise<void> {
   const override = process.env.DSH_PDF_NATIVE_HELPER
   if (override) {
     const info = await stat(override)

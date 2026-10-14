@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { PdfUserBookmark } from '../shared/contracts.ts'
 import type { createWorkspaces } from './workspaces.ts'
 import type { PdfDispatch } from './transport.ts'
@@ -22,11 +23,7 @@ export const bookmarkRecordSchema = z.object({
 }).strict()
 export type BookmarkRecord = z.infer<typeof bookmarkRecordSchema>
 
-interface BookmarkTable {
-  get(key: string): BookmarkRecord | undefined
-  put(key: string, value: BookmarkRecord): Promise<void>
-  delete(key: string): Promise<unknown>
-}
+type BookmarkTable = Pick<KvTable<string, BookmarkRecord>, 'get' | 'put'> & { delete(key: string): Promise<unknown> }
 const requests = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'), sessionId: id, id }).strict(),
   z.object({ action: z.literal('add'), sessionId: id, id, title, position: bookmarkPositionSchema }).strict(),

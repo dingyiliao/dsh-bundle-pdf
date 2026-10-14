@@ -3,7 +3,7 @@ import type { ReaderDocument } from './reader-document.js'
 import { BookmarkPanel, type BookmarkAccess } from './BookmarkPanel.js'
 import { PageThumbnailPanel } from './PageThumbnailPanel.js'
 
-export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'search'
+export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'search' | 'ocr'
 
 export interface ReadingSidebarProps {
   activeSection: ReadingSidebarSection
@@ -25,7 +25,7 @@ export interface ReadingSidebarProps {
   t: (key: string) => string
 }
 
-const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'search', 'translation']
+const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'search', 'translation', 'ocr']
 const railWidth = 44
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
@@ -35,6 +35,8 @@ function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
       <rect x="5" y="3" width="11" height="14" rx="1" /><path d="M9 7h4M9 10h4M9 13h3M8 20h11V7" />
     </> : section === 'translation' ? <>
       <path d="M3 5h12M9 3v2M6 5c.7 4.1 3 7.2 7 9M13 5c-.9 4.4-4 8.1-9 10M14 21l4-10 4 10M15.2 18h5.6" />
+    </> : section === 'ocr' ? <>
+      <path d="M4 5h16v14H4zM7 9h4M7 12h7M7 15h5" /><path d="m16 10 1 1 2-2" />
     </> : section === 'annotations' ? <>
       <path d="m5 15 9-10 4 4-9 10H5v-4ZM12.5 6.5l4 4M4 22h16" />
     </> : section === 'search' ? <>
@@ -160,7 +162,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           {section === 'pages' ? <PageThumbnailPanel pdf={pdf} active={expanded && activeSection === section}
             currentPage={currentPage} onNavigatePage={onNavigatePage} t={t} />
             : section === 'bookmarks' ? <BookmarkPanel pdf={pdf} active={expanded && activeSection === section}
-              bookmarks={bookmarks} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
+              currentPage={currentPage} bookmarks={bookmarks} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
         </div>)}
       </div>
       <div className="dsh-pdf-sidebar-footer">

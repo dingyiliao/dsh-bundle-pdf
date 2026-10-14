@@ -7,6 +7,7 @@ import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safe
 import type { NativeDocument, NativePage } from './native/document.ts'
 import { TileSurface } from './native/TileSurface.tsx'
 import { renderNativeTextLayer } from './native/text-layer.ts'
+import type { ExplanationExcerpt } from './explain-mode.js'
 
 export interface PageProps {
   pdf: NativeDocument
@@ -19,6 +20,7 @@ export interface PageProps {
   renderedAnnotations?: PdfAnnotation[]
   selectedAnnotation?: string
   selection: ReaderSelection | null
+  explanationExcerpts?: readonly ExplanationExcerpt[]
   ocrWords?: PdfOcrTextPart[]
   /** Keep selectable text and its viewport while a selection spans offscreen pages. */
   retainTextLayer?: boolean
@@ -274,6 +276,25 @@ export function Page(props: PageProps) {
     [near, props.annotations, pending, patchBoxes, viewport])
   const noteMarkers = useMemo(() => near ? props.annotations.filter(annotation => annotation.subtype === 'Text'
     && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, props.annotations])
+  const explanationPolygons = useMemo(() => {
+    if (!near || !viewport) return []
+    return (props.explanationExcerpts ?? []).flatMap(excerpt => excerpt.fragments
+      .filter(fragment => fragment.page === geometry.page)
+      .flatMap(fragment => {
+        const polygons: string[] = []
+        for (let index = 0; index + 7 < fragment.quadPoints.length; index += 8) {
+          const points = Array.from({ length: 4 }, (_, corner) => viewport.convertToViewportPoint(
+            fragment.quadPoints[index + corner * 2], fragment.quadPoints[index + corner * 2 + 1],
+          ))
+          polygons.push(points.map(point => point.join(',')).join(' '))
+        }
+        if (!polygons.length) {
+          const [left, top, right, bottom] = pdfRectToViewport(viewport, fragment.rect)
+          polygons.push(`${left},${top} ${right},${top} ${right},${bottom} ${left},${bottom}`)
+        }
+        return polygons
+      }))
+  }, [near, viewport, props.explanationExcerpts, geometry.page])
 
   return <div ref={outer} className="dsh-pdf-page-wrap" data-page-number={geometry.page}>
     <div className="dsh-pdf-page-label">{t('reader.page')} {geometry.page}{props.ocrWords?.length ? ` · ${t('reader.ocrText')}` : ''}</div>
@@ -365,6 +386,11 @@ export function Page(props: PageProps) {
       </div>}
       {viewport && selected && <svg className="dsh-pdf-annotation-outline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {annotationPolygons(selected, viewport).map((points, index) => <polygon key={index} points={points.map((point) => point.join(',')).join(' ')} fill="none" stroke="var(--pdf-accent)" strokeWidth="1.5" />)}
+      </svg>}
+      {!!explanationPolygons.length && <svg className="dsh-pdf-explanation-overlay" width={width} height={height}
+        viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+        {explanationPolygons.map((points, index) => <polygon key={index} data-pdf-explanation-mark=""
+          points={points} />)}
       </svg>}
       {viewport && region && <div className="dsh-pdf-region" style={screenRect(viewport, region.rect)} />}
       {drag && props.mode === 'region' && <div className="dsh-pdf-region" style={{ left: Math.min(drag.x, drag.endX), top: Math.min(drag.y, drag.endY), width: Math.abs(drag.endX - drag.x), height: Math.abs(drag.endY - drag.y) }} />}

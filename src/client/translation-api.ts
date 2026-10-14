@@ -3,16 +3,27 @@ import { TranslationError, type TranslationEngine, type TranslationEngineDescrip
 import { translationSourceLanguage } from '../shared/contracts.js'
 import type { PdfConnection } from './api.js'
 
+const lexicalMeaning = z.object({
+  partOfSpeech: z.string().trim().min(1).max(64),
+  meaning: z.string().trim().min(1).max(32768),
+  example: z.string().trim().min(1).max(32768),
+  exampleTranslation: z.string().trim().min(1).max(32768),
+})
 const wireResult = z.object({
   text: z.string().min(1).max(32768), status: z.enum(['complete', 'partial']),
   warnings: z.array(z.string().max(200)).max(20), detectedSourceLanguage: z.string().max(100).optional(),
+  detail: z.object({
+    kind: z.enum(['word', 'phrase']), pronunciation: z.string().trim().min(1).max(32768).optional(),
+    meanings: z.array(lexicalMeaning).min(1),
+  }).optional(),
 })
 const response = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), value: wireResult }),
   z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
 ])
 const errorCodes = new Set(['disabled', 'not-configured', 'engine-unavailable', 'authentication-failed',
-  'invalid-request', 'limit-exceeded', 'timeout', 'cancelled', 'stale-result', 'translation-failed'])
+  'invalid-request', 'limit-exceeded', 'timeout', 'cancelled', 'stale-result', 'translation-failed',
+  'invalid-model-output', 'incomplete-model-output', 'empty-model-output'])
 
 /** Provider credentials and model calls remain behind the authenticated Host route. */
 export function createHostTranslationEngine(connection: PdfConnection, lifetime: AbortSignal,

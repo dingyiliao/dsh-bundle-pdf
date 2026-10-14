@@ -4,6 +4,7 @@ export type TranslationConfiguration = Readonly<Record<string, TranslationJson>>
 export type TranslationErrorCode =
   | 'disabled' | 'not-configured' | 'engine-unavailable' | 'authentication-failed'
   | 'invalid-request' | 'limit-exceeded' | 'timeout' | 'cancelled' | 'stale-result' | 'translation-failed'
+  | 'invalid-model-output' | 'incomplete-model-output' | 'empty-model-output'
 
 export class TranslationError extends Error {
   constructor(readonly code: TranslationErrorCode, message: string, options?: ErrorOptions) {
@@ -50,6 +51,19 @@ export interface TranslationOutput {
   /** Stable warning identifiers suitable for localization by the consuming UI. */
   warnings: string[]
   detectedSourceLanguage?: string
+  /** Lexical detail is present only when an engine can validate it. */
+  detail?: {
+    kind: 'word' | 'phrase'
+    /** Source-language IPA when the engine can supply it reliably. */
+    pronunciation?: string
+    meanings: {
+      /** Short grammatical category localized by the engine to the target language. */
+      partOfSpeech: string
+      meaning: string
+      example: string
+      exampleTranslation: string
+    }[]
+  }
 }
 
 export interface TranslationEngineDescriptor {

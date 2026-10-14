@@ -64,8 +64,7 @@ export function createHostTranslations(ctx: TranslationHostContext, namespace: s
     const settings = readSettings()
     const engineId = effectiveTranslationEngine(settings.translationEngine)
     if (request.engineId !== engineId) throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
-    const revision = JSON.stringify([engineId, settings.translationTargetLanguage,
-      settings.translationTimeoutMs])
+    const revision = JSON.stringify([engineId, settings.translationTimeoutMs])
     registry.select({ id: `${namespace}/${engineId}`, engineId,
       configurationRevision: revision, config: {} })
     const result = await registry.translate({ text: request.text, sourceLanguage: translationSourceLanguage, targetLanguage: request.targetLanguage,
@@ -73,8 +72,7 @@ export function createHostTranslations(ctx: TranslationHostContext, namespace: s
       context: { ...request.context, sessionId } })
     signal.throwIfAborted()
     const current = readSettings()
-    if (revision !== JSON.stringify([effectiveTranslationEngine(current.translationEngine), current.translationTargetLanguage,
-      current.translationTimeoutMs])) {
+    if (revision !== JSON.stringify([effectiveTranslationEngine(current.translationEngine), current.translationTimeoutMs])) {
       throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
     }
     return result

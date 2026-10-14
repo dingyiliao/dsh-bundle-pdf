@@ -1,17 +1,18 @@
-import React, { useLayoutEffect, useMemo, useSyncExternalStore, type ComponentType } from 'react'
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
+import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { Reader } from './Reader.tsx'
 import { Settings, settingsLocales, type ConfigForm } from './Settings.tsx'
 import { readerLocales } from './reader-locales.ts'
 import { createPdfApi, createReadingContextReporter, type PdfConnection } from './api.ts'
-import { createOcrRegistry } from '../ocr/index.ts'
-import { effectiveOcrEngine } from './ocr-availability.ts'
+import { createHostOcrApi } from './host-ocr-api.ts'
 import { defaultSettings, effectiveTranslationEngine } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import type { ReaderProps } from './contracts.ts'
 import { createTranslationRegistry } from '../translation/index.js'
 import { createHostTranslationEngine } from './translation-api.js'
 import { createPdfSessionLifecycle, type PdfSessionOwner, type PdfSessionSource, type PdfSidebarNavigation } from './pdf-session-lifecycle.js'
+import { sendExplanationPrompt, type CurrentSessionSource } from './explain-mode.js'
 import styles from './reader.css'
 import readingSidebarStyles from './reading-sidebar.css'
 
@@ -26,11 +27,11 @@ const desktopSavePicker = (globalThis as typeof globalThis & {
 interface ClientContext {
   fiber?: { readonly uid: number | null }
   connection: PdfConnection
-  uiSession: { readonly adapter: { readonly current: PdfSessionSource } }
+  uiSession: { readonly adapter: { readonly current: PdfSessionSource & CurrentSessionSource } }
   sidebarRight: PdfSidebarNavigation
   configForms: { get(namespace: string): ConfigForm }
-  effect(callback: () => (() => void | Promise<void>), label?: string): unknown
-  reflect: { provide(key: string, value: unknown): () => void }
+  effect: Context['effect']
+  reflect: Context['reflect']
   locale: {
     register(namespace: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
     bind(namespace: string): (key: string) => string
@@ -46,7 +47,7 @@ interface ClientContext {
 }
 
 const settingsSchema = z.object({
-  ocrEngine: z.string(), ocrLanguages: z.string(), ocrTimeoutMs: z.number(),
+  ocrTimeoutMs: z.number(),
   translationEngine: z.string(), translationTargetLanguage: z.string(), translationTimeoutMs: z.number(),
   historyCapacity: z.number(), maxFileBytes: z.number(),
 })
@@ -68,21 +69,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const form = ctx.configForms.get(info.settingsNamespace)
   const subscribeSettings = (listener: () => void) => form.subscribe(listener)
   const readSettings = () => form.getSnapshot()
-  const ocr = createOcrRegistry({
-    bridgePath: '/api/pdf-assets/ocr/bridge.js', workerPath: '/api/pdf-assets/ocr/worker.min.js',
-    corePath: '/api/pdf-assets/ocr/core', langPath: '/api/pdf-assets/ocr/lang', availableLanguages: ['eng', 'chi_sim'],
-  })
-  const synchronizeOcr = () => {
-    const state = form.getSnapshot()
-    const settings = state.value ?? info.settings
-    const engineId = effectiveOcrEngine(settings.ocrEngine)
-    ocr.select({ id: `${info.namespace}/${engineId}`, engineId,
-      configurationRevision: String(state.revision ?? 'initial'), config: {} })
-  }
-  synchronizeOcr()
-  ctx.effect(() => form.subscribe(synchronizeOcr), 'pdf: OCR configuration')
-  ctx.effect(() => () => ocr.dispose(), 'pdf: OCR lifecycle')
-  ctx.effect(() => ctx.reflect.provide('pdfOcr', ocr), 'pdf: OCR engine registry')
+  const hostOcr = createHostOcrApi(ctx.connection, lifetime.signal)
   const translation = createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })
   for (const engine of info.translationEngines) translation.register(createHostTranslationEngine(ctx.connection, lifetime.signal, engine))
   const synchronizeTranslation = () => {
@@ -90,8 +77,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
     const settings = state.value ?? info.settings
     const engineId = effectiveTranslationEngine(settings.translationEngine)
     translation.select({ id: `${info.namespace}/${engineId}`, engineId,
-      configurationRevision: JSON.stringify([engineId, settings.translationTargetLanguage,
-        settings.translationTimeoutMs]), config: {} })
+      configurationRevision: JSON.stringify([engineId, settings.translationTimeoutMs]), config: {} })
   }
   synchronizeTranslation()
   ctx.effect(() => form.subscribe(synchronizeTranslation), 'pdf: translation configuration')
@@ -117,7 +103,8 @@ export async function apply(ctx: ClientContext): Promise<void> {
     return () => style.remove()
   }, 'pdf: reader stylesheet')
   type ReaderTabInfo = ReturnType<ReaderProps['useTabInfo']>
-  type OwnerProps = Omit<ReaderProps, 'api' | 'ocr' | 'translation' | 'settings' | 'useTabInfo'> & {
+  type OwnerProps = Omit<ReaderProps, 'api' | 'hostOcr' | 'translation' | 'settings' | 'useTabInfo'
+    | 'promptExplanation' | 'rememberTranslationTargetLanguage'> & {
     useTabInfo(): ReaderTabInfo & { tab: ReaderTabInfo['tab'] & {
       actions: ReaderTabInfo['tab']['actions'] & { close(): void }
     } }
@@ -125,6 +112,20 @@ export async function apply(ctx: ClientContext): Promise<void> {
   function PdfSurface(props: OwnerProps) {
     const state = useSyncExternalStore(subscribeSettings, readSettings, readSettings)
     const currentSettings = state.value ?? info.settings ?? defaultSettings
+    const [pendingTargetLanguage, setPendingTargetLanguage] = useState<string>()
+    const targetWriteGeneration = useRef(0)
+    const rememberTranslationTargetLanguage = useCallback(async (language: string) => {
+      const generation = ++targetWriteGeneration.current
+      setPendingTargetLanguage(language)
+      let accepted = false
+      try {
+        accepted = await form.mutate([{ op: 'set', path: ['translationTargetLanguage'], value: language }])
+      } catch (cause) {
+        console.error('[pdf] Failed to save translation target language', cause)
+      }
+      if (generation === targetWriteGeneration.current) setPendingTargetLanguage(undefined)
+      return accepted
+    }, [])
     const { tab } = props.useTabInfo()
     // Resource addresses carry their own session. The active chat may be different.
     const file = sessionFile(props.resourceAddress)
@@ -142,10 +143,14 @@ export async function apply(ctx: ClientContext): Promise<void> {
       ...api,
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
     }), [owner])
-    return <Reader {...props} sessionId={file.sessionId} api={readerApi} ocr={ocr} translation={translation}
+    return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={hostOcr} translation={translation}
       allowReadingContext={props.sessionId === file.sessionId} reportReadingContext={reportReadingContext}
+      promptExplanation={props.sessionId === file.sessionId
+        ? (text, signal) => sendExplanationPrompt(ctx.uiSession.adapter.current, file.sessionId, text, signal) : undefined}
       pickSavePath={desktopSavePicker?.pick}
-      settings={{ ...currentSettings, translationEngine: effectiveTranslationEngine(currentSettings.translationEngine) }} />
+      rememberTranslationTargetLanguage={rememberTranslationTargetLanguage}
+      settings={{ ...currentSettings, translationEngine: effectiveTranslationEngine(currentSettings.translationEngine),
+        translationTargetLanguage: pendingTargetLanguage ?? currentSettings.translationTargetLanguage }} />
   }
   function PdfSettingsSection(props: { t: (key: string) => string }) {
     return <Settings t={props.t} form={form}

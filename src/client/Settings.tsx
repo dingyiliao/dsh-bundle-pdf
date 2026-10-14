@@ -31,7 +31,7 @@ export const settingsLocales = {
     'settings.memory': '当前连接仅支持临时设置，无法保存到 Host。',
     'settings.readOnly': '当前设置为只读。',
     'settings.ocr': 'OCR',
-    'settings.ocrUnavailable': '暂不可用，文字识别功能尚未开放。',
+    'settings.ocrUnavailable': '阅读器会向 Host 查询当前会话模型和 OCR 后端的能力，并据此启用识别入口。',
     'settings.unknownEngine': '当前引擎未加载',
     'settings.translationEngine': '翻译引擎',
     'settings.translationDshModel': 'DSH 模型 · 文字翻译',
@@ -68,7 +68,7 @@ export const settingsLocales = {
     'settings.memory': 'This connection only supports temporary settings and cannot save them to the Host.',
     'settings.readOnly': 'These settings are read-only.',
     'settings.ocr': 'OCR',
-    'settings.ocrUnavailable': 'Unavailable for now. Text recognition has not been enabled.',
+    'settings.ocrUnavailable': 'The reader asks the Host whether this session’s model and OCR backend can recognize text, then enables the action accordingly.',
     'settings.unknownEngine': 'Current engine is not loaded',
     'settings.translationEngine': 'Translation engine',
     'settings.translationDshModel': 'DSH model · Text translation',
@@ -269,13 +269,9 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><button type="button" disabled={disabled} style={buttonStyle} onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} style={buttonStyle} onClick={keepChanges}>{tr('settings.keep')}</button></div>
         <small style={{ display: 'block', marginTop: 8, opacity: 0.75 }}>{tr('settings.keepHint')}</small>
       </div>}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ display: 'grid', gap: 6 }}>
-          <span id={`${id}-ocr-label`} style={{ fontWeight: 500 }}>{tr('settings.ocr')}</span>
-          <small id={`${id}-ocr-hint`} style={{ opacity: 0.7, lineHeight: 1.5 }}>{tr('settings.ocrUnavailable')}</small>
-        </div>
-        <button type="button" role="switch" aria-checked={false} aria-labelledby={`${id}-ocr-label`}
-          aria-describedby={`${id}-ocr-hint`} disabled className="dsh-pdf-settings-ocr-switch"><span /></button>
+      <div style={{ display: 'grid', gap: 6 }}>
+        <span style={{ fontWeight: 500 }}>{tr('settings.ocr')}</span>
+        <small style={{ opacity: 0.7, lineHeight: 1.5 }}>{tr('settings.ocrUnavailable')}</small>
       </div>
       {fieldRow('translationEngine', 'settings.translationHelp', <select {...attributes('translationEngine')} value={editor.draft.translationEngine} onChange={event => edit('translationEngine', event.target.value)}>
         {!availableTranslations.some(engine => engine.id === editor.draft.translationEngine) && <option value={editor.draft.translationEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.translationEngine}</option>}

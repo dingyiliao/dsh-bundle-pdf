@@ -38,7 +38,8 @@ export const draftSchema = z.object({
 export type DraftRecord = z.infer<typeof draftSchema>
 
 export const requestSchema = z.discriminatedUnion('action', [
-  z.object({ ...wireHints, action: z.literal('open'), sessionId: id, address: z.string().min(1).max(32768) }).strict(),
+  z.object({ ...wireHints, action: z.literal('open'), sessionId: id, address: z.string().min(1).max(32768),
+    owner: z.enum(['ui', 'agent']).optional() }).strict(),
   z.object({ ...wireHints, action: z.literal('inspectTarget'), sessionId: id, path }).strict(),
   ...(['undo', 'redo', 'reload', 'discard'] as const).map(action => z.object({
     ...wireHints, action: z.literal(action), sessionId: id, id, revision: z.number().int().min(0),

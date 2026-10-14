@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { Context } from '@deepseek-ai/cordis'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { Config, readConfig, type HostConfig } from './config.ts'
 import { registerPdfTransport } from './transport.ts'
@@ -8,8 +9,9 @@ import { createWorkspaces } from './workspaces.ts'
 import { createPdfService } from './pdf-service.ts'
 import { createReaderContexts } from './reader-contexts.ts'
 import { registerPdfAgentTools } from './agent-tools.ts'
-import { bookmarkRecordSchema, createBookmarkService, type BookmarkRecord } from './bookmarks.ts'
-import { draftSchema, type DraftRecord } from './validation.ts'
+import { createPdfOcrDispatch } from './pdf-ocr-transport.ts'
+import { bookmarkRecordSchema, createBookmarkService } from './bookmarks.ts'
+import { draftSchema } from './validation.ts'
 import { createHostTranslations, type TranslationHostContext } from './translations.js'
 import type { PdfNativeService } from './native-provider.ts'
 
@@ -21,8 +23,9 @@ type TransportContext = Parameters<typeof registerPdfTransport>[0]
 type LocalContext = Parameters<typeof createLocalFiles>[0]
 interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext, TranslationHostContext {
   pdfNative: PdfNativeService
-  tools: Parameters<typeof registerPdfAgentTools>[0]['tools']
-  reflect: { provide(key: string, value: unknown): () => void }
+  tools: Context['tools']
+  reflect: Context['reflect']
+  get: Context['get']
   connection: {
     fetch: {
       register(route: {
@@ -34,22 +37,8 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
     }
   }
   loader: { locate(): string | undefined; resolve(id: string): { options: { id: string } } }
-  effect(callback: () => (() => void | Promise<void>), label?: string): unknown
-  storageDomain: {
-    open(spec: ReturnType<typeof defineDomain>): Promise<{
-      table(name: 'drafts'): {
-        get(key: string): DraftRecord | undefined
-        put(key: string, value: DraftRecord): Promise<void>
-        delete(key: string): Promise<unknown>
-      }
-      table(name: 'bookmarks'): {
-        get(key: string): BookmarkRecord | undefined
-        put(key: string, value: BookmarkRecord): Promise<void>
-        delete(key: string): Promise<unknown>
-      }
-      close(): Promise<void>
-    }>
-  }
+  effect: Context['effect']
+  storageDomain: Context['storageDomain']
 }
 
 export async function apply(ctx: HostContext, config: HostConfig): Promise<void> {
@@ -101,6 +90,8 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
       disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, bookmarks.dispatch, { endpoint: 'pdf.bookmarks', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
+      disposers.push(registerPdfTransport(ctx, createPdfOcrDispatch(ctx, workspaces, pdfService,
+        () => config.ocrTimeoutMs.get()), { endpoint: 'pdf.ocr', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, async (sessionId, input) => readerContexts.update(sessionId, input),
         { endpoint: 'pdf.readercontext', maxRequestBytes: 4096 }))
       disposers.push(registerAssets(ctx))
@@ -133,7 +124,8 @@ export async function apply(ctx: HostContext, config: HostConfig): Promise<void>
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
     ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
     // ToolRuntime binds registrations to this plugin Fiber and removes them on unload.
-    registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts)
+    ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, bookmarks),
+      'pdf: agent tools and background documents')
   } catch (error) {
     await dispose().catch(() => undefined)
     throw error

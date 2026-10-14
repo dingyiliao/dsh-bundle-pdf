@@ -5,6 +5,7 @@ interface FloatingToolbarProps {
   getAnchor: () => DOMRect | null
   label: string
   children: React.ReactNode
+  active?: boolean
 }
 
 /** Docked tools live outside this viewport; contextual actions stay within the PDF column. */
@@ -13,7 +14,7 @@ export function visibleReadingBounds(viewport: HTMLElement): DOMRect {
 }
 
 /** Keep contextual actions near their PDF anchor without changing page layout. */
-export function FloatingToolbar({ viewport, getAnchor, label, children }: FloatingToolbarProps) {
+export function FloatingToolbar({ viewport, getAnchor, label, children, active = true }: FloatingToolbarProps) {
   const toolbar = useRef<HTMLDivElement>(null)
   const anchor = useRef(getAnchor)
   const refresh = useRef<(() => void) | undefined>()
@@ -28,9 +29,9 @@ export function FloatingToolbar({ viewport, getAnchor, label, children }: Floati
       const selection = anchor.current()
       const bounds = visibleReadingBounds(viewport)
       const origin = parent.getBoundingClientRect()
-      if (!selection || bounds.width < 40 || selection.bottom <= bounds.top || selection.top >= bounds.bottom
+      if (!active || !selection || bounds.width < 40 || selection.bottom <= bounds.top || selection.top >= bounds.bottom
         || selection.right <= bounds.left || selection.left >= bounds.right) {
-        element.style.visibility = 'hidden'
+        element.dataset.visible = 'false'
         return
       }
       const inset = 8, gap = 7
@@ -39,7 +40,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children }: Floati
       element.style.maxWidth = `${Math.max(0, bounds.width - inset * 2)}px`
       const width = element.offsetWidth, height = element.offsetHeight
       if (safeTop + height > bounds.bottom - inset) {
-        element.style.visibility = 'hidden'
+        element.dataset.visible = 'false'
         return
       }
       const left = Math.max(bounds.left + inset, Math.min(bounds.right - width - inset, selection.left))
@@ -48,7 +49,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children }: Floati
       top = Math.max(safeTop, Math.min(bounds.bottom - height - inset, top))
       element.style.left = `${left - origin.left}px`
       element.style.top = `${top - origin.top}px`
-      element.style.visibility = 'visible'
+      element.dataset.visible = 'true'
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
     refresh.current = schedule
@@ -67,9 +68,10 @@ export function FloatingToolbar({ viewport, getAnchor, label, children }: Floati
       window.removeEventListener('resize', schedule)
       refresh.current = undefined
     }
-  }, [viewport])
+  }, [viewport, active])
   useLayoutEffect(() => { refresh.current?.() })
   return <div ref={toolbar} className="dsh-pdf-toolbar dsh-pdf-context-toolbar" role="toolbar" aria-label={label}
+    data-visible="false" aria-hidden={!active}
     onPointerDown={(event) => {
       // Pointer activation of an action must not collapse the native text range.
       // Inputs keep their normal focus and keyboard behaviour.

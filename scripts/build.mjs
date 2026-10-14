@@ -50,6 +50,10 @@ const nativeProviderBuild = await build({
   ...common, entryPoints: ['src/host/native-provider.ts'], outfile: 'dist/native-provider.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
+const ocrHostBuild = await build({
+  ...common, entryPoints: ['src/host/ocr-plugin.ts'], outfile: 'dist/ocr-host.js',
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
+})
 
 // The Harness client loader supplies the shared React and Cordis module instances.
 const clientBuild = await build({
@@ -95,7 +99,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -119,4 +123,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, OCR Host plugin, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)

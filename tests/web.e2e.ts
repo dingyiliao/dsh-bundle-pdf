@@ -223,6 +223,83 @@ async function savedHighlightColors(path: string): Promise<number[][]> {
   return colors
 }
 
+it('remembers the selected translation language for the next selection and after client reload', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    const entry = [...scaffold.ctx.loader.entries()].find(row => row.options.name === '@local/dsh-pdf')
+    expect(entry?.fiber?.state).toBe(2)
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-translation-language-web-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF translation language test' })
+    await writeFile(join(scaffold.workspaceCwd, FILE_NAME), await sourcePdf())
+
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-translation-language-browser'))
+    const reader = page.locator('.dsh-pdf-reader')
+    const panel = reader.locator('.dsh-pdf-translation-panel')
+    const target = panel.getByRole('combobox', { name: 'Target language' })
+    const openReader = async () => {
+      await page.getByRole('treeitem').filter({ hasText: 'PDF translation language test' }).click()
+      if (!await reader.isVisible()) {
+        const column = page.locator('[data-rightbar-col]')
+        if (await page.locator('[data-sidebar-right-expand]').isVisible()) await page.locator('[data-sidebar-right-expand]').click()
+        await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+        await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+        await column.locator('[data-files-reload]').click()
+        await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
+      }
+      await reader.waitFor({ state: 'visible', timeout: 20_000 })
+      await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
+        .toContain('Browser PDF page one')
+    }
+    const openTranslation = async () => {
+      await reader.evaluate(element => {
+        const text = element.querySelector('[data-pdf-page="1"] .dsh-pdf-text-layer span')?.firstChild
+        const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')
+        if (!text || !scroll) throw new Error('PDF text layer is not ready for translation selection')
+        const range = document.createRange()
+        range.selectNodeContents(text)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+        scroll.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
+      })
+      const toolbar = reader.getByRole('toolbar', { name: 'Selected text actions' })
+      await toolbar.waitFor({ state: 'visible' })
+      await toolbar.getByRole('button', { name: 'Translate', exact: true }).click()
+      await target.waitFor({ state: 'visible' })
+    }
+
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await openReader()
+    await openTranslation()
+    await expect.poll(() => target.inputValue()).toBe('zh')
+    await target.selectOption('fr')
+    await expect.poll(() => target.inputValue()).toBe('fr')
+    // Wait for the Host-backed ConfigForm mutation, not just the local select
+    // state, before simulating a fresh Client instance.
+    await expect.poll(() => entry?.fiber?.config?.translationTargetLanguage?.get()).toBe('fr')
+    await panel.getByRole('button', { name: 'Close translation' }).click()
+    await openTranslation()
+    await expect.poll(() => target.inputValue()).toBe('fr')
+    await panel.getByRole('button', { name: 'Close translation' }).click()
+
+    await page.reload({ waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await openReader()
+    await openTranslation()
+    await expect.poll(() => target.inputValue()).toBe('fr')
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await browser?.close()
+    await scaffold.close()
+  }
+}, 90_000)
+
 it('loads the installed PDF plugin and saves a browser-created note into the real PDF file', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
@@ -309,10 +386,16 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     expect(pagesInset).toBeGreaterThanOrEqual(9)
     expect(bookmarksInset).toBeGreaterThanOrEqual(9)
     expect(Math.abs(pagesInset - bookmarksInset)).toBeLessThanOrEqual(1)
+    const bookmarkInfo = reader.locator('.dsh-pdf-bookmark-info')
+    expect(await bookmarkInfo.evaluate(element => (element as HTMLDetailsElement).open)).toBe(false)
+    await bookmarkInfo.locator('summary').click()
+    await bookmarkInfo.getByText('Saved by this plugin; not embedded in the PDF.').waitFor({ state: 'visible' })
+    await bookmarkInfo.locator('summary').click()
     await reader.getByRole('button', { name: 'Bookmark current location' }).click()
     await reader.getByRole('textbox', { name: 'Bookmark name' }).fill('Browser test bookmark')
     await reader.getByRole('button', { name: 'Add', exact: true }).click()
     await reader.getByRole('button', { name: 'Browser test bookmark', exact: true }).waitFor({ state: 'visible' })
+    await reader.getByRole('button', { name: 'More bookmark actions: Browser test bookmark' }).click()
     await reader.getByRole('button', { name: 'Delete bookmark: Browser test bookmark' }).click()
     await reader.getByRole('button', { name: 'Delete?', exact: true }).click()
     await reader.getByText('No personal bookmarks yet.', { exact: true }).waitFor({ state: 'visible' })
@@ -344,9 +427,12 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await page.emulateMedia({ contrast: 'no-preference' })
     expect(await toolbar.locator('summary').evaluate(element => getComputedStyle(element).whiteSpace)).toBe('nowrap')
     const zoomControl = toolbar.getByRole('combobox', { name: 'Zoom' })
-    const zoomIdleBackground = await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)
+    const zoomTrigger = toolbar.locator('.dsh-pdf-toolbar-zoom')
+    expect(await zoomTrigger.locator('.dsh-pdf-toolbar-label').textContent()).toBe('Zoom')
+    expect(await zoomControl.locator('option:checked').textContent()).toBe('Fit width')
+    const zoomIdleBackground = await zoomTrigger.evaluate(element => getComputedStyle(element).backgroundColor)
     await zoomControl.hover()
-    expect(await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(zoomIdleBackground)
+    expect(await zoomTrigger.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(zoomIdleBackground)
     expect(await zoomControl.evaluate(element => getComputedStyle(element).cursor)).toBe('pointer')
     await page.mouse.move(0, 0)
     const saveFeedback = reader.locator('.dsh-pdf-save-feedback')
@@ -386,6 +472,35 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     expect(await panelTargetLanguage.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value)))
       .toEqual(['zh', 'en', 'ja', 'ko', 'fr', 'de'])
     await translationPanel.getByRole('button', { name: 'Close translation' }).click()
+    const selectExcerpt = async (start: number, end: number) => {
+      await reader.evaluate((element, offsets) => {
+        const text = element.querySelector('[data-pdf-page="1"] .dsh-pdf-text-layer span')?.firstChild
+        const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')
+        if (!text || !scroll) throw new Error('PDF text layer is not ready for explanation selection')
+        const range = document.createRange()
+        range.setStart(text, offsets[0])
+        range.setEnd(text, offsets[1])
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+        scroll.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
+      }, [start, end] as [number, number])
+      await selectionToolbar.waitFor({ state: 'visible' })
+    }
+    await selectExcerpt(0, 7)
+    await selectionToolbar.getByRole('button', { name: 'Explain selection' }).click()
+    const explanationTray = reader.getByRole('region', { name: 'Explain passages' })
+    await explanationTray.waitFor({ state: 'visible' })
+    expect(await explanationTray.getByRole('listitem').count()).toBe(1)
+    expect(await reader.locator('[data-pdf-explanation-mark]').count()).toBeGreaterThan(0)
+    expect(await save.isDisabled()).toBe(true)
+    await selectExcerpt(8, 15)
+    await selectionToolbar.getByRole('button', { name: 'Add to explanation' }).click()
+    expect(await explanationTray.getByRole('listitem').count()).toBe(2)
+    expect(await save.isDisabled()).toBe(true)
+    await explanationTray.getByRole('button', { name: 'Remove passage 1' }).click()
+    expect(await explanationTray.getByRole('listitem').count()).toBe(1)
+    await explanationTray.getByRole('button', { name: 'Cancel' }).click()
+    expect(await reader.locator('[data-pdf-explanation-mark]').count()).toBe(0)
     await reader.locator('[data-pdf-page="1"]').click({ position: { x: 8, y: 8 } })
     await selectionToolbar.waitFor({ state: 'hidden' })
 
@@ -432,6 +547,63 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       await captureStableAria(page, '.dsh-pdf-toolbar-controls', scaffold.workspaceCwd),
       webSnapshotMode(),
     )
+
+    // The document pane, not the browser viewport, drives the floating
+    // toolbar's compact layout: a visible button must never sit in an
+    // off-screen horizontal scroller when the PDF sidebar is open.
+    const originalContentSizing = await content.evaluate(element => ({
+      flex: (element as HTMLElement).style.flex,
+      width: (element as HTMLElement).style.width,
+    }))
+    for (const paneWidth of [700, 400]) {
+      await content.evaluate((element, width) => {
+        const style = (element as HTMLElement).style
+        style.flex = `0 0 ${width}px`
+        style.width = `${width}px`
+      }, paneWidth)
+      await expect.poll(() => content.evaluate(element => element.clientWidth)).toBe(paneWidth)
+      const [compactToolbar, compactContent] = await Promise.all([toolbar.boundingBox(), content.boundingBox()])
+      expect(compactToolbar).not.toBeNull()
+      expect(compactContent).not.toBeNull()
+      expect(compactToolbar!.x, `toolbar at ${paneWidth}px`).toBeGreaterThanOrEqual(compactContent!.x + 11)
+      expect(compactToolbar!.x + compactToolbar!.width, `toolbar at ${paneWidth}px`)
+        .toBeLessThanOrEqual(compactContent!.x + compactContent!.width - 11)
+      const fit = await toolbar.evaluate(element => {
+        const bounds = element.getBoundingClientRect()
+        const controls = element.querySelector<HTMLElement>('.dsh-pdf-toolbar-controls')!
+        const clipped = [...element.querySelectorAll<HTMLElement>(
+          'summary, .dsh-pdf-toolbar-controls > button, .dsh-pdf-toolbar-controls > .dsh-pdf-toolbar-zoom',
+        )].filter(control => control.getClientRects().length && getComputedStyle(control).visibility !== 'hidden')
+          .filter(control => {
+            const rect = control.getBoundingClientRect()
+            return rect.left < bounds.left - 1 || rect.right > bounds.right + 1
+          }).map(control => control.getAttribute('aria-label') ?? control.textContent?.trim() ?? control.tagName)
+        return { clipped, overflow: controls.scrollWidth - controls.clientWidth }
+      })
+      expect(fit.clipped, `visible controls at ${paneWidth}px`).toEqual([])
+      expect(fit.overflow, `horizontal control overflow at ${paneWidth}px`).toBeLessThanOrEqual(1)
+      expect(await zoomTrigger.evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(34)
+      expect(await zoomTrigger.locator('svg').isVisible()).toBe(true)
+      if (process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR) {
+        await toolbar.screenshot({ path: join(process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR, `pdf-toolbar-${paneWidth}.png`) })
+      }
+      await toolbar.getByRole('combobox', { name: 'Zoom' }).waitFor({ state: 'visible' })
+      for (const name of [/Back$/, /^Undo/, /^Redo/, 'Save']) {
+        expect(await toolbar.getByRole('button', { name, exact: true }).count(), `accessible ${String(name)} at ${paneWidth}px`).toBe(1)
+      }
+      if (paneWidth === 400) {
+        await toolbar.locator('summary').click()
+        const menu = toolbar.locator('.dsh-pdf-tools-menu')
+        expect(await menu.getByRole('button', { name: 'Save as', exact: true }).isEnabled()).toBe(true)
+        expect(await menu.getByRole('button', { name: 'Discard all changes', exact: true }).isEnabled()).toBe(true)
+        await toolbar.locator('summary').click()
+      }
+    }
+    await content.evaluate((element, sizing) => {
+      const style = (element as HTMLElement).style
+      style.flex = sizing.flex
+      style.width = sizing.width
+    }, originalContentSizing)
 
     await expect.poll(() => reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
     await reader.evaluate(element => {
@@ -610,6 +782,128 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
   }
 }, 120_000)
 
+it('auto-collapses the reading sidebar below 760px without overriding manual sidebar choices', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-narrow-sidebar-web-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF narrow sidebar test' })
+    await writeFile(join(scaffold.workspaceCwd, FILE_NAME), await sourcePdf())
+
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-reader-narrow-sidebar-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await page.getByRole('treeitem').filter({ hasText: 'PDF narrow sidebar test' }).click()
+    const column = page.locator('[data-rightbar-col]')
+    await page.locator('[data-sidebar-right-expand]').click()
+    await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+    await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+    await column.locator('[data-files-reload]').click()
+    await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
+
+    const reader = page.locator('.dsh-pdf-reader')
+    await reader.waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 10_000 })
+    const sidebar = reader.locator('.dsh-pdf-sidebar')
+    const toggle = sidebar.locator('.dsh-pdf-sidebar-toggle')
+    const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
+    const setReaderWidth = async (width: number) => {
+      await reader.evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px` }, width)
+      await expect.poll(() => reader.evaluate(element => element.clientWidth)).toBe(width)
+      await reader.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    }
+    const assertToolbarClearOfSidebar = async () => {
+      const [bar, content, rail] = await Promise.all([
+        toolbar.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(), sidebar.boundingBox(),
+      ])
+      expect(bar).not.toBeNull(); expect(content).not.toBeNull(); expect(rail).not.toBeNull()
+      expect(bar!.x).toBeGreaterThanOrEqual(content!.x + 11)
+      expect(bar!.x + bar!.width).toBeLessThanOrEqual(rail!.x - 11)
+      const clipped = await toolbar.evaluate(element => {
+        const bounds = element.getBoundingClientRect()
+        return [...element.querySelectorAll<HTMLElement>(
+          'summary, .dsh-pdf-toolbar-controls > button, .dsh-pdf-toolbar-controls > select',
+        )].filter(control => control.getClientRects().length && getComputedStyle(control).visibility !== 'hidden')
+          .filter(control => {
+            const rect = control.getBoundingClientRect()
+            return rect.left < bounds.left - 1 || rect.right > bounds.right + 1
+          }).map(control => control.getAttribute('aria-label') ?? control.textContent?.trim() ?? control.tagName)
+      })
+      expect(clipped).toEqual([])
+    }
+    const assertFeedbackAlignedWithToolbar = async () => {
+      const feedback = reader.locator('.dsh-pdf-save-feedback')
+      await feedback.evaluate(element => {
+        element.style.transition = 'none'
+        element.setAttribute('data-visible', 'true')
+        element.querySelector('span')!.textContent = 'Unsaved changes'
+      })
+      const [bar, notice] = await Promise.all([toolbar.boundingBox(), feedback.boundingBox()])
+      expect(bar).not.toBeNull(); expect(notice).not.toBeNull()
+      expect(Math.abs((notice!.x + notice!.width) - (bar!.x + bar!.width))).toBeLessThanOrEqual(1)
+      expect(notice!.y - (bar!.y + bar!.height)).toBeGreaterThanOrEqual(7)
+      expect(notice!.y - (bar!.y + bar!.height)).toBeLessThanOrEqual(9)
+      await feedback.evaluate(element => {
+        element.removeAttribute('data-visible')
+        element.querySelector('span')!.textContent = ''
+        element.style.removeProperty('transition')
+      })
+    }
+
+    // The host may initially mount a narrower tab; explicitly start this
+    // scenario in a wide, expanded reader before crossing the threshold.
+    await setReaderWidth(960)
+    if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+
+    const pageField = sidebar.getByRole('textbox', { name: 'Page' })
+    await pageField.focus()
+    await setReaderWidth(700)
+    expect(await toggle.getAttribute('aria-expanded')).toBe('true')
+    await pageField.evaluate(input => input.blur())
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(await sidebar.getAttribute('class')).toContain('is-collapsed')
+    await assertToolbarClearOfSidebar()
+    await assertFeedbackAlignedWithToolbar()
+
+    await setReaderWidth(960)
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+
+    await setReaderWidth(700)
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+    await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+    await reader.getByRole('tab', { name: 'Pages' }).click()
+    await reader.getByRole('button', { name: 'Page 1 / 2' }).waitFor({ state: 'visible' })
+    await assertToolbarClearOfSidebar()
+
+    // Match the cramped Desktop case: a manually reopened panel leaves only
+    // about 200px for the PDF column, so Save must move into Tools.
+    await setReaderWidth(365)
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+    await assertToolbarClearOfSidebar()
+    await assertFeedbackAlignedWithToolbar()
+    expect(await toolbar.locator('.dsh-pdf-toolbar-save').isVisible()).toBe(false)
+    await toolbar.locator('summary').click()
+    await toolbar.locator('.dsh-pdf-tools-menu').getByRole('button', { name: 'Save', exact: true }).waitFor({ state: 'visible' })
+    await toolbar.locator('summary').click()
+
+    await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+    await setReaderWidth(960)
+    expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await browser?.close()
+    await scaffold.close()
+  }
+}, 120_000)
+
 it('uses the desktop Save As picker and clears a single stale-save conflict after discard', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined
@@ -662,14 +956,19 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     await notePanel.getByRole('button', { name: 'Apply', exact: true }).click()
     await expect.poll(() => save.isEnabled()).toBe(true)
 
-    const saveAs = toolbar.getByRole('button', { name: 'Save as', exact: true })
-    await saveAs.click()
+    const clickToolbarAction = async (selector: string, name: string) => {
+      const direct = toolbar.locator(selector)
+      if (await direct.isVisible()) return direct.click()
+      await toolbar.locator('summary').click()
+      await toolbar.locator('.dsh-pdf-tools-menu').getByRole('button', { name, exact: true }).click()
+    }
+    await clickToolbarAction('.dsh-pdf-toolbar-save-as', 'Save as')
     expect(await reader.locator('.dsh-pdf-dialog').count()).toBe(0)
     expect(await save.isEnabled()).toBe(true)
     await page.evaluate(path => {
       (window as typeof window & { __pdfPickerNextPath?: string | null }).__pdfPickerNextPath = path
     }, copyPath)
-    await saveAs.click()
+    await clickToolbarAction('.dsh-pdf-toolbar-save-as', 'Save as')
     await expect.poll(() => savedNoteContents(copyPath)).toEqual([NOTE])
     await expect.poll(() => reader.locator('.dsh-pdf-save-feedback').getAttribute('title')).toBe(copyPath)
     const pickerDefaults = await page.evaluate(() =>
@@ -688,6 +987,7 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     await conflict.waitFor({ state: 'visible' })
     expect(await conflict.count()).toBe(1)
     expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    if (!await toolbar.locator('.dsh-pdf-toolbar-discard').isVisible()) await toolbar.locator('summary').click()
     const discard = toolbar.getByRole('button', { name: 'Discard all changes' })
     await expect.poll(() => discard.isEnabled()).toBe(true)
     await discard.click()
@@ -732,6 +1032,10 @@ it('navigates from the whole built-in and personal bookmark item without hijacki
     const sidebarPage = reader.locator('.dsh-pdf-sidebar').getByRole('textbox', { name: 'Page' })
     const scroll = reader.locator('.dsh-pdf-scroll')
     const scrollTop = () => scroll.evaluate(root => root.scrollTop)
+    // Opening the auto-collapsed sidebar preserves the reading anchor and can
+    // leave a nonzero starting scroll offset at this responsive width.
+    const originScrollTop = await scrollTop()
+    const atOrigin = async () => Math.abs(await scrollTop() - originScrollTop)
 
     const chapter = reader.locator('.dsh-pdf-bookmark-row').filter({ hasText: 'Chapter 1' }).first()
     await expect.poll(() => chapter.getByRole('button', { name: 'Chapter 1' }).isEnabled()).toBe(true)
@@ -743,10 +1047,10 @@ it('navigates from the whole built-in and personal bookmark item without hijacki
     // Scroll position directly proves that the bookmark navigated to page 2.
     await expect.poll(scrollTop, { timeout: 20_000 }).toBeGreaterThan(200)
     await reader.getByRole('button', { name: '← Back' }).click()
-    await expect.poll(scrollTop).toBeLessThan(20)
+    await expect.poll(atOrigin).toBeLessThan(20)
     await chapter.getByRole('button', { name: 'Expand bookmark section' }).click()
     await reader.getByRole('treeitem', { name: 'Section 1' }).waitFor({ state: 'visible' })
-    expect(await scrollTop()).toBeLessThan(20)
+    expect(await atOrigin()).toBeLessThan(20)
 
     await reader.getByRole('button', { name: 'Bookmark current location' }).click()
     await reader.getByRole('textbox', { name: 'Bookmark name' }).fill('Whole-row bookmark')
@@ -758,12 +1062,14 @@ it('navigates from the whole built-in and personal bookmark item without hijacki
     const bookmarkPageBox = await personal.getByText('Page 1', { exact: true }).boundingBox()
     expect(bookmarkPageBox).not.toBeNull()
     await page.mouse.click(bookmarkPageBox!.x + bookmarkPageBox!.width / 2, bookmarkPageBox!.y + bookmarkPageBox!.height / 2)
-    await expect.poll(scrollTop).toBeLessThan(20)
+    await expect.poll(atOrigin).toBeLessThan(20)
     await sidebarPage.fill('2'); await sidebarPage.press('Enter')
     await expect.poll(scrollTop).toBeGreaterThan(200)
+    await personal.getByRole('button', { name: 'More bookmark actions: Whole-row bookmark' }).click()
     await personal.getByRole('button', { name: 'Rename bookmark: Whole-row bookmark' }).click()
     expect(await scrollTop()).toBeGreaterThan(200)
     await personal.getByRole('button', { name: 'Cancel' }).click()
+    await personal.getByRole('button', { name: 'More bookmark actions: Whole-row bookmark' }).click()
     await personal.getByRole('button', { name: 'Delete bookmark: Whole-row bookmark' }).click()
     expect(await scrollTop()).toBeGreaterThan(200)
     await personal.getByRole('button', { name: 'Cancel' }).click()
@@ -976,11 +1282,11 @@ it('renders an annotation destination after scrolling deep into a book-length PD
     await scroll.evaluate((root, { source, count }) => {
       const pages = root.querySelector<HTMLElement>('.dsh-pdf-windowed-pages')
       if (!pages) throw new Error('Book layout is not ready')
-      root.scrollTop = pages.offsetHeight * (source - 0.9) / count
+      root.scrollTop = pages.offsetHeight * (source - 0.5) / count
     }, { source: LONG_ANNOTATION_SOURCE, count: LONG_ANNOTATION_PAGE_COUNT })
     const source = reader.locator(`[data-pdf-page="${LONG_ANNOTATION_SOURCE}"]`)
     await source.locator('canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible', timeout: 20_000 })
-    await expect.poll(() => input.inputValue()).toBe(String(LONG_ANNOTATION_SOURCE))
+    await expect.poll(() => input.inputValue(), { timeout: 10_000 }).toBe(String(LONG_ANNOTATION_SOURCE))
 
     await reader.locator('.dsh-pdf-comments .dsh-pdf-comment-item')
       .filter({ hasText: 'Distant book highlight' }).first().click()
@@ -1058,14 +1364,45 @@ it('keeps active pages bounded while navigating to a distant page through the in
     expect(await pageInput.isVisible()).toBe(true)
     expect(await toolbar.getByRole('textbox', { name: 'Page' }).count()).toBe(0)
     await reader.getByRole('tab', { name: 'Pages' }).click()
-    await pageInput.fill('115')
-    await pageInput.press('Enter')
-    await reader.locator('[data-pdf-page="115"] canvas[data-pdf-raster-ready="true"]').first()
-      .waitFor({ state: 'visible', timeout: 20_000 })
+    await expect.poll(() => sidebar.locator('.dsh-pdf-sidebar-toggle').getAttribute('aria-expanded')).toBe('true')
+    // Let fit-width consume the new PDF column width before starting a jump.
     await reader.locator('.dsh-pdf-scroll').evaluate(() => new Promise<void>(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
     }))
-    expect(await pageInput.inputValue()).toBe('115')
+    await pageInput.fill('115')
+    await pageInput.press('Enter')
+    await reader.locator('[data-pdf-page="115"] canvas[data-pdf-raster-ready="true"]').first()
+      .waitFor({ state: 'visible', timeout: 20_000 }).catch(async failure => {
+        const state = await reader.evaluate(element => {
+          const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')
+          const input = element.querySelector<HTMLInputElement>('.dsh-pdf-sidebar-page-nav input')
+          return {
+            sidebar: element.querySelector('.dsh-pdf-sidebar')?.className,
+            input: input?.value, disabled: input?.disabled,
+            scrollTop: scroll?.scrollTop, scrollHeight: scroll?.scrollHeight,
+            scrollWidth: scroll?.clientWidth,
+            pages: [...element.querySelectorAll<HTMLElement>('[data-page-number]')]
+              .slice(0, 12).map(page => ({ page: page.dataset.pageNumber, top: page.getBoundingClientRect().top })),
+            error: element.querySelector('.dsh-pdf-error')?.textContent,
+          }
+        })
+        throw new Error(`${String(failure)}\nReader state: ${JSON.stringify(state)}\nPage errors: ${tripwire.pageErrors.join('\n')}`)
+      })
+    await reader.locator('.dsh-pdf-scroll').evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    }))
+    await expect.poll(() => pageInput.inputValue(), { timeout: 10_000 }).toBe('115').catch(async failure => {
+      const state = await reader.evaluate(element => ({
+        sidebar: element.querySelector('.dsh-pdf-sidebar')?.className,
+        inputs: [...element.querySelectorAll<HTMLInputElement>('.dsh-pdf-sidebar-page-nav input')]
+          .map(input => ({ value: input.value, disabled: input.disabled, visible: input.getClientRects().length > 0 })),
+        error: element.querySelector('.dsh-pdf-error')?.textContent,
+        scrollTop: element.querySelector('.dsh-pdf-scroll')?.scrollTop,
+        current: [...element.querySelectorAll<HTMLElement>('[aria-current="page"]')]
+          .map(node => node.getAttribute('aria-label')),
+      }))
+      throw new Error(`${String(failure)}\nReader state: ${JSON.stringify(state)}`)
+    })
     await expect.poll(() => reader.getByRole('button', { name: `Page 115 / ${LARGE_PAGE_COUNT}` }).getAttribute('aria-current'))
       .toBe('page')
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())

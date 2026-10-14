@@ -28,6 +28,7 @@ export function PersonalBookmarks({ access, document, active, t }: {
   const [editingId, setEditingId] = useState<string>()
   const [editTitle, setEditTitle] = useState('')
   const [deletingId, setDeletingId] = useState<string>()
+  const [actionsId, setActionsId] = useState<string>()
   const operation = useRef<AbortController | null>(null)
   const listing = useRef<AbortController | null>(null)
   const [listRevision, setListRevision] = useState(0)
@@ -39,6 +40,8 @@ export function PersonalBookmarks({ access, document, active, t }: {
     setError('')
     setCreating(false)
     setEditingId(undefined)
+    setDeletingId(undefined)
+    setActionsId(undefined)
     operation.current?.abort()
   }, [api, sessionId, documentId, document])
 
@@ -82,6 +85,7 @@ export function PersonalBookmarks({ access, document, active, t }: {
     setNewTitle(`${t('reader.page')} ${page}`)
     setCreating(true)
     setEditingId(undefined)
+    setActionsId(undefined)
   }
   const create = () => {
     if (!access || !newTitle.trim()) return
@@ -102,11 +106,21 @@ export function PersonalBookmarks({ access, document, active, t }: {
 
   return <section className="dsh-pdf-personal-bookmarks" aria-label={t('reader.sidebar.myBookmarks')}>
     <div className="dsh-pdf-bookmark-section-heading">
-      <h4>{t('reader.sidebar.myBookmarks')}</h4>
+      <div className="dsh-pdf-bookmark-heading-title">
+        <h4>{t('reader.sidebar.myBookmarks')}</h4>
+        <details className="dsh-pdf-bookmark-info"
+          onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false }}>
+          <summary aria-label={t('reader.sidebar.bookmarkStorageInfo')} title={t('reader.sidebar.bookmarkStorageInfo')}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.25" /><path d="M8 7v4M8 4.5v.5" strokeLinecap="round" />
+            </svg>
+          </summary>
+          <p>{t('reader.sidebar.bookmarkStorage')}</p>
+        </details>
+      </div>
       <button type="button" disabled={!access || busy} onClick={beginCreate} title={t('reader.sidebar.addBookmark')}
         aria-label={t('reader.sidebar.addBookmark')}>+</button>
     </div>
-    <p className="dsh-pdf-bookmark-scope">{t('reader.sidebar.bookmarkStorage')}</p>
     {creating && <form className="dsh-pdf-bookmark-form" onSubmit={event => { event.preventDefault(); create() }}>
       <input autoFocus aria-label={t('reader.sidebar.bookmarkName')} value={newTitle} onChange={event => setNewTitle(event.target.value)} maxLength={200} />
       <button type="submit" disabled={busy || !newTitle.trim()}>{t('reader.sidebar.add')}</button>
@@ -119,7 +133,7 @@ export function PersonalBookmarks({ access, document, active, t }: {
     {!!items?.length && <div ref={root} className="dsh-pdf-personal-bookmark-list" tabIndex={0} aria-label={t('reader.sidebar.myBookmarks')}>
       <div className="dsh-pdf-personal-bookmark-virtual" style={{ height: totalHeight }}>
       {items.slice(start, end).map((item, offset) => <div key={item.id} className="dsh-pdf-personal-bookmark-row"
-        style={{ position: 'absolute', top: (start + offset) * rowHeight, left: 0, right: 0, height: rowHeight }}>
+        style={{ position: 'absolute', top: (start + offset) * rowHeight, left: 6, right: 6, height: rowHeight }}>
         {editingId === item.id ? <form className="dsh-pdf-bookmark-form" onSubmit={event => { event.preventDefault(); rename(item.id) }}>
           <input autoFocus aria-label={t('reader.sidebar.bookmarkName')} value={editTitle} onChange={event => setEditTitle(event.target.value)} maxLength={200} />
           <button disabled={busy || !editTitle.trim()}>{t('reader.sidebar.saveBookmark')}</button>
@@ -134,14 +148,33 @@ export function PersonalBookmarks({ access, document, active, t }: {
             <span className="dsh-pdf-personal-bookmark-page">{t('reader.page')} {item.position.page}{item.stale === 'content-changed' ? ` · ${t('reader.sidebar.bookmarkChanged')}`
               : item.stale === 'page-missing' ? ` · ${t('reader.sidebar.bookmarkPageMissing')}` : ''}</span>
           </div>
-          <button type="button" className="dsh-pdf-bookmark-action" disabled={busy} title={t('reader.sidebar.renameBookmark')}
-            aria-label={`${t('reader.sidebar.renameBookmark')}: ${item.title}`}
-            onClick={() => { setEditingId(item.id); setEditTitle(item.title); setDeletingId(undefined) }}>✎</button>
           {deletingId === item.id ? <>
             <button type="button" className="dsh-pdf-bookmark-action" disabled={busy} onClick={() => remove(item.id)}>{t('reader.sidebar.confirmDeleteBookmark')}</button>
             <button type="button" className="dsh-pdf-bookmark-action" onClick={() => setDeletingId(undefined)}>{t('reader.cancel')}</button>
-          </> : <button type="button" className="dsh-pdf-bookmark-action" disabled={busy} title={t('reader.sidebar.deleteBookmark')}
-            aria-label={`${t('reader.sidebar.deleteBookmark')}: ${item.title}`} onClick={() => setDeletingId(item.id)}>×</button>}
+          </> : <div className="dsh-pdf-bookmark-actions"
+            onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setActionsId(undefined) }}
+            onKeyDown={event => {
+              if (event.key !== 'Escape') return
+              event.stopPropagation()
+              setActionsId(undefined)
+              event.currentTarget.querySelector<HTMLButtonElement>('.dsh-pdf-bookmark-more')?.focus()
+            }}>
+            <button type="button" className="dsh-pdf-bookmark-action dsh-pdf-bookmark-more" disabled={busy}
+              title={t('reader.sidebar.moreBookmarkActions')} aria-label={`${t('reader.sidebar.moreBookmarkActions')}: ${item.title}`}
+              aria-expanded={actionsId === item.id} onClick={() => setActionsId(actionsId === item.id ? undefined : item.id)}>
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <circle cx="3" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="13" cy="8" r="1.2" />
+              </svg>
+            </button>
+            {actionsId === item.id && <>
+              <button type="button" className="dsh-pdf-bookmark-action" disabled={busy} title={t('reader.sidebar.renameBookmark')}
+                aria-label={`${t('reader.sidebar.renameBookmark')}: ${item.title}`}
+                onClick={() => { setEditingId(item.id); setEditTitle(item.title); setActionsId(undefined) }}>✎</button>
+              <button type="button" className="dsh-pdf-bookmark-action" disabled={busy} title={t('reader.sidebar.deleteBookmark')}
+                aria-label={`${t('reader.sidebar.deleteBookmark')}: ${item.title}`}
+                onClick={() => { setDeletingId(item.id); setActionsId(undefined) }}>×</button>
+            </>}
+          </div>}
         </>}
       </div>)}
       </div>

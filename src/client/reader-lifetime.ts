@@ -1,13 +1,16 @@
 import { NavigationHistory, type NavigationPosition } from '../navigation/index.js'
 import type { PdfOcrTextPart } from '../ocr/mapping.js'
+import type { PdfRect } from '../core/pdf-types.js'
+import type { HostOcrRecognition } from './host-ocr-api.js'
 
 export interface OcrPage { words: PdfOcrTextPart[]; text: string; engine: string; warnings: string[] }
+export interface OcrTranscript { result: HostOcrRecognition; region?: PdfRect }
 export interface ReaderLifetime {
   history: NavigationHistory
   position?: NavigationPosition
   contentVersion?: string
   ocrPages: Map<number, OcrPage>
-  ocrConfiguration?: string
+  ocrTranscript?: OcrTranscript | null
 }
 
 const tabs = new Map<string, { signal: AbortSignal; state: ReaderLifetime }>()
@@ -22,6 +25,7 @@ export function readerLifetime(sessionId: string, tabId: string, signal: AbortSi
   const release = () => {
     state.history.clear()
     state.ocrPages.clear()
+    state.ocrTranscript = null
     if (tabs.get(key)?.state === state) tabs.delete(key)
   }
   if (signal.aborted) release()

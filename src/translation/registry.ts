@@ -1,8 +1,48 @@
 import {
   TranslationError, type TranslationAvailability, type TranslationEngine,
   type TranslationEngineDescriptor, type TranslationInstance, type TranslationLimits,
-  type TranslationRequest, type TranslationResult,
+  type TranslationOutput, type TranslationRequest, type TranslationResult,
 } from './types.js'
+
+function validateDetail(value: unknown, maxLength: number): TranslationOutput['detail'] {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TranslationError('translation-failed', 'The translation engine returned invalid lexical details.')
+  }
+  const detail = value as Record<string, unknown>
+  if ((detail.kind !== 'word' && detail.kind !== 'phrase') || !Array.isArray(detail.meanings)
+      || detail.meanings.length === 0) {
+    throw new TranslationError('translation-failed', 'The translation engine returned invalid lexical details.')
+  }
+  let size = 0
+  const readText = (value: unknown): string => {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new TranslationError('translation-failed', 'The translation engine returned incomplete lexical details.')
+    }
+    const text = value.trim()
+    size += text.length
+    if (size > maxLength) throw new TranslationError('limit-exceeded', 'The translation details exceed the output limit.')
+    return text
+  }
+  const pronunciation = detail.pronunciation === undefined ? undefined : readText(detail.pronunciation)
+  const meanings = detail.meanings.map((item: unknown) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new TranslationError('translation-failed', 'The translation engine returned incomplete lexical details.')
+    }
+    const meaning = item as Record<string, unknown>
+    const partOfSpeech = readText(meaning.partOfSpeech)
+    if (partOfSpeech.length > 64) {
+      throw new TranslationError('translation-failed', 'The translation engine returned an invalid part of speech.')
+    }
+    return {
+      partOfSpeech,
+      meaning: readText(meaning.meaning),
+      example: readText(meaning.example),
+      exampleTranslation: readText(meaning.exampleTranslation),
+    }
+  })
+  return { kind: detail.kind, ...(pronunciation === undefined ? {} : { pronunciation }), meanings }
+}
 
 /** A shared engine directory. Requests capture their engine/configuration before starting. */
 export class TranslationRegistry {
@@ -113,10 +153,15 @@ export class TranslationRegistry {
       if (output.text.length > this.limits.maxOutputCharacters) {
         throw new TranslationError('limit-exceeded', 'The translation exceeds the output limit.')
       }
+      const detail = validateDetail(output.detail, this.limits.maxOutputCharacters)
+      if (detail && output.status !== 'complete') {
+        throw new TranslationError('translation-failed', 'The translation engine returned incomplete lexical details.')
+      }
       return {
         text: output.text,
         status: output.status, warnings: [...output.warnings],
         ...(output.detectedSourceLanguage === undefined ? {} : { detectedSourceLanguage: output.detectedSourceLanguage }),
+        ...(detail === undefined ? {} : { detail }),
         source: { engineId: engine.descriptor.id, engineVersion: engine.descriptor.version,
           instanceId: instance.id, configurationRevision: instance.configurationRevision },
       }

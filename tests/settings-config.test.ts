@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Config, readConfig, type HostConfig } from '../src/host/config.ts'
-import { createHostTranslations } from '../src/host/translations.ts'
+import { createHostTranslations, type TranslationHostContext } from '../src/host/translations.ts'
 import { defaultSettings, translationTargetLanguages } from '../src/shared/contracts.ts'
 import { TranslationError } from '../src/translation/index.ts'
 
@@ -53,6 +53,34 @@ test('the Host translation route enforces automatic source detection and support
       targetLanguage: 'not-a-language', timeoutMs: 30000,
     }, { session: { id: 'session', header: {} } }, new AbortController().signal),
     error => error instanceof TranslationError && error.code === 'invalid-request')
+  } finally {
+    translations.registry.dispose()
+  }
+})
+
+test('saving a new target preference does not invalidate an in-flight translation', async () => {
+  let settings = { ...defaultSettings }
+  const context = {
+    get(key: string) {
+      if (key !== 'llm') return undefined
+      return { async *stream() {
+        yield { type: 'text-delta', index: 0, text: '译文。' }
+        settings = { ...settings, translationTargetLanguage: 'fr' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } }
+    },
+    sessionController: { async resolveAgent() { return { agent: { session: {
+      requestHeader: () => ({ config: { provider: 'test', model: 'test' } }),
+    } } } } },
+  } as unknown as TranslationHostContext
+  const translations = createHostTranslations(context, 'test', () => settings)
+  try {
+    const result = await translations.dispatch('session', {
+      sessionId: 'session', engineId: 'dsh-model', text: 'A complete sentence.', sourceLanguage: 'auto',
+      targetLanguage: 'zh', timeoutMs: 30000,
+    }, { session: { id: 'session', header: {} } }, new AbortController().signal)
+    assert.equal((result as { text: string }).text, '译文。')
+    assert.equal(settings.translationTargetLanguage, 'fr')
   } finally {
     translations.registry.dispose()
   }

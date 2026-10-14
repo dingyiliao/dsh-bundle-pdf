@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { currentOutlineKey, outlineAncestorKeys } from './bookmark-current.js'
 import type { ReaderDocument, ReaderOutlineItem } from './reader-document.js'
 import { safeLinkUrl } from './reader-links.js'
 import { useVirtualRows } from './use-virtual-rows.js'
@@ -10,11 +11,12 @@ interface OutlineRow { key: string; depth: number; item: ReaderOutlineItem; chil
 const rowHeight = 36
 const destinationKinds = new Set(['XYZ', 'Fit', 'FitB', 'FitH', 'FitBH', 'FitV', 'FitBV', 'FitR'])
 
-function OutlineEntry({ pdf, row, index, expanded, toggle, onNavigateDestination, t }: {
+function OutlineEntry({ pdf, row, index, expanded, current, toggle, onNavigateDestination, t }: {
   pdf: ReaderDocument
   row: OutlineRow
   index: number
   expanded: boolean
+  current: boolean
   toggle(key: string): void
   onNavigateDestination(destination: unknown): void
   t(key: string): string
@@ -39,7 +41,8 @@ function OutlineEntry({ pdf, row, index, expanded, toggle, onNavigateDestination
 
   const title = row.item.title || t('reader.sidebar.untitledBookmark')
   const content = <span className="dsh-pdf-bookmark-title" title={target?.reason ?? title}>{title}</span>
-  return <div className="dsh-pdf-bookmark-row" role="treeitem" aria-level={row.depth}
+  return <div className={`dsh-pdf-bookmark-row${current ? ' is-current' : ''}`} role="treeitem" aria-level={row.depth}
+    aria-current={current ? 'location' : undefined}
     aria-expanded={row.children ? expanded : undefined}
     style={{ top: index * rowHeight, height: rowHeight, paddingLeft: Math.min(18 + (row.depth - 1) * 14, 116) }}>
     {row.children ? <button type="button" className="dsh-pdf-bookmark-toggle"
@@ -78,22 +81,29 @@ function visibleRows(items: readonly ReaderOutlineItem[], expanded: ReadonlySet<
   return result
 }
 
-export function BookmarkPanel({ pdf, active, bookmarks, onNavigateDestination, t }: {
+export function BookmarkPanel({ pdf, active, currentPage, bookmarks, onNavigateDestination, t }: {
   pdf: ReaderDocument | null
   active: boolean
+  currentPage: number
   bookmarks?: BookmarkAccess
   onNavigateDestination(destination: unknown): void
   t(key: string): string
 }) {
   const [loaded, setLoaded] = useState<{ pdf: ReaderDocument; items: ReaderOutlineItem[] | null; error?: string }>()
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const revealed = useRef(false)
+  const pendingReveal = useRef<string>()
   const outline = loaded?.pdf === pdf ? loaded : undefined
   const rows = useMemo(() => visibleRows(outline?.items ?? [], expanded), [outline, expanded])
-  const { root, start, end, totalHeight } = useVirtualRows(rows.length, rowHeight, active)
+  const currentKey = useMemo(() => currentOutlineKey(outline?.items ?? [], currentPage, pdf?.numPages ?? 0),
+    [outline?.items, currentPage, pdf?.numPages])
+  const { root, start, end, scrollToRow, totalHeight } = useVirtualRows(rows.length, rowHeight, active)
 
   useEffect(() => {
     setExpanded(new Set())
     setLoaded(undefined)
+    revealed.current = false
+    pendingReveal.current = undefined
   }, [pdf])
   useEffect(() => {
     if (!active || !pdf || loaded?.pdf === pdf) return
@@ -105,6 +115,25 @@ export function BookmarkPanel({ pdf, active, bookmarks, onNavigateDestination, t
     })
     return () => { cancelled = true }
   }, [active, pdf, loaded])
+
+  useEffect(() => {
+    if (!active) { revealed.current = false; pendingReveal.current = undefined; return }
+    if (!outline?.items || revealed.current) return
+    revealed.current = true
+    if (!currentKey) return
+    pendingReveal.current = currentKey
+    const ancestors = outlineAncestorKeys(currentKey)
+    if (ancestors.length) setExpanded(previous => new Set([...previous, ...ancestors]))
+  }, [active, outline?.items, currentKey])
+
+  useEffect(() => {
+    const key = pendingReveal.current
+    if (!active || !key) return
+    const index = rows.findIndex(row => row.key === key)
+    if (index < 0) return
+    scrollToRow(index, true)
+    pendingReveal.current = undefined
+  }, [active, rows, scrollToRow])
 
   const toggle = (key: string) => setExpanded(previous => {
     const next = new Set(previous)
@@ -126,7 +155,7 @@ export function BookmarkPanel({ pdf, active, bookmarks, onNavigateDestination, t
             : <div ref={root} className="dsh-pdf-bookmark-scroll" role="tree" tabIndex={0} aria-label={t('reader.sidebar.bookmarks')}>
               <div className="dsh-pdf-bookmark-virtual" style={{ height: totalHeight }}>
                 {rows.slice(start, end).map((row, offset) => <OutlineEntry key={row.key} pdf={pdf} row={row}
-                  index={start + offset} expanded={expanded.has(row.key)} toggle={toggle}
+                  index={start + offset} expanded={expanded.has(row.key)} current={row.key === currentKey} toggle={toggle}
                   onNavigateDestination={onNavigateDestination} t={t} />)}
               </div>
             </div>}

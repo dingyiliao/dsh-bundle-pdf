@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
+import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { applyPdfOperations, loadPdfDocument } from '../core/pdf-document.ts'
 import { projectPdfOperations } from '../core/pdf-operation-projection.ts'
 import type { PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
@@ -10,11 +11,7 @@ import { draftSchema, requestSchema, type DraftRecord } from './validation.ts'
 import type { createLocalFiles, PdfFileRead } from './local-files.ts'
 import type { PdfAgent } from './transport.ts'
 
-interface DraftTable {
-  get(key: string): DraftRecord | undefined
-  put(key: string, value: DraftRecord): Promise<void>
-  delete(key: string): Promise<unknown>
-}
+type DraftTable = Pick<KvTable<string, DraftRecord>, 'get' | 'put'> & { delete(key: string): Promise<unknown> }
 interface WorkingCopy {
   id: string
   record: WorkspaceRecord
@@ -42,6 +39,8 @@ function errorText(error: unknown): string { return error instanceof Error ? err
 export function createWorkspaces(files: Files, drafts: DraftTable) {
   const copies = new Map<string, WorkingCopy>()
   const byPath = new Map<string, string>()
+  // Once a Client has opened a copy it must never be evicted by an Agent tool.
+  const uiOwned = new Set<string>()
   const queues = new Map<string, Promise<unknown>>()
   const hashes = new WeakMap<Uint8Array, string>()
   let closing = false
@@ -181,7 +180,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     return snapshot
   }
 
-  async function open(sessionId: string, address: string, agent: PdfAgent, signal: AbortSignal) {
+  async function open(sessionId: string, address: string, owner: 'ui' | 'agent', agent: PdfAgent, signal: AbortSignal) {
     const file = sessionFile(address)
     if (file.sessionId !== sessionId) fail('pdf/session-mismatch', 'The file address belongs to a different session')
     const path = await files.resolvePath(agent, file.path, signal)
@@ -193,6 +192,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     const key = recordKey(sessionId, path)
     const existingId = byPath.get(key)
     if (existingId) {
+      if (owner === 'ui') uiOwned.add(existingId)
       const copy = copies.get(existingId)!
       if (source && copy.record.renderedHash && copy.record.renderedHash !== copy.record.sourceHash
         && copy.record.renderedHash === source.version) {
@@ -253,13 +253,14 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     signal.throwIfAborted()
     copies.set(id, { id, record, baseline: baseline.document, snapshot })
     byPath.set(key, id)
+    if (owner === 'ui') uiOwned.add(id)
     return snapshot
   }
 
   async function run(raw: Record<string, unknown>, agent: PdfAgent, signal: AbortSignal) {
     const input = requestSchema.parse(raw)
     if (input.sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
-    if (input.action === 'open') return open(input.sessionId, input.address, agent, signal)
+    if (input.action === 'open') return open(input.sessionId, input.address, input.owner ?? 'ui', agent, signal)
     if (input.action === 'inspectTarget') {
       try { return { version: (await files.read(agent, input.path, signal)).version } }
       catch (error) {
@@ -301,6 +302,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
           const id = byPath.get(key)
           if (id) {
             copies.delete(id)
+            uiOwned.delete(id)
             if (byPath.get(key) === id) byPath.delete(key)
           }
           if (stored) await deleteBaseline(stored).catch(() => undefined)
@@ -443,6 +445,29 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
   }
   return {
     execute,
+    isUiOwned(sessionId: string, id: string): boolean {
+      const copy = copies.get(id)
+      if (!copy || copy.record.sessionId !== sessionId) fail('pdf/unknown-document', 'PDF working copy is unavailable in this session')
+      return uiOwned.has(id)
+    },
+    async releaseBackground(sessionId: string, id: string): Promise<'released' | 'retained-ui' | 'already-closed'> {
+      if (closing) return 'already-closed'
+      // Wait behind any ongoing session mutation before removing the copy. This
+      // does not delete persisted drafts, so reopening recovers unsaved work.
+      const before = queues.get(sessionId) ?? Promise.resolve()
+      const task = before.catch(() => undefined).then(() => {
+        const copy = copies.get(id)
+        if (!copy) return 'already-closed' as const
+        if (copy.record.sessionId !== sessionId) fail('pdf/session-mismatch', 'Working copy belongs to another session')
+        if (uiOwned.has(id)) return 'retained-ui' as const
+        const key = recordKey(sessionId, copy.record.path)
+        copies.delete(id)
+        if (byPath.get(key) === id) byPath.delete(key)
+        return 'released' as const
+      })
+      queues.set(sessionId, task)
+      try { return await task } finally { if (queues.get(sessionId) === task) queues.delete(sessionId) }
+    },
     readSnapshot(sessionId: string, id: string): HostWorkspaceSnapshot {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
       const copy = copies.get(id)
@@ -456,7 +481,7 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       closing = true
       disposal = (async () => {
         await Promise.allSettled([...queues.values()])
-        copies.clear(); byPath.clear(); queues.clear()
+        copies.clear(); byPath.clear(); uiOwned.clear(); queues.clear()
       })()
       return disposal
     },

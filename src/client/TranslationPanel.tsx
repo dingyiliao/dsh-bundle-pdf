@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { TranslationError, type TranslationRequest, type TranslationResult } from '../translation/index.js'
+import { TranslationError, type TranslationErrorCode, type TranslationRequest, type TranslationResult } from '../translation/index.js'
 import { translationSourceLanguage, translationTargetLanguages } from '../shared/contracts.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 
@@ -11,11 +11,12 @@ export interface TranslationPanelProps {
   }
   engineName: string
   translate: (request: TranslationRequest) => Promise<TranslationResult>
+  rememberTargetLanguage?: (language: string) => Promise<boolean>
   onClose: () => void
   t: (key: string) => string
 }
 
-const errorKeys: Readonly<Record<TranslationError['code'], string>> = {
+const errorKeys: Readonly<Record<TranslationErrorCode, string>> = {
   disabled: 'errorDisabled',
   'not-configured': 'errorNotConfigured',
   'engine-unavailable': 'errorEngineUnavailable',
@@ -26,28 +27,83 @@ const errorKeys: Readonly<Record<TranslationError['code'], string>> = {
   cancelled: 'cancelled',
   'stale-result': 'cancelled',
   'translation-failed': 'errorFailed',
+  'invalid-model-output': 'errorInvalidModelOutput',
+  'incomplete-model-output': 'errorIncompleteModelOutput',
+  'empty-model-output': 'errorEmptyModelOutput',
 }
 
 interface PanelResult { value: TranslationResult; targetLanguage: string }
 type PanelStatus = 'loading' | 'complete' | 'cancelled' | 'error'
 
+/** Show only classified, localized failures; Remote error messages may contain provider diagnostics. */
+export function TranslationErrorNotice({ code, t }: { code: TranslationErrorCode; t: (key: string) => string }) {
+  const label = (key: string) => t(`reader.translation.${key}`)
+  return <div className="dsh-pdf-translation-error" role="alert">
+    <span className="dsh-pdf-translation-error-icon" aria-hidden="true">!</span>
+    <div>
+      <strong>{label('errorTitle')}</strong>
+      <p>{label(errorKeys[code])}</p>
+    </div>
+  </div>
+}
+
+/** Render lexical translations without repeating their serialized copy text. */
+export function TranslationDetails({ detail, sourceText, t }: {
+  detail: NonNullable<TranslationResult['detail']>
+  sourceText: string
+  t: (key: string) => string
+}) {
+  const label = (key: string) => t(`reader.translation.${key}`)
+  return <div className="dsh-pdf-translation-details" data-translation-kind={detail.kind} tabIndex={0}>
+    <div className="dsh-pdf-translation-lexical-heading">
+      <strong className="dsh-pdf-translation-term" dir="auto">{sourceText}</strong>
+      <span className="dsh-pdf-translation-kind">{label(detail.kind)}</span>
+    </div>
+    {detail.kind === 'word' && detail.pronunciation && <p className="dsh-pdf-translation-pronunciation">
+      <span>{label('pronunciation')}</span> <span dir="auto">{detail.pronunciation}</span>
+    </p>}
+    <ol className="dsh-pdf-translation-meanings">
+      {detail.meanings.map(({ partOfSpeech, meaning, example, exampleTranslation }, index) => <li key={index}>
+        <div className="dsh-pdf-translation-meaning">
+          <span className="dsh-pdf-translation-part-of-speech" dir="auto">{partOfSpeech}</span>
+          <span dir="auto">{meaning}</span>
+        </div>
+        <p className="dsh-pdf-translation-example"><span className="dsh-pdf-visually-hidden">{label('example')}: </span><span dir="auto">{example}</span></p>
+        <p className="dsh-pdf-translation-example-translation"><span className="dsh-pdf-visually-hidden">{label('exampleTranslation')}: </span><span dir="auto">{exampleTranslation}</span></p>
+      </li>)}
+    </ol>
+  </div>
+}
+
+export function TranslationContent({ value, sourceText, t }: {
+  value: TranslationResult
+  sourceText: string
+  t: (key: string) => string
+}) {
+  return value.detail
+    ? <TranslationDetails detail={value.detail} sourceText={sourceText} t={t} />
+    : <div className="dsh-pdf-translation-text" dir="auto" tabIndex={0}>{value.text}</div>
+}
+
 /** An explicit, cancellable translation of the selection captured by the reader. */
-export function TranslationPanel({ selection, engineName, translate, onClose, t }: TranslationPanelProps) {
-  const callbacks = useRef({ translate, onClose, t })
-  callbacks.current = { translate, onClose, t }
+export function TranslationPanel({ selection, engineName, translate, rememberTargetLanguage, onClose, t }: TranslationPanelProps) {
+  const callbacks = useRef({ translate, rememberTargetLanguage, onClose, t })
+  callbacks.current = { translate, rememberTargetLanguage, onClose, t }
   const alive = useRef(false)
   const closeRequested = useRef(false)
   const generation = useRef(0)
   const active = useRef<AbortController>()
+  const preferenceGeneration = useRef(0)
   const latestResult = useRef<PanelResult>()
   const titleId = useId()
   const targetId = useId()
   const [targetLanguage, setTargetLanguage] = useState(selection.targetLanguage)
   const [status, setStatus] = useState<PanelStatus>('loading')
   const [result, setResult] = useState<PanelResult>()
-  const [errorKey, setErrorKey] = useState<string>()
+  const [errorCode, setErrorCode] = useState<TranslationErrorCode>()
   const [copyErrorKey, setCopyErrorKey] = useState<string>()
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied'>('idle')
+  const [preferenceStatus, setPreferenceStatus] = useState<'idle' | 'saving' | 'failed'>('idle')
 
   const invalidate = useCallback(() => {
     generation.current++
@@ -64,7 +120,7 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
     latestResult.current = undefined
     setResult(undefined)
     setStatus('loading')
-    setErrorKey(undefined)
+    setErrorCode(undefined)
     setCopyErrorKey(undefined)
     setCopyState('idle')
     const translateSelection = callbacks.current.translate
@@ -91,7 +147,7 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
         if (cause instanceof TranslationError && (cause.code === 'cancelled' || cause.code === 'stale-result')) {
           setStatus('cancelled')
         } else {
-          setErrorKey(cause instanceof TranslationError ? errorKeys[cause.code] : 'errorFailed')
+          setErrorCode(cause instanceof TranslationError ? cause.code : 'translation-failed')
           setStatus('error')
         }
       } finally {
@@ -103,6 +159,8 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
   useEffect(() => {
     alive.current = true
     closeRequested.current = false
+    preferenceGeneration.current++
+    setPreferenceStatus('idle')
     setTargetLanguage(selection.targetLanguage)
     startTranslation(selection, selection.targetLanguage)
     return () => {
@@ -121,7 +179,25 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
   const cancel = () => {
     invalidate()
     setStatus('cancelled')
-    setErrorKey(undefined)
+    setErrorCode(undefined)
+  }
+
+  const changeTargetLanguage = (language: string) => {
+    setTargetLanguage(language)
+    const generation = ++preferenceGeneration.current
+    setPreferenceStatus('saving')
+    void (async () => {
+      try {
+        const accepted = await callbacks.current.rememberTargetLanguage?.(language) ?? false
+        if (alive.current && !closeRequested.current && generation === preferenceGeneration.current) {
+          setPreferenceStatus(accepted ? 'idle' : 'failed')
+        }
+      } catch {
+        if (alive.current && !closeRequested.current && generation === preferenceGeneration.current) {
+          setPreferenceStatus('failed')
+        }
+      }
+    })()
   }
 
   const copyResult = async () => {
@@ -169,12 +245,12 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
         <button type="button" onClick={requestClose} aria-label={label('close')}>×</button>
       </div>
       <p className="dsh-pdf-translation-meta">
-        {label('engine')} {engineName}<br />{label('pages')} {pages}
+        <span>{label('pages')} {pages}</span><span aria-hidden="true"> · </span>
+        <span>{label('engine')} {engineName}</span>
       </p>
-      <p className="dsh-pdf-muted">{label('selectionOnly')}</p>
       <div className="dsh-pdf-translation-controls">
         <label htmlFor={targetId}>{label('targetLanguage')}</label>
-        <select id={targetId} value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>
+        <select id={targetId} value={targetLanguage} onChange={(event) => changeTargetLanguage(event.target.value)}>
           {translationTargetLanguages.map(language => <option key={language} value={language}>{languageName(language)}</option>)}
         </select>
         <button type="button" disabled={loading} onClick={() => startTranslation(selection, targetLanguage)}>
@@ -182,31 +258,40 @@ export function TranslationPanel({ selection, engineName, translate, onClose, t 
         </button>
         {loading && <button type="button" onClick={cancel}>{label('cancel')}</button>}
       </div>
+      {preferenceStatus === 'saving' && <p className="dsh-pdf-translation-preference" role="status">{label('languageSaving')}</p>}
+      {preferenceStatus === 'failed' && <p className="dsh-pdf-translation-preference is-error" role="alert">{label('languageSaveFailed')}</p>}
+      <section className="dsh-pdf-translation-result" aria-busy={loading}>
+        <div className="dsh-pdf-translation-result-header">
+          <h4>{label('result')} · {languageName(result?.targetLanguage ?? targetLanguage)}</h4>
+          {result && <button type="button" disabled={copyState === 'copying'} onClick={() => void copyResult()}>
+            {label(copyState === 'copied' ? 'copied' : copyState === 'copying' ? 'copying' : 'copy')}
+          </button>}
+        </div>
+        <div className="dsh-pdf-translation-result-body">
+          <div className="dsh-pdf-translation-status" role="status" aria-live="polite">
+            {loading ? label('loading') : status === 'cancelled' ? label('cancelled') : copyState === 'copied' ? label('copied') : null}
+          </div>
+          {errorCode && <TranslationErrorNotice code={errorCode} t={t} />}
+          {result && <>
+            {result.value.detectedSourceLanguage && <p className="dsh-pdf-translation-meta">
+              {label('detectedLanguage')} {languageName(result.value.detectedSourceLanguage)}
+            </p>}
+            {result.value.status === 'partial' && <p className="dsh-pdf-translation-warning" role="status">{label('partial')}</p>}
+            {!!result.value.warnings.length && <ul className="dsh-pdf-translation-warnings">
+              {result.value.warnings.map((warning, index) => <li key={`${index}:${warning}`}>
+                {warning === 'max-tokens' ? label('warningMaxTokens') : <>{label('warningUnknown')} {warning}</>}
+              </li>)}
+            </ul>}
+            <TranslationContent value={result.value} sourceText={selection.text} t={t} />
+          </>}
+          {copyErrorKey && <p className="dsh-pdf-translation-copy-error" role="alert">{label(copyErrorKey)}</p>}
+        </div>
+      </section>
       <details className="dsh-pdf-translation-original">
         <summary>{label('original')}</summary>
         <div className="dsh-pdf-translation-text" dir="auto">{selection.text}</div>
       </details>
-      <div className="dsh-pdf-translation-status" role="status" aria-live="polite">
-        {loading ? label('loading') : status === 'cancelled' ? label('cancelled') : copyState === 'copied' ? label('copied') : null}
-      </div>
-      {errorKey && <p className="dsh-pdf-translation-error" role="alert">{label(errorKey)}</p>}
-      {result && <section className="dsh-pdf-translation-result" aria-busy={loading}>
-        <h4>{label('result')} · {languageName(result.targetLanguage)}</h4>
-        {result.value.detectedSourceLanguage && <p className="dsh-pdf-translation-meta">
-          {label('detectedLanguage')} {languageName(result.value.detectedSourceLanguage)}
-        </p>}
-        {result.value.status === 'partial' && <p className="dsh-pdf-translation-warning" role="status">{label('partial')}</p>}
-        {!!result.value.warnings.length && <ul className="dsh-pdf-translation-warnings">
-          {result.value.warnings.map((warning, index) => <li key={`${index}:${warning}`}>
-            {warning === 'max-tokens' ? label('warningMaxTokens') : <>{label('warningUnknown')} {warning}</>}
-          </li>)}
-        </ul>}
-        <div className="dsh-pdf-translation-text" dir="auto" tabIndex={0}>{result.value.text}</div>
-        <button type="button" disabled={copyState === 'copying'} onClick={() => void copyResult()}>
-          {label(copyState === 'copying' ? 'copying' : 'copy')}
-        </button>
-      </section>}
-      {copyErrorKey && <p className="dsh-pdf-translation-error" role="alert">{label(copyErrorKey)}</p>}
+      <p className="dsh-pdf-translation-note">{label('selectionOnly')}</p>
     </section>
   </ScrollablePanel>
 }

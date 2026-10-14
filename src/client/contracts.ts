@@ -1,7 +1,7 @@
 import type { RefCallback } from 'react'
-import type { OcrRegistry } from '../ocr/registry.ts'
 import type { PdfClientApi, PdfSettings } from '../shared/contracts.ts'
 import type { TranslationRegistry } from '../translation/index.js'
+import type { HostOcrApi } from './host-ocr-api.js'
 
 export type { PdfClientApi, PdfSettings, WorkspaceSnapshot } from '../shared/contracts.ts'
 
@@ -26,12 +26,16 @@ export interface ReaderProps {
     actions: { openResource(address: string, options?: { replaceTab?: boolean }): void } } }
   t: (key: string) => string
   api: PdfClientApi
-  ocr: OcrRegistry
+  hostOcr: HostOcrApi
   translation: TranslationRegistry
   settings: PdfSettings
+  /** Persist the translation target for the next selection in this profile. */
+  rememberTranslationTargetLanguage?: (language: string) => Promise<boolean>
   /** Desktop-only native Save As chooser; the browser keeps the in-page fallback. */
   pickSavePath?: (defaultPath: string) => Promise<string | null>
   /** Only the Session which owns the resource may publish its active reader. */
   allowReadingContext?: boolean
   reportReadingContext?: (update: PdfReadingContextUpdate) => Promise<void>
+  /** Append one user turn to this PDF's owning current conversation. */
+  promptExplanation?: (text: string, signal: AbortSignal) => Promise<void>
 }

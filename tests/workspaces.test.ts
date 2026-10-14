@@ -350,3 +350,26 @@ test('same-process reopen recovers a committed PDF when immediate verification i
     assert.equal(state.records.size, 0)
   } finally { await workspaces.dispose() }
 })
+
+test('background release preserves drafts and refuses to close a Client-owned copy', async () => {
+  const state = harness(await fixture())
+  const workspaces = createWorkspaces(state.files, state.drafts)
+  try {
+    const first = await snapshot(workspaces, { action: 'open', address, owner: 'agent' })
+    assert.equal(workspaces.isUiOwned(sessionId, first.id), false)
+    const edited = await snapshot(workspaces, edit(first.id, first.revision, note('background-draft')))
+    assert.equal(await workspaces.releaseBackground(sessionId, first.id), 'released')
+    assert.throws(() => workspaces.readSnapshot(sessionId, first.id), { code: 'pdf/unknown-document' })
+    assert.ok(state.records.size > 0, 'releasing memory must not delete the saved draft')
+    const reopened = await snapshot(workspaces, { action: 'open', address, owner: 'agent' })
+    assert.notEqual(reopened.id, first.id)
+    assert.equal(reopened.dirty, true)
+    assert.equal(reopened.document.annotations.find(item => item.id === 'background-draft')?.contents, 'background-draft')
+    const ui = await snapshot(workspaces, { action: 'open', address })
+    assert.equal(ui.id, reopened.id)
+    assert.equal(workspaces.isUiOwned(sessionId, ui.id), true)
+    assert.equal(await workspaces.releaseBackground(sessionId, ui.id), 'retained-ui')
+    assert.equal(workspaces.readSnapshot(sessionId, ui.id).revision, edited.revision)
+    await assert.rejects(workspaces.releaseBackground('other-session', ui.id), { code: 'pdf/session-mismatch' })
+  } finally { await workspaces.dispose() }
+})

@@ -25,8 +25,6 @@ export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] a
 export const translationSourceLanguage = 'auto' as const
 
 export interface PdfSettings {
-  ocrEngine: string
-  ocrLanguages: string
   ocrTimeoutMs: number
   translationEngine: string
   translationTargetLanguage: string
@@ -36,7 +34,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
-  ocrEngine: 'none', ocrLanguages: 'eng+chi_sim', ocrTimeoutMs: 120000,
+  ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
 }

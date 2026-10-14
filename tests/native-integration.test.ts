@@ -165,6 +165,55 @@ test('PDFium exposes searchable text, URI/internal destinations and bounded obje
   } finally { worker.dispose() }
 })
 
+test('native dispatcher rejects an unknown command without stopping the worker', { skip }, async () => {
+  const worker = new NativeWorker(executable)
+  try {
+    await assert.rejects(worker.request({ command: 'unknown' }), /Unknown native command/)
+    assert.deepEqual((await worker.request({ command: 'hello' })).value,
+      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
+  } finally { worker.dispose() }
+})
+
+test('native render rejects invalid flags and leaves blank pixels white', { skip }, async () => {
+  const pdf = await PDFDocument.create(); pdf.addPage([32, 32])
+  const worker = new NativeWorker(executable)
+  try {
+    await worker.request({ command: 'open', documentId: 'blank' }, await pdf.save())
+    const tile = { command: 'render', documentId: 'blank', pageIndex: 0, rotation: 0,
+      rasterWidth: 32, rasterHeight: 32, x: 0, y: 0, width: 32, height: 32 }
+    await assert.rejects(worker.request({ ...tile, annotations: 'yes' }), { code: 'pdf/native-request' })
+    const { bytes } = await worker.request({ ...tile, annotations: false })
+    assert.equal(bytes.length, 32 * 32 * 4)
+    assert.ok(bytes.every(channel => channel === 255))
+  } finally { worker.dispose() }
+})
+
+test('oversized native replies return an explicit error without stopping the worker', { skip }, async () => {
+  const pdf = await PDFDocument.create(), page = pdf.addPage([32, 32])
+  const root = pdf.context.obj({ Type: 'Outlines', Count: 110 })
+  const rootRef = pdf.context.register(root)
+  let previous: typeof root | undefined
+  let previousRef: typeof rootRef | undefined
+  for (let index = 0; index < 110; index++) {
+    const bookmark = pdf.context.obj({ Title: PDFHexString.fromText('汉'.repeat(7000)), Parent: rootRef,
+      Dest: [page.ref, PDFName.of('Fit')] })
+    const bookmarkRef = pdf.context.register(bookmark)
+    if (previous && previousRef) { previous.set(PDFName.of('Next'), bookmarkRef); bookmark.set(PDFName.of('Prev'), previousRef) }
+    else root.set(PDFName.of('First'), bookmarkRef)
+    previous = bookmark; previousRef = bookmarkRef
+  }
+  root.set(PDFName.of('Last'), previousRef!)
+  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
+  const worker = new NativeWorker(executable)
+  try {
+    await worker.request({ command: 'open', documentId: 'large-outline' }, await pdf.save({ useObjectStreams: false }))
+    await assert.rejects(worker.request({ command: 'outline', documentId: 'large-outline' }),
+      { code: 'pdf/native-reply-too-large' })
+    assert.deepEqual((await worker.request({ command: 'hello' })).value,
+      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
+  } finally { worker.dispose() }
+})
+
 test('PDFium reads a nested Unicode outline with a working page destination', { skip }, async () => {
   const pdf = await PDFDocument.create()
   pdf.addPage([300, 400])
