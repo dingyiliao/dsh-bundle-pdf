@@ -62,9 +62,11 @@ npm run bench:compare -- --before bench-results/reader-before/runs.jsonl --after
 | host.materialize | 原始字节 → 新增一次操作的 PDF/元数据返回 | 独立重新打开并检查页数和新增 ID |
 | reader.open | 挂载 Reader → 可见页面 raster 完成与采样质量达标 | 可见画布含墨迹、文本层存在、页占位数匹配 |
 | reader.scroll | 从 100% 顶部开始，1500ms 内沿时间移动最多 8000 CSS px | 到达指定终点，停止后 raster/文本恢复 |
-| reader.zoom4x | 从已渲染 100% 页面发送两次 Ctrl+wheel → 提交 400% 与新 raster | 完成目标比例、实际像素密度满足现有安全上限 |
+| reader.zoom4x | 通过当前 Zoom 菜单设为 100%，再发送两次 Ctrl+wheel → 提交 400% 与新 raster | 完成目标比例、实际像素密度满足现有安全上限 |
+| reader.search-cold | `text-1000` 首次提交固定无命中词 → 搜索面板显示完整的“无结果” | 结果数为 0；包括逐页文本提取，不含输入文字和初始打开 |
+| reader.search-warm | 同一 Reader 先完整执行一次无命中搜索，再计时重复提交同一个词 → 显示“无结果” | 结果数为 0；同一文档的文本索引已预热，仍须扫描全部页 |
 
-Host 每次使用新 Node 子进程；输入读取/预解析不计入操作计时。Browser 共用一个浏览器进程，每次使用全新 context 和 Host workspace；应用脚本下载、浏览器启动和滚动/缩放的初始打开不计入对应场景。OS 文件缓存和机器热状态未清空；这些结果不叫“冷机启动”。文件和 draft 为内存适配器，RPC 走真实 loopback HTTP，但没有 DSH 授权链或真实 fsync。
+Host 每次使用新 Node 子进程；输入读取/预解析不计入操作计时。Browser 共用一个浏览器进程，每次使用全新 context 和 Host workspace；应用脚本下载、浏览器启动和滚动/缩放/搜索的初始打开不计入对应场景。默认仅在 `text-1000` 上运行两个搜索场景；显式 `--document` 和 `--scenario` 可单独排查其他组合。OS 文件缓存和机器热状态未清空；这些结果不叫“冷机启动”。文件和 draft 为内存适配器，RPC 走真实 loopback HTTP，但没有 DSH 授权链或真实 fsync。
 
 ## 指标
 
@@ -79,6 +81,8 @@ Host 每次使用新 Node 子进程；输入读取/预解析不计入操作计�
 | blankAreaTimeRatio | 滚动 rAF 样本中未完成 bitmap 的可见 PDF 面积比例，按时间间隔加权；排除页外背景 |
 | rafIntervalP95Ms / rafIntervalMaxMs | 滚动过程主线程 rAF 回调间隔，**不是呈现 FPS/丢帧率** |
 | scrollSettleProxyMs | 最后一次滚动位置更新 → 最终视口达到目标 raster 质量 |
+| searchCompleteMs | 提交已输入的固定无命中词 → 搜索面板显示最终“无结果”；此时仍需结合 `client.search` 阶段确认内部扫描耗时 |
+| searchResultCount | 搜索结果个数；固定无命中场景应为 0，是正确性哨兵而非性能提升指标 |
 | canvasPixelBytesEstimate | 附着在 DOM 的 canvas 宽×高×4；滚动取采样峰值。遗漏尚未附着的渲染、GPU、副本等 |
 | longTaskTotalMs / longTaskMaxMs | 支持 Long Tasks API 时，计时范围内开始的主线程长任务统计 |
 | browserTotalRssMiB | 当前未采集，始终 null；不得拿画布估计替代整个浏览器/Host/native 的内存 |

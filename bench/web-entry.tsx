@@ -59,6 +59,9 @@ function open() {
     t={t} api={api} hostOcr={{
       availability: async () => ({ status: 'unavailable', reason: 'OCR is outside the reader benchmark.' }),
       recognize: async () => { throw new Error('OCR is outside the reader benchmark.') },
+    }} imageUnderstanding={{
+      availability: async () => ({ status: 'unavailable', reason: 'Image understanding is outside the reader benchmark.' }),
+      prepare: async () => { throw new Error('Image understanding is outside the reader benchmark.') },
     }} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
     settings={defaultSettings} />)
 }
@@ -138,6 +141,56 @@ async function waitQuality(start: number, timeout: number, response = () => true
   throw new Error('Timed out waiting for completed raster at the target sampling quality')
 }
 function canvasBytes() { return [...document.querySelectorAll('canvas')].reduce((total, canvas) => total + canvas.width * canvas.height * 4, 0) }
+async function selectZoom100(timeout: number) {
+  const menu = document.querySelector<HTMLDetailsElement>('.dsh-pdf-toolbar-zoom')
+  const trigger = menu?.querySelector<HTMLElement>('summary')
+  const preset = [...(menu?.querySelectorAll<HTMLButtonElement>('.dsh-pdf-zoom-menu button') ?? [])]
+    .find(button => button.textContent?.trim() === '100%')
+  if (!trigger || !preset) throw new Error('The Reader 100% zoom control is unavailable')
+  trigger.click(); preset.click()
+  await frame()
+  await waitQuality(performance.now(), timeout,
+    () => trigger.getAttribute('aria-label')?.endsWith('100%') === true,
+    () => trigger.getAttribute('aria-label')?.endsWith('100%') === true)
+}
+function searchPanel() {
+  const tab = [...document.querySelectorAll<HTMLButtonElement>('.dsh-pdf-sidebar-tab')]
+    .find(button => button.getAttribute('aria-label') === t('reader.sidebar.search'))
+  if (!tab) throw new Error('The Reader search tab is unavailable')
+  tab.click()
+  const panel = document.querySelector<HTMLElement>('.dsh-pdf-search-panel')
+  const form = panel?.querySelector<HTMLFormElement>('form')
+  const input = form?.querySelector<HTMLInputElement>('input')
+  if (!panel || !form || !input) throw new Error('The Reader search form is unavailable')
+  return { panel, form, input }
+}
+async function prepareSearch(timeout: number) {
+  const { panel, form, input } = searchPanel()
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  if (!setter) throw new Error('The native search input setter is unavailable')
+  setter.call(input, 'zz_pdf_benchmark_no_match_187')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  const start = performance.now()
+  while (performance.now() - start < timeout) {
+    await frame()
+    if (form.querySelector<HTMLButtonElement>('button:not([disabled])')) return { panel, form }
+  }
+  throw new Error('The Reader search form did not accept the benchmark query')
+}
+async function submitAndWaitForSearch(panel: HTMLElement, form: HTMLFormElement, timeout: number) {
+  form.requestSubmit()
+  // A prior warm-up may leave the previous result visible until React commits
+  // the new search state, so cross one frame before checking the terminal UI.
+  await frame()
+  const start = performance.now()
+  while (performance.now() - start < timeout) {
+    await frame(); checkError()
+    const button = form.querySelector<HTMLButtonElement>('button')
+    if (!button?.disabled && panel.textContent?.includes(t('reader.noResults')) &&
+      !panel.textContent?.includes(t('reader.searching'))) return
+  }
+  throw new Error('Timed out waiting for the complete no-hit search result')
+}
 function validateVisibleContent() {
   const mounted = document.querySelectorAll('.dsh-pdf-windowed-page').length
   if (config.pages >= 64 && mounted > 12) throw new Error('Reader mounted too many page wrappers')
@@ -188,9 +241,7 @@ window.__PDF_BENCH__ = {
       // Text is checked after timing; never equate content.loaded() with visible raster.
     } else {
       open(); await waitQuality(performance.now(), timeout)
-      const zoom = document.querySelector<HTMLSelectElement>('select[aria-label="Zoom"]')!
-      zoom.value = '1'; zoom.dispatchEvent(new Event('change', { bubbles: true }))
-      await frame(); await waitQuality(performance.now(), timeout, () => true, () => zoom.value === '1')
+      await selectZoom100(timeout)
       stages.length = 0; longTasks.length = 0
       const scroll = rootElement()!
       scroll.scrollTop = 0; scroll.scrollLeft = 0; await frame()
@@ -204,7 +255,8 @@ window.__PDF_BENCH__ = {
           ctrlKey: true, clientX: x, clientY: y, deltaY: -Math.log(2) / 0.002 }))
         Object.assign(metrics, await waitQuality(timedStart, timeout,
           () => page.getBoundingClientRect().width >= initialWidth * 3.99,
-          () => Math.abs(Number(zoom.value) - 4) < 0.001 && page.offsetWidth >= initialWidth * 3.99))
+          () => document.querySelector('.dsh-pdf-toolbar-zoom summary')?.getAttribute('aria-label')?.endsWith('400%') === true
+            && page.offsetWidth >= initialWidth * 3.99))
       } else if (scenario === 'reader.scroll') {
         const distance = Math.min(8000, scroll.scrollHeight - scroll.clientHeight), duration = 1500
         const intervals: number[] = []
@@ -224,6 +276,15 @@ window.__PDF_BENCH__ = {
           blankAreaTimeRatio: weight ? blankWeighted / weight : null, maxBlankAreaRatio: maxBlank,
           canvasPixelBytesEstimate: Math.max(peakCanvas, canvasBytes()) })
         if (Math.abs(scroll.scrollTop - distance) > 2) throw new Error('Scroll workload did not reach the specified endpoint')
+      } else if (scenario === 'reader.search-cold' || scenario === 'reader.search-warm') {
+        const { panel, form } = await prepareSearch(timeout)
+        if (scenario === 'reader.search-warm') await submitAndWaitForSearch(panel, form, timeout)
+        stages.length = 0; longTasks.length = 0
+        timedStart = performance.now()
+        await submitAndWaitForSearch(panel, form, timeout)
+        metrics.searchCompleteMs = performance.now() - timedStart
+        metrics.searchResultCount = document.querySelectorAll('.dsh-pdf-search-hit').length
+        if (metrics.searchResultCount !== 0) throw new Error('No-hit search unexpectedly returned results')
       } else throw new Error('Unknown Reader scenario')
     }
     const end = performance.now()

@@ -7,6 +7,7 @@ import type { DraftRecord } from '../src/host/validation.ts'
 import { sha256 } from './metadata.ts'
 import { createPdfService } from '../src/host/pdf-service.ts'
 import { registerPdfTransport } from '../src/host/transport.ts'
+import { nativeTestSubprocess } from '../tests/native-test-subprocess.ts'
 import { resolve } from 'node:path'
 
 export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages: number, annotations: number) {
@@ -28,7 +29,10 @@ export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages
   }
   const workspaces = createWorkspaces(files, { get: key => records.get(key),
     async put(key, value) { records.set(key, structuredClone(value)) }, async delete(key) { records.delete(key) } })
-  const service = createPdfService(workspaces, { executable: process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`) })
+  const service = createPdfService(workspaces, {
+    executable: process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`),
+    subprocess: nativeTestSubprocess,
+  })
   const routes = new Map<string, (request: Request) => Promise<Response>>()
   const context: Parameters<typeof registerPdfTransport>[0] = { connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return async () => { routes.delete(route.path) } } } },
     sessionController: { async resolveAgent(id) { return id === sessionId ? { agent: { session: { id, header: { cwd: '/bench' } } } } : { error: new Error('Unknown fixture session') } } } }
@@ -71,7 +75,6 @@ export async function startServer(bundle: Uint8Array, initial: Uint8Array, pages
   if (!address || typeof address === 'string') throw new Error('No benchmark server port')
   return { url: `http://127.0.0.1:${address.port}/`, stages, traffic, diagnostics: service.diagnostics, currentBytes: () => bytes, async close() {
     owner.abort(); stop(); server.closeAllConnections()
-    service.dispose()
-    await Promise.all([workspaces.dispose(), new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))])
+    await Promise.all([service.dispose(), workspaces.dispose(), new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))])
   } }
 }

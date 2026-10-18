@@ -23,6 +23,13 @@ const output = join(out, 'runs.jsonl'); await writeFile(output, '', { flag: 'wx'
 const corpus = await ensureCorpus(corpusDirectory)
 const documents = values.document ? corpus.documents.filter(document => document.id === values.document) : corpus.documents
 if (!documents.length) throw new Error('Unknown document ID')
+const scenariosFor = (documentId: string) => values.scenario ? [values.scenario] : [
+  'reader.open', 'reader.scroll', 'reader.zoom4x',
+  ...(documentId === 'text-1000' ? ['reader.search-cold', 'reader.search-warm'] : []),
+]
+const validScenarios = new Set(['reader.open', 'reader.scroll', 'reader.zoom4x', 'reader.search-cold', 'reader.search-warm'])
+if (values.scenario && !validScenarios.has(values.scenario)) throw new Error('Unknown Reader scenario')
+const expectedRowCount = repeats * documents.reduce((total, document) => total + scenariosFor(document.id).length, 0)
 await mkdir(join(ROOT, 'bench/.web-build'), { recursive: true })
 await build({ absWorkingDir: ROOT, entryPoints: ['bench/web-entry.tsx'], outfile: 'bench/.web-build/app.js', bundle: true,
   minify: false, sourcemap: false, platform: 'browser', format: 'iife', target: ['chrome120'], mainFields: ['browser', 'module', 'main'],
@@ -38,11 +45,7 @@ const rows: BenchmarkRow[] = []
 let failures = 0
 try {
   for (let iteration = 0; iteration < repeats; iteration++) {
-    const scenarios = values.scenario ? ['reader.open', 'reader.scroll', 'reader.zoom4x'].filter(scenario => scenario === values.scenario)
-      : ['reader.open', 'reader.scroll', 'reader.zoom4x']
-    if (!scenarios.length) throw new Error('Unknown Reader scenario')
-    if (iteration % 2) scenarios.reverse()
-    for (const document of documents) for (const scenario of scenarios) {
+    for (const document of documents) for (const scenario of iteration % 2 ? scenariosFor(document.id).reverse() : scenariosFor(document.id)) {
       const bytes = new Uint8Array(await readFile(join(corpusDirectory, document.file)))
       if (sha256(bytes) !== document.sha256) throw new Error('Corpus digest changed')
       const server = await startServer(bundle, bytes, document.pages, document.annotations)
@@ -81,7 +84,7 @@ try {
         await context.close(); await server.close()
       }
       const row = rowSchema.parse({ schemaVersion: 1, runId: randomUUID(), iteration, suite, measurementKind: 'reader-component', scenario,
-        repeatCount: repeats, expectedRowCount: repeats * documents.length * scenarios.length,
+        repeatCount: repeats, expectedRowCount,
         documentId: document.id, documentSha256: document.sha256, pageCount: document.pages, annotationCount: document.annotations, seed: corpus.seed,
         cacheState: 'fresh-browser-context-host-workspace-app-bundle-ready', qualityMode: 'completed-raster-visible-area-and-sampling-with-text-ink-validation',
         environment, source, ...payload })
