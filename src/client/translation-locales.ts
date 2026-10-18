@@ -3,7 +3,7 @@ export const translationEn = {
   'translation.close': 'Close translation',
   'translation.engine': 'Engine:',
   'translation.pages': 'Pages:',
-  'translation.selectionOnly': 'Translates only the selected text, without adding it to conversation history.',
+  'translation.selectionOnly': 'This translation stays in the reader and is not added to conversation history.',
   'translation.targetLanguage': 'Target language',
   'translation.languageSaving': 'Saving language preference…',
   'translation.languageSaveFailed': 'Could not remember this language. The next translation may use the previous choice.',
@@ -11,6 +11,7 @@ export const translationEn = {
   'translation.retry': 'Retry',
   'translation.cancel': 'Cancel',
   'translation.original': 'Original',
+  'translation.reselect': 'Select again',
   'translation.loading': 'Translating…',
   'translation.cancelled': 'Translation cancelled.',
   'translation.result': 'Translation',
@@ -47,6 +48,8 @@ export const translationEn = {
   'translation.errorInvalidModelOutput': 'The model did not return complete meanings and examples in the expected format. Retry.',
   'translation.errorIncompleteModelOutput': 'The model stopped before the translation was complete. Retry.',
   'translation.errorEmptyModelOutput': 'The model returned no translation. Retry.',
+  'translation.errorIncompleteSelection': 'This selection may be incomplete. It cannot be translated reliably; select the text again.',
+  'translation.errorUnrecognizedSelection': 'This text cannot be translated reliably. Select a clearer passage and try again.',
 }
 
 export const translationZh: Record<keyof typeof translationEn, string> = {
@@ -54,7 +57,7 @@ export const translationZh: Record<keyof typeof translationEn, string> = {
   'translation.close': '关闭翻译',
   'translation.engine': '引擎：',
   'translation.pages': '来源页：',
-  'translation.selectionOnly': '仅翻译此处选中的文字，不加入会话历史。',
+  'translation.selectionOnly': '译文仅用于当前阅读，不加入会话历史。',
   'translation.targetLanguage': '目标语言',
   'translation.languageSaving': '正在保存语言偏好…',
   'translation.languageSaveFailed': '无法记住此语言，下次翻译可能会使用之前的选择。',
@@ -62,6 +65,7 @@ export const translationZh: Record<keyof typeof translationEn, string> = {
   'translation.retry': '重试',
   'translation.cancel': '取消',
   'translation.original': '原文',
+  'translation.reselect': '重新选择',
   'translation.loading': '正在翻译…',
   'translation.cancelled': '已取消翻译。',
   'translation.result': '译文',
@@ -98,4 +102,6 @@ export const translationZh: Record<keyof typeof translationEn, string> = {
   'translation.errorInvalidModelOutput': '模型没有按要求返回完整的释义和例句，请重试。',
   'translation.errorIncompleteModelOutput': '模型在完成翻译前停止了输出，请重试。',
   'translation.errorEmptyModelOutput': '模型没有返回译文，请重试。',
+  'translation.errorIncompleteSelection': '选区可能不完整，无法可靠翻译。请重新选择文字。',
+  'translation.errorUnrecognizedSelection': '这段文字无法可靠翻译，请重新选择更清晰的内容。',
 }

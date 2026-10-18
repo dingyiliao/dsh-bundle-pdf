@@ -20,6 +20,19 @@ export interface PdfBookmarksApi {
   remove(sessionId: string, documentId: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
 }
 
+/** Where reading stopped in one file, with the reason it may no longer apply. */
+export interface PdfStoredReadingPosition {
+  position: PdfBookmarkPosition
+  stale: 'none' | 'content-changed' | 'page-missing'
+  updatedAt: string
+}
+
+export interface PdfReadingPositionApi {
+  /** The remembered position for this file path, or null when none was ever stored. */
+  get(sessionId: string, documentId: string, signal?: AbortSignal): Promise<PdfStoredReadingPosition | null>
+  set(sessionId: string, documentId: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<void>
+}
+
 /** Target languages offered by the per-selection translation panel. */
 export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] as const
 export const translationSourceLanguage = 'auto' as const
@@ -66,6 +79,7 @@ export interface WorkspaceSnapshot {
 export interface PdfClientApi {
   native: NativeReaderApi
   bookmarks: PdfBookmarksApi
+  positions: PdfReadingPositionApi
   open(sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   change(sessionId: string, id: string, revision: number, operations: PdfAnnotationOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>

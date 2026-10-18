@@ -9,7 +9,7 @@ import {
   removeHighlightQuickColor,
 } from './highlight-colors.js'
 
-interface HighlightColorBarProps {
+interface AnnotationColorBarProps {
   value: string
   disabled?: boolean
   /** Clicking a saved color immediately applies it to the current selection. */
@@ -28,8 +28,12 @@ function persistColors(colors: string[]): void {
   window.dispatchEvent(new CustomEvent<string[]>(changeEvent, { detail: colors }))
 }
 
-/** Five editable quick slots plus a native palette. No silent replacement at capacity. */
-export function HighlightColorBar({ value, disabled = false, onQuickColor, onPaletteColor, label, t }: HighlightColorBarProps) {
+/**
+ * Five editable quick slots plus a native palette. No silent replacement at
+ * capacity. Highlight, underline and strike-out share one bar and one saved
+ * palette, so the mark color is chosen the same way whichever action created it.
+ */
+export function AnnotationColorBar({ value, disabled = false, onQuickColor, onPaletteColor, label, t }: AnnotationColorBarProps) {
   const [colors, setColors] = useState(readHighlightQuickColors)
   const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [menuError, setMenuError] = useState('')
@@ -87,18 +91,18 @@ export function HighlightColorBar({ value, disabled = false, onQuickColor, onPal
   }
 
   return <div className="dsh-pdf-highlight-colors" data-testid="pdf-highlight-colors" role="group" aria-label={t('reader.quickColor')}>
-    <div className="dsh-pdf-highlight-swatches">
+    {colors.length > 0 && <div className="dsh-pdf-highlight-swatches">
       {colors.map((hex, index) => <span className="dsh-pdf-highlight-swatch-wrap" key={index}>
         <button type="button" ref={(element) => { swatchRefs.current[index] = element }}
           className="dsh-pdf-highlight-swatch" data-testid={`pdf-highlight-swatch-${index}`}
-          style={{ backgroundColor: hex }} disabled={disabled} aria-pressed={chosen === hex}
+          disabled={disabled} aria-pressed={chosen === hex}
           aria-label={`${t('reader.quickColor')} ${index + 1}: ${hex}`}
           title={`${t('reader.quickColor')} ${index + 1}: ${hex}`}
           onClick={() => { setMenuIndex(null); onQuickColor(hex) }}
           onContextMenu={(event) => {
             event.preventDefault()
             if (!disabled) { setMenuIndex(index); setMenuError('') }
-          }} />
+          }}><span className="dsh-pdf-highlight-swatch-core" style={{ backgroundColor: hex }} aria-hidden="true" /></button>
         {menuIndex === index && <div ref={menuRef} className="dsh-pdf-highlight-menu" data-testid="pdf-highlight-color-menu"
           role="dialog" aria-label={`${t('reader.quickColor')} ${index + 1}`} style={index >= 3 ? { right: 0 } : { left: 0 }}>
           <label className="dsh-pdf-highlight-menu-edit">{t('reader.editQuickColor')}
@@ -118,18 +122,23 @@ export function HighlightColorBar({ value, disabled = false, onQuickColor, onPal
           {menuError && <span className="dsh-pdf-highlight-menu-error" role="status">{menuError}</span>}
         </div>}
       </span>)}
-    </div>
-    <span className="dsh-pdf-highlight-separator" aria-hidden="true" />
-    <input type="color" className="dsh-pdf-highlight-palette" data-testid="pdf-highlight-palette"
-      aria-label={label} title={t('reader.colorPalette')} value={chosen ?? '#ffff00'} disabled={disabled}
-      onChange={(event) => { setMenuIndex(null); onPaletteColor(event.target.value) }} />
-    <button type="button" className="dsh-pdf-highlight-add" data-testid="pdf-highlight-add-color"
+    </div>}
+    <span className="dsh-pdf-highlight-palette-wrap" title={t('reader.colorPalette')}>
+      <span className="dsh-pdf-highlight-palette-wheel" aria-hidden="true">
+        <span className="dsh-pdf-highlight-palette-current" style={{ backgroundColor: chosen ?? '#ffff00' }} />
+      </span>
+      <input type="color" className="dsh-pdf-highlight-palette" data-testid="pdf-highlight-palette"
+        aria-label={label} value={chosen ?? '#ffff00'} disabled={disabled}
+        onChange={(event) => { setMenuIndex(null); onPaletteColor(event.target.value) }} />
+    </span>
+    {!isDuplicate && <button type="button" className="dsh-pdf-highlight-add" data-testid="pdf-highlight-add-color"
       disabled={disabled || cannotAdd} title={addReason || t('reader.addQuickColor')}
       aria-label={addReason ? `${t('reader.addQuickColor')}: ${addReason}` : t('reader.addQuickColor')}
       onClick={() => {
         const next = addHighlightQuickColor(colors, value)
         if (next) updateColors(next)
-      }}>+</button>
-    {addReason && <span className="dsh-pdf-visually-hidden" role="status">{addReason}</span>}
+      }}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>}
+    {!isDuplicate && addReason && <span className="dsh-pdf-visually-hidden" role="status">{addReason}</span>}
   </div>
 }

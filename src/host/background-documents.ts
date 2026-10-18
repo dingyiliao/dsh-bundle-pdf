@@ -47,9 +47,10 @@ export function createBackgroundDocuments(workspaces: Workspaces, pdfService: Pd
       const totalBytes = [...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0)
       if (session.length <= MAX_DOCUMENTS_PER_SESSION && sessionBytes <= MAX_BYTES_PER_SESSION
         && totalBytes <= MAX_BYTES_GLOBAL) return
+      // A limit can only be exceeded when entries is nonempty. This loop is
+      // serialized, so no other admission or eviction can remove it here.
       const oldest = session.length > MAX_DOCUMENTS_PER_SESSION || sessionBytes > MAX_BYTES_PER_SESSION
-        ? session[0] : entries.values().next().value as Entry | undefined
-      if (!oldest) return
+        ? session[0]! : entries.values().next().value as Entry
       await release(oldest)
     }
   }

@@ -52,6 +52,8 @@ export async function apply(ctx: Pick<Context, 'provide'>): Promise<void> {
     ctx.provide('pdfNative', { executable: override })
     return
   }
-  const directory = fileURLToPath(new URL('./native/', import.meta.url))
+  // The installed entry lives in dist/, while direct source execution during
+  // development uses the same staged native archive from dist/native/.
+  const directory = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/native/' : './native/', import.meta.url))
   ctx.provide('pdfNative', await verifyNativeDistribution(directory))
 }

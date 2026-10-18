@@ -3,5 +3,7 @@
       name: '@local/dsh-pdf/native'
     - id: pdf-ocr
       name: '@local/dsh-pdf/ocr-host'
+    - id: pdf-image-understanding
+      name: '@local/dsh-pdf/image-host'
     - id: pdf-reader
       name: '@local/dsh-pdf'

@@ -19,7 +19,8 @@ const inputSchema = z.object({
   text: z.string().min(1).max(8192), sourceLanguage: z.literal(translationSourceLanguage),
   targetLanguage: z.enum(translationTargetLanguages), timeoutMs: z.number().int().min(1000).max(600000),
   context: z.object({ sessionId: z.string(), documentId: z.string().max(512).optional(),
-    contentVersion: z.string().max(512).optional(), pages: z.array(z.number().int().positive()).max(200).optional() }).optional(),
+    contentVersion: z.string().max(512).optional(), pages: z.array(z.number().int().positive()).max(200).optional(),
+    selectionBefore: z.string().max(80).optional(), selectionAfter: z.string().max(80).optional() }).optional(),
 })
 
 /** Translation adapters use Host model services; the PDF editor only knows this registry. */

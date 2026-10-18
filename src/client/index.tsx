@@ -1,16 +1,20 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { z } from 'zod'
 import { Reader } from './Reader.tsx'
-import { Settings, settingsLocales, type ConfigForm } from './Settings.tsx'
+import { Settings, settingsLocales } from './Settings.tsx'
 import { readerLocales } from './reader-locales.ts'
 import { createPdfApi, createReadingContextReporter, type PdfConnection } from './api.ts'
 import { createHostOcrApi } from './host-ocr-api.ts'
-import { defaultSettings, effectiveTranslationEngine } from '../shared/contracts.ts'
+import { createImageUnderstandingApi } from './image-understanding-api.ts'
+import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import type { ReaderProps } from './contracts.ts'
 import { createTranslationRegistry } from '../translation/index.js'
 import { createHostTranslationEngine } from './translation-api.js'
+import { persistTranslationLanguage } from './persist-translation-language.js'
 import { createPdfSessionLifecycle, type PdfSessionOwner, type PdfSessionSource, type PdfSidebarNavigation } from './pdf-session-lifecycle.js'
 import { sendExplanationPrompt, type CurrentSessionSource } from './explain-mode.js'
 import styles from './reader.css'
@@ -29,17 +33,14 @@ interface ClientContext {
   connection: PdfConnection
   uiSession: { readonly adapter: { readonly current: PdfSessionSource & CurrentSessionSource } }
   sidebarRight: PdfSidebarNavigation
-  configForms: { get(namespace: string): ConfigForm }
+  configForms: Pick<Context['configForms'], 'get'>
   effect: Context['effect']
   reflect: Context['reflect']
   locale: {
     register(namespace: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
     bind(namespace: string): (key: string) => string
   }
-  documentPreviews: { register(definition: {
-    id: string; extensions: string[]; binaryExtensions: string[]; priority: 'extension';
-    title(): string; loading: 'renderer'; wrap: false
-  }): () => void }
+  documentPreviews: Pick<Context['documentPreviews'], 'register'>
   slots: {
     inject(name: string, register: () => () => void): () => void
     register<P extends object>(definition: Record<string, unknown>, component: ComponentType<P>): () => void
@@ -66,10 +67,11 @@ export async function apply(ctx: ClientContext): Promise<void> {
   if (lifetime.signal.aborted || ctx.fiber?.uid === null) return
   if (!bootstrap.ok) throw new Error(bootstrap.error.message)
   const info = bootstrap.value
-  const form = ctx.configForms.get(info.settingsNamespace)
+  const form = ctx.configForms.get<PdfSettings>(info.settingsNamespace)
   const subscribeSettings = (listener: () => void) => form.subscribe(listener)
   const readSettings = () => form.getSnapshot()
   const hostOcr = createHostOcrApi(ctx.connection, lifetime.signal)
+  const imageUnderstanding = createImageUnderstandingApi(ctx.connection, lifetime.signal)
   const translation = createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })
   for (const engine of info.translationEngines) translation.register(createHostTranslationEngine(ctx.connection, lifetime.signal, engine))
   const synchronizeTranslation = () => {
@@ -103,7 +105,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
     return () => style.remove()
   }, 'pdf: reader stylesheet')
   type ReaderTabInfo = ReturnType<ReaderProps['useTabInfo']>
-  type OwnerProps = Omit<ReaderProps, 'api' | 'hostOcr' | 'translation' | 'settings' | 'useTabInfo'
+  type OwnerProps = Omit<ReaderProps, 'api' | 'hostOcr' | 'imageUnderstanding' | 'translation' | 'settings' | 'useTabInfo'
     | 'promptExplanation' | 'rememberTranslationTargetLanguage'> & {
     useTabInfo(): ReaderTabInfo & { tab: ReaderTabInfo['tab'] & {
       actions: ReaderTabInfo['tab']['actions'] & { close(): void }
@@ -117,12 +119,9 @@ export async function apply(ctx: ClientContext): Promise<void> {
     const rememberTranslationTargetLanguage = useCallback(async (language: string) => {
       const generation = ++targetWriteGeneration.current
       setPendingTargetLanguage(language)
-      let accepted = false
-      try {
-        accepted = await form.mutate([{ op: 'set', path: ['translationTargetLanguage'], value: language }])
-      } catch (cause) {
-        console.error('[pdf] Failed to save translation target language', cause)
-      }
+      const accepted = await persistTranslationLanguage(() => form.mutate([
+        { op: 'set', path: ['translationTargetLanguage'], value: language },
+      ]))
       if (generation === targetWriteGeneration.current) setPendingTargetLanguage(undefined)
       return accepted
     }, [])
@@ -143,10 +142,11 @@ export async function apply(ctx: ClientContext): Promise<void> {
       ...api,
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
     }), [owner])
-    return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={hostOcr} translation={translation}
+    return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={hostOcr}
+      imageUnderstanding={imageUnderstanding} translation={translation}
       allowReadingContext={props.sessionId === file.sessionId} reportReadingContext={reportReadingContext}
       promptExplanation={props.sessionId === file.sessionId
-        ? (text, signal) => sendExplanationPrompt(ctx.uiSession.adapter.current, file.sessionId, text, signal) : undefined}
+        ? (content, signal) => sendExplanationPrompt(ctx.uiSession.adapter.current, file.sessionId, content, signal) : undefined}
       pickSavePath={desktopSavePicker?.pick}
       rememberTranslationTargetLanguage={rememberTranslationTargetLanguage}
       settings={{ ...currentSettings, translationEngine: effectiveTranslationEngine(currentSettings.translationEngine),

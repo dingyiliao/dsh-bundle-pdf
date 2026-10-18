@@ -1,20 +1,14 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
 
-/** Structural view of DSH's public ConfigForm; no runtime Client package import. */
-export interface ConfigFormSnapshot {
-  status: 'loading' | 'ready' | 'unavailable'
-  value: PdfSettings | undefined
-  base: unknown
-  user: unknown
-  revision: number | undefined
-  writable: boolean
-  mode: 'host' | 'memory'
-}
-export interface ConfigForm {
+// `mode` was removed from DSH's snapshot. Keep only the stable public fields so
+// the editor works with both older and newer Host connections.
+export type ConfigFormSnapshot = Pick<DshConfigFormSnapshot<PdfSettings>,
+  'status' | 'value' | 'base' | 'user' | 'revision' | 'writable'>
+/** The PDF settings card uses only these operations of DSH's public form. */
+export type ConfigForm = Pick<DshConfigForm<PdfSettings>, 'subscribe' | 'mutate'> & {
   getSnapshot(): ConfigFormSnapshot
-  subscribe(listener: () => void): () => void
-  mutate(ops: readonly ({ op: 'set'; path: string[]; value: string | number } | { op: 'unset'; path: string[] })[], expectedRevision?: number): Promise<boolean>
 }
 export interface SettingsProps {
   form: ConfigForm
@@ -28,7 +22,6 @@ export const settingsLocales = {
     'settings.description': '配置选中文字翻译和阅读跳转。修改后手动保存。',
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
-    'settings.memory': '当前连接仅支持临时设置，无法保存到 Host。',
     'settings.readOnly': '当前设置为只读。',
     'settings.ocr': 'OCR',
     'settings.ocrUnavailable': '阅读器会向 Host 查询当前会话模型和 OCR 后端的能力，并据此启用识别入口。',
@@ -65,7 +58,6 @@ export const settingsLocales = {
     'settings.description': 'Configure selected-text translation and reading navigation. Save changes manually.',
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
-    'settings.memory': 'This connection only supports temporary settings and cannot save them to the Host.',
     'settings.readOnly': 'These settings are read-only.',
     'settings.ocr': 'OCR',
     'settings.ocrUnavailable': 'The reader asks the Host whether this session’s model and OCR backend can recognize text, then enables the action accordingly.',
@@ -168,7 +160,7 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [dirty])
 
-  const disabled = saving || snapshot.status !== 'ready' || !snapshot.writable || snapshot.mode !== 'host' || snapshot.revision === undefined
+  const disabled = saving || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
   const availableTranslations = translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
       id: engine.id, label: engine.id === 'dsh-model' ? tr('settings.translationDshModel') : engine.label,
     })).filter((engine, index, all) => all.findIndex(other => other.id === engine.id) === index)
@@ -258,7 +250,7 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
   return <section aria-labelledby={`${id}-title`} style={{ display: 'grid', gap: 18, padding: 20, color: 'inherit', fontSize: 14 }}>
     <div><h2 id={`${id}-title`} style={{ margin: '0 0 8px', fontSize: 18 }}>{tr('settings.title')}</h2><p style={{ margin: 0, opacity: 0.7, lineHeight: 1.6 }}>{tr('settings.description')}</p></div>
     {snapshot.status === 'loading' && <p role="status">{tr('settings.loading')}</p>}
-    {snapshot.status === 'unavailable' && <p role="status" style={noticeStyle}>{tr(snapshot.mode === 'memory' ? 'settings.memory' : 'settings.unavailable')}</p>}
+    {snapshot.status === 'unavailable' && <p role="status" style={noticeStyle}>{tr('settings.unavailable')}</p>}
     {snapshot.status === 'ready' && !snapshot.writable && <p role="status">{tr('settings.readOnly')}</p>}
     {editor && <form onSubmit={event => { event.preventDefault(); void save() }} style={{ display: 'grid', gap: 20 }}>
       {editor.conflict && <div role="alert" style={noticeStyle}>

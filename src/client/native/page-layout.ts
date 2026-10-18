@@ -1,7 +1,7 @@
 import type { PdfPageInfo } from '../../core/pdf-types.js'
 
-/** Initial window estimate; the mounted window uses the browser's actual label and gap height. */
-export const PAGE_CHROME_HEIGHT = 43
+/** Vertical space between neighboring PDF pages. */
+export const PAGE_GAP = 16
 /** Space above the first page for the floating reader controls. */
 export const READING_TOP_INSET = 72
 
@@ -54,7 +54,7 @@ export function buildPageLayout(
     const baseHeight = (geometry.cropBox[3] - geometry.cropBox[1]) * geometry.userUnit
     const width = (quarterTurn ? baseHeight : baseWidth) * scale
     const height = (quarterTurn ? baseWidth : baseHeight) * scale
-    const outerHeight = height + PAGE_CHROME_HEIGHT
+    const outerHeight = height + PAGE_GAP
     const result = { page: geometry.page, top, width, height, outerHeight, scale }
     top += outerHeight
     return result

@@ -6,6 +6,7 @@ interface FloatingToolbarProps {
   label: string
   children: React.ReactNode
   active?: boolean
+  className?: string
 }
 
 /** Docked tools live outside this viewport; contextual actions stay within the PDF column. */
@@ -14,7 +15,7 @@ export function visibleReadingBounds(viewport: HTMLElement): DOMRect {
 }
 
 /** Keep contextual actions near their PDF anchor without changing page layout. */
-export function FloatingToolbar({ viewport, getAnchor, label, children, active = true }: FloatingToolbarProps) {
+export function FloatingToolbar({ viewport, getAnchor, label, children, active = true, className }: FloatingToolbarProps) {
   const toolbar = useRef<HTMLDivElement>(null)
   const anchor = useRef(getAnchor)
   const refresh = useRef<(() => void) | undefined>()
@@ -70,7 +71,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
     }
   }, [viewport, active])
   useLayoutEffect(() => { refresh.current?.() })
-  return <div ref={toolbar} className="dsh-pdf-toolbar dsh-pdf-context-toolbar" role="toolbar" aria-label={label}
+  return <div ref={toolbar} className={`dsh-pdf-toolbar dsh-pdf-context-toolbar${className ? ` ${className}` : ''}`} role="toolbar" aria-label={label}
     data-visible="false" aria-hidden={!active}
     onPointerDown={(event) => {
       // Pointer activation of an action must not collapse the native text range.

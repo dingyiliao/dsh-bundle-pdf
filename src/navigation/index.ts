@@ -18,8 +18,16 @@ export interface NavigationAdapter {
 }
 
 export interface NavigationResult {
-  status: 'changed' | 'noop' | 'empty' | 'cancelled'
+  status: 'changed' | 'noop' | 'empty' | 'cancelled' | 'stale'
   position?: NavigationPosition
+}
+
+/** Positions are ordered from the next return destination to the oldest one. */
+export interface NavigationHistorySnapshot {
+  readonly revision: number
+  readonly positions: readonly (Readonly<Omit<NavigationPosition, 'viewportAnchor'>> & {
+    readonly viewportAnchor?: Readonly<NonNullable<NavigationPosition['viewportAnchor']>>
+  })[]
 }
 
 function copy(position: NavigationPosition): NavigationPosition {
@@ -52,6 +60,7 @@ export class NavigationHistory {
   private readonly pending = new Set<AbortController>()
   private documentVersion: string | undefined
   private capacity: number
+  private revision = 0
 
   constructor(options: { capacity?: number } = {}) {
     this.capacity = options.capacity ?? 100
@@ -65,8 +74,16 @@ export class NavigationHistory {
     return entry ? copy(entry) : undefined
   }
 
+  snapshot(): NavigationHistorySnapshot {
+    return { revision: this.revision, positions: [...this.entries].reverse().map(copy) }
+  }
+
   setCapacity(capacity: number): void {
     if (!Number.isInteger(capacity) || capacity < 0 || capacity > 1000) throw new RangeError('Navigation capacity must be between 0 and 1000.')
+    if (capacity !== this.capacity) {
+      this.revision++
+      for (const controller of this.pending) controller.abort()
+    }
     this.capacity = capacity
     this.entries.splice(0, Math.max(0, this.entries.length - capacity))
   }
@@ -82,6 +99,7 @@ export class NavigationHistory {
 
   clear(): void {
     this.entries.length = 0
+    this.revision++
     for (const controller of this.pending) controller.abort()
   }
 
@@ -102,14 +120,29 @@ export class NavigationHistory {
       if (this.capacity) {
         this.entries.push(origin)
         this.entries.splice(0, Math.max(0, this.entries.length - this.capacity))
+        this.revision++
       }
       return { status: 'changed', position: actual }
     }, signal)
   }
 
   back(adapter: Pick<NavigationAdapter, 'apply'>, signal?: AbortSignal): Promise<NavigationResult> {
+    return this.returnTo(0, undefined, adapter, signal)
+  }
+
+  /** Return to a snapshot entry (0 is newest), removing it and all newer entries only after arrival. */
+  backTo(depth: number, revision: number, adapter: Pick<NavigationAdapter, 'apply'>, signal?: AbortSignal): Promise<NavigationResult> {
+    if (!Number.isInteger(depth) || depth < 0) throw new RangeError('Navigation history depth must be a non-negative integer.')
+    if (!Number.isInteger(revision) || revision < 0) throw new RangeError('Navigation history revision must be a non-negative integer.')
+    return this.returnTo(depth, revision, adapter, signal)
+  }
+
+  private returnTo(depth: number, revision: number | undefined, adapter: Pick<NavigationAdapter, 'apply'>, signal?: AbortSignal): Promise<NavigationResult> {
     return this.enqueue(async (operationSignal) => {
-      const target = this.peek()
+      if (revision !== undefined && revision !== this.revision) return { status: 'stale' }
+      const index = this.entries.length - 1 - depth
+      const entry = this.entries[index]
+      const target = entry && copy(entry)
       if (!target) return { status: 'empty' }
       const actual = copy(await adapter.apply(copy(target), operationSignal))
       if (operationSignal.aborted) return { status: 'cancelled' }
@@ -119,7 +152,8 @@ export class NavigationHistory {
         throw new Error('Could not restore the previous PDF position.')
       }
       // A resize may legitimately change the effective scale in fit mode.
-      this.entries.pop()
+      this.entries.splice(index)
+      this.revision++
       return { status: 'changed', position: actual }
     }, signal)
   }

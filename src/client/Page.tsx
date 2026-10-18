@@ -7,7 +7,9 @@ import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safe
 import type { NativeDocument, NativePage } from './native/document.ts'
 import { TileSurface } from './native/TileSurface.tsx'
 import { renderNativeTextLayer } from './native/text-layer.ts'
+import { mergeSelectionRects, selectedTextRects } from './selection-highlight.js'
 import type { ExplanationExcerpt } from './explain-mode.js'
+import { ToolbarIcon } from './ToolbarIcon.js'
 
 export interface PageProps {
   pdf: NativeDocument
@@ -21,6 +23,8 @@ export interface PageProps {
   selectedAnnotation?: string
   selection: ReaderSelection | null
   explanationExcerpts?: readonly ExplanationExcerpt[]
+  explanationDraft?: { index: number; fragment: ReaderSelection['fragments'][number] }
+  onExplanationMark?(id: string, marker: HTMLElement): void
   ocrWords?: PdfOcrTextPart[]
   /** Keep selectable text and its viewport while a selection spans offscreen pages. */
   retainTextLayer?: boolean
@@ -40,10 +44,26 @@ interface LoadedPage { owner: NativeDocument; page: NativePage; links?: PdfLink[
 const noLinks: PdfLink[] = []
 const noAnnotations: PdfAnnotation[] = []
 const noOcrWords: PdfOcrTextPart[] = []
+const nonCommentAnnotations = new Set(['Popup', 'Link', 'Widget'])
+const isCancelledNativeRead = (error: unknown) => error !== null && typeof error === 'object'
+  && 'name' in error && (error.name === 'AbortError' || error.name === 'AbortException')
 
 function screenRect(viewport: PageViewport, rect: readonly number[]) {
   const value = pdfRectToViewport(viewport, rect)
   return { left: Math.min(value[0], value[2]), top: Math.min(value[1], value[3]), width: Math.abs(value[2] - value[0]), height: Math.abs(value[3] - value[1]) }
+}
+
+function explanationFragmentRects(fragment: ReaderSelection['fragments'][number], viewport: PageViewport): PdfRect[] {
+  const rects: PdfRect[] = []
+  for (let index = 0; index + 7 < fragment.quadPoints.length; index += 8) {
+    const points = Array.from({ length: 4 }, (_, corner) => viewport.convertToViewportPoint(
+      fragment.quadPoints[index + corner * 2], fragment.quadPoints[index + corner * 2 + 1],
+    ))
+    const xs = points.map(point => point[0]), ys = points.map(point => point[1])
+    rects.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)])
+  }
+  if (!rects.length) rects.push(pdfRectToViewport(viewport, fragment.rect))
+  return rects
 }
 
 const PendingMarkup = memo(function PendingMarkup({ annotation, viewport }: { annotation: PdfAnnotation; viewport: PageViewport }) {
@@ -87,6 +107,8 @@ export function Page(props: PageProps) {
   const outer = useRef<HTMLDivElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const textHost = useRef<HTMLDivElement>(null)
+  const paintedText = useRef<{ owner: NativeDocument; page: NativePage; angle: number; width: number; height: number; boxes: PdfRect[] } | null>(null)
+  const selectionHost = useRef<HTMLDivElement>(null)
   const ocrHost = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false)
   const textActive = near || !!props.retainTextLayer
@@ -155,7 +177,7 @@ export function Page(props: PageProps) {
       }))
       record.links = nativeLinks
       if (active) setLinks(nativeLinks)
-    }).catch((error) => { if (active) callbacks.current.onError(String(error)) })
+    }).catch((error) => { if (active && !isCancelledNativeRead(error)) callbacks.current.onError(String(error)) })
     return () => { active = false }
   }, [pdf, geometry.page, textActive])
 
@@ -174,25 +196,92 @@ export function Page(props: PageProps) {
   }, [near, pdf])
 
   useEffect(() => {
-    if (!textActive) { setNativeBoxes([]); return }
-    if (!page || pageOwner !== pdf || !textHost.current) return
     const host = textHost.current
-    host.replaceChildren()
+    if (!host) return
+    if (!textActive || !page || pageOwner !== pdf) {
+      host.replaceChildren()
+      host.style.transform = ''
+      paintedText.current = null
+      setNativeBoxes([])
+      return
+    }
     const nextViewport = page.getViewport({ scale, rotation: angle })
-    host.style.width = `${nextViewport.width}px`
-    host.style.height = `${nextViewport.height}px`
+    const previous = paintedText.current
+    if (previous?.owner === pdf && previous.page === page && previous.angle === angle) {
+      // Keep the selectable layer in the same PDF coordinates as the old
+      // bitmap while text geometry is rebuilt. Repeated resizes always scale
+      // from the last painted layer, not from an intermediate CSS transform.
+      host.style.width = `${previous.width}px`
+      host.style.height = `${previous.height}px`
+      host.style.transformOrigin = '0 0'
+      host.style.transform = `scale(${nextViewport.width / previous.width}, ${nextViewport.height / previous.height})`
+      setNativeBoxes(previous.boxes.map(([left, top, right, bottom]) => [
+        left * nextViewport.width / previous.width, top * nextViewport.height / previous.height,
+        right * nextViewport.width / previous.width, bottom * nextViewport.height / previous.height,
+      ]))
+    } else {
+      // A different document or rotation cannot reuse old hit targets.
+      host.replaceChildren()
+      host.style.transform = ''
+      paintedText.current = null
+      setNativeBoxes([])
+    }
     let active = true
-    void page.getTextContent().then((content) => {
-      if (!active || !surface.current) return
-      const spans = renderNativeTextLayer(host, content, nextViewport)
-      const bounds = surface.current.getBoundingClientRect()
-      setNativeBoxes(spans.filter((span) => span.textContent?.trim()).map((span) => {
-        const box = span.getBoundingClientRect()
-        return [box.left - bounds.left, box.top - bounds.top, box.right - bounds.left, box.bottom - bounds.top] as PdfRect
-      }))
-    }).catch((error) => { if (active && error?.name !== 'AbortException') callbacks.current.onError(String(error)) })
-    return () => { active = false; host.replaceChildren() }
+    const rebuild = () => {
+      void page.getTextContent().then((content) => {
+        if (!active || !surface.current) return
+        host.style.transform = ''
+        host.style.width = `${nextViewport.width}px`
+        host.style.height = `${nextViewport.height}px`
+        const spans = renderNativeTextLayer(host, content, nextViewport)
+        const bounds = surface.current.getBoundingClientRect()
+        const boxes = spans.filter((span) => span.textContent?.trim()).map((span) => {
+          const box = span.getBoundingClientRect()
+          return [box.left - bounds.left, box.top - bounds.top, box.right - bounds.left, box.bottom - bounds.top] as PdfRect
+        })
+        paintedText.current = { owner: pdf, page, angle, width: nextViewport.width, height: nextViewport.height, boxes }
+        setNativeBoxes(boxes)
+      }).catch((error) => { if (active && !isCancelledNativeRead(error)) callbacks.current.onError(String(error)) })
+    }
+    // A drag can resize the viewport every frame. CSS scales the selectable
+    // layer immediately; only rebuild thousands of glyph spans after it rests.
+    const timer = previous && previous.owner === pdf && previous.page === page && previous.angle === angle
+      ? setTimeout(rebuild, 64) : undefined
+    if (timer === undefined) rebuild()
+    return () => { active = false; if (timer !== undefined) clearTimeout(timer) }
   }, [textActive, pageOwner, pdf, page, scale, angle, geometry.userUnit])
+
+  useEffect(() => {
+    const host = textHost.current, overlay = selectionHost.current, pageElement = surface.current
+    if (!host || !overlay || !pageElement) return
+    if (!textActive || props.mode !== 'text') { overlay.replaceChildren(); return }
+    let frame = 0
+    const paint = () => {
+      frame = 0
+      const fragment = document.createDocumentFragment()
+      for (const [left, top, right, bottom] of selectedTextRects(host, pageElement)) {
+        const box = document.createElement('div')
+        box.className = 'dsh-pdf-selection-box'
+        box.style.left = `${left}px`
+        box.style.top = `${top}px`
+        box.style.width = `${right - left}px`
+        box.style.height = `${bottom - top}px`
+        fragment.append(box)
+      }
+      overlay.replaceChildren(fragment)
+    }
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(paint) }
+    const observer = new MutationObserver(schedule)
+    observer.observe(host, { childList: true })
+    document.addEventListener('selectionchange', schedule)
+    schedule()
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('selectionchange', schedule)
+      if (frame) cancelAnimationFrame(frame)
+      overlay.replaceChildren()
+    }
+  }, [textActive, props.mode, pdf, scale, angle])
 
   const pointer = (event: React.PointerEvent) => {
     const bounds = surface.current!.getBoundingClientRect()
@@ -276,28 +365,36 @@ export function Page(props: PageProps) {
     [near, props.annotations, pending, patchBoxes, viewport])
   const noteMarkers = useMemo(() => near ? props.annotations.filter(annotation => annotation.subtype === 'Text'
     && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, props.annotations])
-  const explanationPolygons = useMemo(() => {
+  const commentMarkers = useMemo(() => {
     if (!near || !viewport) return []
-    return (props.explanationExcerpts ?? []).flatMap(excerpt => excerpt.fragments
-      .filter(fragment => fragment.page === geometry.page)
-      .flatMap(fragment => {
-        const polygons: string[] = []
-        for (let index = 0; index + 7 < fragment.quadPoints.length; index += 8) {
-          const points = Array.from({ length: 4 }, (_, corner) => viewport.convertToViewportPoint(
-            fragment.quadPoints[index + corner * 2], fragment.quadPoints[index + corner * 2 + 1],
-          ))
-          polygons.push(points.map(point => point.join(',')).join(' '))
-        }
-        if (!polygons.length) {
-          const [left, top, right, bottom] = pdfRectToViewport(viewport, fragment.rect)
-          polygons.push(`${left},${top} ${right},${top} ${right},${bottom} ${left},${bottom}`)
-        }
-        return polygons
-      }))
+    return props.annotations.flatMap(annotation => {
+      if (!annotation.contents?.trim() || !annotation.rect || !visibleAnnotation(annotation)
+        || nonCommentAnnotations.has(annotation.subtype)) return []
+      const first = annotationPolygons(annotation, viewport)[0]
+      const box = first?.length ? {
+        left: Math.min(...first.map(point => point[0])),
+        top: Math.min(...first.map(point => point[1])),
+        right: Math.max(...first.map(point => point[0])),
+      } : screenRect(viewport, annotation.rect)
+      return [{ annotation, left: Math.max(0, Math.min(width - 22, ('right' in box ? box.right : box.left) - 12)), top: Math.max(0, box.top - 24) }]
+    })
+  }, [near, viewport, props.annotations, width])
+  const explanationMarks = useMemo(() => {
+    if (!near || !viewport) return []
+    return (props.explanationExcerpts ?? []).flatMap((excerpt, index) => {
+      const boxes = excerpt.fragments.filter(fragment => fragment.page === geometry.page)
+        .flatMap(fragment => explanationFragmentRects(fragment, viewport))
+      const rects = mergeSelectionRects(boxes)
+      return rects.length ? [{ id: excerpt.id, index: index + 1, rects, kind: excerpt.kind }] : []
+    })
   }, [near, viewport, props.explanationExcerpts, geometry.page])
+  const draftExplanationMark = useMemo(() => {
+    if (!near || !viewport || !props.explanationDraft || props.explanationDraft.fragment.page !== geometry.page) return null
+    const rects = mergeSelectionRects(explanationFragmentRects(props.explanationDraft.fragment, viewport))
+    return rects.length ? { index: props.explanationDraft.index, rect: rects[0]! } : null
+  }, [near, viewport, props.explanationDraft, geometry.page])
 
   return <div ref={outer} className="dsh-pdf-page-wrap" data-page-number={geometry.page}>
-    <div className="dsh-pdf-page-label">{t('reader.page')} {geometry.page}{props.ocrWords?.length ? ` · ${t('reader.ocrText')}` : ''}</div>
     <div ref={surface} data-pdf-page={geometry.page} className={`dsh-pdf-page dsh-pdf-mode-${props.mode}`}
       style={{ width, height }} onPointerDown={(event) => {
         cancelLinkClick()
@@ -367,6 +464,7 @@ export function Page(props: PageProps) {
         {pending.map((annotation) => <PendingMarkup key={annotation.id} annotation={annotation} viewport={viewport} />)}
       </svg>}
       {!rendered && <div className="dsh-pdf-page-loading" role="status">{t('reader.loadingPage')}</div>}
+      <div ref={selectionHost} className="dsh-pdf-selection-overlay" aria-hidden="true" />
       <div ref={textHost} className="textLayer dsh-pdf-text-layer" data-pdf-text="active" />
       {textActive && !!visibleOcrWords.length && viewport && <div ref={ocrHost} className="dsh-pdf-ocr-layer" data-pdf-text="active">
         {visibleOcrWords.map((word) => <OcrWord key={word.id} word={word} viewport={viewport} />)}
@@ -379,19 +477,47 @@ export function Page(props: PageProps) {
         })}
       </div>}
       {near && viewport && props.mode === 'text' && <div className="dsh-pdf-links">
-        {noteMarkers.map((annotation) => <button
+        {noteMarkers.filter(annotation => !annotation.contents?.trim()).map((annotation) => <button
           key={annotation.id} className="dsh-pdf-note-marker" style={screenRect(viewport, annotation.rect!)}
           title={annotation.contents || t('reader.note')} aria-label={annotation.contents || t('reader.note')}
-          onClick={() => props.onAnnotation(annotation.id)}>▤</button>)}
+          onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+          onClick={event => { event.stopPropagation(); props.onAnnotation(annotation.id) }}>▤</button>)}
+        {commentMarkers.map(({ annotation, left, top }) => <button key={annotation.id} type="button"
+          className={`dsh-pdf-comment-marker${props.selectedAnnotation === annotation.id ? ' is-selected' : ''}`}
+          data-pdf-comment-id={annotation.id}
+          style={{ left, top }} title={t('reader.commentText')}
+          aria-label={`${t('reader.commentText')} · ${t('reader.page')} ${geometry.page} · ${annotation.contents!.trim().slice(0, 80)}`}
+          onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+          onClick={event => { event.stopPropagation(); props.onAnnotation(annotation.id) }}>
+          <ToolbarIcon name="comment" />
+        </button>)}
       </div>}
       {viewport && selected && <svg className="dsh-pdf-annotation-outline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {annotationPolygons(selected, viewport).map((points, index) => <polygon key={index} points={points.map((point) => point.join(',')).join(' ')} fill="none" stroke="var(--pdf-accent)" strokeWidth="1.5" />)}
       </svg>}
-      {!!explanationPolygons.length && <svg className="dsh-pdf-explanation-overlay" width={width} height={height}
-        viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        {explanationPolygons.map((points, index) => <polygon key={index} data-pdf-explanation-mark=""
-          points={points} />)}
-      </svg>}
+      {(!!explanationMarks.length || !!draftExplanationMark) && <div className="dsh-pdf-explanation-overlay">
+        {explanationMarks.flatMap(mark => mark.rects.map(([left, top, right, bottom], index) =>
+          <div key={`${mark.id}:${index}`} className={`dsh-pdf-explanation-mark${mark.kind === 'region' ? ' is-region' : ''}`}
+            data-pdf-explanation-mark="" data-pdf-explanation-kind={mark.kind}
+            aria-hidden="true" style={{ left, top, width: right - left, height: bottom - top }} />))}
+        {explanationMarks.map(mark => {
+          const [left, top] = mark.rects[0]!
+          const hasMargin = left >= 32
+          return <button key={mark.id} type="button" className="dsh-pdf-explanation-index"
+            data-pdf-explanation-id={mark.id}
+            aria-label={`${t('reader.explain.editQuestion')} ${mark.index}`}
+            style={{ left: hasMargin ? left - 30 : left, top: hasMargin ? top : Math.max(0, top - 28) }}
+            onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+            onClick={event => { event.stopPropagation(); props.onExplanationMark?.(mark.id, event.currentTarget) }}>
+            {mark.index}
+          </button>
+        })}
+        {draftExplanationMark && <span className="dsh-pdf-explanation-index" data-pdf-explanation-preview="" aria-hidden="true"
+          style={{ left: draftExplanationMark.rect[0] >= 32 ? draftExplanationMark.rect[0] - 30 : draftExplanationMark.rect[0],
+            top: draftExplanationMark.rect[0] >= 32 ? draftExplanationMark.rect[1] : Math.max(0, draftExplanationMark.rect[1] - 28) }}>
+          {draftExplanationMark.index}
+        </span>}
+      </div>}
       {viewport && region && <div className="dsh-pdf-region" style={screenRect(viewport, region.rect)} />}
       {drag && props.mode === 'region' && <div className="dsh-pdf-region" style={{ left: Math.min(drag.x, drag.endX), top: Math.min(drag.y, drag.endY), width: Math.abs(drag.endX - drag.x), height: Math.abs(drag.endY - drag.y) }} />}
     </div>

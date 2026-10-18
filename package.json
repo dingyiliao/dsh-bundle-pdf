@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-pdf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
@@ -19,6 +19,10 @@
     "./ocr-host": {
       "types": "./dist/types/host/ocr-plugin.d.ts",
       "import": "./dist/ocr-host.js"
+    },
+    "./image-host": {
+      "types": "./dist/types/host/image-understanding-plugin.d.ts",
+      "import": "./dist/image-host.js"
     },
     "./client": "./dist/client.js",
     "./ocr": {
@@ -55,6 +59,10 @@
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
     "test": "npm run build && node --import tsx --test --test-concurrency=1 \"tests/*.test.ts\"",
+    "test:coverage:node": "npm run build && node --enable-source-maps --experimental-test-coverage --test-coverage-include-all --test-coverage-include=\"src/**/*.ts\" --test-coverage-include=\"src/**/*.tsx\" --import tsx --test --test-concurrency=1 \"tests/*.test.ts\"",
+    "test:coverage:native": "node scripts/coverage-native.mjs",
+    "test:coverage:project": "node scripts/coverage-project.mjs",
+    "test:coverage": "npm run test:coverage:project",
     "test:web": "npm run build && vitest run --config vitest.web.config.ts",
     "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test"
   },
@@ -76,11 +84,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-attachment": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
-    "@deepseek-ai/dsh-fs-local": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.1 || 0.2.1-alpha.1 || 0.2.1-alpha.2",
+    "@deepseek-ai/dsh-attachment": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs-local": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2",
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
@@ -107,22 +116,25 @@
     }
   },
   "dependencies": {
-    "@tesseract.js-data/chi_sim": "1.0.0",
-    "@tesseract.js-data/eng": "1.0.0",
+    "@deepseek-ai/dsh-util-workspace-path": "0.2.0-rc.2",
     "pdf-lib": "1.17.1",
-    "tesseract.js": "7.0.0",
-    "tesseract.js-core": "7.0.0",
     "zod": "^4.3.0"
   },
   "devDependencies": {
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
     "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/dsh-attachment": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-app-boot": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-loader-smoke": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-app-boot": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-documentpreview": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-loader-smoke": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "3.18.4",
+    "@jridgewell/sourcemap-codec": "1.6.0",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
@@ -130,6 +142,8 @@
     "playwright": "1.58.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "tesseract.js": "7.0.0",
+    "tesseract.js-core": "7.0.0",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"

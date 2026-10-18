@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 /** Keep DOM size independent of the PDF page count or outline length. */
-export function useVirtualRows(count: number, rowHeight: number, active: boolean) {
+export function useVirtualRows(count: number, rowHeight: number, active: boolean, overscan = 3) {
   const root = useRef<HTMLDivElement>(null)
   const frame = useRef(0)
   const [position, setPosition] = useState({ top: 0, height: 480 })
@@ -35,7 +35,7 @@ export function useVirtualRows(count: number, rowHeight: number, active: boolean
     }
   }, [count, rowHeight])
 
-  const start = Math.max(0, Math.floor(position.top / rowHeight) - 3)
-  const end = Math.min(count, Math.ceil((position.top + position.height) / rowHeight) + 3)
+  const start = Math.max(0, Math.floor(position.top / rowHeight) - overscan)
+  const end = Math.min(count, Math.ceil((position.top + position.height) / rowHeight) + overscan)
   return { root, start, end, scrollToRow, totalHeight: count * rowHeight }
 }

@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
 import { z } from 'zod'
-import { NativeWorker } from '../engine/native-worker.ts'
+import { NativeWorker, type NativeProcessRuntime } from '../engine/native-worker.ts'
 import { ByteCache } from '../engine/byte-cache.ts'
 import { encodePng } from '../engine/png.ts'
 import { NativeViewport } from '../client/native/viewport.ts'
@@ -31,9 +30,9 @@ interface Handle { hash: string; generation: number; bytes: number }
 
 /** Host authority is shared by UI dispatch, native reads and future Agent callers. */
 export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>, options: {
-  executable: string; cacheBytes?: number; timeoutMs?: number
+  executable: string; subprocess: NativeProcessRuntime; cacheBytes?: number; timeoutMs?: number
 }) {
-  const worker = new NativeWorker(options.executable, options.timeoutMs)
+  const worker = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
   const handles = new Map<string, Handle>()
   const openings = new Map<string, Promise<void>>()
   const tiles = new ByteCache<Buffer>(options.cacheBytes ?? 32 * 1024 * 1024)
@@ -97,7 +96,6 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
     if (snapshot.document.encrypted) fail('pdf/native-unsupported', 'Encrypted PDFs are not supported by the native reader')
     if (snapshot.document.signed) fail('pdf/native-unsupported', 'Signed PDFs are not supported by the native reader')
-    if (!existsSync(options.executable)) fail('pdf/native-unavailable', 'Native helper is unavailable; install the PDF package for this platform')
     await ensure(snapshot, signal)
     return { bytesHash, protocolVersion: 1, generation: worker.generation }
   }
@@ -197,7 +195,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
     const reply = await worker.request({ command: 'text', documentId, pageIndex: page - 1 }, undefined, signal, -5)
     signal.throwIfAborted()
     const content = z.object({ items: z.array(z.object({ str: z.string(), transform: z.array(z.number()),
-      width: z.number(), height: z.number(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean() })),
+      width: z.number(), height: z.number(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean(),
+      glyphs: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite().positive()])).max(200000).optional() })),
       styles: z.record(z.string(), z.object({ fontFamily: z.string(), ascent: z.number(), descent: z.number(), vertical: z.boolean() })),
       lang: z.string().nullable() }).parse(reply.value)
     return { snapshot, content }
@@ -337,7 +336,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkspaces>
       }
     })
   }
-  return { dispatch, native, readPageText, readOutline, renderPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, workerPid: worker.pid, documents: handles.size, documentBytes: handlesBytes,
+  return { dispatch, native, readPageText, readOutline, renderPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
-    dispose() { closed = true; worker.dispose(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0 } }
+    async dispose() { closed = true; tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0
+      await worker.dispose() } }
 }

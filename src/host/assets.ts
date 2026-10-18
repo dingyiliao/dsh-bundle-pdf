@@ -45,9 +45,12 @@ function loadManifest(root: string): AssetRecord[] {
 }
 
 /** Connection supplies authentication; only build-listed public dependency assets are exposed. */
-export function registerAssets(ctx: AssetContext): () => Promise<void> {
+export function registerAssets(
+  ctx: AssetContext,
+  /** @internal An isolated asset tree for source-level tests; production uses the packaged directory. */
+  root = fileURLToPath(new URL('./assets/', import.meta.url)),
+): () => Promise<void> {
   // After bundling this module lives in dist/index.js, next to dist/assets.
-  const root = fileURLToPath(new URL('./assets/', import.meta.url))
   const manifest = loadManifest(root)
   const disposers: (() => Promise<void>)[] = []
   const cached = new Map<string, Promise<Uint8Array<ArrayBuffer>>>()

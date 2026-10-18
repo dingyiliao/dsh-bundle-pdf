@@ -33,11 +33,9 @@ export class TranslationService {
     if (request.signal?.aborted) cancel()
     try {
       const result = await this.registry.translate({ ...request, signal: controller.signal })
+      // Every path that supersedes this request calls cancel(), which aborts
+      // this controller. No work can interleave after throwIfAborted below.
       controller.signal.throwIfAborted()
-      if (this.disposed || this.generation !== requestId || this.document?.documentId !== document.documentId
-          || this.document?.contentVersion !== document.contentVersion) {
-        throw new TranslationError('stale-result', 'The translation no longer belongs to the active selection.')
-      }
       return { ...result, document, requestId }
     } finally {
       request.signal?.removeEventListener('abort', cancel)

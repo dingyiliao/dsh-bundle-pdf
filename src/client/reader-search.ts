@@ -2,6 +2,35 @@ interface SearchTextItem { str: string; transform: number[]; width: number; heig
 
 const summaryBytes = 1024
 
+/** Give long searches a time budget, including pages resolved from cached promises. */
+export class SearchProgressPacer {
+  private yieldedAt: number
+  private publishedAt: number
+  private publishedCount = 0
+
+  constructor(private readonly now: () => number, private readonly yieldTurn: () => Promise<void>,
+    private readonly publish: () => void, private readonly isCurrent: () => boolean,
+    private readonly frameBudgetMs = 12, private readonly publishIntervalMs = 50) {
+    this.yieldedAt = this.publishedAt = now()
+  }
+
+  checkpoint(hitCount: number): Promise<boolean> | undefined {
+    if (!this.isCurrent()) return
+    const now = this.now()
+    const shouldYield = now - this.yieldedAt >= this.frameBudgetMs
+    if (hitCount > this.publishedCount && (shouldYield || now - this.publishedAt >= this.publishIntervalMs)) {
+      this.publish()
+      this.publishedCount = hitCount
+      this.publishedAt = now
+    }
+    if (!shouldYield) return
+    return this.yieldTurn().then(() => {
+      this.yieldedAt = this.now()
+      return this.isCurrent()
+    })
+  }
+}
+
 function gramHash(text: string, offset: number, length: number): number {
   let hash = Math.imul(length, 0x27d4eb2d) ^ Math.imul(text.charCodeAt(offset), 0x9e3779b1)
   if (length > 1) hash ^= Math.imul(text.charCodeAt(offset + 1), 0x85ebca6b)
@@ -142,6 +171,21 @@ export function searchResultExcerpt(text: string, matchStart: number, matchLengt
   if (start > 0 && low(text.charCodeAt(start)) && high(text.charCodeAt(start - 1))) start--
   if (end < text.length && high(text.charCodeAt(end - 1)) && low(text.charCodeAt(end))) end++
 
+  // Keep a short excerpt readable without splitting an ordinary word. Very
+  // long unbroken PDF tokens retain the size cap and show a truncation mark.
+  const word = /[\p{L}\p{N}]/u
+  const boundary = /[\s\p{P}]/u
+  if (start > 0 && word.test(text[start - 1]) && word.test(text[start])) {
+    for (let index = start - 1; index >= Math.max(0, start - 12); index--) {
+      if (boundary.test(text[index])) { start = index + 1; break }
+    }
+  }
+  if (end < text.length && word.test(text[end - 1]) && word.test(text[end])) {
+    for (let index = end; index < Math.min(text.length, end + 12); index++) {
+      if (boundary.test(text[index])) { end = index; break }
+    }
+  }
+
   let result = ''
   let damaged = false
   for (let index = start; index < end; index++) {
@@ -158,5 +202,6 @@ export function searchResultExcerpt(text: string, matchStart: number, matchLengt
       damaged = false
     }
   }
-  return result
+  result = result.replace(/\s+/gu, ' ').trim()
+  return `${start > 0 ? '…' : ''}${result}${end < text.length ? '…' : ''}`
 }

@@ -10,9 +10,7 @@ export interface WindowedPagesProps {
   fit: 'custom' | 'width' | 'page'
   size: { width: number; height: number }
   scrollRoot: HTMLElement | null
-  t(key: string): string
   scaleForPage(page: PdfPageInfo): number
-  hasOcrText(page: number): boolean
   pinnedPages?: ReadonlySet<number>
   selectedTextPages?: ReadonlySet<number>
   dragAnchorPage?: number | null
@@ -26,11 +24,17 @@ export function WindowedPages(props: WindowedPagesProps) {
   const layout = useMemo(() => buildPageLayout(pages, scaleForPage, rotation, READING_TOP_INSET), [pages, scaleForPage, rotation, zoom, fit, size.width, size.height])
   const [position, setPosition] = useState(() => scrollRoot?.scrollTop ?? 0)
   const totalWidth = layout.reduce((width, item) => Math.max(width, item.width + 32), size.width)
-  const previous = useRef<{ root: HTMLElement | null; layout: readonly PageGeometry[]; width: number } | null>(null)
+  const previous = useRef<{ root: HTMLElement | null; layout: readonly PageGeometry[]; width: number; fit: WindowedPagesProps['fit']; size: { width: number; height: number } } | null>(null)
   // Read the old scroll offset before React replaces the old page dimensions.
   // On a large zoom-out the browser may clamp scrollTop during that replacement.
   const prior = previous.current
-  const anchor = props.preserveAnchor && prior?.root === scrollRoot && prior.layout !== layout && scrollRoot && prior.layout.length && layout.length
+  // Automatic-fit viewport resizes have their own point-preserving anchor in
+  // usePdfViewportSize. Running this center-based anchor too scrolls twice
+  // during sidebar dragging. A fit-mode change resets that hook, so keep this
+  // anchor for the mode transition even if the viewport changed concurrently.
+  const viewportResized = prior && (Math.abs(prior.size.width - size.width) >= .25 || Math.abs(prior.size.height - size.height) >= .25)
+  const viewportAnchorOwnsChange = viewportResized && fit !== 'custom' && prior?.fit === fit
+  const anchor = props.preserveAnchor && !viewportAnchorOwnsChange && prior?.root === scrollRoot && prior.layout !== layout && scrollRoot && prior.layout.length && layout.length
     ? (() => {
       const viewportX = scrollRoot.clientWidth / 2, viewportY = scrollRoot.clientHeight / 2
       const oldX = scrollRoot.scrollLeft + viewportX, oldY = scrollRoot.scrollTop + viewportY
@@ -38,16 +42,16 @@ export function WindowedPages(props: WindowedPagesProps) {
       const oldPage = prior.layout[index], newPage = layout[index]
       if (!oldPage || !newPage) return null
       const within = oldY - oldPage.top
-      const newWithin = within <= 27 ? within : within >= 27 + oldPage.height
-        ? 27 + newPage.height + within - 27 - oldPage.height
-        : 27 + (within - 27) * newPage.height / oldPage.height
+      const newWithin = within <= 0 ? within : within >= oldPage.height
+        ? newPage.height + within - oldPage.height
+        : within * newPage.height / oldPage.height
       return {
         top: newPage.top + newWithin - viewportY,
         left: totalWidth / 2 + (oldX - prior.width / 2) * newPage.width / oldPage.width - viewportX,
       }
     })() : null
   useLayoutEffect(() => {
-    previous.current = { root: scrollRoot, layout, width: totalWidth }
+    previous.current = { root: scrollRoot, layout, width: totalWidth, fit, size: { width: size.width, height: size.height } }
     if (!scrollRoot) return
     setWindowLayout(scrollRoot, layout)
     if (anchor) {
@@ -62,7 +66,7 @@ export function WindowedPages(props: WindowedPagesProps) {
     scrollRoot.addEventListener('scroll', schedule, { passive: true }); schedule()
     scrollRoot.dispatchEvent(new Event('pdflayoutchange'))
     return () => { clearWindowLayout(scrollRoot); scrollRoot.removeEventListener('scroll', schedule); cancelAnimationFrame(frame) }
-  }, [scrollRoot, layout, totalWidth])
+  }, [scrollRoot, layout, totalWidth, fit, size.width, size.height])
   const range = windowForViewport(layout, position, scrollRoot?.clientHeight || size.height)
   const active = new Set<number>()
   for (let index = range.start; index < range.end; index++) active.add(index)
@@ -79,7 +83,6 @@ export function WindowedPages(props: WindowedPagesProps) {
       return <div key={item.page} className="dsh-pdf-page-wrap dsh-pdf-windowed-page"
         data-page-number={item.page}
         style={{ position: 'absolute', top: item.top, left: 0, width: totalWidth, height: item.outerHeight }}>
-        <div className="dsh-pdf-page-label" style={{ height: 27, boxSizing: 'border-box' }}>{props.t('reader.page')} {item.page}{props.hasOcrText(item.page) ? ` · ${props.t('reader.ocrText')}` : ''}</div>
         <div className="dsh-pdf-page-stage" style={{ width: item.width, height: item.height }}>
           {props.renderPage(pages[index], retainText)}
         </div>

@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readFile, readdir, mkdir, writeFile, copyFile } from 'node:fs/promises'
+import { readFile, readdir, mkdir, writeFile, copyFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +23,15 @@ await new Promise((resolveBuild, rejectBuild) => {
   })
   child.once('error', rejectBuild)
   child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`OCR declaration build exited with status ${code}`)))
+})
+await new Promise((resolveBuild, rejectBuild) => {
+  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'),
+    '--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler', '--strict',
+    '--esModuleInterop', '--skipLibCheck', '--declaration', '--emitDeclarationOnly',
+    '--rootDir', 'src', '--outDir', 'dist/types', '--lib', 'ES2023,DOM,DOM.Iterable', '--types', 'node',
+    'src/host/image-understanding-plugin.ts'], { cwd: project, stdio: 'inherit', windowsHide: true })
+  child.once('error', rejectBuild)
+  child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Image Host declaration build exited with status ${code}`)))
 })
 
 const common = {
@@ -54,16 +63,45 @@ const ocrHostBuild = await build({
   ...common, entryPoints: ['src/host/ocr-plugin.ts'], outfile: 'dist/ocr-host.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
+const imageHostBuild = await build({
+  ...common, entryPoints: ['src/host/image-understanding-plugin.ts'], outfile: 'dist/image-host.js',
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
+})
 
-// The Harness client loader supplies the shared React and Cordis module instances.
+// The Harness client loader supplies these shared platform modules. Bundle
+// pure DSH utilities such as workspace-path locally: they are not Client
+// module rows or entries in the shell's frozen shared-module table.
+const clientWrapperStart = 'window.__ModuleLoader__.load({\n  id: "@local/dsh-pdf",\n  factory(require) {\n    const module = { exports: {} };\n    const exports = module.exports;\n'
+const clientWrapperEnd = '\n    return module.exports;\n  }\n});\n'
+const browserCoverage = process.env.DSH_PDF_BROWSER_COVERAGE === '1'
 const clientBuild = await build({
   ...browser, entryPoints: ['src/client/index.tsx'], outfile: 'dist/client.js',
-  write: false, format: 'cjs', external: ['react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/*'],
+  write: false, format: 'cjs', external: [
+    'react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/cordis',
+  ],
   jsx: 'automatic', loader: { '.css': 'text' },
+  // In coverage builds, esbuild must know the loader wrapper's line offset.
+  ...(browserCoverage ? {
+    sourcemap: 'external',
+    banner: { js: clientWrapperStart },
+    footer: { js: clientWrapperEnd },
+  } : {}),
 })
 const clientCode = clientBuild.outputFiles.find((file) => file.path.endsWith('client.js'))?.text
 if (!clientCode) throw new Error('The PDF client build did not produce JavaScript.')
-await writeFile(join(dist, 'client.js'), `window.__ModuleLoader__.load({\n  id: "@local/dsh-pdf",\n  factory(require) {\n    const module = { exports: {} };\n    const exports = module.exports;\n${clientCode}\n    return module.exports;\n  }\n});\n`, 'utf8')
+await writeFile(join(dist, 'client.js'), browserCoverage
+  ? clientCode
+  : `${clientWrapperStart}${clientCode}${clientWrapperEnd}`, 'utf8')
+if (browserCoverage) {
+  const clientMap = clientBuild.outputFiles.find((file) => file.path.endsWith('client.js.map'))?.text
+  if (!clientMap) throw new Error('The PDF client coverage build did not produce a source map.')
+  await writeFile(join(dist, 'client.js.map'), clientMap, 'utf8')
+} else {
+  // A later normal build must not leave a stale opt-in coverage map beside it.
+  await unlink(join(dist, 'client.js.map')).catch((error) => {
+    if (error.code !== 'ENOENT') throw error
+  })
+}
 
 const ocrBuild = await build({
   ...browser, entryPoints: ['src/ocr/index.ts'], outfile: 'dist/ocr.js', format: 'esm',
@@ -99,7 +137,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -123,4 +161,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, OCR Host plugin, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)

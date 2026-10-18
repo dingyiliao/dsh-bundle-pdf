@@ -1,4 +1,5 @@
 import type { PdfRect } from '../core/pdf-types.js'
+import { mergeSelectionRects } from './selection-highlight.js'
 import type { ReaderPage } from './reader-document.js'
 
 export type PageViewport = ReturnType<ReaderPage['getViewport']>
@@ -12,6 +13,8 @@ export interface ReaderSelection {
   text: string
   kind: 'text' | 'region'
   fragments: { page: number; rect: PdfRect; quadPoints: number[] }[]
+  selectionBefore?: string
+  selectionAfter?: string
 }
 
 export function unionRects(rects: readonly PdfRect[]): PdfRect {
@@ -42,6 +45,34 @@ export function overlapFraction(rect: PdfRect, other: PdfRect): number {
   return area / Math.max(0.00001, (rect[2] - rect[0]) * (rect[3] - rect[1]))
 }
 
+function selectionBoundaryContext(range: Range): Pick<ReaderSelection, 'selectionBefore' | 'selectionAfter'> {
+  const start = range.startContainer, end = range.endContainer
+  if (start.nodeType !== Node.TEXT_NODE || end.nodeType !== Node.TEXT_NODE) return {}
+  if (start === end) {
+    const text = start.textContent ?? ''
+    return {
+      selectionBefore: text.slice(Math.max(0, range.startOffset - 80), range.startOffset),
+      selectionAfter: text.slice(range.endOffset, range.endOffset + 80),
+    }
+  }
+  // Native PDFium positioning uses one span per glyph. Recover surrounding
+  // letters only inside the same PDFium text run, never across unrelated runs.
+  const startSpan = start.parentElement?.closest<HTMLElement>('[data-pdf-run]')
+  const endSpan = end.parentElement?.closest<HTMLElement>('[data-pdf-run]')
+  const layer = startSpan?.closest<HTMLElement>('[data-pdf-text="active"]')
+  if (!startSpan || !endSpan || !layer || layer !== endSpan.closest('[data-pdf-text="active"]') ||
+      startSpan.dataset.pdfRun !== endSpan.dataset.pdfRun) return {}
+  const spans = [...layer.querySelectorAll<HTMLElement>('[data-pdf-run]')]
+    .filter(span => span.dataset.pdfRun === startSpan.dataset.pdfRun)
+  const first = spans.indexOf(startSpan), last = spans.indexOf(endSpan)
+  if (first < 0 || last < first) return {}
+  const before = spans.slice(0, first).map(span => span.textContent ?? '').join('') +
+    (start.textContent ?? '').slice(0, range.startOffset)
+  const after = (end.textContent ?? '').slice(range.endOffset) +
+    spans.slice(last + 1).map(span => span.textContent ?? '').join('')
+  return { selectionBefore: before.slice(-80), selectionAfter: after.slice(0, 80) }
+}
+
 /** Collect selected text nodes individually: a container's bounding box would include other columns. */
 export function captureTextSelection(container: HTMLElement, views: Map<number, PageView>, revision: number): ReaderSelection | null {
   const selection = window.getSelection()
@@ -57,7 +88,7 @@ export function captureTextSelection(container: HTMLElement, views: Map<number, 
     if (!layers.length) continue
     const pageBox = view.element.getBoundingClientRect()
     const bounds: PdfRect = [Infinity, Infinity, -Infinity, -Infinity]
-    const quads: number[] = [], text: string[] = []
+    const boxes: PdfRect[] = [], text: string[] = []
     for (const layer of layers) {
       // A word selection usually has a text/span ancestor, not the entire page.
       const root = layer.contains(range.commonAncestorContainer) ? range.commonAncestorContainer : layer
@@ -82,10 +113,7 @@ export function captureTextSelection(container: HTMLElement, views: Map<number, 
               const left = Math.max(0, box.left - pageBox.left), top = Math.max(0, box.top - pageBox.top)
               const right = Math.min(view.viewport.width, box.right - pageBox.left), bottom = Math.min(view.viewport.height, box.bottom - pageBox.top)
               if (right <= left || bottom <= top) continue
-              const converted = viewportRectToPdf(view.viewport, [left, top, right, bottom])
-              bounds[0] = Math.min(bounds[0], converted.rect[0]); bounds[1] = Math.min(bounds[1], converted.rect[1])
-              bounds[2] = Math.max(bounds[2], converted.rect[2]); bounds[3] = Math.max(bounds[3], converted.rect[3])
-              quads.push(...converted.quadPoints)
+              boxes.push([left, top, right, bottom])
             }
           }
         }
@@ -93,12 +121,25 @@ export function captureTextSelection(container: HTMLElement, views: Map<number, 
         node = walker.nextNode()
       }
     }
+    // One region per line: PDFium paints each quad separately, so per-glyph quads
+    // would multiply into a striped highlight instead of one mark.
+    const quads: number[] = []
+    for (const box of mergeSelectionRects(boxes)) {
+      const converted = viewportRectToPdf(view.viewport, box)
+      bounds[0] = Math.min(bounds[0], converted.rect[0]); bounds[1] = Math.min(bounds[1], converted.rect[1])
+      bounds[2] = Math.max(bounds[2], converted.rect[2]); bounds[3] = Math.max(bounds[3], converted.rect[3])
+      quads.push(...converted.quadPoints)
+    }
     if (quads.length) {
       fragments.push({ page, rect: bounds, quadPoints: quads })
       selectedText.push(text.join(''))
     }
   }
-  return fragments.length ? { revision, kind: 'text', text: selectedText.join('\n'), fragments } : null
+  if (!fragments.length) return null
+  return {
+    revision, kind: 'text', text: selectedText.join('\n'), fragments,
+    ...selectionBoundaryContext(range),
+  }
 }
 
 export function colorFromHex(value: string): [number, number, number] {

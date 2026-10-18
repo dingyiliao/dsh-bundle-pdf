@@ -23,7 +23,8 @@ const response = z.discriminatedUnion('ok', [
 ])
 const errorCodes = new Set(['disabled', 'not-configured', 'engine-unavailable', 'authentication-failed',
   'invalid-request', 'limit-exceeded', 'timeout', 'cancelled', 'stale-result', 'translation-failed',
-  'invalid-model-output', 'incomplete-model-output', 'empty-model-output'])
+  'invalid-model-output', 'incomplete-model-output', 'empty-model-output',
+  'incomplete-selection', 'unrecognized-selection'])
 
 /** Provider credentials and model calls remain behind the authenticated Host route. */
 export function createHostTranslationEngine(connection: PdfConnection, lifetime: AbortSignal,

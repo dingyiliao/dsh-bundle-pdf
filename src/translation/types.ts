@@ -5,6 +5,7 @@ export type TranslationErrorCode =
   | 'disabled' | 'not-configured' | 'engine-unavailable' | 'authentication-failed'
   | 'invalid-request' | 'limit-exceeded' | 'timeout' | 'cancelled' | 'stale-result' | 'translation-failed'
   | 'invalid-model-output' | 'incomplete-model-output' | 'empty-model-output'
+  | 'incomplete-selection' | 'unrecognized-selection'
 
 export class TranslationError extends Error {
   constructor(readonly code: TranslationErrorCode, message: string, options?: ErrorOptions) {
@@ -28,6 +29,9 @@ export interface TranslationRequest {
     documentId?: string
     contentVersion?: string
     pages?: readonly number[]
+    /** Text immediately adjacent to the selection in the same PDF text run. */
+    selectionBefore?: string
+    selectionAfter?: string
   }
 }
 

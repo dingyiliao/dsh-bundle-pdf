@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PdfBookmarkPosition, PdfClientApi, PdfUserBookmark, WorkspaceSnapshot } from '../shared/contracts.ts'
+import type { PdfBookmarkPosition, PdfClientApi, PdfStoredReadingPosition, PdfUserBookmark, WorkspaceSnapshot } from '../shared/contracts.ts'
 import { sessionFile } from '../shared/address.ts'
 import { measurePdfAsync } from '../shared/performance.ts'
 import type { NativeOutlineItem, NativeReaderApi, NativeTextContent } from '../shared/native.ts'
@@ -62,6 +62,7 @@ const bookmarkPosition = z.object({ page: z.number().int().positive(), x: z.numb
 })
 const bookmarksResult = z.array(z.object({ id: z.string().uuid(), title: z.string(), position: bookmarkPosition,
   stale: z.enum(['none', 'content-changed', 'page-missing']), createdAt: z.string(), updatedAt: z.string() })).max(1000)
+const readingPositionStale = z.enum(['none', 'content-changed', 'page-missing'])
 
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
   const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
@@ -116,7 +117,8 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       const result = await call({ action: 'text', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')
       // The subprocess and Host enforce the detailed run and character budgets.
       return z.object({ items: z.array(z.object({ str: z.string(), transform: z.array(z.number().finite()).length(6),
-        width: z.number().finite(), height: z.number().finite(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean() })).max(10000),
+        width: z.number().finite(), height: z.number().finite(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean(),
+        glyphs: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite().positive()])).max(200000).optional() })).max(10000),
         styles: z.record(z.string(), z.object({ fontFamily: z.string(), ascent: z.number(), descent: z.number(), vertical: z.boolean() })),
         lang: z.string().nullable() }).parse(result) as NativeTextContent
     },
@@ -138,8 +140,19 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     remove: async (sessionId: string, id: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
       bookmarksResult.parse(await call({ action: 'remove', sessionId, id, bookmarkId }, signal, 'pdf.bookmarks')),
   }
+  const positions = {
+    get: async (sessionId: string, id: string, signal?: AbortSignal): Promise<PdfStoredReadingPosition | null> =>
+      z.object({ position: z.object({ position: bookmarkPosition, stale: readingPositionStale,
+        updatedAt: z.string() }).strict().nullable() }).parse(
+        await call({ action: 'get', sessionId, id }, signal, 'pdf.position')).position,
+    async set(sessionId: string, id: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<void> {
+      // The wire shape rejects `documentVersion`, so a full navigation position
+      // cannot be stored by accident.
+      z.object({ stored: z.literal(true) }).parse(await call({ action: 'set', sessionId, id, position }, signal, 'pdf.position'))
+    },
+  }
   return {
-    native, bookmarks,
+    native, bookmarks, positions,
     open(sessionId, address, signal) {
       const addressed = sessionFile(address)
       if (addressed.sessionId !== sessionId) return Promise.reject(new Error('The PDF address belongs to another session'))

@@ -2,12 +2,15 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { TranslationError, type TranslationErrorCode, type TranslationRequest, type TranslationResult } from '../translation/index.js'
 import { translationSourceLanguage, translationTargetLanguages } from '../shared/contracts.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
+import { TranslationLanguageMenu } from './TranslationLanguageMenu.js'
 
 export interface TranslationPanelProps {
   selection: {
     text: string
     pages: readonly number[]
     targetLanguage: string
+    selectionBefore?: string
+    selectionAfter?: string
   }
   engineName: string
   translate: (request: TranslationRequest) => Promise<TranslationResult>
@@ -30,9 +33,11 @@ const errorKeys: Readonly<Record<TranslationErrorCode, string>> = {
   'invalid-model-output': 'errorInvalidModelOutput',
   'incomplete-model-output': 'errorIncompleteModelOutput',
   'empty-model-output': 'errorEmptyModelOutput',
+  'incomplete-selection': 'errorIncompleteSelection',
+  'unrecognized-selection': 'errorUnrecognizedSelection',
 }
 
-interface PanelResult { value: TranslationResult; targetLanguage: string }
+interface PanelResult { value: TranslationResult }
 type PanelStatus = 'loading' | 'complete' | 'cancelled' | 'error'
 
 /** Show only classified, localized failures; Remote error messages may contain provider diagnostics. */
@@ -68,8 +73,10 @@ export function TranslationDetails({ detail, sourceText, t }: {
           <span className="dsh-pdf-translation-part-of-speech" dir="auto">{partOfSpeech}</span>
           <span dir="auto">{meaning}</span>
         </div>
-        <p className="dsh-pdf-translation-example"><span className="dsh-pdf-visually-hidden">{label('example')}: </span><span dir="auto">{example}</span></p>
-        <p className="dsh-pdf-translation-example-translation"><span className="dsh-pdf-visually-hidden">{label('exampleTranslation')}: </span><span dir="auto">{exampleTranslation}</span></p>
+        <div className="dsh-pdf-translation-example-pair">
+          <p className="dsh-pdf-translation-example"><span className="dsh-pdf-visually-hidden">{label('example')}: </span><span dir="auto">{example}</span></p>
+          <p className="dsh-pdf-translation-example-translation"><span className="dsh-pdf-visually-hidden">{label('exampleTranslation')}: </span><span dir="auto">{exampleTranslation}</span></p>
+        </div>
       </li>)}
     </ol>
   </div>
@@ -96,7 +103,6 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
   const preferenceGeneration = useRef(0)
   const latestResult = useRef<PanelResult>()
   const titleId = useId()
-  const targetId = useId()
   const [targetLanguage, setTargetLanguage] = useState(selection.targetLanguage)
   const [status, setStatus] = useState<PanelStatus>('loading')
   const [result, setResult] = useState<PanelResult>()
@@ -138,7 +144,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
           signal: controller.signal,
         })
         if (!current()) return
-        const completed = { value, targetLanguage: target }
+        const completed = { value }
         latestResult.current = completed
         setResult(completed)
         setStatus('complete')
@@ -183,7 +189,11 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
   }
 
   const changeTargetLanguage = (language: string) => {
+    if (language === targetLanguage) return
     setTargetLanguage(language)
+    if (errorCode !== 'incomplete-selection' && errorCode !== 'unrecognized-selection') {
+      startTranslation(selection, language)
+    }
     const generation = ++preferenceGeneration.current
     setPreferenceStatus('saving')
     void (async () => {
@@ -229,6 +239,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
     ? label(`language.${language}`) : language
   const pages = [...new Set(selection.pages)].join(', ')
   const loading = status === 'loading'
+  const needsNewSelection = errorCode === 'incomplete-selection' || errorCode === 'unrecognized-selection'
 
   return <ScrollablePanel className="dsh-pdf-translation-panel" verticalLabel={t('reader.verticalScroll')}
     horizontalLabel={t('reader.horizontalScroll')}>
@@ -244,29 +255,30 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
         <h3 id={titleId}>{label('title')}</h3>
         <button type="button" onClick={requestClose} aria-label={label('close')}>×</button>
       </div>
-      <p className="dsh-pdf-translation-meta">
-        <span>{label('pages')} {pages}</span><span aria-hidden="true"> · </span>
-        <span>{label('engine')} {engineName}</span>
-      </p>
-      <div className="dsh-pdf-translation-controls">
-        <label htmlFor={targetId}>{label('targetLanguage')}</label>
-        <select id={targetId} value={targetLanguage} onChange={(event) => changeTargetLanguage(event.target.value)}>
-          {translationTargetLanguages.map(language => <option key={language} value={language}>{languageName(language)}</option>)}
-        </select>
-        <button type="button" disabled={loading} onClick={() => startTranslation(selection, targetLanguage)}>
-          {label(status === 'error' || status === 'cancelled' ? 'retry' : 'translate')}
-        </button>
+      <div className="dsh-pdf-translation-source">
+        <span className="dsh-pdf-translation-source-label">{label('original')}</span>
+        <p className="dsh-pdf-translation-source-text" dir="auto">{selection.text}</p>
+        <p className="dsh-pdf-translation-meta">
+          <span>{label('pages')} {pages}</span><span aria-hidden="true"> · </span>
+          <span>{label('engine')} {engineName}</span>
+        </p>
+      </div>
+      <div className="dsh-pdf-translation-result-header">
+        <div className="dsh-pdf-translation-result-heading">
+          <h4>{label('result')}</h4>
+          <TranslationLanguageMenu value={targetLanguage} label={label('targetLanguage')}
+            languageName={languageName} onChange={changeTargetLanguage} />
+        </div>
+        {result && <button type="button" disabled={copyState === 'copying'} onClick={() => void copyResult()}>
+          {label(copyState === 'copied' ? 'copied' : copyState === 'copying' ? 'copying' : 'copy')}
+        </button>}
         {loading && <button type="button" onClick={cancel}>{label('cancel')}</button>}
+        {(status === 'error' || status === 'cancelled') && !needsNewSelection &&
+          <button type="button" onClick={() => startTranslation(selection, targetLanguage)}>{label('retry')}</button>}
       </div>
       {preferenceStatus === 'saving' && <p className="dsh-pdf-translation-preference" role="status">{label('languageSaving')}</p>}
       {preferenceStatus === 'failed' && <p className="dsh-pdf-translation-preference is-error" role="alert">{label('languageSaveFailed')}</p>}
       <section className="dsh-pdf-translation-result" aria-busy={loading}>
-        <div className="dsh-pdf-translation-result-header">
-          <h4>{label('result')} · {languageName(result?.targetLanguage ?? targetLanguage)}</h4>
-          {result && <button type="button" disabled={copyState === 'copying'} onClick={() => void copyResult()}>
-            {label(copyState === 'copied' ? 'copied' : copyState === 'copying' ? 'copying' : 'copy')}
-          </button>}
-        </div>
         <div className="dsh-pdf-translation-result-body">
           <div className="dsh-pdf-translation-status" role="status" aria-live="polite">
             {loading ? label('loading') : status === 'cancelled' ? label('cancelled') : copyState === 'copied' ? label('copied') : null}
@@ -285,12 +297,10 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
             <TranslationContent value={result.value} sourceText={selection.text} t={t} />
           </>}
           {copyErrorKey && <p className="dsh-pdf-translation-copy-error" role="alert">{label(copyErrorKey)}</p>}
+          {needsNewSelection &&
+            <button type="button" className="dsh-pdf-translation-reselect" onClick={requestClose}>{label('reselect')}</button>}
         </div>
       </section>
-      <details className="dsh-pdf-translation-original">
-        <summary>{label('original')}</summary>
-        <div className="dsh-pdf-translation-text" dir="auto">{selection.text}</div>
-      </details>
       <p className="dsh-pdf-translation-note">{label('selectionOnly')}</p>
     </section>
   </ScrollablePanel>

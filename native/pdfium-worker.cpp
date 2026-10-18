@@ -203,10 +203,18 @@ json text_content(Document& doc, const json& request) {
   FPDF_PAGEOBJECT owner = nullptr;
   std::array<double, 6> transform{};
   double width = 0, size = 0;
+  std::vector<std::array<double, 3>> glyphs;
+  bool positioned = true;
   auto flush = [&](bool eol) {
-    if (!value.empty()) runs.push_back({{"str", value}, {"transform", transform}, {"width", std::max(0.0, width)},
-      {"height", size}, {"hasEOL", eol}, {"dir", "ltr"}, {"fontName", "nativeSans"}});
-    value.clear(); owner = nullptr; width = 0;
+    if (!value.empty()) {
+      json run = {{"str", value}, {"transform", transform}, {"width", std::max(0.0, width)},
+        {"height", size}, {"hasEOL", eol}, {"dir", "ltr"}, {"fontName", "nativeSans"}};
+      // One positioned glyph per Unicode scalar lets the browser's selectable
+      // layer follow PDFium's advances instead of a substituted font's widths.
+      if (positioned && glyphs.size() > 1) run["glyphs"] = glyphs;
+      runs.push_back(std::move(run));
+    }
+    value.clear(); owner = nullptr; width = 0; glyphs.clear(); positioned = true;
   };
   for (int i = 0; i < chars; i++) {
     const auto cp = FPDFText_GetUnicode(text_page, i);
@@ -227,8 +235,8 @@ json text_content(Document& doc, const json& request) {
     auto object = FPDFText_GetTextObject(text_page, i);
     double x = 0, y = 0, l = 0, r = 0, b = 0, t = 0;
     FS_MATRIX m{1, 0, 0, 1, 0, 0};
-    FPDFText_GetCharOrigin(text_page, i, &x, &y);
-    FPDFText_GetCharBox(text_page, i, &l, &r, &b, &t);
+    const bool has_origin = FPDFText_GetCharOrigin(text_page, i, &x, &y);
+    const bool has_box = FPDFText_GetCharBox(text_page, i, &l, &r, &b, &t);
     FPDFText_GetMatrix(text_page, i, &m);
     auto font_size = FPDFText_GetFontSize(text_page, i);
     if (!std::isfinite(font_size) || font_size <= 0) font_size = std::max(1.0, t - b);
@@ -247,13 +255,27 @@ json text_content(Document& doc, const json& request) {
         FPDFText_GetCharBox(text_page, last_char, &l, &r, &b, &t);
         width = std::max({width, projection(l,b), projection(l,t), projection(r,b), projection(r,t)});
       }
+      const auto from_char = [&](double px, double py) { return ((px - x) * nx + (py - y) * ny) / norm; };
+      const double box_width = has_box ? std::max({from_char(l,b), from_char(l,t), from_char(r,b), from_char(r,t)}) : 0;
+      if (!glyphs.empty()) {
+        // The previous character's selectable width ends at this origin.
+        const double next = ((x - glyphs.back()[0]) * nx + (y - glyphs.back()[1]) * ny) / norm;
+        if (std::isfinite(next) && next > 0) glyphs.back()[2] = next;
+      }
+      glyphs.push_back({x, y, std::max(0.01, box_width > 0 ? box_width : font_size * 0.4)});
     }
+    positioned = positioned && has_origin && std::isfinite(x) && std::isfinite(y) && norm > 0
+      && !glyphs.empty() && std::isfinite(glyphs.back()[2]);
     i = last_char;
     require(runs.size() < 10000, "Text page exceeds the text-run budget");
   }
   flush(false);
-  return {{"items", runs}, {"styles", {{"nativeSans", {{"fontFamily", "sans-serif"}, {"ascent", 0.8},
+  json result = {{"items", runs}, {"styles", {{"nativeSans", {{"fontFamily", "sans-serif"}, {"ascent", 0.8},
     {"descent", -0.2}, {"vertical", false}}}}}, {"lang", nullptr}};
+  // Preserve the existing text response for unusually dense pages instead of
+  // crossing the worker's JSON frame limit just to add selection positions.
+  if (result.dump().size() > max_json - 4096) for (auto& run : result["items"]) run.erase("glyphs");
+  return result;
 }
 
 json page_links(Document& doc, const json& request) {
@@ -340,7 +362,7 @@ json render_tile(Document& doc, const json& request, std::vector<unsigned char>&
   return {{"width",w},{"height",h},{"format","rgba"}};
 }
 
-enum class Command { hello, open, close, text, outline, destination, links, inspect, render };
+enum class Command { unknown, hello, open, close, text, outline, destination, links, inspect, render };
 
 Command command_for(const json& request) {
   const auto name = request.at("command").get<std::string>();
@@ -350,11 +372,13 @@ Command command_for(const json& request) {
     {"links", Command::links}, {"inspect", Command::inspect}, {"render", Command::render},
   }};
   for (const auto& [label, command] : commands) if (label == name) return command;
-  throw Failure("pdf/native-request", "Unknown native command");
+  return Command::unknown;
 }
 
 json run(const json& request, std::vector<unsigned char>& payload, std::vector<unsigned char>& out) {
   switch (command_for(request)) {
+  case Command::unknown:
+    break;
   case Command::hello:
     return {{"protocolVersion", 1}, {"engine", "pdfium"}, {"build", "156.0.8076.0"}};
   case Command::open: {

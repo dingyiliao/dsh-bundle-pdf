@@ -16,7 +16,7 @@ export interface ReadingSidebarProps {
   pageInput: string
   navigating: boolean
   onPageInputChange: (value: string) => void
-  onPageInputSubmit: () => void
+  onPageInputSubmit: (value: string) => void
   onPageInputReset: () => void
   onNavigatePage: (page: number) => void
   onStepPage: (page: number) => void
@@ -49,20 +49,84 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
   onPageInputSubmit, onPageInputReset, onStepPage, t }: Pick<ReadingSidebarProps,
   'pdf' | 'currentPage' | 'pageInput' | 'navigating' | 'onPageInputChange' | 'onPageInputSubmit' | 'onPageInputReset' | 'onStepPage' | 't'> & { compact: boolean }) {
   const count = pdf?.numPages
+  const skipBlur = useRef(false)
+  const submittedPage = useRef<number | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  // The 44px rail leaves about 33px inside the capsule; reserve enough space
+  // for every digit of the document's page count without changing size on turns.
+  const countDigits = String(count ?? 1).length
+  const compactFontSize = Math.max(9, Math.min(15, 56 / countDigits))
+  const compactTotalFontSize = Math.max(8, Math.min(11, 50 / countDigits))
+  const submit = () => {
+    const raw = (inputRef.current?.value ?? pageInput).trim()
+    const page = Number(raw)
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(page) || page < 1 || page > (count ?? 0)) {
+      onPageInputReset()
+      return
+    }
+    submittedPage.current = page
+    onPageInputSubmit(raw)
+  }
   return <div className={`dsh-pdf-sidebar-page-nav${compact ? ' is-compact' : ''}`}
     role="group" aria-label={t('reader.navigation')}>
-    <button type="button" aria-label={t('reader.previous')} title={t('reader.previous')}
-      disabled={!pdf || navigating || currentPage <= 1} onClick={() => onStepPage(currentPage - 1)}>‹</button>
-    <form className="dsh-pdf-page-form" onSubmit={event => { event.preventDefault(); onPageInputSubmit() }}>
-      <input aria-label={t('reader.page')} inputMode="numeric" autoComplete="off"
+    {/* A step stays enabled while a jump is in flight: the reader coalesces page
+        requests anyway, and dimming these buttons for the length of a load reads
+        as a flicker. Only the page field is locked, so a half-typed number is not
+        lost when the layout changes under it. */}
+    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.previous')} title={t('reader.previous')}
+      disabled={!pdf || currentPage <= 1} onClick={() => onStepPage(currentPage - 1)}>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={compact ? 'm5 14 7-7 7 7' : 'm14 5-7 7 7 7'} />
+      </svg>
+    </button>
+    <form className="dsh-pdf-page-form" onSubmit={event => { event.preventDefault(); submit() }}>
+      <input ref={inputRef} className="dsh-pdf-page-input" aria-label={t('reader.page')} inputMode="numeric" autoComplete="off"
         title={`${currentPage} / ${count ?? '—'}`} value={pageInput} disabled={!pdf || navigating}
-        onChange={event => onPageInputChange(event.target.value)}
-        onFocus={event => event.currentTarget.select()} onBlur={onPageInputReset}
-        onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); onPageInputReset(); event.currentTarget.blur() } }} />
-      <span>/ {count ?? '—'}</span>
+        style={compact ? { fontSize: compactFontSize } : undefined}
+        onChange={event => {
+          if (!/^\d*$/.test(event.target.value)) return
+          onPageInputChange(event.target.value)
+        }}
+        onFocus={event => { submittedPage.current = null; event.currentTarget.select() }}
+        onBlur={event => {
+          if (skipBlur.current) { skipBlur.current = false; return }
+          if (!pdf || navigating) return
+          const raw = event.currentTarget.value.trim()
+          if (!/^\d+$/.test(raw)) { onPageInputReset(); return }
+          if (submittedPage.current === Number(raw)) return
+          const page = Math.max(1, Math.min(count ?? 1, Number(raw)))
+          onPageInputChange(String(page))
+          if (page !== currentPage) onStepPage(page)
+        }}
+        onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            skipBlur.current = true
+            onPageInputReset()
+            event.currentTarget.blur()
+          } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            event.preventDefault()
+            const typed = Number(event.currentTarget.value)
+            const base = Number.isSafeInteger(typed) && typed >= 1 && typed <= (count ?? 0) ? typed : currentPage
+            const page = Math.max(1, Math.min(count ?? 1, base + (event.key === 'ArrowUp' ? 1 : -1)))
+            onPageInputChange(String(page))
+            if (page !== currentPage) onStepPage(page)
+          }
+        }} />
+      <span className="dsh-pdf-page-total" title={`${currentPage} / ${count ?? '—'}`}
+        aria-label={`${t('reader.totalPages')} ${count ?? '—'}`}
+        style={compact ? { fontSize: compactTotalFontSize } : undefined}>
+        {compact ? count ?? '—' : `/ ${count ?? '—'}`}
+      </span>
     </form>
-    <button type="button" aria-label={t('reader.next')} title={t('reader.next')}
-      disabled={!pdf || navigating || currentPage >= (count ?? 0)} onClick={() => onStepPage(currentPage + 1)}>›</button>
+    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.next')} title={t('reader.next')}
+      disabled={!pdf || currentPage >= (count ?? 0)} onClick={() => onStepPage(currentPage + 1)}>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={compact ? 'm5 10 7 7 7-7' : 'm10 5 7 7-7 7'} />
+      </svg>
+    </button>
   </div>
 }
 
@@ -102,10 +166,15 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     drag.current = undefined
   }, [expanded])
 
-  useEffect(() => () => {
-    cancelAnimationFrame(frame.current)
-    if (drag.current && divider.current?.hasPointerCapture(drag.current.pointerId)) {
-      divider.current.releasePointerCapture(drag.current.pointerId)
+  useEffect(() => {
+    // React clears host refs before passive unmount cleanup. Keep the actual
+    // divider so a resize capture is released even when this sidebar unmounts.
+    const element = divider.current
+    return () => {
+      cancelAnimationFrame(frame.current)
+      if (drag.current && element?.hasPointerCapture(drag.current.pointerId)) {
+        element.releasePointerCapture(drag.current.pointerId)
+      }
     }
   }, [])
 
@@ -154,7 +223,8 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           resize(event.key === 'Home' ? minimumWidth : maximumWidth)
         }
       }} />
-    <div className="dsh-pdf-sidebar-main" hidden={!expanded}>
+    <div className="dsh-pdf-sidebar-main" aria-hidden={!expanded}
+      ref={element => { if (element) element.inert = !expanded }}>
       <div className="dsh-pdf-sidebar-panels" id={panelId}>
         {sections.map(section => <div key={section} className="dsh-pdf-sidebar-panel"
           id={`${panelId}-${section}`} role="tabpanel" aria-labelledby={`${panelId}-tab-${section}`}
@@ -177,7 +247,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
         title={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => onExpandedChange(!expanded)}>
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
           strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d={expanded ? 'm9 5 7 7-7 7' : 'm15 5-7 7 7 7'} />
+          <path d="m9 5 7 7-7 7" />
         </svg>
       </button>
       <div className="dsh-pdf-sidebar-tabs" role="tablist" aria-orientation="vertical" aria-label={t('reader.sidebar.title')}>
