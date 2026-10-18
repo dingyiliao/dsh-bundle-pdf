@@ -17,7 +17,10 @@ export default {
   root: dshRoot,
   test: {
     ...dshConfig.test,
-    include: [join(ownerRoot, 'tests', 'web.e2e.ts').replaceAll('\\', '/')],
+    include: [
+      join(ownerRoot, 'tests', 'web.e2e.ts').replaceAll('\\', '/'),
+      join(ownerRoot, 'tests', 'client-panels.e2e.ts').replaceAll('\\', '/'),
+    ],
     fileParallelism: false,
   },
 }

@@ -1,0 +1,313 @@
+/** Real Web/Chromium panel interactions, collected from the built PDF Client. */
+import { existsSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { PDFDocument, PDFHexString, PDFName, StandardFonts } from 'pdf-lib'
+import { chromium, type Browser, type Page } from 'playwright'
+import { expect, it } from 'vitest'
+import { launchWebScaffold, seedSession, watchConsole } from '../../deepseek-harness/apps/web/tests/scaffold.ts'
+import { newEnglishPage } from '../../deepseek-harness/apps/web/tests/support.ts'
+import { attachPdfBrowserCoverage } from './browser-coverage.ts'
+import type { DshTranslationLlm } from '../src/host/translation-model.ts'
+
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
+const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'session.v3.jsonl')
+const MODEL_FIXTURE = join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl')
+const FILE_NAME = 'panel-coverage.pdf'
+
+async function browser(): Promise<Browser> {
+  if (process.env.PDF_BENCH_CHROMIUM) return attachPdfBrowserCoverage(await chromium.launch({ executablePath: process.env.PDF_BENCH_CHROMIUM }))
+  if (existsSync(chromium.executablePath())) return attachPdfBrowserCoverage(await chromium.launch())
+  return attachPdfBrowserCoverage(await chromium.launch({ channel: 'chrome' }))
+}
+
+async function documentBytes(): Promise<Uint8Array> {
+  const document = await PDFDocument.create()
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  for (let number = 1; number <= 4; number++) {
+    const page = document.addPage([1100, 700])
+    page.drawText(`Coverage page ${number}`, { x: 50, y: 610, size: 20, font })
+    if (number !== 1) continue
+    const records = [
+      { kind: 'Text', text: 'A plain note', rect: [50, 530, 75, 555] },
+      { kind: 'Highlight', text: 'A highlighted line', rect: [48, 600, 290, 630] },
+      { kind: 'Underline', text: 'An underlined line', rect: [48, 600, 290, 630] },
+      { kind: 'StrikeOut', text: 'A struck line', rect: [48, 600, 290, 630] },
+    ] as const
+    const refs = records.map(({ kind, text, rect }) => document.context.register(document.context.obj({
+      Type: 'Annot', Subtype: kind, P: page.ref, Rect: rect,
+      Contents: PDFHexString.fromText(text), C: [1, 0.55, 0], F: 4,
+      ...(kind === 'Text' ? {} : { QuadPoints: [48, 630, 290, 630, 48, 600, 290, 600] }),
+    })))
+    page.node.set(PDFName.of('Annots'), document.context.obj(refs))
+  }
+  return document.save({ useObjectStreams: false })
+}
+
+async function openReader(page: Page, url: string, title: string) {
+  await page.goto(url, { waitUntil: 'load' })
+  await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+  await page.getByRole('treeitem').filter({ hasText: title }).click()
+  const column = page.locator('[data-rightbar-col]')
+  await page.locator('[data-sidebar-right-expand]').click()
+  await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+  await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+  await column.locator('[data-files-reload]').click()
+  await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
+  const reader = page.locator('.dsh-pdf-reader')
+  await reader.waitFor({ state: 'visible', timeout: 20_000 })
+  await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first()
+    .waitFor({ state: 'visible', timeout: 20_000 })
+  return reader
+}
+
+it('navigates sidebar and annotation rows by keyboard, then scrolls both axes through the overlay controls', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let opened: Browser | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-panel-navigation-e2e')
+    await workspace.attachSession(sessionId)
+    const title = 'PDF panel navigation test'
+    await scaffold.ctx.sessionController.rename({ sessionId, title })
+    await writeFile(join(scaffold.workspaceCwd, FILE_NAME), await documentBytes())
+    opened = await browser()
+    const page = await newEnglishPage(opened)
+    const tripwire = watchConsole(page)
+    const reader = await openReader(page, scaffold.authenticatedUrl, title)
+    const sidebar = reader.locator('.dsh-pdf-sidebar')
+    const pagesTab = reader.getByRole('tab', { name: 'Pages', exact: true })
+    await pagesTab.focus()
+    await pagesTab.press('End')
+    await expect.poll(() => reader.getByRole('tab', { name: 'OCR', exact: true }).getAttribute('aria-selected')).toBe('true')
+    await page.keyboard.press('Home')
+    await expect.poll(() => pagesTab.getAttribute('aria-selected')).toBe('true')
+    await page.keyboard.press('ArrowDown')
+    await expect.poll(() => reader.getByRole('tab', { name: 'Bookmarks', exact: true }).getAttribute('aria-selected')).toBe('true')
+
+    const divider = sidebar.locator('.dsh-pdf-sidebar-divider')
+    const beforeWidth = (await sidebar.boundingBox())!.width
+    const dividerBox = (await divider.boundingBox())!
+    await page.mouse.move(dividerBox.x + dividerBox.width / 2, dividerBox.y + 40)
+    await page.mouse.down()
+    await page.mouse.move(dividerBox.x - 38, dividerBox.y + 40, { steps: 4 })
+    await page.mouse.up()
+    await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeGreaterThan(beforeWidth + 5)
+    await divider.focus()
+    await divider.press('Home')
+    await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeLessThanOrEqual(225)
+    await divider.press('End')
+    await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeGreaterThan(beforeWidth)
+    await divider.press('ArrowLeft')
+    await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeGreaterThan(beforeWidth)
+    await divider.press('ArrowRight')
+
+    await reader.getByRole('tab', { name: 'Annotations', exact: true }).click()
+    const filter = reader.getByRole('combobox', { name: 'Filter annotations' })
+    const list = reader.getByRole('list', { name: 'Annotations' })
+    await list.waitFor({ state: 'visible' })
+    const rows = list.locator('.dsh-pdf-comment-item')
+    expect(await reader.locator('.dsh-pdf-annotation-count').innerText()).toBe('4')
+    expect(await rows.count()).toBeGreaterThan(0)
+    await rows.first().click()
+    await filter.selectOption('Highlight')
+    await expect.poll(() => rows.count()).toBe(1)
+    await filter.selectOption('all')
+    await list.focus()
+    await page.keyboard.press('End')
+    await expect.poll(() => rows.last().evaluate(element => element === document.activeElement)).toBe(true)
+    await page.keyboard.press('Home')
+    await expect.poll(() => rows.first().evaluate(element => element === document.activeElement)).toBe(true)
+    await page.keyboard.press('ArrowDown')
+    await expect.poll(() => rows.nth(1).evaluate(element => element === document.activeElement)).toBe(true)
+    await rows.nth(1).evaluate(element => (element as HTMLElement).blur())
+
+    await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
+    const zoom = reader.locator('.dsh-pdf-toolbar-zoom')
+    await zoom.locator('summary').click()
+    await zoom.locator('.dsh-pdf-zoom-menu').getByRole('button', { name: '100%' }).click()
+    const scroller = reader.locator('.dsh-pdf-scroll')
+    await expect.poll(() => scroller.evaluate(element => element.scrollWidth - element.clientWidth)).toBeGreaterThan(200)
+    await expect.poll(() => scroller.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(200)
+    const vertical = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Vertical scrollbar' })
+    const horizontal = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Horizontal scrollbar' })
+    await vertical.focus()
+    await page.keyboard.press('End')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(200)
+    await page.keyboard.press('Home')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0)
+    await page.keyboard.press('PageDown')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(100)
+    await page.keyboard.press('PageUp')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0)
+    await page.keyboard.press('ArrowDown')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(40)
+    await page.keyboard.press('ArrowUp')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0)
+    await page.keyboard.press('Space')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(100)
+    await page.keyboard.press('Shift+Space')
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBe(0)
+    await horizontal.focus()
+    await page.keyboard.press('End')
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBeGreaterThan(200)
+    await page.keyboard.press('Home')
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBe(0)
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBe(40)
+    await page.keyboard.press('ArrowLeft')
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBe(0)
+    await horizontal.evaluate(element => element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, deltaY: 2, deltaMode: WheelEvent.DOM_DELTA_LINE,
+    })))
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    await vertical.evaluate(element => element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_PAGE,
+    })))
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(100)
+    const verticalBounds = (await vertical.boundingBox())!
+    await page.mouse.move(verticalBounds.x + verticalBounds.width / 2, verticalBounds.y + 10)
+    await page.mouse.down()
+    await expect.poll(() => reader.locator('.dsh-pdf-content .dsh-pdf-scrollbars.is-dragging').count()).toBe(1)
+    await page.mouse.move(verticalBounds.x + verticalBounds.width / 2,
+      verticalBounds.y + verticalBounds.height - 10, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(() => reader.locator('.dsh-pdf-content .dsh-pdf-scrollbars.is-dragging').count()).toBe(0)
+    // Pinch-to-zoom follows the mounted page under the pointer and commits a
+    // document-local scale; it must not zoom the surrounding Harness window.
+    const zoomBeforeGesture = await zoom.locator('summary').getAttribute('aria-label')
+    const mountedPage = reader.locator('[data-pdf-page]').last()
+    await mountedPage.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      element.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true,
+        ctrlKey: true, deltaY: -80, clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2 }))
+    })
+    await expect.poll(() => zoom.locator('summary').getAttribute('aria-label')).not.toBe(zoomBeforeGesture)
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await opened?.close()
+    await scaffold.close()
+  }
+}, 90_000)
+
+it('shows a real selected-word translation and handles screenshot preview copy and cancellation', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] },
+    replayFixture: MODEL_FIXTURE, replayProvidersOnly: true })
+  let opened: Browser | undefined
+  let response: string = JSON.stringify({ recognized: true, pronunciation: '/ˈkʌvərɪdʒ/', meanings: [
+    { partOfSpeech: 'noun', meaning: 'scope', example: 'Coverage is broad.', exampleTranslation: '覆盖范围很广。' },
+  ] })
+  let responseDelayMs = 0
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-panel-translation-e2e')
+    await workspace.attachSession(sessionId)
+    const title = 'PDF panel translation test'
+    await scaffold.ctx.sessionController.rename({ sessionId, title })
+    await writeFile(join(scaffold.workspaceCwd, FILE_NAME), await documentBytes())
+    await scaffold.ctx.sessionController.selectModel({ sessionId, provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' })
+    const llm = scaffold.ctx.get('llm') as DshTranslationLlm | undefined
+    if (!llm) throw new Error('The Web profile has no model runtime')
+    llm.stream = async function* () {
+      if (responseDelayMs) await new Promise(resolve => setTimeout(resolve, responseDelayMs))
+      yield { type: 'text-delta', index: 0, text: response }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+    opened = await browser()
+    const page = await newEnglishPage(opened)
+    const tripwire = watchConsole(page)
+    const reader = await openReader(page, scaffold.authenticatedUrl, title)
+    await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents()).toContain('Coverage page 1')
+    await reader.evaluate(element => {
+      const glyphs = [...element.querySelectorAll<HTMLElement>('[data-pdf-page="1"] span[data-pdf-run]')]
+      const word = glyphs.slice(0, 8)
+      if (word.map(item => item.textContent).join('') !== 'Coverage') throw new Error('Unexpected PDF text layer')
+      const range = document.createRange()
+      range.setStart(word[0]!.firstChild!, 0)
+      range.setEnd(word.at(-1)!.firstChild!, 1)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+      element.querySelector<HTMLElement>('.dsh-pdf-scroll')!.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
+    })
+    const selected = reader.getByRole('toolbar', { name: 'Selected text actions' })
+    await selected.waitFor({ state: 'visible' })
+    await selected.getByRole('button', { name: 'Translate', exact: true }).click()
+    const panel = reader.locator('.dsh-pdf-translation-panel')
+    await panel.waitFor({ state: 'visible' })
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-details').count()).toBe(1)
+    expect(await panel.innerText()).toContain('Coverage is broad.')
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        writeText: async (text: string) => { (window as typeof window & { __copiedTranslation?: string }).__copiedTranslation = text },
+      } })
+    })
+    await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { __copiedTranslation?: string }).__copiedTranslation))
+      .toContain('Coverage is broad.')
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-status').innerText()).toContain('copied')
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
+      configurable: true, value: { writeText: async () => { throw new Error('clipboard denied') } },
+    }))
+    await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
+    await panel.locator('.dsh-pdf-translation-copy-error').waitFor({ state: 'visible' })
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} }))
+    await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-copy-error').innerText()).toContain('unavailable')
+    response = JSON.stringify({ recognized: false })
+    responseDelayMs = 250
+    const language = panel.locator('.dsh-pdf-translation-language-trigger')
+    await language.click()
+    await panel.locator('.dsh-pdf-translation-language-menu').getByRole('button', { name: 'French' }).click()
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-status').innerText()).toContain('cancelled')
+    responseDelayMs = 0
+    await panel.getByRole('button', { name: 'Retry', exact: true }).click()
+    await expect.poll(() => panel.getByRole('alert').allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining('clearer')]))
+    await panel.locator('.dsh-pdf-translation-language-trigger').focus()
+    await page.keyboard.press('Escape')
+    await panel.locator('.dsh-pdf-translation-content').waitFor({ state: 'detached' })
+
+    const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
+    await toolbar.locator('.dsh-pdf-tools > summary').click()
+    await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
+    await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
+    const box = (await reader.locator('[data-pdf-page="1"]').boundingBox())!
+    await page.mouse.move(box.x + 120, box.y + 120)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 320, box.y + 250, { steps: 8 })
+    await page.mouse.up()
+    const dialog = reader.getByRole('dialog', { name: 'Screenshot preview' })
+    await dialog.waitFor({ state: 'visible', timeout: 10_000 })
+    await dialog.getByRole('img').waitFor({ state: 'visible' })
+    const close = dialog.getByRole('button', { name: 'Close', exact: true })
+    await close.focus()
+    await close.press('Shift+Tab')
+    await expect.poll(() => dialog.evaluate(element => element.contains(document.activeElement)
+      && document.activeElement !== element.querySelector('button'))).toBe(true)
+    await page.keyboard.press('Tab')
+    await expect.poll(() => close.evaluate(element => element === document.activeElement)).toBe(true)
+    const copy = dialog.locator('.dsh-pdf-screenshot-actions button').first()
+    await copy.click()
+    await expect.poll(async () => (await dialog.getByRole('alert').count())
+      + (await dialog.locator('.dsh-pdf-screenshot-status').allTextContents()).filter(text => text.trim()).length)
+      .toBeGreaterThan(0)
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      write: async (_items: ClipboardItem[]) => { (window as typeof window & { __copiedImage?: boolean }).__copiedImage = true },
+    } }))
+    await copy.click()
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { __copiedImage?: boolean }).__copiedImage)).toBe(true)
+    await expect.poll(() => dialog.locator('.dsh-pdf-screenshot-status').innerText()).toContain('Image copied')
+    const recognize = dialog.getByRole('button', { name: 'Recognize region' })
+    await recognize.waitFor({ state: 'visible' })
+    response = 'Panel OCR completed.'
+    await recognize.click()
+    await dialog.waitFor({ state: 'hidden' })
+    await expect.poll(() => reader.locator('.dsh-pdf-ocr-transcript').textContent()).toContain('Panel OCR completed.')
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await opened?.close()
+    await scaffold.close()
+  }
+}, 90_000)

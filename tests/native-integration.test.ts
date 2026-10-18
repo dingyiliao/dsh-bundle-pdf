@@ -9,15 +9,16 @@ import { applyPdfOperations, loadPdfDocument } from '../src/core/pdf-document.ts
 import { createPdfService } from '../src/host/pdf-service.ts'
 import { registerPdfTransport } from '../src/host/transport.ts'
 import { createPdfApi } from '../src/client/api.ts'
-import { PDFDocument, PDFHexString, PDFName, rgb } from 'pdf-lib'
-import { memoryWorkspace, nativeFixture } from './native-fixture.ts'
+import { PDFDocument, PDFHexString, PDFName, PDFString, rgb } from 'pdf-lib'
+import { memoryWorkspace, nativeFixture, supplementaryTextPdf } from './native-fixture.ts'
+import { nativeTestSubprocess } from './native-test-subprocess.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
 const skip = !existsSync(executable), signal = new AbortController().signal
 
 test('PDFium renders crop, intrinsic/additional rotation and UserUnit in the UI coordinate system', { skip }, async () => {
-  const bytes = await nativeFixture(), metadata = await loadPdfDocument(bytes), worker = new NativeWorker(executable)
+  const bytes = await nativeFixture(), metadata = await loadPdfDocument(bytes), worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'geometry' }, bytes)
     for (const geometry of metadata.pages) for (const extra of [0, 90, 180, 270]) {
@@ -31,10 +32,10 @@ test('PDFium renders crop, intrinsic/additional rotation and UserUnit in the UI 
         assert.deepEqual(viewport.convertToPdfPoint(...point), [x, y])
       }
     }
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 test('guttered tiles agree with a whole-page render at all internal seams', { skip }, async () => {
-  const bytes = await nativeFixture(), worker = new NativeWorker(executable)
+  const bytes = await nativeFixture(), worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'seams' }, bytes)
     const base = { command: 'render', documentId: 'seams', pageIndex: 0, rotation: 0, rasterWidth: 750, rasterHeight: 960, annotations: true }
@@ -48,7 +49,7 @@ test('guttered tiles agree with a whole-page render at all internal seams', { sk
       }
     }
     assert.ok(differences / tested < 0.0005, `seam differing-byte ratio=${differences / tested}`)
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 
 test('PDFium gives existing and newly authored highlights the same color on white and gray paper', { skip }, async () => {
@@ -115,7 +116,7 @@ test('PDFium gives existing and newly authored highlights the same color on whit
       color,
     },
   }])
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   const sample = (pixels: Uint8Array, x: number, pdfY: number): number[] => {
     const rasterX = x * 2, rasterY = (220 - pdfY) * 2
     return [...pixels.subarray((rasterY * 880 + rasterX) * 4, (rasterY * 880 + rasterX) * 4 + 3)]
@@ -148,10 +149,10 @@ test('PDFium gives existing and newly authored highlights the same color on whit
       assert.ok(directOverlap.some((channel, index) => Math.abs(channel - directSingle[index]) > 8),
         `Pre-fix appearance unexpectedly hides its double alpha at y=${pdfY}: single=${directSingle}, overlap=${directOverlap}`)
     }
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 test('PDFium exposes searchable text, URI/internal destinations and bounded object inspection', { skip }, async () => {
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'content' }, await nativeFixture())
     const text = (await worker.request({ command: 'text', documentId: 'content', pageIndex: 0 })).value as { items: { str: string; transform: number[] }[] }
@@ -162,21 +163,37 @@ test('PDFium exposes searchable text, URI/internal destinations and bounded obje
     assert.deepEqual((await worker.request({ command: 'destination', documentId: 'content', name: 'chapter' })).value, [2, { name: 'XYZ' }, 50, 300, null])
     const objects = (await worker.request({ command: 'inspect', documentId: 'content', pageIndex: 0, offset: 0, limit: 1 })).value as { objects: unknown[]; nextOffset: unknown }
     assert.equal(objects.objects.length, 1); assert.equal(objects.nextOffset, 1)
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 
 test('native dispatcher rejects an unknown command without stopping the worker', { skip }, async () => {
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await assert.rejects(worker.request({ command: 'unknown' }), /Unknown native command/)
+    await assert.rejects(worker.request({}), /Invalid native command/)
     assert.deepEqual((await worker.request({ command: 'hello' })).value,
       { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
+})
+
+test('native page cache evicts the oldest page and reloads it when revisited', { skip }, async () => {
+  const pdf = await PDFDocument.create()
+  for (let page = 0; page < 18; page++) pdf.addPage([100, 100])
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    await worker.request({ command: 'open', documentId: 'cache' }, await pdf.save())
+    for (let pageIndex = 0; pageIndex < 18; pageIndex++) {
+      const reply = await worker.request({ command: 'inspect', documentId: 'cache', pageIndex, offset: 0, limit: 1 })
+      assert.deepEqual(reply.value, { objects: [], nextOffset: null })
+    }
+    assert.deepEqual((await worker.request({ command: 'inspect', documentId: 'cache', pageIndex: 0, offset: 0, limit: 1 })).value,
+      { objects: [], nextOffset: null })
+  } finally { await worker.dispose() }
 })
 
 test('native render rejects invalid flags and leaves blank pixels white', { skip }, async () => {
   const pdf = await PDFDocument.create(); pdf.addPage([32, 32])
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'blank' }, await pdf.save())
     const tile = { command: 'render', documentId: 'blank', pageIndex: 0, rotation: 0,
@@ -185,7 +202,7 @@ test('native render rejects invalid flags and leaves blank pixels white', { skip
     const { bytes } = await worker.request({ ...tile, annotations: false })
     assert.equal(bytes.length, 32 * 32 * 4)
     assert.ok(bytes.every(channel => channel === 255))
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 
 test('oversized native replies return an explicit error without stopping the worker', { skip }, async () => {
@@ -204,14 +221,14 @@ test('oversized native replies return an explicit error without stopping the wor
   }
   root.set(PDFName.of('Last'), previousRef!)
   pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'large-outline' }, await pdf.save({ useObjectStreams: false }))
     await assert.rejects(worker.request({ command: 'outline', documentId: 'large-outline' }),
       { code: 'pdf/native-reply-too-large' })
     assert.deepEqual((await worker.request({ command: 'hello' })).value,
       { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
 })
 
 test('PDFium reads a nested Unicode outline with a working page destination', { skip }, async () => {
@@ -229,7 +246,7 @@ test('PDFium reads a nested Unicode outline with a working page destination', { 
   chapter.set(PDFName.of('First'), sectionRef); chapter.set(PDFName.of('Last'), sectionRef)
   root.set(PDFName.of('First'), chapterRef); root.set(PDFName.of('Last'), chapterRef)
   pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-  const worker = new NativeWorker(executable)
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'outline' }, await pdf.save({ useObjectStreams: false }))
     assert.deepEqual((await worker.request({ command: 'outline', documentId: 'outline' })).value, [{
@@ -237,7 +254,64 @@ test('PDFium reads a nested Unicode outline with a working page destination', { 
         { title: '第二节', dest: [1, { name: 'Fit' }], items: [] },
       ],
     }])
-  } finally { worker.dispose() }
+  } finally { await worker.dispose() }
+})
+
+test('PDFium preserves emoji bookmark titles, URI bookmark actions and link quadrilaterals', { skip }, async () => {
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([300, 400])
+  const root = pdf.context.obj({ Type: 'Outlines', Count: 2 })
+  const rootRef = pdf.context.register(root)
+  const destination = pdf.context.obj({
+    Title: PDFHexString.fromText('Read 📖'), Parent: rootRef,
+    A: { S: 'GoTo', D: [page.ref, PDFName.of('Fit')] },
+  })
+  const destinationRef = pdf.context.register(destination)
+  const external = pdf.context.obj({
+    Title: PDFHexString.fromText('Project site'), Parent: rootRef, Prev: destinationRef,
+    A: { S: 'URI', URI: PDFString.of('https://example.com/bookmark') },
+  })
+  const externalRef = pdf.context.register(external)
+  destination.set(PDFName.of('Next'), externalRef)
+  root.set(PDFName.of('First'), destinationRef)
+  root.set(PDFName.of('Last'), externalRef)
+  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
+
+  const quadrilateral = [40, 310, 110, 310, 40, 280, 110, 280]
+  const link = pdf.context.register(pdf.context.obj({
+    Type: 'Annot', Subtype: 'Link', Rect: [40, 280, 110, 310],
+    QuadPoints: quadrilateral,
+    A: { S: 'URI', URI: PDFString.of('https://example.com/quad') },
+  }))
+  page.node.set(PDFName.of('Annots'), pdf.context.obj([link]))
+
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    await worker.request({ command: 'open', documentId: 'outline-actions' }, await pdf.save({ useObjectStreams: false }))
+    assert.deepEqual((await worker.request({ command: 'outline', documentId: 'outline-actions' })).value, [
+      { title: 'Read 📖', dest: [0, { name: 'Fit' }], items: [] },
+      { title: 'Project site', url: 'https://example.com/bookmark', items: [] },
+    ])
+    const links = (await worker.request({ command: 'links', documentId: 'outline-actions', pageIndex: 0 })).value as {
+      rect: number[]; quadPoints?: number[]; url?: string
+    }[]
+    assert.deepEqual(links, [{
+      id: 'native-link-0-1', subtype: 'Link', rect: [40, 280, 110, 310],
+      quadPoints: quadrilateral, url: 'https://example.com/quad',
+    }])
+  } finally { await worker.dispose() }
+})
+
+test('PDFium text combines supplementary Unicode encoded by a ToUnicode CMap', { skip }, async () => {
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    await worker.request({ command: 'open', documentId: 'supplementary-text-coverage' }, supplementaryTextPdf())
+    const text = (await worker.request({ command: 'text', documentId: 'supplementary-text-coverage', pageIndex: 0 })).value as {
+      items: { str: string; width: number }[]
+    }
+    assert.equal(text.items.map(item => item.str).join(''), '\u{1D445}\u{1D45D}')
+    assert.ok(text.items.some(item => item.width > 0))
+  } finally { await worker.dispose() }
 })
 
 /** Decode the public Connection contract, including native PNG tile attachments. */
@@ -252,7 +326,7 @@ async function decode(response: Response): Promise<unknown> {
   return (await response.json()).result
 }
 test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen and raw PNG attachments', { skip }, async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable })
+  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const routes = new Map<string, (request: Request) => Promise<Response>>()
   const context: Parameters<typeof registerPdfTransport>[0] = {
     connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return async () => { routes.delete(route.path) } } } },
@@ -276,9 +350,8 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
     assert.equal(changed.dirty, true); assert.ok(changed.document.annotations.some(a => a.id === 'v1-note'))
     assert.equal(calls.at(-1)!.value.document, undefined); assert.equal(calls.at(-1)!.value.annotationDelta.upsert.length, 1)
     const retry = calls.at(-1)!.payload
-    const generation = service.diagnostics().generation, pid = service.diagnostics().workerPid
-    assert.ok(pid)
-    process.kill(pid, 'SIGKILL')
+    const generation = service.diagnostics().generation
+    nativeTestSubprocess.crashLatest()
     await new Promise(resolve => setTimeout(resolve, 20))
     const recoveredText = await api.native.text('native-test', changed.id, changed.reader, 1)
     assert.equal(recoveredText.items.map(item => item.str).join(''), 'Native PDF test page 1')
@@ -296,20 +369,20 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
     const attacker = { session: { id: 'another-session', header: {} } }
     await assert.rejects(service.native('another-session', { action: 'text', sessionId: 'another-session', id: saved.id, bytesHash: saved.reader.bytesHash, page: 1 }, attacker, signal), { code: 'pdf/session-mismatch' })
     assert.ok(service.diagnostics().tileCacheBytes <= 32 * 1024 * 1024)
-  } finally { clientLifetime.abort(); service.dispose(); await state.workspaces.dispose() }
+  } finally { clientLifetime.abort(); await service.dispose(); await state.workspaces.dispose() }
 })
 test('opening fails explicitly when the native helper is absent', async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable: '/missing/helper' })
+  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable: '/missing/helper', subprocess: nativeTestSubprocess })
   try {
     await assert.rejects(service.dispatch('missing-helper', { action: 'open', sessionId: 'missing-helper', address: 'dsh-resource://file/session/missing-helper//fixtures/native.pdf' }, { session: { id: 'missing-helper', header: {} } }, signal), { code: 'pdf/native-unavailable' })
-  } finally { service.dispose(); await state.workspaces.dispose() }
+  } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 test('PDF forms fail explicitly rather than showing an incomplete native appearance', { skip }, async () => {
   const document = await PDFDocument.create(), page = document.addPage([300, 400])
   document.getForm().createTextField('field').addToPage(page, { x: 30, y: 100, width: 150, height: 30 })
-  const state = memoryWorkspace(await document.save()), service = createPdfService(state.workspaces, { executable })
+  const state = memoryWorkspace(await document.save()), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   try {
     await assert.rejects(service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal), { code: 'pdf/native-unsupported' })
     assert.equal(service.diagnostics().documents, 0)
-  } finally { service.dispose(); await state.workspaces.dispose() }
+  } finally { await service.dispose(); await state.workspaces.dispose() }
 })

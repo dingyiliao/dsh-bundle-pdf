@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/engine/framing.ts'
 import { NativeWorker } from '../src/engine/native-worker.ts'
+import { NativeTestSubprocess, nativeTestSubprocess } from './native-test-subprocess.ts'
+import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { ByteCache } from '../src/engine/byte-cache.ts'
 import { encodePng } from '../src/engine/png.ts'
 import { inflateSync } from 'node:zlib'
@@ -60,7 +62,7 @@ function reply(q) { if(q.command==='hang')return;const value=q.command==='hello'
   return { executable, close: () => rm(directory, { recursive: true, force: true }) }
 }
 test('cancelling an in-flight request consumes its reply before the next request', { skip: process.platform === 'win32' }, async () => {
-  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 3000)
+  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, nativeTestSubprocess, 3000)
   try {
     await worker.ready()
     const controller = new AbortController()
@@ -70,14 +72,111 @@ test('cancelling an in-flight request consumes its reply before the next request
     controller.abort()
     await assert.rejects(first, { name: 'AbortError' })
     assert.deepEqual((await second).value, { command: 'second' })
-  } finally { worker.dispose(); await fake.close() }
+  } finally { await worker.dispose(); await fake.close() }
 })
 test('timeout kills the helper and a later handshake starts a new generation', { skip: process.platform === 'win32' }, async () => {
-  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, 1000)
+  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, nativeTestSubprocess, 1000)
   try {
     await worker.ready(); const firstGeneration = worker.generation
     await assert.rejects(worker.request({ command: 'hang' }), { code: 'pdf/native-timeout' })
     await worker.ready(); assert.equal(worker.generation, firstGeneration + 1)
     assert.deepEqual((await worker.request({ command: 'recovered' })).value, { command: 'recovered' })
-  } finally { worker.dispose(); await fake.close() }
+  } finally { await worker.dispose(); await fake.close() }
+})
+
+test('executable lookup failure can be retried on the next handshake', { skip: process.platform === 'win32' }, async () => {
+  class FlakyLookupSubprocess extends NativeTestSubprocess {
+    attempts = 0
+    override async resolveExecutable(command: string): Promise<string> {
+      if (++this.attempts === 1) throw new Error('temporary provider failure')
+      return super.resolveExecutable(command)
+    }
+  }
+  const fake = await fakeWorker(), subprocess = new FlakyLookupSubprocess()
+  const worker = new NativeWorker(fake.executable, subprocess, 3000)
+  try {
+    await assert.rejects(worker.ready(), { code: 'pdf/native-unavailable' })
+    await worker.ready()
+    assert.equal(subprocess.attempts, 2)
+    assert.equal(worker.generation, 1)
+  } finally { await worker.dispose(); await fake.close() }
+})
+
+test('spawn failure can be retried on the next handshake', { skip: process.platform === 'win32' }, async () => {
+  class FlakySpawnSubprocess extends NativeTestSubprocess {
+    attempts = 0
+    override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
+      if (++this.attempts === 1) throw new Error('temporary launch failure')
+      return super.spawn(spec)
+    }
+  }
+  const fake = await fakeWorker(), subprocess = new FlakySpawnSubprocess()
+  const worker = new NativeWorker(fake.executable, subprocess, 3000)
+  try {
+    await assert.rejects(worker.ready(), { code: 'pdf/native-start' })
+    await worker.ready()
+    assert.equal(subprocess.attempts, 2)
+    assert.equal(worker.generation, 1)
+  } finally { await worker.dispose(); await fake.close() }
+})
+
+test('disposing during executable lookup prevents the pending startup from spawning', { skip: process.platform === 'win32' }, async () => {
+  class DelayedLookupSubprocess extends NativeTestSubprocess {
+    releaseLookup!: () => void
+    lookupStarted!: () => void
+    private readonly lookupGate = new Promise<void>(resolve => { this.releaseLookup = resolve })
+    readonly enteredLookup = new Promise<void>(resolve => { this.lookupStarted = resolve })
+    spawns = 0
+    override async resolveExecutable(command: string): Promise<string> {
+      this.lookupStarted()
+      await this.lookupGate
+      return super.resolveExecutable(command)
+    }
+    override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
+      this.spawns++
+      return super.spawn(spec)
+    }
+  }
+  const fake = await fakeWorker(), subprocess = new DelayedLookupSubprocess()
+  const worker = new NativeWorker(fake.executable, subprocess, 3000)
+  try {
+    const startup = worker.ready()
+    await subprocess.enteredLookup
+    const disposal = worker.dispose()
+    let disposed = false
+    void disposal.then(() => { disposed = true })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(disposed, false, 'dispose waits for the pending lookup to settle')
+    subprocess.releaseLookup()
+    await assert.rejects(startup, { code: 'pdf/native-unavailable' })
+    await disposal
+    assert.equal(subprocess.spawns, 0)
+  } finally { subprocess.releaseLookup(); await worker.dispose(); await fake.close() }
+})
+
+test('a replacement waits for the previous managed process range to exit', { skip: process.platform === 'win32' }, async () => {
+  class DelayedRangeSubprocess extends NativeTestSubprocess {
+    spawns = 0
+    releaseRange!: () => void
+    private readonly rangeGate = new Promise<void>(resolve => { this.releaseRange = resolve })
+    override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
+      const handle = super.spawn(spec)
+      this.spawns++
+      if (this.spawns !== 1) return handle
+      return { ...handle, waitForExit: async () => { await this.rangeGate; return handle.waitForExit() } }
+    }
+  }
+  const fake = await fakeWorker(), subprocess = new DelayedRangeSubprocess()
+  const worker = new NativeWorker(fake.executable, subprocess, 1000)
+  try {
+    await worker.ready()
+    await assert.rejects(worker.request({ command: 'hang' }), { code: 'pdf/native-timeout' })
+    const restart = worker.ready()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(subprocess.spawns, 1, 'must not overlap native process generations')
+    subprocess.releaseRange()
+    await restart
+    assert.equal(subprocess.spawns, 2)
+    assert.equal(worker.generation, 2)
+  } finally { subprocess.releaseRange(); await worker.dispose(); await fake.close() }
 })

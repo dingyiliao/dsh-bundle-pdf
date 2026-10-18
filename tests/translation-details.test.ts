@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TranslationContent } from '../src/client/TranslationPanel.js'
+import { TranslationContent, TranslationErrorNotice, TranslationPanel } from '../src/client/TranslationPanel.js'
 import { translationEn, translationZh } from '../src/client/translation-locales.js'
 
 const translate = (dictionary: typeof translationEn) => (key: string) =>
@@ -111,4 +111,27 @@ test('sentence translation keeps the plain-text result', () => {
   assert.match(html, /class="dsh-pdf-translation-text"/)
   assert.match(html, /请进入房间。/)
   assert.doesNotMatch(html, /dsh-pdf-translation-details/)
+})
+
+test('a suspected fragment keeps the exact selected text without a preflight block', () => {
+  const html = renderToStaticMarkup(React.createElement(TranslationPanel, {
+    selection: { text: 'btracti', selectionBefore: 'su', selectionAfter: 'ons', pages: [380], targetLanguage: 'zh' },
+    engineName: 'DSH',
+    translate: async () => { throw new Error('SSR does not run effects') },
+    onClose: () => {},
+    t: translate(translationZh),
+  }))
+
+  assert.match(html, /btracti/)
+  assert.match(html, /正在翻译/)
+  assert.match(html, /class="dsh-pdf-translation-result"/)
+  assert.doesNotMatch(html, /subtractions|翻译完整单词|选区可能不完整/)
+})
+
+test('unrecognized model output has a clear reselect message', () => {
+  const html = renderToStaticMarkup(React.createElement(TranslationErrorNotice, {
+    code: 'unrecognized-selection', t: translate(translationZh),
+  }))
+  assert.match(html, /无法可靠翻译/)
+  assert.match(html, /重新选择/)
 })

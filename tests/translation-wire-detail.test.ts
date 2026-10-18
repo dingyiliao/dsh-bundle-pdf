@@ -60,7 +60,8 @@ test('the authenticated translation wire rejects an omitted part of speech', asy
 })
 
 test('the authenticated translation wire preserves model-output failure codes for the UI', async () => {
-  for (const code of ['invalid-model-output', 'incomplete-model-output', 'empty-model-output'] as const satisfies readonly TranslationErrorCode[]) {
+  for (const code of ['invalid-model-output', 'incomplete-model-output', 'empty-model-output',
+    'incomplete-selection', 'unrecognized-selection'] as const satisfies readonly TranslationErrorCode[]) {
     const engine = createHostTranslationEngine({ rpc: { async call() {
       return { ok: false, error: { code, message: 'Sensitive provider diagnostic; do not show in the UI.' } }
     } } }, new AbortController().signal,

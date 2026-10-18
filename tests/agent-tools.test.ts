@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { registerPdfAgentTools, summarizeOutline, windowPageText } from '../src/host/agent-tools.ts'
 import { createBookmarkService, type BookmarkRecord } from '../src/host/bookmarks.ts'
 import { createPdfService } from '../src/host/pdf-service.ts'
+import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import { createReaderContexts } from '../src/host/reader-contexts.ts'
 import { memoryWorkspace, nativeFixture } from './native-fixture.ts'
 
@@ -174,6 +175,39 @@ test('pdf_bookmarks lists personal and native outline items with bounded, sessio
   }
 })
 
+test('pdf_bookmarks refuses an outline or final list from a different PDF revision', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-bookmarks-stale'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  let changeDuringRead = false
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async readOutline(callerSession: string, id: string) {
+      const snapshot = state.workspaces.readSnapshot(callerSession, id)
+      if (changeDuringRead) {
+        await state.workspaces.execute(sessionId, { action: 'change', sessionId, id,
+          revision: snapshot.revision, operations: [{ type: 'add', annotation: {
+            id: 'new-bookmark-revision', page: 1, subtype: 'Text', rect: [20, 20, 30, 30],
+          } }] }, agent(sessionId), signal)
+        return { snapshot, items: [] }
+      }
+      return { snapshot: { ...snapshot, revision: snapshot.revision + 1 }, items: [] }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] }, { async dispatch() { return [] } } as never)
+  try {
+    await assert.rejects(readTool(definitions, 'pdf_bookmarks', {
+      documentId: opened.id, kind: 'embedded',
+    }, sessionId), { code: 'pdf/stale-reader' })
+    changeDuringRead = true
+    await assert.rejects(readTool(definitions, 'pdf_bookmarks', {
+      documentId: opened.id, kind: 'embedded',
+    }, sessionId), { code: 'pdf/stale-reader' })
+  } finally { await state.workspaces.dispose() }
+})
+
 test('outline summaries keep hierarchy and never expose raw external URLs', () => {
   const summary = summarizeOutline([{ title: 'A', dest: [1, { name: 'Fit' }], url: 'https://example.com',
     items: [{ title: 'B', dest: [99, { name: 'Fit' }], items: [] }] }], 4)
@@ -202,17 +236,61 @@ test('pdf_ocr_page refuses an unavailable backend before rendering a page', asyn
   } finally { await state.workspaces.dispose() }
 })
 
+test('pdf_ocr_page returns bounded positioned lines and refuses OCR from a changed document', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-ocr-stale'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  let changeDuringRecognition = false
+  const { ctx, definitions } = captureTools({ ocr: {
+    selectedDescriptor() { return { languages: [] } },
+    async availability() { return { status: 'available' } },
+    async recognize(request: { languages: string[] }) {
+      assert.deepEqual(request.languages, ['auto'])
+      if (changeDuringRecognition) {
+        const snapshot = state.workspaces.readSnapshot(sessionId, opened.id)
+        await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+          revision: snapshot.revision, operations: [{ type: 'add', annotation: {
+            id: 'changed-during-ocr', page: 1, subtype: 'Text', rect: [20, 20, 30, 30],
+          } }] }, agent(sessionId), signal)
+      }
+      return { text: 'Recognized text', status: 'complete',
+        source: { backendId: 'test-ocr', backendVersion: '1' },
+        blocks: [], words: [], lines: [{ id: 'line-1', text: 'Recognized text',
+          box: { x0: 1, y0: 2, x1: 30, y1: 40 } }], warnings: [] }
+    },
+  } })
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async renderPage(callerSession: string, id: string) {
+      return { snapshot: state.workspaces.readSnapshot(callerSession, id),
+        png: Buffer.from('png'), width: 100, height: 100 }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] })
+  try {
+    const first = await readTool(definitions, 'pdf_ocr_page', { documentId: opened.id, page: 1 }, sessionId) as
+      { geometry: { status: string }; lines: Array<{ text: string; box: { x0: number } }> }
+    assert.equal(first.geometry.status, 'complete')
+    assert.deepEqual(first.lines, [{ id: 'line-1', text: 'Recognized text',
+      box: { x0: 1, y0: 2, x1: 30, y1: 40 } }])
+    changeDuringRecognition = true
+    await assert.rejects(readTool(definitions, 'pdf_ocr_page', { documentId: opened.id, page: 1 }, sessionId),
+      { code: 'pdf/stale-reader' })
+  } finally { await state.workspaces.dispose() }
+})
+
 test('pdf_render_page gates on exact model image capability and stores a bounded PNG attachment', {
   skip: !existsSync(nativeExecutable),
 }, async () => {
   const state = memoryWorkspace(await nativeFixture())
-  const pdfService = createPdfService(state.workspaces, { executable: nativeExecutable })
+  const pdfService = createPdfService(state.workspaces, { executable: nativeExecutable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-render-agent'
   const opened = await state.workspaces.execute(sessionId, {
     action: 'open', sessionId, address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf`,
   }, agent(sessionId), signal)
   assert.ok('bytes' in opened)
-  let capable = false, saved = 0
+  let capable = false, saved = 0, stageFails = false
   const { ctx, definitions } = captureTools({
     llm: { async resolveModelInfo() { return { inputModalities: capable ? ['text', 'image'] : ['text'] } } },
     ocr: {
@@ -220,6 +298,7 @@ test('pdf_render_page gates on exact model image capability and stores a bounded
       async stageImage(request: { image: Uint8Array; sessionId: string; languages: string[] }) {
         assert.equal(request.sessionId, sessionId)
         assert.deepEqual(request.languages, ['eng'])
+        if (stageFails) throw new Error('Optional OCR staging is offline')
         return 'ocrimg-test'
       },
       async availability() { return { status: 'available' } },
@@ -269,6 +348,10 @@ test('pdf_render_page gates on exact model image capability and stores a bounded
     assert.equal(blocks[1]?.type, 'image')
     assert.equal(blocks[1]?.attachment?.attachmentId, image.attachmentId)
     assert.ok(!JSON.stringify(result).includes('iVBOR'), 'canonical output must not embed Base64 image bytes')
+    stageFails = true
+    const withoutOcr = await invoke(1)
+    assert.equal(withoutOcr.imageHandle, undefined, 'optional OCR failure must not hide a usable screenshot')
+    assert.ok(withoutOcr.image, 'the visual model still receives the attachment')
     capable = false
     const ocrTool = definitions.get('pdf_ocr_page')
     assert.ok(ocrTool)
@@ -287,7 +370,153 @@ test('pdf_render_page gates on exact model image capability and stores a bounded
     assert.deepEqual(ocrBlocks.map(block => block.type), ['text'], 'text-only OCR must not return an image block')
     capable = true
     await assert.rejects(invoke(5), (error: unknown) => (error as { code?: string }).code === 'pdf/invalid-page')
-  } finally { pdfService.dispose(); await state.workspaces.dispose() }
+  } finally { await pdfService.dispose(); await state.workspaces.dispose() }
+})
+
+test('pdf_render_page uses a configured image backend only when explicitly requested', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-image-backend-agent'
+  const opened = await state.workspaces.execute(sessionId, {
+    action: 'open', sessionId, address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf`,
+  }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL5WQAAAABJRU5ErkJggg==', 'base64')
+  let rendered = 0, prepared = 0, saved = 0
+  let description = 'A diagram with three nodes.'
+  let backendAvailable = true
+  let backendKind: 'direct-image' | 'derived-text' = 'derived-text'
+  const { ctx, definitions } = captureTools({
+    llm: { async resolveModelInfo() { return { inputModalities: ['text'] } } },
+    imageUnderstanding: {
+      async availability(requestSessionId: string) {
+        assert.equal(requestSessionId, sessionId)
+        return backendAvailable ? { status: 'available', kind: backendKind, backendId: 'test-backend' }
+          : { status: 'unavailable', reason: 'Selected backend is disabled' }
+      },
+      async prepare(request: { sessionId: string; question: string; image: { data: Uint8Array } }) {
+        prepared++
+        assert.equal(request.sessionId, sessionId)
+        assert.equal(request.question, 'What does the diagram show?')
+        assert.deepEqual(request.image.data, png)
+        return { kind: 'derived-text', text: description,
+          provenance: { backendId: 'test-backend', mode: 'image-description', model: 'cheap-vision' },
+          limitations: 'Generated visual description may omit fine details.' }
+      },
+    },
+    attachments: {
+      imageLimits: { mediaTypes: ['image/png'] },
+      async saveImage() { saved++; throw new Error('A derived-text backend must not save an image attachment') },
+    },
+  })
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async renderPage(requestSessionId: string, documentId: string, currentPage: number) {
+      rendered++
+      assert.equal(requestSessionId, sessionId)
+      assert.equal(currentPage, 1)
+      return { snapshot: state.workspaces.readSnapshot(requestSessionId, documentId), png, width: 1, height: 1 }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] })
+  const args = { documentId: opened.id, page: 1, question: 'What does the diagram show?' }
+  const exec = { signal, agent: { session: { id: sessionId, header: {},
+    requestHeader: () => ({ config: { provider: 'test', model: 'text-only' } }) },
+  options: { provider: 'test', model: 'text-only' } } }
+  const tool = definitions.get('pdf_render_page')!
+  try {
+    await assert.rejects(tool.execute(args, exec), /does not declare image input/i)
+    assert.equal(rendered, 0, 'default direct-image route rejects before rendering')
+    backendAvailable = false
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, exec), /backend is disabled/i)
+    assert.equal(rendered, 0, 'unavailable configured backend rejects before rendering')
+    backendAvailable = true
+    const derived = await tool.execute({ ...args, mode: 'configured-backend' }, exec) as Record<string, unknown>
+    assert.equal(derived.kind, 'derived-text')
+    assert.equal(derived.text, 'A diagram with three nodes.')
+    assert.deepEqual(derived.source, { backendId: 'test-backend', mode: 'image-description', model: 'cheap-vision' })
+    assert.equal(derived.limitations, 'Generated visual description may omit fine details.')
+    assert.equal(rendered, 1)
+    assert.equal(prepared, 1)
+    assert.equal(saved, 0)
+    assert.deepEqual(tool.output.render(args, derived).map(block => block.type), ['text'])
+    description = 'detail '.repeat(1_500)
+    const longDescription = await tool.execute({ ...args, mode: 'configured-backend' }, exec) as Record<string, unknown>
+    assert.equal(longDescription.text, description, 'the bounded backend result must not be silently cut to 8000 characters')
+    assert.equal(longDescription.totalChars, description.length)
+    assert.equal(longDescription.truncated, false)
+    backendKind = 'direct-image'
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, exec), /does not declare image input/i)
+    assert.equal(rendered, 2, 'configured direct-image backend still enforces current model capability first')
+    assert.equal(saved, 0)
+  } finally { await state.workspaces.dispose() }
+})
+
+test('pdf_render_page checks route, backend, attachment type, and backend changes before exposing an image', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-render-boundaries'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL5WQAAAABJRU5ErkJggg==', 'base64')
+  let renders = 0
+  let imageInput = true
+  let preparation: 'direct-image' | 'stale' = 'direct-image'
+  const services: Record<string, unknown> = {
+    llm: { async resolveModelInfo() { return { inputModalities: imageInput ? ['text', 'image'] : ['text'] } } },
+  }
+  const { ctx, definitions } = captureTools(services)
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async renderPage(callerSession: string, id: string) {
+      renders++
+      return { snapshot: state.workspaces.readSnapshot(callerSession, id), png, width: 1, height: 1 }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] })
+  const tool = definitions.get('pdf_render_page')!
+  const args = { documentId: opened.id, page: 1 }
+  const routed = { signal, agent: { session: { id: sessionId,
+    requestHeader: () => ({ config: { provider: 'test', model: 'vision' } }) },
+  options: { provider: 'test', model: 'vision' } } }
+  const unknownRoute = { signal, agent: { session: { id: sessionId,
+    requestHeader: () => ({ config: {} }) }, options: {} } }
+  try {
+    await assert.rejects(tool.execute(args, unknownRoute), { code: 'pdf/image-route-unknown' })
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, routed),
+      { code: 'pdf/image-backend-unavailable' })
+    await assert.rejects(tool.execute(args, routed), { code: 'pdf/attachment-unavailable' })
+    assert.equal(renders, 0, 'preflight rejection must precede page rendering')
+    services.attachments = { imageLimits: { mediaTypes: ['image/jpeg'] } }
+    await assert.rejects(tool.execute(args, routed), { code: 'pdf/image-type-unsupported' })
+    assert.equal(renders, 0)
+
+    services.imageUnderstanding = {
+      async availability() { return { status: 'available', kind: 'derived-text' } },
+      async prepare() {
+        if (preparation === 'stale') {
+          const snapshot = state.workspaces.readSnapshot(sessionId, opened.id)
+          await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+            revision: snapshot.revision, operations: [{ type: 'add', annotation: {
+              id: 'changed-during-image-understanding', page: 1, subtype: 'Text', rect: [20, 20, 30, 30],
+            } }] }, agent(sessionId), signal)
+          return { kind: 'derived-text', text: 'No longer current', provenance: { backendId: 'test' } }
+        }
+        return { kind: 'direct-image' }
+      },
+    }
+    delete services.attachments
+    imageInput = false
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, routed),
+      { code: 'pdf/image-input-unsupported' })
+    imageInput = true
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, routed),
+      { code: 'pdf/attachment-unavailable' })
+    services.attachments = { imageLimits: { mediaTypes: [] } }
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, routed),
+      { code: 'pdf/image-type-unsupported' })
+    preparation = 'stale'
+    await assert.rejects(tool.execute({ ...args, mode: 'configured-backend' }, routed),
+      { code: 'pdf/stale-reader' })
+    assert.equal(renders, 4, 'only post-render checks should render a page')
+  } finally { await state.workspaces.dispose() }
 })
 
 test('pdf_read_page reads only a caller-owned working copy, reports no text, and refuses anonymous access', async () => {
@@ -464,11 +693,13 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
   }, agent(sessionId), signal)
   assert.ok('bytes' in opened)
   const pageText = 'needle '.repeat(25)
+  let staleRead = false
   const pdfService = {
     async readPageText(callerSession: string, documentId: string, page: number, readSignal: AbortSignal) {
       readSignal.throwIfAborted()
       const snapshot = state.workspaces.readSnapshot(callerSession, documentId)
-      return { snapshot, content: { items: page === 1 ? [{
+      return { snapshot: staleRead ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot,
+        content: { items: page === 1 ? [{
         str: pageText, transform: [1, 0, 0, 1, 0, 0], width: 100, height: 10,
         dir: 'ltr', fontName: 'Helvetica', hasEOL: false,
       }] : [], styles: {}, lang: null } }
@@ -492,6 +723,13 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
     assert.equal(second.nextCursor, null)
     const offsets = [...first.matches, ...second.matches].map(match => match.offset)
     assert.deepEqual(offsets, Array.from({ length: 25 }, (_, index) => index * 7))
+    await assert.rejects(readTool(definitions, 'pdf_search', {
+      documentId: opened.id, query: 'needle', fromPage: 5,
+    }, sessionId), { code: 'pdf/invalid-page' })
+    staleRead = true
+    await assert.rejects(readTool(definitions, 'pdf_search', {
+      documentId: opened.id, query: 'needle',
+    }, sessionId), { code: 'pdf/stale-reader' })
   } finally {
     await state.workspaces.dispose()
   }
@@ -501,7 +739,7 @@ test('pdf_read_page retrieves actual PDFium text through the Host service', {
   skip: !existsSync(nativeExecutable),
 }, async () => {
   const state = memoryWorkspace(await nativeFixture())
-  const pdfService = createPdfService(state.workspaces, { executable: nativeExecutable })
+  const pdfService = createPdfService(state.workspaces, { executable: nativeExecutable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-native-agent'
   const opened = await state.workspaces.execute(sessionId, {
     action: 'open', sessionId,
@@ -519,7 +757,256 @@ test('pdf_read_page retrieves actual PDFium text through the Host service', {
     assert.equal(result.documentId, opened.id)
     assert.equal(result.page, 1)
   } finally {
-    pdfService.dispose()
+    await pdfService.dispose()
+    await state.workspaces.dispose()
+  }
+})
+
+test('pdf_page_annotations ignores navigation entries and never reads text for a page without marks', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const { ctx, definitions } = captureTools()
+  let textReads = 0
+  registerPdfAgentTools(ctx, state.workspaces,
+    { async readPageText() { textReads++; throw new Error('a page without text marks must not read page text') },
+      async releaseDocument() {} } as never,
+    { current: () => [] })
+  const sessionId = 'pdf-annotations-links'
+  try {
+    // Every fixture page carries two Link annotations, which are navigation.
+    const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+    assert.ok('bytes' in opened)
+    const linksOnly = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 1 }, sessionId) as Record<string, unknown>
+    assert.equal(linksOnly.total, 0)
+    assert.deepEqual(linksOnly.annotations, [])
+    assert.equal(linksOnly.nextCursor, null)
+    assert.equal(linksOnly.pageCount, 4)
+    assert.equal(textReads, 0)
+
+    // A note carries no covered text, so adding one must not start a text read
+    // either: only marks with quadrilaterals pay for that.
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: { id: 'note-only', page: 1,
+        subtype: 'Text', rect: [60, 200, 80, 220], color: [1, 0.85, 0], contents: 'A note' } }] },
+      agent(sessionId), signal)
+    const withNote = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 1 }, sessionId) as
+      { total: number; annotations: Record<string, unknown>[] }
+    assert.equal(withNote.total, 1)
+    assert.equal(withNote.annotations[0]!.subtype, 'Text')
+    assert.equal(withNote.annotations[0]!.draft, true)
+    assert.equal(textReads, 0)
+  } finally {
+    await state.workspaces.dispose()
+  }
+})
+
+test('pdf_page_annotations rejects a result when an annotation changes during its text read', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-annotations-race'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const added = await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+    revision: opened.revision, operations: [{ type: 'add', annotation: {
+      id: 'racing-highlight', page: 1, subtype: 'Highlight', rect: [42, 320, 170, 342],
+      quadPoints: [42, 342, 170, 342, 42, 320, 170, 320], contents: 'Original comment',
+    } }] }, agent(sessionId), signal)
+  assert.ok('bytes' in added)
+  const beforeRead = state.workspaces.readSnapshot(sessionId, opened.id)
+  let enterRead!: () => void
+  let finishRead!: () => void
+  const readStarted = new Promise<void>(resolve => { enterRead = resolve })
+  const readReleased = new Promise<void>(resolve => { finishRead = resolve })
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async readPageText() {
+      enterRead()
+      await readReleased
+      return { snapshot: beforeRead, content: { items: [], styles: {}, lang: null } }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] })
+  try {
+    const pending = readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 1 }, sessionId)
+    await readStarted
+    const latest = state.workspaces.readSnapshot(sessionId, opened.id)
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: latest.revision, operations: [{ type: 'update', id: 'racing-highlight',
+        patch: { contents: 'Updated while readPageText was pending' } }] }, agent(sessionId), signal)
+    finishRead()
+    await assert.rejects(pending, (error: unknown) => (error as { code?: string }).code === 'pdf/stale-reader')
+  } finally {
+    finishRead()
+    await state.workspaces.dispose()
+  }
+})
+
+test('pdf_page_annotations refuses text extracted from a different revision', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-annotations-extraction-stale'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+    revision: opened.revision, operations: [{ type: 'add', annotation: {
+      id: 'highlight', page: 1, subtype: 'Highlight', rect: [42, 320, 170, 342],
+      quadPoints: [42, 342, 170, 342, 42, 320, 170, 320],
+    } }] }, agent(sessionId), signal)
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces, {
+    async readPageText(callerSession: string, id: string) {
+      const snapshot = state.workspaces.readSnapshot(callerSession, id)
+      return { snapshot: { ...snapshot, revision: snapshot.revision + 1 },
+        content: { items: [], styles: {}, lang: null } }
+    },
+    async releaseDocument() {},
+  } as never, { current: () => [] })
+  try {
+    await assert.rejects(readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1,
+    }, sessionId), { code: 'pdf/stale-reader' })
+  } finally { await state.workspaces.dispose() }
+})
+
+test('pdf_page_annotations rejects an offset cursor from an earlier annotation revision', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-annotations-cursor'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const note = (id: string) => ({ id, page: 1, subtype: 'Text' as const,
+    rect: [60, 200, 80, 220] as [number, number, number, number], contents: id })
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces,
+    { async readPageText() { throw new Error('Text notes must not trigger a text read') }, async releaseDocument() {} } as never,
+    { current: () => [] })
+  try {
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: note('a-note') },
+        { type: 'add', annotation: note('b-note') }] }, agent(sessionId), signal)
+    const first = await readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1, limit: 1,
+    }, sessionId) as { annotations: { id: string }[]; nextCursor: unknown }
+    assert.deepEqual(first.annotations.map(item => item.id), ['a-note'])
+    assert.notEqual(first.nextCursor, null)
+    await assert.rejects(readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1, cursor: 'not-a-canonical-cursor',
+    }, sessionId), { code: 'pdf/invalid-window' })
+    const beforeEdit = state.workspaces.readSnapshot(sessionId, opened.id)
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: beforeEdit.revision, operations: [{ type: 'add', annotation: note('0-note') }] }, agent(sessionId), signal)
+    // A bare offset of 1 would now return a-note twice. The continuation must
+    // be tied to the revision that produced it and refused after the edit.
+    await assert.rejects(readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1, cursor: first.nextCursor, limit: 1,
+    }, sessionId), (error: unknown) => (error as { code?: string }).code === 'pdf/stale-reader')
+  } finally {
+    await state.workspaces.dispose()
+  }
+})
+
+test('pdf_page_annotations bounds long document metadata without losing pagination', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-annotations-output-budget'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces,
+    { async readPageText() { throw new Error('Text notes must not trigger a text read') }, async releaseDocument() {} } as never,
+    { current: () => [] })
+  try {
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: Array.from({ length: 50 }, (_, index) => ({ type: 'add' as const,
+        annotation: { id: `note-${String(index).padStart(2, '0')}-${'I'.repeat(190)}`,
+          page: 1, subtype: 'Text' as const, rect: [60, 200, 80, 220] as [number, number, number, number],
+          contents: 'C'.repeat(4000), author: 'A'.repeat(1024) } })) }, agent(sessionId), signal)
+
+    const seen = new Set<string>()
+    let cursor: unknown
+    for (let request = 0; request < 50; request++) {
+      const result = await readTool(definitions, 'pdf_page_annotations', {
+        documentId: opened.id, page: 1, limit: 50,
+        ...(cursor === undefined ? {} : { cursor }),
+      }, sessionId) as { total: number; annotations: Array<{ id: string; author?: string; contents?: string }>; nextCursor: unknown }
+      assert.equal(result.total, 50)
+      assert.ok(JSON.stringify(result).length <= 32_768, 'one tool response must fit its total character budget')
+      assert.ok(result.annotations.length > 0, 'a bounded page must still make progress')
+      for (const annotation of result.annotations) {
+        assert.ok(!seen.has(annotation.id), 'continuation must not repeat an annotation')
+        seen.add(annotation.id)
+        assert.ok((annotation.author?.length ?? 0) < 1024, 'untrusted author metadata must be clipped')
+        assert.ok((annotation.contents?.length ?? 0) < 4000, 'untrusted comments must be clipped')
+      }
+      if (result.nextCursor === null) break
+      cursor = result.nextCursor
+    }
+    assert.equal(seen.size, 50, 'all annotations remain reachable through pagination')
+  } finally {
+    await state.workspaces.dispose()
+  }
+})
+
+test('pdf_page_annotations reports page markup with covered text, draft state and pagination', {
+  skip: !existsSync(nativeExecutable),
+}, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const pdfService = createPdfService(state.workspaces, { executable: nativeExecutable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-annotations-page'
+  const { ctx, definitions } = captureTools()
+  registerPdfAgentTools(ctx, state.workspaces, pdfService, { current: () => [] })
+  try {
+    const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+    assert.ok('bytes' in opened)
+    // Take the quadrilateral from the page's own text run, so the covered-text
+    // expectation is derived from the file rather than guessed.
+    const read = await pdfService.readPageText(sessionId, opened.id, 1, signal)
+    const run = read.content.items.find(item => item.str.includes('Native PDF test page 1'))
+    assert.ok(run, 'the fixture page keeps its text run')
+    const [a, b, , , x, y] = run.transform
+    assert.equal(Math.hypot(a, b) > 0, true)
+    const top = y + run.height * 0.8, bottom = y - run.height * 0.2, right = x + run.width
+    const highlight = { id: 'probe-highlight', page: 1, subtype: 'Highlight',
+      rect: [x, bottom, right, top],
+      quadPoints: [x, top, right, top, x, bottom, right, bottom], color: [1, 0, 0] }
+    const note = { id: 'probe-note', page: 1, subtype: 'Text', rect: [60, 200, 80, 220],
+      color: [1, 0.85, 0], contents: 'Comment kept in the file' }
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: highlight }, { type: 'add', annotation: note }] },
+      agent(sessionId), signal)
+
+    const result = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 1 }, sessionId) as
+      { total: number; nextCursor: string | null; annotations: Record<string, unknown>[] }
+    // Links are excluded; only the two marks added above remain.
+    assert.equal(result.total, 2)
+    assert.deepEqual(result.annotations.map(annotation => annotation.subtype), ['Highlight', 'Text'])
+    const [mark, sticky] = result.annotations
+    assert.equal(mark.draft, true, 'unsaved additions are marked as drafts')
+    assert.deepEqual(mark.color, [255, 0, 0])
+    assert.match(String(mark.excerpt), /Native PDF test page 1/)
+    assert.equal(sticky.contents, 'Comment kept in the file')
+
+    const first = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 1, limit: 1 }, sessionId) as
+      { annotations: Record<string, unknown>[]; nextCursor: string | null }
+    assert.equal(first.annotations.length, 1)
+    assert.equal(typeof first.nextCursor, 'string')
+    const second = await readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1, cursor: first.nextCursor, limit: 1,
+    }, sessionId) as { annotations: Record<string, unknown>[]; nextCursor: string | null }
+    assert.equal(second.annotations[0]!.id, 'probe-note')
+    assert.equal(second.nextCursor, null)
+    await assert.rejects(readTool(definitions, 'pdf_page_annotations', {
+      documentId: opened.id, page: 1, cursor: 1,
+    }, sessionId), /string|cursor/i)
+
+    // An empty page still answers, and a page outside the document is refused.
+    const empty = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 4 }, sessionId) as Record<string, unknown>
+    assert.equal(empty.total, 0)
+    await assert.rejects(readTool(definitions, 'pdf_page_annotations', { documentId: opened.id, page: 5 }, sessionId),
+      /outside the document/)
+  } finally {
+    await pdfService.dispose()
     await state.workspaces.dispose()
   }
 })

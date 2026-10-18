@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import * as nativeProvider from '../src/host/native-provider.ts'
@@ -64,6 +65,22 @@ test('native provider rejects modified helper or PDFium library', async () => {
     await rm(value.directory, { recursive: true, force: true })
   }
 })
+
+test('source-mode provider loads the same verified native archive staged for its package',
+  { skip: !existsSync(resolve('dist/native', executableName)) }, async () => {
+    const previous = process.env.DSH_PDF_NATIVE_HELPER
+    delete process.env.DSH_PDF_NATIVE_HELPER
+    let provided: { name: string; executable: string } | undefined
+    try {
+      await nativeProvider.apply({ provide(name: string, value: { executable: string }) {
+        provided = { name, executable: value.executable }
+      } } as never)
+      assert.deepEqual(provided, { name: 'pdfNative', executable: resolve('dist/native', executableName) })
+    } finally {
+      if (previous === undefined) delete process.env.DSH_PDF_NATIVE_HELPER
+      else process.env.DSH_PDF_NATIVE_HELPER = previous
+    }
+  })
 
 test('a reader plugin waits for the native service and unloads with it', async () => {
   const value = await fixture()

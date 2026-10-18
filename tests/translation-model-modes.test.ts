@@ -6,10 +6,11 @@ import {
 } from '../src/host/translation-model.ts'
 import { TranslationError, type TranslationEngineRequest } from '../src/translation/types.ts'
 
-function request(text: string, maxOutputCharacters = 32768): TranslationEngineRequest {
+function request(text: string, maxOutputCharacters = 32768,
+  adjacent: { selectionBefore?: string; selectionAfter?: string } = {}): TranslationEngineRequest {
   return {
     text, sourceLanguage: 'auto', targetLanguage: 'zh',
-    context: { sessionId: 'current-session' }, signal: new AbortController().signal,
+    context: { sessionId: 'current-session', ...adjacent }, signal: new AbortController().signal,
     timeoutMs: 30000, maxOutputCharacters,
   }
 }
@@ -31,17 +32,17 @@ test('selection classification separates words, phrases, and sentences', () => {
   assert.equal(classifyTranslationSelection('The model attends to each token'), 'sentence')
 })
 
-test('the session model returns validated lexical detail for words and phrases, but direct text for sentences', async () => {
+test('the session model returns verified lexical details and sentence translations', async () => {
   const calls: DshTranslationGenerateOptions[] = []
   const responses = [
-    JSON.stringify({ pronunciation: '/ˈen.tər/', meanings: [
+    JSON.stringify({ recognized: true, pronunciation: '/ˈen.tər/', meanings: [
       { partOfSpeech: '动词', meaning: '进入', example: 'She entered the room.', exampleTranslation: '她走进了房间。' },
       { partOfSpeech: '及物动词', meaning: '录入', example: 'Enter your name.', exampleTranslation: '输入你的名字。' },
     ] }),
-    JSON.stringify({ pronunciation: null, meanings: [
+    JSON.stringify({ recognized: true, pronunciation: null, meanings: [
       { partOfSpeech: '动词短语', meaning: '注意', example: 'Pay attention to the details.', exampleTranslation: '注意细节。' },
     ] }),
-    '模型会关注每个标记。',
+    JSON.stringify({ recognized: true, translation: '模型会关注每个标记。' }),
   ]
   const engine = engineFor(async function * (options) {
     calls.push(options)
@@ -73,9 +74,12 @@ test('the session model returns validated lexical detail for words and phrases, 
   assert.match(calls[0]!.system, /IPA pronunciation/)
   assert.match(calls[0]!.system, /partOfSpeech/)
   assert.match(calls[0]!.system, /part of speech.*target_language/i)
-  assert.match(calls[0]!.system, /each distinct relevant meaning/)
+  assert.match(calls[0]!.system, /distinct common meanings/)
+  assert.match(calls[0]!.system, /short dictionary gloss/)
+  assert.match(calls[0]!.system, /"recognized":false/)
   assert.match(calls[1]!.system, /phrase or technical term/)
-  assert.match(calls[2]!.system, /Translate it directly/)
+  assert.match(calls[2]!.system, /translate it directly/i)
+  assert.match(calls[2]!.system, /"recognized":false/)
   for (const call of calls) {
     assert.equal(call.provider, 'selected-provider')
     assert.equal(call.model, 'selected-model')
@@ -92,6 +96,83 @@ test('a bare translated word cannot masquerade as a successful word explanation'
       && /Retry the translation/.test(error.message))
 })
 
+test('a complete word is sent to the model even when PDF text extraction visually joins its neighbors', async () => {
+  let payload: unknown
+  let system = ''
+  const engine = engineFor(async function * (options) {
+    payload = JSON.parse(options.messages[0]!.content[0]!.text)
+    system = options.system
+    yield { type: 'text-delta', index: 0, text: JSON.stringify({ recognized: true, pronunciation: null,
+      meanings: [{ partOfSpeech: '名词', meaning: '架构', example: 'The architecture is clear.', exampleTranslation: '架构很清晰。' }] }) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  const output = await engine.translate(request('Architecture', 32768, {
+    selectionBefore: 'Arm', selectionAfter: 'Memory',
+  }), {})
+  assert.equal(output.detail?.kind, 'word')
+  assert.deepEqual(payload, { source_language: 'auto', target_language: 'zh', text: 'Architecture', mode: 'word',
+    nearby_text: { before: 'Arm', after: 'Memory' } })
+  assert.match(system, /PDF text extraction can omit visual spaces/)
+})
+
+test('nearby PDF text is passed only as context for a complete selection', async () => {
+  let payload: unknown
+  const engine = engineFor(async function * (options) {
+    payload = JSON.parse(options.messages[0]!.content[0]!.text)
+    yield { type: 'text-delta', index: 0, text: JSON.stringify({ recognized: true, pronunciation: null,
+      meanings: [{ partOfSpeech: '名词', meaning: '模型', example: 'The model works.', exampleTranslation: '模型有效。' }] }) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  const output = await engine.translate(request('model', 32768, {
+    selectionBefore: 'The ', selectionAfter: ' works.',
+  }), {})
+  assert.equal(output.detail?.kind, 'word')
+  assert.deepEqual(payload, {
+    source_language: 'auto', target_language: 'zh', text: 'model', mode: 'word',
+    nearby_text: { before: 'The ', after: ' works.' },
+  })
+})
+
+test('the model can decline an unrecognized token instead of fabricating a dictionary entry', async () => {
+  const engine = engineFor(async function * () {
+    yield { type: 'text-delta', index: 0, text: '{"recognized":false}' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  await assert.rejects(engine.translate(request('btracti'), {}), error =>
+    error instanceof TranslationError && error.code === 'unrecognized-selection')
+})
+
+test('the model can decline an unreadable sentence without emitting a guessed translation', async () => {
+  const engine = engineFor(async function * () {
+    yield { type: 'text-delta', index: 0, text: '{"recognized":false}' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  await assert.rejects(engine.translate(request('The model arg#@@ xzz does not pr\uFFFDduce.'), {}), error =>
+    error instanceof TranslationError && error.code === 'unrecognized-selection')
+})
+
+test('sentence output must include an explicit recognition decision and nonempty translation', async () => {
+  for (const response of ['直接译文', '{"recognized":true}', '{"recognized":true,"translation":"  " }']) {
+    const engine = engineFor(async function * () {
+      yield { type: 'text-delta', index: 0, text: response }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })
+    await assert.rejects(engine.translate(request('The model attends to each token.'), {}), error =>
+      error instanceof TranslationError && error.code === 'invalid-model-output')
+  }
+})
+
+test('dictionary detail without an explicit recognition decision is not trusted', async () => {
+  const engine = engineFor(async function * () {
+    yield { type: 'text-delta', index: 0, text: JSON.stringify({ pronunciation: null, meanings: [
+      { partOfSpeech: '名词', meaning: '猜测', example: 'A made-up example.', exampleTranslation: '编造的例句。' },
+    ] }) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  await assert.rejects(engine.translate(request('btracti'), {}), error =>
+    error instanceof TranslationError && error.code === 'invalid-model-output')
+})
+
 test('a meaning without its source-language example and translation is rejected', async () => {
   const engine = engineFor(async function * () {
     yield { type: 'text-delta', index: 0, text: '{"meanings":[{"meaning":"进入"}]}' }
@@ -104,7 +185,7 @@ test('a meaning without its source-language example and translation is rejected'
 test('a lexical meaning without a non-empty part of speech is rejected', async () => {
   for (const partOfSpeech of [undefined, '', '   ']) {
     const engine = engineFor(async function * () {
-      yield { type: 'text-delta', index: 0, text: JSON.stringify({ pronunciation: null, meanings: [
+      yield { type: 'text-delta', index: 0, text: JSON.stringify({ recognized: true, pronunciation: null, meanings: [
         { partOfSpeech, meaning: '进入', example: 'Enter the room.', exampleTranslation: '进入房间。' },
       ] }) }
       yield { type: 'finish', reason: { kind: 'stop' } }
@@ -120,7 +201,7 @@ test('a polysemous word preserves every valid meaning without a fixed count cap'
     meaning: `含义 ${index + 1}`, example: `Use on in example ${index + 1}.`, exampleTranslation: `例句 ${index + 1}。`,
   }))
   const engine = engineFor(async function * () {
-    yield { type: 'text-delta', index: 0, text: JSON.stringify({ pronunciation: '/ɒn/', meanings }) }
+    yield { type: 'text-delta', index: 0, text: JSON.stringify({ recognized: true, pronunciation: '/ɒn/', meanings }) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })
   const output = await engine.translate(request('on'), {})
@@ -130,7 +211,7 @@ test('a polysemous word preserves every valid meaning without a fixed count cap'
 })
 
 test('a final assembled text block replaces earlier deltas without duplicating the JSON', async () => {
-  const complete = JSON.stringify({ pronunciation: null, meanings: [
+  const complete = JSON.stringify({ recognized: true, pronunciation: null, meanings: [
     { partOfSpeech: '动词', meaning: '进入', example: 'Enter the room.', exampleTranslation: '进入房间。' },
   ] })
   const engine = engineFor(async function * () {

@@ -231,6 +231,76 @@ test('nested jumps restore the positions at departure in LIFO order; scrolling i
   assert.equal(history.canGoBack, false)
 })
 
+test('selecting an older return point removes it and all newer points only after arrival', async () => {
+  const history = new NavigationHistory()
+  let current = position(1)
+  const adapter = { capture: () => current, apply: (target: NavigationPosition) => current = target }
+  await history.jump(position(2), adapter)
+  await history.jump(position(3), adapter)
+  await history.jump(position(4), adapter)
+  const snapshot = history.snapshot()
+  assert.deepEqual(snapshot.positions.map(item => item.page), [3, 2, 1])
+  const result = await history.backTo(1, snapshot.revision, adapter)
+  assert.equal(result.status, 'changed')
+  assert.equal(current.page, 2)
+  assert.deepEqual(history.snapshot().positions.map(item => item.page), [1])
+  await history.back(adapter)
+  assert.equal(current.page, 1)
+  assert.equal(history.canGoBack, false)
+})
+
+test('history snapshots are detached and stale dropdown selections cannot navigate', async () => {
+  const history = new NavigationHistory()
+  let current = { ...position(1), viewportAnchor: { x: 0, y: 0.5 } }
+  let applies = 0
+  const adapter = { capture: () => current, apply: (target: NavigationPosition) => { applies++; return current = target as typeof current } }
+  await history.jump(position(2), adapter)
+  const snapshot = history.snapshot()
+  const detached = snapshot.positions[0] as NavigationPosition
+  detached.viewportAnchor!.y = 0.9
+  assert.equal(history.peek()!.viewportAnchor!.y, 0.5)
+  await history.jump(position(3), adapter)
+  assert.equal((await history.backTo(0, snapshot.revision, adapter)).status, 'stale')
+  assert.equal(applies, 2)
+  assert.equal(current.page, 3)
+  assert.deepEqual(history.snapshot().positions.map(item => item.page), [2, 1])
+})
+
+test('returning to an earlier anchor on the current page still truncates history', async () => {
+  const history = new NavigationHistory()
+  let current = position(1, 100)
+  const adapter = { capture: () => current, apply: (target: NavigationPosition) => current = target }
+  await history.jump(position(2), adapter)
+  await history.jump(position(1, 700), adapter)
+  const snapshot = history.snapshot()
+  assert.deepEqual(snapshot.positions.map(item => [item.page, item.y]), [[2, 700], [1, 100]])
+  assert.equal((await history.backTo(1, snapshot.revision, adapter)).status, 'changed')
+  assert.equal(current.page, 1)
+  assert.equal(current.y, 100)
+  assert.equal(history.size, 0)
+})
+
+test('failed or cancelled selection leaves all return points intact', async () => {
+  const history = new NavigationHistory()
+  let current = position(1)
+  const adapter = { capture: () => current, apply: (target: NavigationPosition) => current = target }
+  await history.jump(position(2), adapter)
+  await history.jump(position(3), adapter)
+  const snapshot = history.snapshot()
+  await assert.rejects(history.backTo(1, snapshot.revision, { apply: async () => { throw new Error('render unavailable') } }), /render unavailable/)
+  assert.deepEqual(history.snapshot().positions.map(item => item.page), [2, 1])
+  await assert.rejects(history.backTo(1, snapshot.revision, { apply: target => ({ ...target, y: 123 }) }), /restore/)
+  assert.deepEqual(history.snapshot().positions.map(item => item.page), [2, 1])
+  const controller = new AbortController()
+  const started = deferred<void>(), finish = deferred<NavigationPosition>()
+  const returnTask = history.backTo(1, snapshot.revision, { apply: () => { started.resolve(); return finish.promise } }, controller.signal)
+  await started.promise
+  controller.abort()
+  finish.resolve(position(1))
+  assert.equal((await returnTask).status, 'cancelled')
+  assert.deepEqual(history.snapshot().positions.map(item => item.page), [2, 1])
+})
+
 test('a no-op or failed jump does not enter history', async () => {
   const history = new NavigationHistory()
   const capture = () => position(1)

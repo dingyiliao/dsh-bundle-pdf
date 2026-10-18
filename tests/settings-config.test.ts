@@ -64,7 +64,7 @@ test('saving a new target preference does not invalidate an in-flight translatio
     get(key: string) {
       if (key !== 'llm') return undefined
       return { async *stream() {
-        yield { type: 'text-delta', index: 0, text: '译文。' }
+        yield { type: 'text-delta', index: 0, text: '{"recognized":true,"translation":"译文。"}' }
         settings = { ...settings, translationTargetLanguage: 'fr' }
         yield { type: 'finish', reason: { kind: 'stop' } }
       } }

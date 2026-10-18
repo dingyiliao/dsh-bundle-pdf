@@ -79,3 +79,49 @@ test('a session disposed during background open cannot admit its late working co
     assert.equal(background.diagnostics().documents, 1)
   } finally { background.dispose() }
 })
+
+test('scheduled sweep releases idle copies without waiting for a real minute', async () => {
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  let sweep: (() => void) | undefined
+  let unrefs = 0, clears = 0
+  const timer = { unref() { unrefs++ } } as unknown as ReturnType<typeof setInterval>
+  globalThis.setInterval = ((callback: () => void, delay?: number) => {
+    assert.equal(delay, 60_000)
+    sweep = callback
+    return timer
+  }) as typeof setInterval
+  globalThis.clearInterval = ((active: ReturnType<typeof setInterval>) => {
+    assert.equal(active, timer)
+    clears++
+  }) as typeof clearInterval
+  let time = 1
+  const released: string[] = []
+  const closed: string[] = []
+  let background: ReturnType<typeof createBackgroundDocuments> | undefined
+  try {
+    background = createBackgroundDocuments({
+      isUiOwned: () => false,
+      async releaseBackground(_sessionId: string, id: string) { released.push(id); return 'released' as const },
+    } as never, { async releaseDocument(id: string) { closed.push(id) } } as never, { now: () => time })
+    assert.equal(unrefs, 1)
+    await background.adopt('session', 'idle-copy', 1024)
+    time += 11 * 60_000
+    assert.ok(sweep)
+    sweep()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(released, ['idle-copy'])
+    assert.deepEqual(closed, ['idle-copy'])
+    assert.equal(background.diagnostics().documents, 0)
+    background.dispose()
+    assert.equal(clears, 1)
+    sweep()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(released, ['idle-copy'], 'a stopped sweep must not schedule new work')
+    background = undefined
+  } finally {
+    background?.dispose()
+    globalThis.setInterval = realSetInterval
+    globalThis.clearInterval = realClearInterval
+  }
+})

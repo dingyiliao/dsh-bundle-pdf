@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { inflateSync } from 'node:zlib'
 import { createPdfService } from '../src/host/pdf-service.ts'
+import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import { memoryWorkspace, nativeFixture } from './native-fixture.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
@@ -33,7 +34,7 @@ function centerPixel(png: Uint8Array): number[] {
 test('native OCR region crops preserve PDF coordinates through crop, rotation, and UserUnit',
   { skip: !existsSync(executable) }, async () => {
     const state = memoryWorkspace(await nativeFixture())
-    const pdf = createPdfService(state.workspaces, { executable })
+    const pdf = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
     const sessionId = 'ocr-region'
     const signal = new AbortController().signal
     try {
@@ -48,5 +49,5 @@ test('native OCR region crops preserve PDF coordinates through crop, rotation, a
         assert.deepEqual(centerPixel(red.png), [255, 0, 0], `red page ${page}`)
         assert.deepEqual(centerPixel(blue.png), [0, 0, 255], `blue page ${page}`)
       }
-    } finally { pdf.dispose(); await state.workspaces.dispose() }
+    } finally { await pdf.dispose(); await state.workspaces.dispose() }
   })

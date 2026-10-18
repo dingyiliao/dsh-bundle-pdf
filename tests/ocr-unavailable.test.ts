@@ -9,7 +9,7 @@ import { defaultSettings } from '../src/shared/contracts.ts'
 test('global PDF settings explain Host-controlled OCR instead of showing a permanently disabled switch', () => {
   const snapshot: ConfigFormSnapshot = {
     status: 'ready', value: { ...defaultSettings }, base: {}, user: {}, revision: 1,
-    writable: true, mode: 'host',
+    writable: true,
   }
   const form: ConfigForm = {
     getSnapshot: () => snapshot,

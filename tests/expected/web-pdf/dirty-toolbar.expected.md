@@ -1,14 +1,9 @@
-- button "← Back" [disabled]: Back
-- combobox "Zoom":
-  - option "Fit width" [selected]
-  - option "Fit page"
-  - option "50%"
-  - option "75%"
-  - option "100%"
-  - option "125%"
-  - option "150%"
-  - option "200%"
-  - option "300%"
-- button "Undo annotation edit": ↶
-- button "Redo annotation edit" [disabled]: ↷
+- group "Return to an earlier position":
+  - button "Back" [disabled]
+  - button "Return to an earlier position" [disabled]
+- 'group "Zoom: Fit width"'
+- button "Undo annotation edit"
+- button "Redo annotation edit" [disabled]
 - button "Save"
+- button "Save as"
+- button "Discard all changes"

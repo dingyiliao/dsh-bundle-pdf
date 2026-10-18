@@ -1,5 +1,15 @@
 - complementary:
-  - heading "Annotations" [level=3]
-  - 'button "Page 1 · Note Saved through the PDF reader browser UI Created: {{date}}, {{clock}} Modified: {{date}}, {{clock}}"':
-    - strong: Page 1 · Note
-    - text: "Saved through the PDF reader browser UI Created: {{date}}, {{clock}} Modified: {{date}}, {{clock}}"
+  - heading "Annotations 1" [level=3]
+  - combobox "Filter annotations":
+    - option "All annotations" [selected]
+    - option "Highlight"
+    - option "Underline"
+    - option "Strike out"
+    - option "Note"
+  - list "Annotations":
+    - group "Page 1":
+      - heading "Page 1" [level=4]
+      - listitem:
+        - button "Saved through the PDF reader browser UI Note {{date}}":
+          - text: Saved through the PDF reader browser UI Note
+          - time: {{date}}
