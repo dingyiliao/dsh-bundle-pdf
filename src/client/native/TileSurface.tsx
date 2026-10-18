@@ -4,6 +4,8 @@ import type { NativePage } from './document.ts'
 import type { PageViewport } from '../reader-selection.ts'
 
 interface TileJob { key: string; x: number; y: number; width: number; height: number; canvas: HTMLCanvasElement; controller: AbortController; state: 'queued' | 'running' | 'ready' }
+// Fewer render/RPC calls than 512px without the large visible-canvas spike of 1024px.
+const tileSize = 768
 export interface TileSurfaceProps {
   page: NativePage; viewport: PageViewport; scrollRoot: HTMLElement | null
   patchBoxes: PdfRect[]; onReady(): void; onError(message: string): void
@@ -27,19 +29,32 @@ export function TileSurface(props: TileSurfaceProps) {
     const jobs = new Map<string, TileJob>()
     let running = 0, disposed = false, frame = 0
     let desired = new Set<string>()
-    const old = Array.from(host.querySelectorAll<HTMLCanvasElement>('canvas'))
-    // Keep cached pixels visible at the new CSS scale until replacements finish.
-    for (const canvas of old) {
-      if (canvas.dataset.rotation !== String(viewport.rotation) || Number(canvas.dataset.tileEpoch) < currentEpoch - 1) { canvas.remove(); canvas.width = 0; canvas.height = 0; continue }
+    const canvases = Array.from(host.querySelectorAll<HTMLCanvasElement>('canvas'))
+    // A resize can start several raster epochs before any of them finishes.
+    // Retain the last *complete* frame, not merely the preceding epoch: the
+    // latter may contain only a few tiles and would expose a white page.
+    const readyEpoch = Number(host.dataset.pdfReadyEpoch)
+    const fallbackEpoch = canvases.some(canvas => Number(canvas.dataset.tileEpoch) === readyEpoch)
+      ? readyEpoch : Math.max(-1, ...canvases.map(canvas => Number(canvas.dataset.tileEpoch)))
+    const old: HTMLCanvasElement[] = []
+    for (const canvas of canvases) {
+      if (canvas.dataset.rotation !== String(viewport.rotation) || Number(canvas.dataset.tileEpoch) !== fallbackEpoch) {
+        canvas.remove(); canvas.width = 0; canvas.height = 0; continue
+      }
+      old.push(canvas)
       canvas.style.left = `${Number(canvas.dataset.tileLeft) * viewport.width}px`
       canvas.style.top = `${Number(canvas.dataset.tileTop) * viewport.height}px`
       canvas.style.width = `${Number(canvas.dataset.tileWidth) * viewport.width}px`
       canvas.style.height = `${Number(canvas.dataset.tileHeight) * viewport.height}px`
     }
     const retire = (job: TileJob) => { job.controller.abort(); job.canvas.remove(); job.canvas.width = 0; job.canvas.height = 0; jobs.delete(job.key) }
+    let committed = false
     const complete = () => {
+      if (committed) return
       if (!desired.size || [...desired].some(key => jobs.get(key)?.state !== 'ready')) return
+      committed = true
       for (const canvas of old) { canvas.remove(); canvas.width = 0; canvas.height = 0 }
+      host.dataset.pdfReadyEpoch = String(currentEpoch)
       callbacks.current.onReady()
     }
     const pump = () => {
@@ -70,7 +85,7 @@ export function TileSurface(props: TileSurfaceProps) {
           host.append(job.canvas)
           complete()
         })().catch(error => {
-          if (!controller.signal.aborted && !disposed) callbacks.current.onError(String(error))
+          if (!controller.signal.aborted && !page.owner.lifetime.signal.aborted && !disposed) callbacks.current.onError(String(error))
           if (jobs.get(job.key) === job) retire(job)
         }).finally(() => { running--; pump() })
       }
@@ -84,12 +99,12 @@ export function TileSurface(props: TileSurfaceProps) {
       desired = new Set()
       if (right <= left || bottom <= top) { for (const job of jobs.values()) retire(job); return }
       const coords: { x: number; y: number }[] = []
-      for (let y = Math.floor(top / 512) * 512; y < bottom; y += 512) for (let x = Math.floor(left / 512) * 512; x < right; x += 512) coords.push({ x, y })
+      for (let y = Math.floor(top / tileSize) * tileSize; y < bottom; y += tileSize) for (let x = Math.floor(left / tileSize) * tileSize; x < right; x += tileSize) coords.push({ x, y })
       coords.sort((a, b) => Math.hypot(a.x - (left + right) / 2, a.y - (top + bottom) / 2) - Math.hypot(b.x - (left + right) / 2, b.y - (top + bottom) / 2))
       for (const { x, y } of coords) {
         const key = `${x}:${y}`; desired.add(key)
         if (jobs.has(key)) continue
-        const width = Math.min(512, rasterWidth - x), height = Math.min(512, rasterHeight - y)
+        const width = Math.min(tileSize, rasterWidth - x), height = Math.min(tileSize, rasterHeight - y)
         const canvas = document.createElement('canvas')
         canvas.width = width; canvas.height = height
         canvas.style.cssText = `position:absolute;left:${x / sx}px;top:${y / sy}px;width:${width / sx}px;height:${height / sy}px`

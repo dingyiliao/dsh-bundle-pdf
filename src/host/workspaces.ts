@@ -94,6 +94,21 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       groupDates: saved.groupDates ?? saved.groups.map(() => new Date().toISOString()) }
   }
 
+  async function restoreMissingBaseline(saved: DraftRecord, source: PdfFileRead | undefined): Promise<RenderedPdf | undefined> {
+    if (saved.original || !saved.baseKey || drafts.get(saved.baseKey)) return undefined
+    // Draft operations refer to the original bytes. A changed or missing file
+    // cannot replace that baseline without silently applying edits to another PDF.
+    if (!source || source.version !== saved.sourceHash) {
+      fail('pdf/draft-damaged', 'Saved draft baseline is missing and the original PDF is unavailable or has changed')
+    }
+    const baseline = await sourcePdf(source)
+    await drafts.put(saved.baseKey, {
+      ...saved, original: base64(baseline.bytes), baseKey: undefined,
+      groups: [], groupDates: [], cursor: 0, renderedHash: undefined,
+    })
+    return baseline
+  }
+
   async function baselinePdf(record: WorkspaceRecord): Promise<RenderedPdf> {
     if (!record.original) fail('pdf/draft-damaged', 'Saved draft baseline is missing')
     const bytes = Buffer.from(record.original, 'base64')
@@ -129,8 +144,11 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
     copy.snapshot = snapshot
     const key = recordKey(previous.sessionId, previous.path)
     const cleanupFailures: string[] = []
-    try { await drafts.delete(key) } catch (error) { cleanupFailures.push(errorText(error)) }
-    try { await deleteBaseline(previous) } catch (error) { cleanupFailures.push(errorText(error)) }
+    let draftDeleted = false
+    try { await drafts.delete(key); draftDeleted = true } catch (error) { cleanupFailures.push(errorText(error)) }
+    if (draftDeleted) {
+      try { await deleteBaseline(previous) } catch (error) { cleanupFailures.push(errorText(error)) }
+    }
     if (cleanupFailures.length) {
       copy.snapshot = { ...snapshot, warning: `PDF saved to ${source.path}, but draft cleanup failed: ${cleanupFailures.join('; ')}` }
     }
@@ -237,11 +255,12 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         snapshot = { ...snapshot, warning: `The PDF is saved, but recovered draft cleanup failed: ${errorText(error)}` }
       }
     } else {
+      const restoredBaseline = stored ? await restoreMissingBaseline(stored, source) : undefined
       record = stored ? hydrate(stored) : fresh(sessionId, source!)
       if (source && record.sourceHash === source.version && record.sourceVersion !== source.fsVersion) {
         record = { ...record, sourceVersion: source.fsVersion }
       }
-      baseline = stored ? await baselinePdf(record) : await sourcePdf(source!)
+      baseline = restoredBaseline ?? (stored ? await baselinePdf(record) : await sourcePdf(source!))
       snapshot = snapshotFor(id, record, baseline.document, baseline.bytes,
         projectedDocument(baseline.document, record), record.sourceHash !== source?.version)
       if (stored && (!stored.baseKey || !stored.groupDates)) {
@@ -338,6 +357,13 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
       if (!same && byPath.has(targetKey)) fail('pdf/target-open', 'The destination already has a working copy; choose another path')
       if (!same && drafts.get(targetKey)?.groups.length) fail('pdf/target-draft', 'The destination has a saved draft; open it first or choose another path')
       let expected = same ? record.sourceHash : input.options.expectedTargetVersion ?? null
+      if (same && input.options.path !== undefined && input.options.expectedTargetVersion === null
+        && input.options.overwrite !== true) {
+        // Save As can recreate a deleted source, but plain Save still requires
+        // the original digest. The file adapter atomically rejects a new file
+        // appearing at this path before publication.
+        expected = null
+      }
       if (same && input.options.path !== undefined && input.options.overwrite === true) {
         // Save As may explicitly replace an externally changed source. It must
         // name the version the user inspected; the file adapter still enforces
@@ -382,10 +408,13 @@ export function createWorkspaces(files: Files, drafts: DraftTable) {
         byPath.set(recordKey(input.sessionId, saved.path), copy.id)
         const cleanupKeys = new Set([recordKey(input.sessionId, record.path), targetKey])
         const cleanupFailures: string[] = []
+        let draftsDeleted = true
         for (const key of cleanupKeys) {
-          try { await drafts.delete(key) } catch (error) { cleanupFailures.push(errorText(error)) }
+          try { await drafts.delete(key) } catch (error) { draftsDeleted = false; cleanupFailures.push(errorText(error)) }
         }
-        try { await deleteBaseline(record) } catch (error) { cleanupFailures.push(errorText(error)) }
+        if (draftsDeleted) {
+          try { await deleteBaseline(record) } catch (error) { cleanupFailures.push(errorText(error)) }
+        }
         if (cleanupFailures.length) {
           copy.snapshot = { ...snapshot, warning: `PDF saved to ${saved.path}, but draft cleanup failed: ${cleanupFailures.join('; ')}` }
         }
