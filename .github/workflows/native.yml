@@ -36,9 +36,18 @@ jobs:
         run: |
           npm ci
           npm run native:build
+      # Playwright's Chromium install stalls after download under Node 26 on
+      # this runner. Use the LTS CLI runtime, then restore Node 26 for coverage.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Install Chromium with system dependencies
         working-directory: dsh-bundle-pdf
+        timeout-minutes: 10
         run: npx playwright install --with-deps chromium
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.7.0
       - name: Browser interaction tests
         working-directory: dsh-bundle-pdf
         env:
