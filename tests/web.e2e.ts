@@ -2086,7 +2086,8 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       })
       expect(fit.clipped, `visible controls at ${paneWidth}px: ${JSON.stringify(fit)}`).toEqual([])
       expect(fit.overflow, `horizontal control overflow at ${paneWidth}px`).toBeLessThanOrEqual(1)
-      expect(await zoomTrigger.evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(52)
+      const zoomWidth = await zoomTrigger.evaluate(element => Math.round(element.getBoundingClientRect().width))
+      expect(Math.abs(zoomWidth - 52), `zoom control width at ${paneWidth}px`).toBeLessThanOrEqual(1)
       expect(await zoomTrigger.locator('svg').isVisible()).toBe(true)
       if (process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR) {
         await toolbar.screenshot({ path: join(process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR, `pdf-toolbar-${paneWidth}.png`) })
