@@ -3471,6 +3471,39 @@ it('keeps active pages bounded while navigating to a distant page through the in
     // platform-specific drag speed while exercising Reader's keyup capture path.
     await expect.poll(() => reader.locator('[data-pdf-page="2"] [data-pdf-text="active"]').textContent())
       .toContain('Browser PDF page 2')
+    // Returning from the distant page and restoring the fit-width viewport can
+    // leave text layers in their 64ms resize debounce. Creating a native Range
+    // during that window lets the next text-layer replacement invalidate its
+    // end point just as the selection is being pinned for virtualization.
+    await expect.poll(() => reader.evaluate(element => [1, 2].every(pageNumber => {
+      const page = element.querySelector<HTMLElement>(`[data-pdf-page="${pageNumber}"]`)
+      const text = page?.querySelector<HTMLElement>('[data-pdf-text="active"]')
+      return !!text?.childNodes.length && text.style.transform === ''
+        && !!page?.querySelector('canvas[data-pdf-raster-ready="true"]')
+    }))).toBe(true)
+    await reader.locator('.dsh-pdf-scroll').evaluate(() => new Promise<void>((resolve, reject) => {
+      let previous = '', stableFrames = 0
+      const deadline = performance.now() + 5_000
+      const check = () => {
+        if (performance.now() > deadline) {
+          reject(new Error('PDF text layers did not settle after restoring fit width'))
+          return
+        }
+        const pages = [1, 2].map(pageNumber => {
+          const page = document.querySelector<HTMLElement>(`.dsh-pdf-reader [data-pdf-page="${pageNumber}"]`)
+          const text = page?.querySelector<HTMLElement>('[data-pdf-text="active"]')
+          const bounds = page?.getBoundingClientRect()
+          return { signature: `${bounds?.width}:${bounds?.height}:${text?.style.transform}:${text?.textContent?.length}`,
+            stable: !!text && text.style.transform === '' }
+        })
+        const current = pages.map(page => page.signature).join('|')
+        stableFrames = pages.every(page => page.stable) && current === previous ? stableFrames + 1 : 0
+        previous = current
+        if (stableFrames >= 8) resolve()
+        else requestAnimationFrame(check)
+      }
+      requestAnimationFrame(check)
+    }))
     const selectedText = await reader.evaluate(element => {
       const firstLayer = element.querySelector('[data-pdf-page="1"] .dsh-pdf-text-layer')
       const secondLayer = element.querySelector('[data-pdf-page="2"] .dsh-pdf-text-layer')
