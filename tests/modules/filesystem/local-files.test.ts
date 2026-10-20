@@ -174,7 +174,8 @@ test('save creates a new PDF and overwrites only the observed version, preservin
   const second = await files.save(agent(root), 'example.pdf', revised, first.version, { overwrite: true })
   assert.notEqual(first.version, second.version)
   assert.deepEqual([...(await readFile(path))], [...revised])
-  assert.equal((await stat(path)).mode & 0o777, 0o640)
+  // chmod's POSIX permission bits are not represented by stat on Windows.
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o640)
   await assert.rejects(files.save(agent(root), 'example.pdf', bytes, first.version), expectCode('PDF_STALE_VERSION'))
   await assert.rejects(files.save(agent(root), 'missing.pdf', bytes, first.version), expectCode('PDF_STALE_VERSION'))
   assert.deepEqual((await readdir(root)).sort(), ['example.pdf'])

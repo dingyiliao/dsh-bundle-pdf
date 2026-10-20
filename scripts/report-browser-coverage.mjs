@@ -1,6 +1,6 @@
 /** Convert the opt-in Playwright/V8 PDF Client artifacts to source-level line LCOV. */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decode } from '@jridgewell/sourcemap-codec'
 import ts from 'typescript'
@@ -11,7 +11,7 @@ const output = process.env.DSH_PDF_BROWSER_COVERAGE_OUTPUT
 if (!artifactDirectory || !output) {
   throw new Error('Set DSH_PDF_BROWSER_COVERAGE_DIR and DSH_PDF_BROWSER_COVERAGE_OUTPUT to absolute paths.')
 }
-if (!artifactDirectory.startsWith('/') || !output.startsWith('/')) {
+if (!isAbsolute(artifactDirectory) || !isAbsolute(output)) {
   throw new Error('PDF browser coverage paths must be absolute.')
 }
 
@@ -20,7 +20,10 @@ function localSource(source) {
   const prefix = '/plugins/@local/src/'
   if (!source.startsWith(prefix)) return undefined
   const path = resolve(root, 'src', source.slice(prefix.length))
-  return path.startsWith(join(root, 'src') + '/') && /\.tsx?$/.test(path) && !path.endsWith('.d.ts')
+  const sourceRoot = resolve(root, 'src')
+  const relativePath = relative(sourceRoot, path)
+  return relativePath !== '' && relativePath !== '..' && !relativePath.startsWith(`..${sep}`)
+    && !isAbsolute(relativePath) && /\.tsx?$/.test(path) && !path.endsWith('.d.ts')
     ? path : undefined
 }
 

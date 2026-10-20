@@ -568,19 +568,21 @@ test('discardAddresses validates all addresses before deleting a valid draft', a
   const absoluteAddress = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(absolutePath)}`
   const otherSessionAddress = `dsh-resource://file/session/other-session/${encodeURIComponent(absolutePath)}`
   const nonPdfAddress = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(join(tmpdir(), 'note.txt'))}`
+  const relativeAddress = `dsh-resource://file/session/${sessionId}/relative.pdf`
+  const agentWithoutCwd: PdfAgent = { session: { id: sessionId, header: { cwd: undefined } } }
   const state = harness(await fixture(), absolutePath)
   const workspaces = createWorkspaces(state.files, state.drafts)
   try {
     const opened = await snapshot(workspaces, { action: 'open', address: absoluteAddress })
     const edited = await snapshot(workspaces, edit(opened.id, opened.revision, note('keep-draft')))
-    for (const [invalidAddress, expectedCode] of [
-      [otherSessionAddress, 'pdf/session-mismatch'],
-      [nonPdfAddress, 'pdf/invalid-address'],
-      [address, 'pdf/invalid-address'],
+    for (const [invalidAddress, expectedCode, requestAgent] of [
+      [otherSessionAddress, 'pdf/session-mismatch', agent],
+      [nonPdfAddress, 'pdf/invalid-address', agent],
+      [relativeAddress, 'pdf/invalid-address', agentWithoutCwd],
     ] as const) {
       await assert.rejects(workspaces.execute(sessionId, {
         sessionId, action: 'discardAddresses', addresses: [absoluteAddress, invalidAddress],
-      }, agent, signal), { code: expectedCode })
+      }, requestAgent, signal), { code: expectedCode })
       assert.equal(workspaces.readSnapshot(sessionId, edited.id).dirty, true)
       assert.equal(state.records.size, 2)
     }

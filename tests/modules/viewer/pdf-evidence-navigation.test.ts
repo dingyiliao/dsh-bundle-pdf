@@ -47,6 +47,10 @@ function approve(snapshot: WorkspaceSnapshot, requests?: EvidenceRevalidationReq
 
 const hashText = async (value: string) => hash(value)
 const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve))
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+}
 
 test('navigation is only available for a registered visible reader and cleans up subscriptions', async () => {
   const { evidence, reader, snapshot, jumps, reads } = fixture()
@@ -231,7 +235,9 @@ test('the production SHA-256 implementation validates a visible Reader', async (
   const { evidence, snapshot, reader } = fixture()
   const navigation = createPdfEvidenceNavigation(approve(snapshot))
   navigation.register(reader)
-  await nextTurn()
+  // WebCrypto runs asynchronously; one event-loop turn is not a portable
+  // guarantee that the path digest has completed on every CI runner.
+  await waitUntil(() => navigation.canNavigate('session-1', evidence))
   assert.equal(navigation.canNavigate('session-1', evidence), true)
   assert.equal(await navigation.navigate('session-1', evidence, new AbortController().signal), 'opened')
 })

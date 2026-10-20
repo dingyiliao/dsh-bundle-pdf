@@ -655,7 +655,9 @@ test('Reader coalesces two quick page-step requests while the first jump is pend
     await act(async () => {
       next.click()
       next.click()
-      await new Promise(resolve => setTimeout(resolve, 20))
+      const deadline = Date.now() + 1_000
+      while (container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value !== '2'
+        && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
     })
     assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value, '2',
       'the coalesced navigation settles on the requested page')

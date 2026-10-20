@@ -1,0 +1,2 @@
+# PDF fixtures are binary evidence: Git must not rewrite their line endings.
+*.pdf -text
