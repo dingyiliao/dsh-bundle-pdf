@@ -40,6 +40,17 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
     assert.ok(section, 'the PDF Client source appears in the browser LCOV report')
     assert.match(section, /^DA:1,1$/m)
     assert.match(section, /^DA:2,0$/m)
+    for (const relative of [
+      'src/modules/viewer/controllers/search-controller.ts',
+      'src/adapters/client/remote/pdf-api.ts',
+      'src/entrypoints/reader-client.tsx',
+    ]) {
+      const seeded = report.split(`SF:${join(root, relative)}\n`)[1]?.split('end_of_record')[0]
+      assert.ok(seeded, `${relative} participates in the Browser lane after the V2 move`)
+      assert.match(seeded, /^DA:\d+,0$/m, 'unexecuted Client-owned code stays in the Browser denominator')
+    }
+    assert.equal(report.includes(`SF:${join(root, 'src/entrypoints/reader-host.ts')}\n`), false,
+      'the Browser lane does not seed Host-only code')
     data.entries.push({
       ...data.entries[0]!,
       sourceMap: { ...data.entries[0]!.sourceMap, sourcesContent: ['different source snapshot'] },

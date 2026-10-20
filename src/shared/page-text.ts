@@ -1,9 +1,9 @@
-import type { NativeTextContent } from './native.ts'
+import type { NativeTextContent } from './native.js'
 
 type PositionedTextItem = Pick<NativeTextContent['items'][number], 'str' | 'transform' | 'width' | 'height' | 'hasEOL'>
 
-/** Join positioned PDF text runs without adding spaces inside split words. */
-export function joinPageText(items: readonly PositionedTextItem[]): string {
+/** Join positioned PDF text runs; optionally record each run's UTF-16 start for UI hit mapping. */
+export function joinPositionedText(items: readonly PositionedTextItem[], starts?: number[]): string {
   let text = ''
   for (let index = 0; index < items.length; index++) {
     const item = items[index], previous = items[index - 1]
@@ -18,7 +18,13 @@ export function joinPageText(items: readonly PositionedTextItem[]): string {
         if (gap > Math.max(0.5, previous.height * 0.15) || cross > Math.max(2, previous.height * 0.5)) text += ' '
       }
     }
+    starts?.push(text.length)
     text += item.str
   }
   return text
+}
+
+/** Join positioned PDF text runs without allocating a source-offset map. */
+export function joinPageText(items: readonly PositionedTextItem[]): string {
+  return joinPositionedText(items)
 }

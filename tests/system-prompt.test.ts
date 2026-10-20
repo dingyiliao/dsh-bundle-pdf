@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
-import { PDF_INTENT_PROMPT, READER_PROMPT_SECTION, registerPdfSystemPrompt } from '../src/host/system-prompt.ts'
+import { PDF_INTENT_PROMPT, READER_PROMPT_SECTION, registerPdfSystemPrompt } from '../src/adapters/host/dsh/system-prompt.ts'
 
 /** Model just the optional service boundary; no reader state is supplied. */
 function registrationHarness(available = true) {

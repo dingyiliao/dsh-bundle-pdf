@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { createHostOcrApi } from '../src/client/host-ocr-api.ts'
+import { createHostOcrApi } from '../src/adapters/client/remote/host-ocr-api.ts'
 import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 

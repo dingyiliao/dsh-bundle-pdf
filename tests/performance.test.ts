@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { loadPdfDocument, applyPdfOperations } from '../src/core/pdf-document.ts'
+import { loadPdfDocument, applyPdfOperations } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { beginPdfSpan, measurePdfAsync, measurePdfSync, observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
 
 test('observers cannot break PDF operations and disposal suppresses late events', async () => {

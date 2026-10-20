@@ -5,7 +5,7 @@ import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-sub
 import { encodeFrame, FrameDecoder } from '../src/engine/framing.ts'
 import { NativeWorker, type NativeProcessRuntime } from '../src/engine/native-worker.ts'
 
-type Reply = { requestId: string; ok: boolean; value?: unknown }
+type Reply = { requestId: string; ok: boolean; value?: unknown; error?: { code: string; message: string } }
 
 function runtime(reply: (request: { command: string; requestId: string }) => Reply,
   missingInput = false): NativeProcessRuntime {
@@ -48,5 +48,22 @@ test('native worker rejects an uncorrelated reply and retires its process range'
   try {
     await worker.ready()
     await assert.rejects(worker.request({ command: 'read' }), { code: 'pdf/native-protocol' })
+  } finally { await worker.dispose() }
+})
+
+test('native worker surfaces a correlated error reply without losing its process range', async () => {
+  const worker = new NativeWorker('/tmp/not-executed', runtime(request => request.command === 'hello'
+    ? { requestId: request.requestId, ok: true, value: { protocolVersion: 1, build: '156.0.8076.0' } }
+    : request.command === 'invalid'
+      ? { requestId: request.requestId, ok: false,
+          error: { code: 'pdf/invalid-page', message: 'Page does not exist' } }
+      : { requestId: request.requestId, ok: true, value: { recovered: true } }))
+  try {
+    await worker.ready()
+    const generation = worker.generation
+    await assert.rejects(worker.request({ command: 'invalid' }), { code: 'pdf/invalid-page',
+      message: 'Page does not exist' })
+    assert.deepEqual((await worker.request({ command: 'valid' })).value, { recovered: true })
+    assert.equal(worker.generation, generation)
   } finally { await worker.dispose() }
 })

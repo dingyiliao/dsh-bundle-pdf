@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readFile, readdir, mkdir, writeFile, copyFile, unlink } from 'node:fs/promises'
+import { readFile, readdir, mkdir, rm, writeFile, copyFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,9 @@ const tesseractRoot = packageRoot('tesseract.js')
 const coreRoot = packageRoot('tesseract.js-core')
 
 await mkdir(dist, { recursive: true })
+// Declarations are generated artifacts. Remove old paths before rebuilding so
+// moved source files cannot leave importable, stale type surfaces in a release.
+await rm(join(dist, 'types'), { recursive: true, force: true })
 
 // The extension entries ship a public type surface without pulling Host/UI
 // development-only declarations into an external engine plugin.
@@ -25,11 +28,8 @@ await new Promise((resolveBuild, rejectBuild) => {
   child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`OCR declaration build exited with status ${code}`)))
 })
 await new Promise((resolveBuild, rejectBuild) => {
-  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'),
-    '--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler', '--strict',
-    '--esModuleInterop', '--skipLibCheck', '--declaration', '--emitDeclarationOnly',
-    '--rootDir', 'src', '--outDir', 'dist/types', '--lib', 'ES2023,DOM,DOM.Iterable', '--types', 'node',
-    'src/host/image-understanding-plugin.ts'], { cwd: project, stdio: 'inherit', windowsHide: true })
+  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.image-host.json'], {
+    cwd: project, stdio: 'inherit', windowsHide: true })
   child.once('error', rejectBuild)
   child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Image Host declaration build exited with status ${code}`)))
 })
@@ -51,20 +51,20 @@ const browser = {
 
 // Host imports belong to the installed Harness profile, not to a second bundled runtime.
 const hostBuild = await build({
-  ...common, entryPoints: ['src/host/index.ts'], outfile: 'dist/index.js',
+  ...common, entryPoints: ['src/entrypoints/reader-host.ts'], outfile: 'dist/index.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
 })
 const nativeProviderBuild = await build({
-  ...common, entryPoints: ['src/host/native-provider.ts'], outfile: 'dist/native-provider.js',
+  ...common, entryPoints: ['src/entrypoints/native-host.ts'], outfile: 'dist/native-provider.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const ocrHostBuild = await build({
-  ...common, entryPoints: ['src/host/ocr-plugin.ts'], outfile: 'dist/ocr-host.js',
+  ...common, entryPoints: ['src/entrypoints/ocr-host.ts'], outfile: 'dist/ocr-host.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const imageHostBuild = await build({
-  ...common, entryPoints: ['src/host/image-understanding-plugin.ts'], outfile: 'dist/image-host.js',
+  ...common, entryPoints: ['src/entrypoints/image-understanding-host.ts'], outfile: 'dist/image-host.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 
@@ -75,7 +75,7 @@ const clientWrapperStart = 'window.__ModuleLoader__.load({\n  id: "@local/dsh-pd
 const clientWrapperEnd = '\n    return module.exports;\n  }\n});\n'
 const browserCoverage = process.env.DSH_PDF_BROWSER_COVERAGE === '1'
 const clientBuild = await build({
-  ...browser, entryPoints: ['src/client/index.tsx'], outfile: 'dist/client.js',
+  ...browser, entryPoints: ['src/entrypoints/reader-client.tsx'], outfile: 'dist/client.js',
   write: false, format: 'cjs', external: [
     'react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/cordis',
   ],

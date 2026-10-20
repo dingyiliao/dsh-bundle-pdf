@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { loadPdfDocument, PdfDocumentError } from '../src/core/pdf-document.ts'
+import { loadPdfDocument, PdfDocumentError } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { createWorkspaces } from '../src/host/workspaces.ts'
 
 async function fixture(name: string): Promise<Uint8Array> {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { binaryResult, PDF_ENDPOINT, registerPdfTransport, type PdfDispatch } from '../src/host/transport.ts'
+import { binaryResult, PDF_ENDPOINT, registerPdfTransport, type PdfDispatch } from '../src/adapters/host/dsh/index.ts'
 
 type Route = Parameters<Parameters<typeof registerPdfTransport>[0]['connection']['fetch']['register']>[0]
 const envelope = (payload: unknown, method = PDF_ENDPOINT) => ({

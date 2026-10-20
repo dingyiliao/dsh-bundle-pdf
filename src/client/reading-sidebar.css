@@ -2,15 +2,17 @@
   --pdf-sidebar-inset: 12px;
   --pdf-sidebar-control-radius: 6px;
   --pdf-sidebar-selected-bg: color-mix(in srgb, var(--pdf-accent) 12%, transparent);
-  margin: 8px 8px 8px 0;
+  position: absolute;
+  z-index: 20;
+  inset: 64px 12px 64px auto;
+  margin: 0;
   border: 1px solid var(--pdf-glass-edge);
   border-radius: 16px;
   overflow: hidden;
   background: linear-gradient(155deg, var(--pdf-glass-shell-top), var(--pdf-glass-shell-fill));
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
-  box-shadow: inset 0 1px 0 var(--pdf-glass-sheen), inset 1px 0 0 var(--pdf-glass-sheen),
-    -8px 0 26px -14px rgb(18 24 34 / 28%), 0 8px 22px -16px rgb(18 24 34 / 18%);
+  box-shadow: var(--pdf-glass-shadow);
 }
 .dsh-pdf-sidebar .dsh-pdf-sidebar-divider { left: 0; }
 .dsh-pdf-sidebar :is(.dsh-pdf-comments, .dsh-pdf-search-panel, .dsh-pdf-translation-panel, .dsh-pdf-ocr-scroll) {
@@ -185,7 +187,7 @@
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .dsh-pdf-sidebar {
-    border-left-color: var(--pdf-border); background: var(--pdf-panel);
+    border-color: var(--pdf-border); background: var(--pdf-panel);
     -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none;
   }
 }

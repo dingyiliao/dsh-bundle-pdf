@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { NativeWorker } from '../src/engine/native-worker.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import { supplementaryTextPdf } from './native-fixture.ts'
-import { searchResultExcerpt } from '../src/client/reader-search.ts'
+import { searchResultExcerpt } from '../src/modules/viewer/model/reader-search.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native text tests require a built helper')

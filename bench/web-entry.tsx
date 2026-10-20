@@ -2,13 +2,13 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { Reader } from '../src/client/Reader.tsx'
-import { createPdfApi } from '../src/client/api.ts'
-import { readerLocales } from '../src/client/reader-locales.ts'
+import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
+import { readerLocales } from '../src/modules/viewer/index.js'
 import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
 import styles from '../src/client/reader.css'
-import { pageIndexAtOffset, windowLayout } from '../src/client/native/window-layout.ts'
+import { pageIndexAtOffset, windowLayout } from '../src/modules/viewer/index.ts'
 
 interface Config { sessionId: string; token: string; pages: number; annotations: number }
 interface Payload { metrics: Record<string, number | null>; stages: PdfPerformanceEvent[]; qualityPassed: boolean }
@@ -62,6 +62,7 @@ function open() {
     }} imageUnderstanding={{
       availability: async () => ({ status: 'unavailable', reason: 'Image understanding is outside the reader benchmark.' }),
       prepare: async () => { throw new Error('Image understanding is outside the reader benchmark.') },
+      prepareReference: async () => { throw new Error('Image understanding is outside the reader benchmark.') },
     }} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
     settings={defaultSettings} />)
 }

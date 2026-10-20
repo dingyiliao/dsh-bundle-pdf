@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createReadingContextReporter } from '../src/client/api.ts'
+import { createReadingContextReporter } from '../src/adapters/client/remote/pdf-api.ts'
 
 test('active reading context sends only session-owned document and page metadata in order', async () => {
   const requests: Array<{ path: string; method: string; payload: Record<string, unknown> }> = []

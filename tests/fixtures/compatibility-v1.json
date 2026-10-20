@@ -1,0 +1,188 @@
+{
+  "format": 1,
+  "package": {
+    "name": "@local/dsh-pdf",
+    "exports": {
+      ".": "./dist/index.js",
+      "./native": "./dist/native-provider.js",
+      "./ocr-host": {
+        "types": "./dist/types/host/ocr-plugin.d.ts",
+        "import": "./dist/ocr-host.js"
+      },
+      "./image-host": {
+        "types": "./dist/types/host/image-understanding-plugin.d.ts",
+        "import": "./dist/image-host.js"
+      },
+      "./client": "./dist/client.js",
+      "./ocr": {
+        "types": "./dist/types/ocr/index.d.ts",
+        "import": "./dist/ocr.js"
+      },
+      "./translation": {
+        "types": "./dist/types/translation/index.d.ts",
+        "import": "./dist/translation.js"
+      },
+      "./package.json": "./package.json",
+      "./locale/*.json": "./locale/*.json"
+    },
+    "dsh": {
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "client": {
+        "platform": "web",
+        "immediately": true,
+        "inject": [
+          "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+          "@deepseek-ai/dsh-client-ui-settings-general",
+          "@deepseek-ai/dsh-client-ui-session",
+          "@deepseek-ai/dsh-client-ui-sidebar-right",
+          "@deepseek-ai/dsh-client-locale"
+        ]
+      }
+    }
+  },
+  "patch": [
+    {
+      "id": "pdf-native",
+      "name": "@local/dsh-pdf/native"
+    },
+    {
+      "id": "pdf-ocr",
+      "name": "@local/dsh-pdf/ocr-host"
+    },
+    {
+      "id": "pdf-image-understanding",
+      "name": "@local/dsh-pdf/image-host"
+    },
+    {
+      "id": "pdf-reader",
+      "name": "@local/dsh-pdf"
+    }
+  ],
+  "plugins": {
+    "readerHost": {
+      "name": "pdf-reader",
+      "inject": [
+        "connection",
+        "sessionController",
+        "fs",
+        "sandboxPolicy",
+        "storageDomain",
+        "loader",
+        "tools",
+        "pdfNative",
+        "subprocess"
+      ]
+    },
+    "nativeHost": {
+      "name": "pdf-native",
+      "provide": "pdfNative"
+    },
+    "ocrHost": {
+      "name": "image-ocr",
+      "provide": "ocr",
+      "inject": [
+        "tools"
+      ]
+    },
+    "imageHost": {
+      "name": "image-understanding",
+      "provide": "imageUnderstanding",
+      "inject": [
+        "connection",
+        "sessionController"
+      ]
+    },
+    "readerClient": {
+      "name": "pdf-reader-client",
+      "inject": [
+        "connection",
+        "documentPreviews",
+        "slots",
+        "locale",
+        "configForms",
+        "uiSession",
+        "sidebarRight"
+      ]
+    }
+  },
+  "providedServices": [
+    "imageUnderstanding",
+    "ocr",
+    "pdf",
+    "pdfNative",
+    "pdfTranslation"
+  ],
+  "rpcMethods": [
+    "pdf.bookmarks",
+    "pdf.dispatch.v2",
+    "pdf.image",
+    "pdf.info",
+    "pdf.native",
+    "pdf.ocr",
+    "pdf.position",
+    "pdf.readercontext",
+    "pdf.translation"
+  ],
+  "toolNames": [
+    "ocr_recognize",
+    "pdf_bookmarks",
+    "pdf_close",
+    "pdf_current",
+    "pdf_ocr_page",
+    "pdf_open",
+    "pdf_page_annotations",
+    "pdf_read_page",
+    "pdf_render_page",
+    "pdf_search"
+  ],
+  "storage": {
+    "suffix": "sha256(namespace).slice(0,16)",
+    "domains": [
+      {
+        "name": "pdf_drafts_${suffix}",
+        "version": 1,
+        "layout": "per-record",
+        "tables": [
+          "drafts"
+        ]
+      },
+      {
+        "name": "pdf_bookmarks_${suffix}",
+        "version": 1,
+        "layout": "per-record",
+        "tables": [
+          "bookmarks"
+        ]
+      },
+      {
+        "name": "pdf_positions_${suffix}",
+        "version": 1,
+        "layout": "per-record",
+        "tables": [
+          "positions"
+        ]
+      }
+    ],
+    "keyExpressions": {
+      "path": "process.platform==='win32'?path.toLowerCase():path",
+      "draft": "createHash('sha256').update(JSON.stringify([session,pathKey(path)])).digest('hex')",
+      "baseline": "`base_${recordKey(record.sessionId,record.path)}_${record.sourceHash.slice(7)}`",
+      "bookmark": "createHash('sha256').update(pathKey(path)).digest('hex')",
+      "readingPosition": "createHash('sha256').update(pathKey(path)).digest('hex')"
+    }
+  },
+  "clientExtensions": {
+    "slots": [
+      "settings.section",
+      "sidebar.right.tab.document"
+    ],
+    "previewExtensions": [
+      "pdf"
+    ],
+    "binaryExtensions": [
+      "pdf"
+    ]
+  }
+}

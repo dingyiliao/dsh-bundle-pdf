@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Context } from '@deepseek-ai/cordis'
-import { createBackgroundDocuments } from '../src/host/background-documents.ts'
+import { createBackgroundDocuments } from '../src/modules/working-copy/index.ts'
 import { createBookmarkService, type BookmarkRecord } from '../src/host/bookmarks.ts'
-import { createImageUnderstandingDispatch } from '../src/host/image-understanding-transport.ts'
-import { HostOcrService, type HostOcrRequest } from '../src/host/ocr-service.ts'
-import { createPdfOcrDispatch } from '../src/host/pdf-ocr-transport.ts'
-import { createReaderContexts } from '../src/host/reader-contexts.ts'
+import { createImageUnderstandingDispatch } from '../src/adapters/host/dsh/image-transport.ts'
+import { HostOcrService, type HostOcrRequest } from '../src/modules/ocr/index.js'
+import { createPdfOcrDispatch } from '../src/adapters/host/dsh/pdf-ocr-transport.ts'
+import { createReaderContexts } from '../src/modules/navigation/index.ts'
 
 const signal = () => new AbortController().signal
 const agent = { session: { id: 'session', header: {} } }
@@ -92,7 +91,7 @@ test('Host OCR dispatch bounds the serialized response, including backend-provid
 })
 
 test('Host OCR rejects invalid session, media type and backend pixel bounds before recognition', async () => {
-  const service = new HostOcrService(new Context(), () => 'small')
+  const service = new HostOcrService(() => 'small')
   let calls = 0
   service.register({ descriptor: { id: 'small', name: 'Small', version: '1', execution: 'local', geometry: [],
     confidence: false, maxPixels: 4 },
@@ -111,7 +110,7 @@ test('Host OCR rejects invalid session, media type and backend pixel bounds befo
 })
 
 test('Host OCR stage handles evict the oldest item when bounded capacity is reached', async () => {
-  const service = new HostOcrService(new Context(), () => 'none')
+  const service = new HostOcrService(() => 'none')
   const valid = { sessionId: 'session', image: new Uint8Array([1]), mediaType: 'image/png' as const,
     width: 1, height: 1, languages: ['eng'] }
   try {

@@ -8,10 +8,9 @@ import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/clien
 import { defaultSettings } from '../src/shared/contracts.ts'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-// Web E2E already requires the adjacent DSH checkout. Reuse its JSDOM runtime
-// instead of introducing a second DOM implementation solely for this test.
-const dshRequire = createRequire(join(root, '..', 'deepseek-harness', 'package.json'))
-const { JSDOM } = dshRequire('jsdom') as {
+// Resolve the pinned test DOM from this package so native CI jobs are self-contained.
+const testRequire = createRequire(import.meta.url)
+const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
 }
 

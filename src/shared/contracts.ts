@@ -1,6 +1,6 @@
-import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.ts'
-import type { NativeReaderApi, ReaderDescriptor } from './native.ts'
-import type { NavigationPosition } from '../navigation/index.ts'
+import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.js'
+import type { NativeReaderApi, ReaderDescriptor } from './native.js'
+import type { NavigationPosition } from '../navigation/index.js'
 
 /** User bookmark locations stay in plugin storage; they are not embedded in the PDF. */
 export type PdfBookmarkPosition = Omit<NavigationPosition, 'documentVersion'>

@@ -43,6 +43,8 @@
     "icon.svg",
     "README.md",
     "SPEC.md",
+    "docs/AI_READER_TOOLS.md",
+    "docs/ARCHITECTURE_V2.md",
     "PERFORMANCE.md",
     "NATIVE_V1.md",
     "LICENSE"
@@ -53,13 +55,14 @@
     "bench:corpus": "node --import tsx bench/corpus.ts",
     "bench:browser": "node --import tsx bench/browser.ts",
     "bench:compare": "node --import tsx bench/compare.ts",
+    "arch:report": "node scripts/architecture-metrics.mjs",
     "typecheck:bench": "tsc --noEmit --project tsconfig.bench.json",
     "build": "node scripts/build.mjs",
     "native:build": "node scripts/build-native.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
-    "test": "npm run build && node --import tsx --test --test-concurrency=1 \"tests/*.test.ts\"",
-    "test:coverage:node": "npm run build && node --enable-source-maps --experimental-test-coverage --test-coverage-include-all --test-coverage-include=\"src/**/*.ts\" --test-coverage-include=\"src/**/*.tsx\" --import tsx --test --test-concurrency=1 \"tests/*.test.ts\"",
+    "test": "npm run build && node scripts/run-node-tests.mjs",
+    "test:coverage:node": "npm run build && node scripts/run-node-tests.mjs --coverage",
     "test:coverage:native": "node scripts/coverage-native.mjs",
     "test:coverage:project": "node scripts/coverage-project.mjs",
     "test:coverage": "npm run test:coverage:project",
@@ -78,6 +81,7 @@
         "@deepseek-ai/dsh-client-ui-settings-general",
         "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-tool",
         "@deepseek-ai/dsh-client-locale"
       ]
     }
@@ -139,6 +143,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
+    "jsdom": "29.1.1",
     "playwright": "1.58.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",

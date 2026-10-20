@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PDFDocument, PDFName } from 'pdf-lib'
-import { loadPdfDocument } from '../src/core/pdf-document.ts'
-import { createPdfApi } from '../src/client/api.ts'
-import { projectPdfOperations } from '../src/core/pdf-operation-projection.ts'
+import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
+import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
+import { projectPdfOperations } from '../src/modules/annotations/index.ts'
 import type { NewPdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../src/core/pdf-types.ts'
 import { NavigationHistory, type NavigationPosition } from '../src/navigation/index.ts'
 

@@ -1,7 +1,7 @@
 import { PDFDocument, PDFName, PDFString, StandardFonts, degrees, rgb } from 'pdf-lib'
 import { createHash } from 'node:crypto'
 import { createWorkspaces } from '../src/host/workspaces.ts'
-import type { DraftRecord } from '../src/host/validation.ts'
+import type { DraftRecord } from '../src/modules/working-copy/index.ts'
 
 export const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 

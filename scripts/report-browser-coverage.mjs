@@ -101,37 +101,48 @@ for (const artifact of artifacts) {
   }
 }
 
+const runtimeKinds = new Set([
+  ts.SyntaxKind.ExpressionStatement, ts.SyntaxKind.VariableStatement, ts.SyntaxKind.ReturnStatement,
+  ts.SyntaxKind.ThrowStatement, ts.SyntaxKind.IfStatement, ts.SyntaxKind.ForStatement,
+  ts.SyntaxKind.ForOfStatement, ts.SyntaxKind.ForInStatement, ts.SyntaxKind.WhileStatement,
+  ts.SyntaxKind.DoStatement, ts.SyntaxKind.SwitchStatement, ts.SyntaxKind.TryStatement,
+  ts.SyntaxKind.BreakStatement, ts.SyntaxKind.ContinueStatement, ts.SyntaxKind.FunctionDeclaration,
+  ts.SyntaxKind.ClassDeclaration, ts.SyntaxKind.MethodDeclaration, ts.SyntaxKind.Constructor,
+  ts.SyntaxKind.GetAccessor, ts.SyntaxKind.SetAccessor, ts.SyntaxKind.EnumDeclaration,
+  ts.SyntaxKind.ExportAssignment,
+])
+
+async function seedClientSource(path) {
+  const content = await readFile(path, 'utf8')
+  const sourceFile = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  function visit(node) {
+    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)
+      || ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return
+    if (runtimeKinds.has(node.kind) || ts.isPropertyDeclaration(node) && node.initializer) {
+      addLine(path, sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, false)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+}
+
 async function walkClient(directory) {
   for (const item of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, item.name)
     if (item.isDirectory()) await walkClient(path)
     else if (item.isFile() && /\.tsx?$/.test(item.name) && !item.name.endsWith('.d.ts')) {
-      const content = await readFile(path, 'utf8')
-      const sourceFile = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true,
-        item.name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
-      const runtimeKinds = new Set([
-        ts.SyntaxKind.ExpressionStatement, ts.SyntaxKind.VariableStatement, ts.SyntaxKind.ReturnStatement,
-        ts.SyntaxKind.ThrowStatement, ts.SyntaxKind.IfStatement, ts.SyntaxKind.ForStatement,
-        ts.SyntaxKind.ForOfStatement, ts.SyntaxKind.ForInStatement, ts.SyntaxKind.WhileStatement,
-        ts.SyntaxKind.DoStatement, ts.SyntaxKind.SwitchStatement, ts.SyntaxKind.TryStatement,
-        ts.SyntaxKind.BreakStatement, ts.SyntaxKind.ContinueStatement, ts.SyntaxKind.FunctionDeclaration,
-        ts.SyntaxKind.ClassDeclaration, ts.SyntaxKind.MethodDeclaration, ts.SyntaxKind.Constructor,
-        ts.SyntaxKind.GetAccessor, ts.SyntaxKind.SetAccessor, ts.SyntaxKind.EnumDeclaration,
-        ts.SyntaxKind.ExportAssignment,
-      ])
-      function visit(node) {
-        if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)
-          || ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return
-        if (runtimeKinds.has(node.kind) || ts.isPropertyDeclaration(node) && node.initializer) {
-          addLine(path, sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, false)
-        }
-        ts.forEachChild(node, visit)
-      }
-      visit(sourceFile)
+      await seedClientSource(path)
     }
   }
 }
-await walkClient(join(root, 'src/client'))
+
+// Keep the Browser lane scoped to Client-owned code after the V2 move. The
+// project-wide report independently counts every emitted source line in src/.
+for (const directory of ['src/client', 'src/modules/viewer', 'src/adapters/client']) {
+  await walkClient(join(root, directory))
+}
+await seedClientSource(join(root, 'src/entrypoints/reader-client.tsx'))
 
 const report = []
 let found = 0

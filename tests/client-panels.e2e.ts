@@ -9,7 +9,7 @@ import { expect, it } from 'vitest'
 import { launchWebScaffold, seedSession, watchConsole } from '../../deepseek-harness/apps/web/tests/scaffold.ts'
 import { newEnglishPage } from '../../deepseek-harness/apps/web/tests/support.ts'
 import { attachPdfBrowserCoverage } from './browser-coverage.ts'
-import type { DshTranslationLlm } from '../src/host/translation-model.ts'
+import type { DshTranslationLlm } from '../src/adapters/host/dsh/translation-model.ts'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
@@ -133,6 +133,20 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     await expect.poll(() => scroller.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(200)
     const vertical = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Vertical scrollbar' })
     const horizontal = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Horizontal scrollbar' })
+    const [bodyBounds, contentBounds, sidebarBounds, scrollBounds, verticalBounds] = await Promise.all([
+      reader.locator('.dsh-pdf-body').boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
+      sidebar.boundingBox(), scroller.boundingBox(), vertical.boundingBox(),
+    ])
+    expect(bodyBounds).not.toBeNull()
+    expect(contentBounds).not.toBeNull()
+    expect(sidebarBounds).not.toBeNull()
+    expect(scrollBounds).not.toBeNull()
+    expect(verticalBounds).not.toBeNull()
+    expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('absolute')
+    expect(Math.abs(contentBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(sidebarBounds!.x).toBeGreaterThan(contentBounds!.x)
+    expect(sidebarBounds!.x + sidebarBounds!.width).toBeLessThan(contentBounds!.x + contentBounds!.width)
+    expect(Math.abs(verticalBounds!.x - scrollBounds!.x - 2)).toBeLessThanOrEqual(1)
     await vertical.focus()
     await page.keyboard.press('End')
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(200)
@@ -167,12 +181,12 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
       bubbles: true, cancelable: true, deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_PAGE,
     })))
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(100)
-    const verticalBounds = (await vertical.boundingBox())!
-    await page.mouse.move(verticalBounds.x + verticalBounds.width / 2, verticalBounds.y + 10)
+    const verticalDragBounds = (await vertical.boundingBox())!
+    await page.mouse.move(verticalDragBounds.x + verticalDragBounds.width / 2, verticalDragBounds.y + 10)
     await page.mouse.down()
     await expect.poll(() => reader.locator('.dsh-pdf-content .dsh-pdf-scrollbars.is-dragging').count()).toBe(1)
-    await page.mouse.move(verticalBounds.x + verticalBounds.width / 2,
-      verticalBounds.y + verticalBounds.height - 10, { steps: 5 })
+    await page.mouse.move(verticalDragBounds.x + verticalDragBounds.width / 2,
+      verticalDragBounds.y + verticalDragBounds.height - 10, { steps: 5 })
     await page.mouse.up()
     await expect.poll(() => reader.locator('.dsh-pdf-content .dsh-pdf-scrollbars.is-dragging').count()).toBe(0)
     // Pinch-to-zoom follows the mounted page under the pointer and commits a

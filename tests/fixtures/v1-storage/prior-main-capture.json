@@ -1,0 +1,157 @@
+{
+  "origin": {
+    "kind": "pre-refactor-git-main-source",
+    "commit": "643a7c9512ff615d9d718b70b1f97c617b2b9abd",
+    "sourceSha256": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48"
+  },
+  "sessionId": "v1-prior-main-capture",
+  "path": "/fixtures/prior-main.pdf",
+  "address": "dsh-resource://file/session/v1-prior-main-capture/%2Ffixtures%2Fprior-main.pdf",
+  "expected": {
+    "activeAnnotationIds": [
+      "old-main-note-a"
+    ],
+    "redoAnnotationIds": [
+      "old-main-note-a",
+      "old-main-note-b"
+    ],
+    "revision": 3,
+    "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+    "position": {
+      "page": 1,
+      "x": 40,
+      "y": 300,
+      "scale": 1.2,
+      "fit": "custom",
+      "viewportAnchor": {
+        "x": 0.25,
+        "y": 0.5
+      }
+    }
+  },
+  "domains": {
+    "drafts": [
+      {
+        "key": "base_c99dd7d7ca65c9c9fec1e3661c909a95948c05ff1d88a645d55e0f14aede2e5a_a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+        "record": {
+          "format": 1,
+          "sessionId": "v1-prior-main-capture",
+          "path": "/fixtures/prior-main.pdf",
+          "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+          "sourceVersion": "prior-main-source-1",
+          "contentVersion": "3fd5e5f2-b501-444f-91fe-7dec8773ac56",
+          "revision": 1,
+          "groups": [],
+          "groupDates": [],
+          "cursor": 0,
+          "original": "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1szIDAgUl0+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCAzMDAgNDAwXT4+CmVuZG9iagp0cmFpbGVyCjw8L1Jvb3QgMSAwIFI+PgolJUVPRgo="
+        }
+      },
+      {
+        "key": "c99dd7d7ca65c9c9fec1e3661c909a95948c05ff1d88a645d55e0f14aede2e5a",
+        "record": {
+          "format": 1,
+          "sessionId": "v1-prior-main-capture",
+          "path": "/fixtures/prior-main.pdf",
+          "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+          "sourceVersion": "prior-main-source-1",
+          "contentVersion": "3fd5e5f2-b501-444f-91fe-7dec8773ac56",
+          "revision": 3,
+          "groups": [
+            [
+              {
+                "type": "add",
+                "annotation": {
+                  "id": "old-main-note-a",
+                  "page": 1,
+                  "subtype": "Text",
+                  "rect": [
+                    40,
+                    40,
+                    60,
+                    60
+                  ],
+                  "contents": "old-main-note-a"
+                }
+              }
+            ],
+            [
+              {
+                "type": "add",
+                "annotation": {
+                  "id": "old-main-note-b",
+                  "page": 1,
+                  "subtype": "Text",
+                  "rect": [
+                    80,
+                    40,
+                    100,
+                    60
+                  ],
+                  "contents": "old-main-note-b"
+                }
+              }
+            ]
+          ],
+          "groupDates": [
+            "2026-10-18T16:48:39.536Z",
+            "2026-10-18T16:48:39.537Z"
+          ],
+          "cursor": 1,
+          "baseKey": "base_c99dd7d7ca65c9c9fec1e3661c909a95948c05ff1d88a645d55e0f14aede2e5a_a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48"
+        }
+      }
+    ],
+    "bookmarks": [
+      {
+        "key": "01ca5485d16859104d65f955e6de6cebcbf1da7d0d458b5b2d97d52c6ce1d3db",
+        "record": {
+          "format": 1,
+          "path": "/fixtures/prior-main.pdf",
+          "entries": [
+            {
+              "id": "ed2c9c49-834c-4169-9cff-a8f457db2feb",
+              "title": "Previous main bookmark",
+              "position": {
+                "page": 1,
+                "x": 40,
+                "y": 300,
+                "scale": 1.2,
+                "fit": "custom",
+                "viewportAnchor": {
+                  "x": 0.25,
+                  "y": 0.5
+                }
+              },
+              "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+              "createdAt": "2026-10-18T16:48:39.538Z",
+              "updatedAt": "2026-10-18T16:48:39.538Z"
+            }
+          ]
+        }
+      }
+    ],
+    "positions": [
+      {
+        "key": "01ca5485d16859104d65f955e6de6cebcbf1da7d0d458b5b2d97d52c6ce1d3db",
+        "record": {
+          "format": 1,
+          "path": "/fixtures/prior-main.pdf",
+          "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+          "position": {
+            "page": 1,
+            "x": 40,
+            "y": 300,
+            "scale": 1.2,
+            "fit": "custom",
+            "viewportAnchor": {
+              "x": 0.25,
+              "y": 0.5
+            }
+          },
+          "updatedAt": "2026-10-18T16:48:39.538Z"
+        }
+      }
+    ]
+  }
+}

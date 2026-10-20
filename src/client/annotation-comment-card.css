@@ -14,18 +14,47 @@
   color: var(--pdf-text); pointer-events: auto;
 }
 .dsh-pdf-page-comment-card[data-visible="false"] { visibility: hidden; }
+.dsh-pdf-page-comment-card[data-dragging="true"] { cursor: grabbing; user-select: none; -webkit-user-select: none; }
 .dsh-pdf-page-comment-card:focus-within { border-color: color-mix(in srgb, var(--pdf-accent) 38%, var(--pdf-glass-edge)); }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor {
   display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; border: 0;
 }
+.dsh-pdf-comment-thread { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; }
+.dsh-pdf-comment-message { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 0; border-top: 1px solid var(--pdf-border); }
+.dsh-pdf-comment-message:first-child { border-top: 0; }
+.dsh-pdf-comment-message-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 3px 8px; color: var(--pdf-muted); font-size: 11px; }
+.dsh-pdf-comment-message-heading strong { color: var(--pdf-text); font-weight: 650; }
+.dsh-pdf-comment-message-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.dsh-pdf-comment-format-warning { margin: 0; color: var(--pdf-muted); font-size: 11px; line-height: 1.4; }
+.dsh-pdf-comment-message-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-message-actions button {
+  min-height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--pdf-muted); font-size: 11px;
+}
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-message-actions button:hover { color: var(--pdf-text); }
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-add,
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-cancel {
+  min-height: 30px; padding: 4px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--pdf-muted);
+}
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-add { color: var(--pdf-text); }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header,
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title,
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions {
   display: flex; align-items: center; gap: 8px; min-width: 0;
 }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header { justify-content: space-between; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; font-size: 12px; font-weight: 650; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; font-size: 12px; font-weight: 650; cursor: grab; user-select: none; -webkit-user-select: none; }
+.dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-title,
+.dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-move { cursor: grabbing; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title svg { display: block; width: 15px; height: 15px; color: var(--pdf-muted); }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header-actions { display: flex; align-items: center; gap: 2px; }
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move {
+  display: grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0;
+  border: 0; border-radius: 8px; background: transparent; color: var(--pdf-muted); cursor: grab; touch-action: none;
+}
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move:hover,
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move:focus-visible { background: var(--dsw-alias-interactive-bg-hover); color: var(--pdf-text); }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move svg { display: block; width: 15px; height: 15px; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 1px; }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-close {
   display: grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0;
   border: 0; border-radius: 8px; background: transparent; color: var(--pdf-muted);
@@ -50,6 +79,7 @@
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions {
   justify-content: flex-end; gap: 5px; padding-top: 8px; border-top: 1px solid var(--pdf-border);
 }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions:has(.dsh-pdf-comment-editor-add) { justify-content: flex-start; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions .dsh-pdf-comment-editor-color {
   display: grid; place-items: center; flex: none; width: 30px; height: 30px; margin-right: auto;
   border-radius: 8px; cursor: pointer;

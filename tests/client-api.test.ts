@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createPdfApi } from '../src/client/api.ts'
+import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 
 test('accepts native snapshots without transferring PDF bytes or inventing a MediaBox', async () => {
   const bytesHash = `sha256:${createHash('sha256').update('native snapshot').digest('hex')}`

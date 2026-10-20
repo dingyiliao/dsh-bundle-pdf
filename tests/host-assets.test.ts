@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
-import { PDF_ASSET_PREFIX, registerAssets } from '../src/host/assets.ts'
+import { PDF_ASSET_PREFIX, registerAssets } from '../src/adapters/host/dsh/assets.ts'
 
 type AssetRoute = Parameters<Parameters<typeof registerAssets>[0]['connection']['fetch']['register']>[0]
 

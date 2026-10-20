@@ -7,7 +7,7 @@ import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/engine/frami
 import { NativeWorker } from '../src/engine/native-worker.ts'
 import { NativeTestSubprocess, nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { ByteCache } from '../src/engine/byte-cache.ts'
+import { ByteCache } from '../src/shared/cache/index.ts'
 import { encodePng } from '../src/engine/png.ts'
 import { inflateSync } from 'node:zlib'
 

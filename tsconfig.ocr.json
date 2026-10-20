@@ -10,6 +10,7 @@
     "types": ["node"],
     "declaration": true,
     "emitDeclarationOnly": true,
+    "rewriteRelativeImportExtensions": true,
     "rootDir": "src",
     "outDir": "dist/types"
   },

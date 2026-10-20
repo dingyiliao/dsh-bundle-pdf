@@ -1,0 +1,19 @@
+{
+  "fixtureOrigin": "Synthetic committed-format V1 inline draft based on e56c28f; not a published-release or user-data capture",
+  "key": "8ed4c2ef8bc26dd1fbef8d8c7ff94605643ad3f423fb0085c7dc6573e30ba07e",
+  "record": {
+    "format": 1,
+    "sessionId": "v1-storage-compat",
+    "path": "/fixtures/v1-storage.pdf",
+    "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
+    "sourceVersion": "fs-fixture-v1",
+    "contentVersion": "v1-inline-content",
+    "original": "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1szIDAgUl0+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCAzMDAgNDAwXT4+CmVuZG9iagp0cmFpbGVyCjw8L1Jvb3QgMSAwIFI+PgolJUVPRgo=",
+    "revision": 7,
+    "groups": [
+      [{ "type": "add", "annotation": { "id": "v1-note-a", "page": 1, "subtype": "Text", "rect": [40, 40, 60, 60], "contents": "Synthetic V1 note A" } }],
+      [{ "type": "add", "annotation": { "id": "v1-note-b", "page": 1, "subtype": "Text", "rect": [80, 80, 100, 100], "contents": "Synthetic V1 note B" } }]
+    ],
+    "cursor": 1
+  }
+}

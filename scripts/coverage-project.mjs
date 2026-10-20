@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { nodeTestFiles } from './node-test-files.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const major = Number(process.versions.node.split('.')[0])
@@ -13,8 +14,12 @@ if (major < 26 || major === 26 && minor < 7) {
   throw new Error('Project coverage needs Node 26.7+ for --test-coverage-include-all.')
 }
 
+const bundledChromium = chromium.executablePath()
+const macChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const browserExecutable = process.env.DSH_PDF_BROWSER_EXECUTABLE
-  ?? process.env.PDF_BENCH_CHROMIUM ?? chromium.executablePath()
+  ?? process.env.PDF_BENCH_CHROMIUM
+  ?? (existsSync(bundledChromium) ? bundledChromium
+    : process.platform === 'darwin' && existsSync(macChrome) ? macChrome : bundledChromium)
 if (!existsSync(browserExecutable)) {
   throw new Error(`Browser coverage needs Chromium at ${browserExecutable}. Install Playwright Chromium or set DSH_PDF_BROWSER_EXECUTABLE.`)
 }
@@ -42,7 +47,8 @@ async function filesBelow(directory) {
 async function projectFingerprint() {
   const paths = [...await filesBelow('src'), ...await filesBelow('tests'), ...await filesBelow('scripts'),
     'native/pdfium-worker.cpp', 'package.json', 'package-lock.json', 'tsconfig.json',
-    'tsconfig.test.json', 'vitest.web.config.ts', 'cordis.patch.yml'].sort()
+    'tsconfig.test.json', 'tsconfig.ocr.json', 'tsconfig.image-host.json',
+    'vitest.web.config.ts', 'cordis.patch.yml'].sort()
   const hash = createHash('sha256')
   for (const path of paths) {
     hash.update(path)
@@ -62,10 +68,10 @@ async function verifyFingerprint() {
 
 /** Node can emit JS line numbers under a TS source path unless source maps are enabled. */
 async function verifyNodeSourceMapAlignment() {
-  const source = await readFile(join(root, 'src/host/local-files.ts'), 'utf8')
+  const source = await readFile(join(root, 'src/adapters/host/filesystem/local-files.ts'), 'utf8')
   const declaration = source.split(/\r?\n/).findIndex(line => /^\s*async function assertExpected\(/.test(line)) + 1
   const lcov = await readFile(nodeLcov, 'utf8')
-  const section = lcov.split(/(?=^SF:)/m).find(record => /^SF:(?:.*\/)?src\/host\/local-files\.ts$/m.test(record))
+  const section = lcov.split(/(?=^SF:)/m).find(record => /^SF:(?:.*\/)?src\/adapters\/host\/filesystem\/local-files\.ts$/m.test(record))
   const reported = Number(section?.match(/^FN:(\d+),assertExpected$/m)?.[1])
   if (!declaration || !section || reported !== declaration) {
     throw new Error(`Node LCOV is not mapped to TypeScript source lines (assertExpected: source ${declaration}, LCOV ${reported || 'missing'}).`)
@@ -88,14 +94,14 @@ let coverageError
 try {
 await run('source-mapped coverage build', ['scripts/build.mjs'], { DSH_PDF_BROWSER_COVERAGE: '1' })
 await verifyFingerprint()
-const nodeTests = (await readdir(join(root, 'tests'))).filter(name => name.endsWith('.test.ts')).sort()
+const nodeTests = await nodeTestFiles(root)
 await run('Node/Host tests with all source files in the denominator', [
   '--enable-source-maps', '--experimental-test-coverage', '--test-coverage-include-all',
   '--test-coverage-include=src/**/*.ts', '--test-coverage-include=src/**/*.tsx',
   '--test-reporter=dot', '--test-reporter-destination=stdout',
   '--test-reporter=lcov', `--test-reporter-destination=${nodeLcov}`,
   '--import', 'tsx', '--test', '--test-concurrency=1',
-  ...nodeTests.map(name => `tests/${name}`),
+  ...nodeTests,
 ])
 await verifyFingerprint()
 await verifyNodeSourceMapAlignment()

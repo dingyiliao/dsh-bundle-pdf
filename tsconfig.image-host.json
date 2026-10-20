@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.ocr.json",
+  "include": ["src/entrypoints/image-understanding-host.ts", "src/host/image-understanding-plugin.ts"]
+}

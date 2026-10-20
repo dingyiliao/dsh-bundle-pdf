@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { persistTranslationLanguage } from '../src/client/persist-translation-language.ts'
+import { persistTranslationLanguage } from '../src/adapters/client/dsh/persist-translation-language.ts'
 
 test('translation target persistence returns the form decision and reports a rejected write', async () => {
   assert.equal(await persistTranslationLanguage(async () => true), true)

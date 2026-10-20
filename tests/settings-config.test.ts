@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Config, readConfig, type HostConfig } from '../src/host/config.ts'
-import { createHostTranslations, type TranslationHostContext } from '../src/host/translations.ts'
+import { Config, readConfig, type HostConfig } from '../src/entrypoints/reader-host-config.ts'
+import { createHostTranslations, type TranslationHostContext } from '../src/adapters/host/dsh/translations.ts'
 import { defaultSettings, translationTargetLanguages } from '../src/shared/contracts.ts'
 import { TranslationError } from '../src/translation/index.ts'
 

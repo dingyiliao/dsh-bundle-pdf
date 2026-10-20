@@ -7,6 +7,57 @@ on:
 permissions:
   contents: read
 jobs:
+  web-and-project-coverage:
+    # The Node 24 matrix below proves platform packaging. This lane also
+    # exercises the real DSH Web composition and all project-owned source.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dsh-bundle-pdf
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          # Keep the adjacent test host reproducible; bump deliberately when
+          # adopting a new DSH contract.
+          ref: 687f282e8625c6b8d11ff58211a90524be2e4317
+          path: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.7.0
+      - name: Prepare pinned DSH test host
+        working-directory: deepseek-harness
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build:artifacts
+      - name: Install PDF bundle and pinned native SDK
+        working-directory: dsh-bundle-pdf
+        run: |
+          npm ci
+          npm run native:build
+      - name: Install Chromium with system dependencies
+        working-directory: dsh-bundle-pdf
+        run: npx playwright install --with-deps chromium
+      - name: Browser interaction tests
+        working-directory: dsh-bundle-pdf
+        env:
+          DSH_SNAPSHOT: replay
+          DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
+        run: npm run test:web
+      - name: Node, browser, and native project coverage
+        working-directory: dsh-bundle-pdf
+        env:
+          DSH_SNAPSHOT: replay
+          DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
+        run: npm run test:coverage:project
+      - name: Upload project coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-pdf-project-coverage
+          path: dsh-bundle-pdf/.test-output/project-coverage-*/
+          if-no-files-found: warn
   native:
     strategy:
       fail-fast: false

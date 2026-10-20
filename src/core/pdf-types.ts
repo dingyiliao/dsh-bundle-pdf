@@ -15,6 +15,10 @@ export interface PdfPageInfo {
 
 export interface PdfAnnotation {
   id: string
+  /** ID of the annotation referenced by PDF /IRT, when it is on the same page. */
+  replyToId?: string
+  /** PDF /RT relation. A missing /RT on a reply means an ordinary reply (R). */
+  replyType?: 'R' | 'Group'
   /** Host projection identity for multiple page entries referencing one PDF dictionary. */
   sourceObjectId?: string
   /** Host projection identity of an associated popup annotation, when present. */
@@ -29,6 +33,8 @@ export interface PdfAnnotation {
   color?: PdfColor
   opacity?: number
   contents?: string
+  /** Imported PDF /RC rich text exists; editing Contents will convert it to plain text. */
+  hasRichText?: true
   author?: string
   /** Raw PDF date strings, absent when the source omits them. */
   createdAt?: string
@@ -53,6 +59,8 @@ export interface PdfDocumentInfo {
 export interface NewPdfAnnotation {
   /** A caller-generated unique ID persisted in the annotation dictionary. */
   id: string
+  /** Add a Text reply to this annotation via PDF /IRT and /RT /R. */
+  replyToId?: string
   page: number
   subtype: EditableAnnotationType
   rect: PdfRect

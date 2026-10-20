@@ -40,16 +40,18 @@ async function emittedSourceLines(path) {
   const mapped = new Set(decode(map.mappings).flat().filter(segment => segment.length >= 4)
     .map(segment => segment[2] + 1))
   const sourceLines = source.split(/\r?\n/)
-  // Static imports are compile-time module linkage in the shipped esbuild
-  // bundles, not independently executable Client statements. transpileModule
-  // retains ESM imports and maps their source lines, but the actual bundle
-  // eliminates that syntax, so no browser V8 range can hit it. Keep this
-  // exclusion explicit and auditable instead of treating it as missed code.
+  // Static imports and re-exports from another module are ESM linkage in the
+  // shipped esbuild bundles, not independently executable source statements.
+  // transpileModule retains and maps that syntax even when the actual bundle
+  // eliminates it or attributes initialization to a neighboring line. Keep
+  // this exclusion explicit and auditable; local exports with a value or an
+  // expression are still measured as runtime code.
   const tree = ts.createSourceFile(path, source, ts.ScriptTarget.ES2022, true,
     path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const linkage = new Set()
   for (const statement of tree.statements) {
-    if (!ts.isImportDeclaration(statement)) continue
+    if (!ts.isImportDeclaration(statement)
+      && !(ts.isExportDeclaration(statement) && statement.moduleSpecifier)) continue
     const first = tree.getLineAndCharacterOfPosition(statement.getStart(tree)).line + 1
     const last = tree.getLineAndCharacterOfPosition(statement.end).line + 1
     for (let line = first; line <= last; line++) {
