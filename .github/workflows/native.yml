@@ -54,6 +54,13 @@ jobs:
           DSH_SNAPSHOT: replay
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
         run: npm run test:web
+      - name: Install LLVM tools for native coverage
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes clang llvm
+          clang++ --version
+          llvm-profdata --version
       - name: Node, browser, and native project coverage
         working-directory: dsh-bundle-pdf
         env:
