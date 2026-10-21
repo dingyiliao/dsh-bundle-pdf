@@ -16,6 +16,7 @@ import {
 import { expandOwningTurnProcess, newEnglishPage, openSettings, saveFailureShot } from '../../deepseek-harness/apps/web/tests/support.ts'
 import { attachPdfBrowserCoverage } from './browser-coverage.ts'
 import type { SessionOcrLlm } from '../src/adapters/host/dsh/ocr-session-llm.ts'
+import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { readPagePresentationMeta } from '../src/adapters/host/dsh/pdf-evidence-meta.ts'
 import { evidenceSha256 } from '../src/modules/evidence/index.ts'
 import { joinPageText } from '../src/shared/page-text.ts'
@@ -1493,7 +1494,15 @@ it('reads, edits, saves and reopens an external PDF /IRT comment thread', async 
       .getByRole('button', { name: 'Save', exact: true })
     await expect.poll(() => save.isEnabled()).toBe(true)
     await save.click()
+    // Disabled also means "saving". Wait for the completed transaction before
+    // reading the on-disk PDF or reloading the browser.
+    await reader.locator('[data-status-id="save"][data-kind="saved"]').waitFor({ state: 'visible' })
     await expect.poll(() => save.isDisabled()).toBe(true)
+
+    const savedDocument = await loadPdfDocument(await readFile(join(scaffold.workspaceCwd, filename)))
+    const savedPosition = savedDocument.annotations.find(annotation => annotation.subtype === 'Highlight')?.commentPosition
+    expect(savedPosition?.length).toBe(2)
+    expect(savedPosition?.every(Number.isFinite)).toBe(true)
 
     // Reopen from disk: the external root, nested reply relation, edit and
     // deletion all survive a real saved-file round trip. A full client reload
@@ -1507,10 +1516,14 @@ it('reads, edits, saves and reopens an external PDF /IRT comment thread', async 
       .waitFor({ state: 'visible', timeout: 20_000 })
     await chooseZoom(reader, '100%')
     await openThread()
-    const cardAfterReopen = await card.boundingBox()
-    expect(cardAfterReopen).not.toBeNull()
-    expect(Math.abs(cardAfterReopen!.x - cardAfterMove!.x)).toBeLessThanOrEqual(2)
-    expect(Math.abs(cardAfterReopen!.y - cardAfterMove!.y)).toBeLessThanOrEqual(2)
+    await expect.poll(async () => {
+      const reopened = await card.boundingBox()
+      return reopened && Math.abs(reopened.x - cardAfterMove!.x)
+    }, { timeout: 5_000 }).toBeLessThanOrEqual(2)
+    await expect.poll(async () => {
+      const reopened = await card.boundingBox()
+      return reopened && Math.abs(reopened.y - cardAfterMove!.y)
+    }, { timeout: 5_000 }).toBeLessThanOrEqual(2)
     expect(await card.locator('.dsh-pdf-comment-message').count()).toBe(2)
     expect(await card.getByText('Alice asks about the method', { exact: true }).count()).toBe(1)
     expect(await card.getByText('Bob revised', { exact: true }).count()).toBe(1)
