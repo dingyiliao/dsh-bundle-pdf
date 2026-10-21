@@ -125,7 +125,9 @@ DSH 的 `presentationMeta(args, value)` 已用于有界 `tool/result.meta`；PDF
 
 ## 第二阶段：可控标注与保存
 
-`pdf_annotate` 仅支持 `Highlight`、`Underline`、`StrikeOut`、`Text`。模型先用 `pdf_read_page` 获取原文；文字标记以 `{ kind: 'pdf-text', page, quote }` 指定当前物理页上的**完整且唯一**的精确引文，Host 从同版本 PDFium 字形求出四边形，不接受模型估算的矩形。独立 `Text` 便签仍以 `{ kind: 'pdf-region', page, rectPdf }` 指定位置，且必须有非空评论。工具还需明确的 `documentId`、预期 `revision` 和可选 RGB 颜色/评论；Host 校验会话、页界、源文件摘要与修订后，直接作为一个可撤销批次写入持久草稿，返回新修订与 `dirty: true`，**不修改原 PDF 文件**。Reader 和模型共用这个工作副本；Reader 通过 `pdf.watch` 的轻量修订监听在模型写入后刷新。现有 `refId` 只有近似几何，不能安全写入；若作为目标传入会被拒绝。没有原文文字层、字形坐标或引文不唯一时拒绝写入，而不是猜测位置。
+`pdf_annotate` 仅支持 `Highlight`、`Underline`、`StrikeOut`、`Text`。模型先用 `pdf_read_page` 获取原文；单页短标记仍可用 `{ kind: 'pdf-text', page, quote }` 指定**完整且唯一**的精确引文。跨行或跨页连续范围改用 `{ kind: 'pdf-text-range', start: { page, quote }, end: { page, quote } }`：两端引文必须分别在所属物理页唯一，Host 基于同版本的完整页文字补齐之间的内容、从 PDFium 字形生成每页四边形，最多跨 10 页、8,000 UTF-16 字符；中间页缺文字层、缺坐标或出现明显的跨栏阅读顺序回跳时整体拒绝，不暗中漏页。跨页范围实际产生每页一条标注，作为**一次**草稿操作写入和撤销；评论只附着首页标注。工具结果的 `coverage.pages` 返回每页实际覆盖的文字、偏移、标注 ID 和新增/已存在状态，模型应核对后再宣称完成。Host 以字形几何检查同类标注：完全相同的范围复用旧标注、只补写缺失页；若对旧标注请求不同的颜色或评论，则拒绝并提示改用 `pdf_annotation_update`；部分重叠也整体拒绝并给出已有 ID。模型可用 `pdf_page_annotations` 检查后重新定位。此检查只比较位置和类型，不仅凭相同文字判断。
+
+独立 `Text` 便签仍以 `{ kind: 'pdf-region', page, rectPdf }` 指定位置，且必须有非空评论；文字标记不接受模型猜测的矩形。工具还需明确的 `documentId`、预期 `revision` 和可选 RGB 颜色/评论；Host 校验会话、页界、源文件摘要与修订后写入持久草稿，**不修改原 PDF 文件**。Reader 和模型共用这个工作副本；Reader 通过 `pdf.watch` 的轻量修订监听在模型写入后刷新。现有 `refId` 只有近似几何，不能安全写入；若作为目标传入会被拒绝。没有原文文字层、字形坐标或引文不唯一时拒绝写入，而不是猜测位置。
 
 `pdf_annotate` 不再有 `preview` / `commit` 双阶段，也不接受 `confirmed: true`。编辑草稿与用户手动标注同属可撤销的工作副本操作；若与 UI 并发编辑，修订或源文件校验失败时拒绝写入，模型应先调用 `pdf_status` 获取新修订再决定是否重试。用户可以在 Reader 查看、撤销或继续修改草稿。
 

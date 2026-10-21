@@ -3,19 +3,55 @@ import type { NativeTextContent } from '../../shared/native.js'
 import { joinPositionedText } from '../../shared/page-text.js'
 
 export interface TextTargetGeometry { rect: PdfRect; quadPoints: number[] }
+export interface TextTargetRange extends TextTargetGeometry {
+  startUtf16: number
+  endUtf16: number
+  text: string
+}
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
-/** Resolve an exact, unique quote to PDF-space glyph geometry, never to a guessed page rectangle. */
-export function locateTextTarget(content: NativeTextContent, quote: string): TextTargetGeometry {
-  const starts: number[] = []
-  const text = joinPositionedText(content.items, starts)
+function uniqueOffset(text: string, quote: string): number {
   const start = text.indexOf(quote)
   if (start < 0) fail('pdf/text-not-found', 'The exact quoted text is not on this page; read the page and copy its wording')
   if (text.indexOf(quote, start + 1) >= 0) {
     fail('pdf/ambiguous-text-target', 'The quote occurs more than once on this page; provide a longer unique quote')
   }
-  const end = start + quote.length
+  return start
+}
+
+/** Resolve bounded start/end anchors against the same joined text exposed by pdf_read_page. */
+export function locateTextRange(content: NativeTextContent, startQuote?: string,
+  endQuote?: string, requireReadingOrder = false): TextTargetRange {
+  const starts: number[] = []
+  const text = joinPositionedText(content.items, starts)
+  const start = startQuote === undefined ? text.search(/\S/u) : uniqueOffset(text, startQuote)
+  const lastText = text.search(/\s*$/u)
+  const endOffset = endQuote === undefined ? lastText : uniqueOffset(text, endQuote) + endQuote.length
+  const end = endOffset
+  if (start < 0 || end <= start || (endQuote !== undefined && uniqueOffset(text, endQuote) < start)) {
+    fail('pdf/invalid-text-range', 'The text range is empty or its end anchor precedes its start anchor')
+  }
+  if (end - start > 8000) fail('pdf/text-range-too-large', 'Text range exceeds 8000 UTF-16 characters; mark it in smaller ranges')
+  if (requireReadingOrder) {
+    // A large return to the top at a different x position is characteristic of
+    // column or layout reordering. Do not silently mark unrelated intervening text.
+    let previous: NativeTextContent['items'][number] | undefined
+    for (let index = 0; index < content.items.length; index++) {
+      const item = content.items[index]!
+      const runStart = starts[index]!, runEnd = runStart + item.str.length
+      if (runStart >= end || runEnd <= start || !item.str.trim()) continue
+      if (previous) {
+        const rise = item.transform[5] - previous.transform[5]
+        const shift = Math.abs(item.transform[4] - previous.transform[4])
+        const lineHeight = Math.max(8, previous.height, item.height)
+        if (rise > lineHeight * 3 && shift > lineHeight * 3) {
+          fail('pdf/ambiguous-reading-order', 'The selected page text jumps to another column or layout region; use separate precise marks')
+        }
+      }
+      previous = item
+    }
+  }
   const quads: number[] = []
   const xs: number[] = [], ys: number[] = []
   for (let index = 0; index < content.items.length; index++) {
@@ -62,9 +98,17 @@ export function locateTextTarget(content: NativeTextContent, quote: string): Tex
       x1 + vx * descent * height, y1 + vy * descent * height]
     const quad = [top[0]!, top[1]!, top[2]!, top[3]!, bottom[0]!, bottom[1]!, bottom[2]!, bottom[3]!]
     quads.push(...quad)
+    if (quads.length > 32000) fail('pdf/text-range-too-large', 'Text range has too many positioned glyph runs; mark it in smaller ranges')
     xs.push(quad[0], quad[2], quad[4], quad[6])
     ys.push(quad[1], quad[3], quad[5], quad[7])
   }
   if (!quads.length) fail('pdf/text-geometry-unavailable', 'No positioned glyphs matched the quote; no annotation was created')
-  return { rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], quadPoints: quads }
+  return { rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], quadPoints: quads,
+    startUtf16: start, endUtf16: end, text: text.slice(start, end) }
+}
+
+/** Resolve an exact, unique quote to PDF-space glyph geometry, never to a guessed page rectangle. */
+export function locateTextTarget(content: NativeTextContent, quote: string): TextTargetGeometry {
+  const { rect, quadPoints } = locateTextRange(content, quote, quote)
+  return { rect, quadPoints }
 }

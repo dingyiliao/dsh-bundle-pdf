@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { evidenceSha256 } from '../evidence/index.js'
 import type { AgentPageReadPort } from '../evidence/index.js'
+import { annotationOverlaps } from './annotation-overlap.js'
+import { buildAnnotationPlans } from './annotation-plan.js'
 import { buildSaveReview } from './save-review.js'
-import { locateTextTarget } from './text-target.js'
-import type { PdfAnnotation, PdfAnnotationOperation, PdfColor, PdfRect } from '../../core/pdf-types.js'
+import type { PdfAnnotation, PdfAnnotationOperation, PdfColor } from '../../core/pdf-types.js'
 import type { HostWorkspaceSnapshot, WorkingCopyAgent } from '../working-copy/index.js'
 
 const coordinate = z.number().finite()
@@ -14,6 +14,8 @@ const documentId = z.string().min(1).max(512)
 const annotationId = z.string().min(1).max(512)
 const revision = z.number().int().nonnegative()
 const editableMarkup = new Set(['Highlight', 'Underline', 'StrikeOut'])
+const textAnchor = z.object({ page: z.number().int().min(1).max(100_000),
+  quote: z.string().min(2).max(512) }).strict()
 
 export const modelAnnotationSchema = z.object({
   documentId, expectedRevision: revision,
@@ -22,6 +24,7 @@ export const modelAnnotationSchema = z.object({
     z.object({ kind: z.literal('pdf-region'), page: z.number().int().min(1).max(100_000), rectPdf: rect }).strict(),
     z.object({ kind: z.literal('pdf-text'), page: z.number().int().min(1).max(100_000),
       quote: z.string().min(2).max(512) }).strict(),
+    z.object({ kind: z.literal('pdf-text-range'), start: textAnchor, end: textAnchor }).strict(),
     z.object({ kind: z.literal('reference'), refId: z.string().min(1).max(128) }).strict(),
   ]),
   color: color.optional(), comment: z.string().max(2000).optional(),
@@ -70,47 +73,6 @@ function editableAnnotation(snapshot: HostWorkspaceSnapshot, id: string): PdfAnn
   return annotation
 }
 
-async function annotationOperation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
-  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<Extract<PdfAnnotationOperation, { type: 'add' }>> {
-  if (input.subtype === 'Text' && !input.comment?.trim()) fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
-  if (input.target.kind === 'reference') {
-    // References have approximate glyph-origin boxes, not verified PDF geometry.
-    return fail('pdf/approximate-target', 'This text reference does not have verified PDF geometry; select an explicit region')
-  }
-  const { page } = input.target
-  const bounds = snapshot.document.pages[page - 1]?.cropBox
-  if (!bounds) fail('pdf/invalid-page', 'Annotation page is outside this document')
-  if (input.target.kind === 'pdf-region' && input.subtype !== 'Text') {
-    fail('pdf/unverified-region', 'Text markup requires an exact pdf-text quote; guessed rectangles are not safe annotation targets')
-  }
-  if (input.target.kind === 'pdf-text' && input.subtype === 'Text') {
-    fail('pdf/invalid-target', 'A standalone text note requires a PDF position, not a quoted text span')
-  }
-  let rectPdf: PdfRect
-  let quadPoints: number[] | undefined
-  if (input.target.kind === 'pdf-text') {
-    if (!pages) fail('pdf/text-geometry-unavailable', 'The PDF text geometry reader is unavailable')
-    const read = await pages.readPageText(sessionId, snapshot.id, page, signal)
-    if (read.snapshot.contentVersion !== snapshot.contentVersion || read.snapshot.revision !== snapshot.revision) {
-      fail('pdf/stale-revision', 'The PDF changed while locating the quoted text; read its status again')
-    }
-    const geometry = locateTextTarget(read.content, input.target.quote)
-    rectPdf = geometry.rect
-    quadPoints = geometry.quadPoints
-  } else rectPdf = input.target.rectPdf
-  const [left, bottom, right, top] = rectPdf
-  if (!(right > left && top > bottom) || left < bounds[0] || bottom < bounds[1]
-    || right > bounds[2] || top > bounds[3]) {
-    fail('pdf/invalid-region', 'Annotation rectangle must lie inside the PDF page crop box')
-  }
-  return { type: 'add', annotation: {
-    id: `ai_${randomUUID()}`, page, subtype: input.subtype, rect: [...rectPdf] as PdfRect,
-    ...(quadPoints ? { quadPoints } : {}),
-    ...(input.color ? { color: [...input.color] as PdfColor } : {}),
-    ...(input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
-  } }
-}
-
 /** Model edits join the same durable, undoable working copy used by the Reader. */
 export function createModelWriteService(workspaces: ModelWritePort, pages?: AgentPageReadPort) {
   let disposed = false
@@ -127,13 +89,13 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
   }
 
   async function applyDraft(sessionId: string, snapshot: HostWorkspaceSnapshot, expectedRevision: number,
-    operation: PdfAnnotationOperation, agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
+    operations: PdfAnnotationOperation[], agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
     const sourceDigest = await currentSource(sessionId, snapshot, agent, signal)
     assertOpen()
     // The working-copy queue rechecks revision and source hash against UI edits.
     const value = await workspaces.execute(sessionId, { action: 'change', sessionId,
       id: snapshot.id, revision: expectedRevision,
-      expectedSourceHash: sourceDigest, operations: [operation] }, agent, signal)
+      expectedSourceHash: sourceDigest, operations }, agent, signal)
     if (!isSnapshot(value)) fail('pdf/invalid-response', 'PDF change did not return a working copy')
     return value
   }
@@ -144,11 +106,51 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     const input = modelAnnotationSchema.parse(raw)
     const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
     checkRevision(snapshot, input.expectedRevision)
-    const operation = await annotationOperation(snapshot, input, sessionId, pages, signal)
-    const value = await applyDraft(sessionId, snapshot, input.expectedRevision, operation, agent, signal)
-    return { status: 'updated' as const, documentId: value.id, annotationId: operation.annotation.id,
-      resolvedTarget: { page: operation.annotation.page, rectPdf: operation.annotation.rect,
-        ...(input.target.kind === 'pdf-text' ? { quote: input.target.quote } : {}) },
+    const plans = await buildAnnotationPlans(snapshot, input, sessionId, pages, signal)
+    const resolved = plans.map(plan => {
+      const overlaps = annotationOverlaps(plan.operation.annotation, snapshot.document.annotations)
+      const partial = overlaps.filter(item => item.kind === 'partial')
+      if (partial.length) {
+        fail('pdf/annotation-overlap', `No annotations were added: page ${plan.operation.annotation.page} partially overlaps existing ${input.subtype} annotation(s) ${partial.map(item => item.annotationId).join(', ')}. Inspect them with pdf_page_annotations and adjust the requested range or edit an existing mark.`)
+      }
+      const existing = overlaps.find(item => item.kind === 'exact')
+      if (existing) {
+        const mark = snapshot.document.annotations.find(item => item.id === existing.annotationId)!
+        const requestedColor = plan.operation.annotation.color
+        const requestedComment = plan.operation.annotation.contents
+        const differentColor = requestedColor !== undefined
+          && (!mark.color || requestedColor.some((value, index) => Math.abs(value - mark.color![index]!) > 0.001))
+        const differentComment = requestedComment !== undefined && requestedComment !== (mark.contents ?? '')
+        if (differentColor || differentComment) {
+          fail('pdf/annotation-already-exists', `No annotations were added: page ${existing.page} already has mark ${existing.annotationId}, but its color or comment differs. Use pdf_annotation_update on that ID instead of creating a duplicate.`)
+        }
+      }
+      return { ...plan, annotationId: existing?.annotationId ?? plan.operation.annotation.id,
+        action: existing ? 'existing' as const : 'added' as const }
+    })
+    const additions = resolved.filter(item => item.action === 'added').map(item => item.operation)
+    if (!additions.length) {
+      await currentSource(sessionId, snapshot, agent, signal)
+      const latest = workspaces.readSnapshot(sessionId, input.documentId)
+      if (latest.revision !== snapshot.revision || latest.contentVersion !== snapshot.contentVersion) {
+        fail('pdf/stale-revision', 'The PDF changed while checking existing annotations; read its status again')
+      }
+    }
+    const value = additions.length
+      ? await applyDraft(sessionId, snapshot, input.expectedRevision, additions, agent, signal)
+      : snapshot
+    const first = resolved[0]!
+    return { status: additions.length ? 'updated' as const : 'already_annotated' as const,
+      documentId: value.id, annotationId: first.annotationId,
+      annotationIds: resolved.map(item => item.annotationId),
+      resolvedTarget: { page: first.operation.annotation.page, rectPdf: first.operation.annotation.rect,
+        ...(input.target.kind === 'pdf-text' ? { quote: input.target.quote } : {}),
+        ...(input.target.kind === 'pdf-text-range' ? { start: input.target.start, end: input.target.end } : {}) },
+      coverage: { complete: true as const, totalChars: resolved.reduce((sum, item) => sum + (item.covered?.text.length ?? 0), 0),
+        pages: resolved.map(item => ({ page: item.operation.annotation.page,
+          annotationId: item.annotationId, action: item.action, rectPdf: item.operation.annotation.rect,
+          ...(item.covered ? { startUtf16: item.covered.startUtf16, endUtf16: item.covered.endUtf16,
+            text: item.covered.text } : {}) })) },
       revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
@@ -172,7 +174,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     const patch = { ...(input.color !== undefined ? { color: [...input.color] as PdfColor } : {}),
       ...(comment !== undefined ? { contents: comment } : {}) }
     const value = await applyDraft(sessionId, snapshot, input.expectedRevision,
-      { type: 'update', id: input.annotationId, patch }, agent, signal)
+      [{ type: 'update', id: input.annotationId, patch }], agent, signal)
     return { status: 'updated' as const, documentId: value.id, annotationId: input.annotationId,
       revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
@@ -185,7 +187,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     checkRevision(snapshot, input.expectedRevision)
     editableAnnotation(snapshot, input.annotationId)
     const value = await applyDraft(sessionId, snapshot, input.expectedRevision,
-      { type: 'delete', id: input.annotationId }, agent, signal)
+      [{ type: 'delete', id: input.annotationId }], agent, signal)
     return { status: 'deleted' as const, documentId: value.id, annotationId: input.annotationId,
       revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }

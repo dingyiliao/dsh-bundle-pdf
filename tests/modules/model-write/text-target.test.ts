@@ -3,7 +3,7 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { locateTextTarget } from '../../../src/modules/model-write/text-target.ts'
+import { locateTextRange, locateTextTarget } from '../../../src/modules/model-write/text-target.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
@@ -25,6 +25,28 @@ test('quoted text resolves to title glyphs, not the preceding row with a plausib
   assert.deepEqual(result.rect, [72, 377.6, 360, 389.6])
   assert.equal(result.quadPoints.length, 16)
   assert.ok(result.rect[3] < 400, 'the preceding Bit[0] row is not covered')
+})
+
+test('start/end anchors cover every intervening visual line and return its exact joined text', () => {
+  const content = page([run('Before', 60, 260, true), run('Start here', 60, 240, true),
+    run('Middle paragraph', 60, 220, true), run('Finish here', 60, 200, true),
+    run('After', 60, 180)])
+  const selected = locateTextRange(content, 'Start here', 'Finish here', true)
+  assert.equal(selected.text, 'Start here\nMiddle paragraph\nFinish here')
+  assert.equal(selected.quadPoints.length, 24)
+  assert.equal(selected.startUtf16, 'Before\n'.length)
+  assert.equal(selected.endUtf16, 'Before\nStart here\nMiddle paragraph\nFinish here'.length)
+})
+
+test('range targeting rejects an end before its start and a possible second-column restart', () => {
+  const content = page([run('Start here', 60, 260, true), run('Middle', 60, 240, true),
+    run('End here', 60, 220)])
+  assert.throws(() => locateTextRange(content, 'End here', 'Start here', true),
+    { code: 'pdf/invalid-text-range' })
+  const columns = page([run('Start here', 60, 260, true), run('First column', 60, 90, true),
+    run('Second column', 180, 260, true), run('End here', 180, 240)])
+  assert.throws(() => locateTextRange(columns, 'Start here', 'End here', true),
+    { code: 'pdf/ambiguous-reading-order' })
 })
 
 test('text targeting fails closed on an absent or ambiguous quote and missing glyph positions', () => {

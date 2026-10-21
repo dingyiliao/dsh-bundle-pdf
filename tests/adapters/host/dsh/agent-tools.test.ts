@@ -171,6 +171,13 @@ test('model annotation updates the draft immediately; only PDF save requires a r
     assert.equal(updated.dirty, true)
     assert.equal(updated.canUndo, true)
     assert.ok(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.some(item => item.id === updated.annotationId))
+    const ranged = await readTool(definitions, 'pdf_annotate', {
+      ...args, expectedRevision: updated.revision,
+      target: { kind: 'pdf-text-range', start: { page: 1, quote }, end: { page: 1, quote } },
+    }, sessionId) as { status: string; revision: number; coverage: { pages: Array<{ action: string }> } }
+    assert.equal(ranged.status, 'already_annotated')
+    assert.equal(ranged.revision, updated.revision)
+    assert.equal(ranged.coverage.pages[0]?.action, 'existing')
     assert.equal(decisions.length, 0, 'draft edits do not ask for approval')
     assert.equal(state.writes(), 0)
     await assert.rejects(readTool(definitions, 'pdf_save', {

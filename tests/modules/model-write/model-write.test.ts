@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
 import { buildSaveReview } from '../../../src/modules/model-write/save-review.ts'
+import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
+import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
+import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 
 const signal = new AbortController().signal
 const sessionId = 'pdf-model-write'
@@ -29,6 +35,153 @@ function annotation(id: string, revision: number) {
   return { documentId: id, expectedRevision: revision,
     subtype: 'Highlight' as const, target, color: [1, 1, 0] as [number, number, number], comment: 'AI suggestion' }
 }
+
+function textLine(str: string, y: number, hasEOL = true): NativeTextContent['items'][number] {
+  return { str, transform: [12, 0, 0, 12, 60, y], width: str.length * 6, height: 12,
+    dir: 'ltr', fontName: 'test', hasEOL,
+    glyphs: Array.from(str, (_, index) => [60 + index * 6, y, 6]) }
+}
+
+async function rangeFixture() {
+  const state = memoryWorkspace(await nativeFixture())
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
+  assert.ok('bytes' in opened)
+  const content = [
+    [textLine('Before', 260), textLine('Start here', 230), textLine('Middle A', 200, false)],
+    [textLine('Middle B', 260), textLine('Middle C', 230, false)],
+    [textLine('Final part', 260), textLine('Stop here', 230), textLine('After', 200, false)],
+  ]
+  const pages = { async readPageText(_owner: string, _id: string, page: number) {
+    return { snapshot: state.workspaces.readSnapshot(sessionId, opened.id), content: {
+      items: content[page - 1] ?? [],
+      styles: { test: { fontFamily: 'sans-serif', ascent: 0.8, descent: -0.2, vertical: false } },
+      lang: null,
+    } }
+  } }
+  const writes = createModelWriteService(state.workspaces, pages)
+  const target = { kind: 'pdf-text-range' as const,
+    start: { page: 1, quote: 'Start here' }, end: { page: 3, quote: 'Stop here' } }
+  return { state, opened, writes, pages, target }
+}
+
+test('cross-page text range fills every middle page in one undoable draft operation', async () => {
+  const { state, opened, writes, target } = await rangeFixture()
+  try {
+    const result = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target, color: [1, 1, 0],
+      comment: 'One comment for the complete range' }, agent, signal)
+    assert.equal(result.status, 'updated')
+    assert.equal(result.revision, opened.revision + 1)
+    assert.deepEqual(result.coverage.pages.map(item => item.page), [1, 2, 3])
+    assert.deepEqual(result.coverage.pages.map(item => item.text), [
+      'Start here\nMiddle A', 'Middle B\nMiddle C', 'Final part\nStop here',
+    ])
+    assert.ok(result.coverage.pages.every(item => item.action === 'added'))
+    const draft = state.workspaces.readSnapshot(sessionId, opened.id)
+    assert.equal(draft.document.annotations.length, opened.document.annotations.length + 3)
+    assert.equal(draft.document.annotations.filter(item => item.contents === 'One comment for the complete range').length, 1)
+    assert.equal(state.writes(), 0)
+    const undone = await state.workspaces.execute(sessionId, { action: 'undo', sessionId,
+      id: opened.id, revision: result.revision }, agent, signal)
+    assert.ok('bytes' in undone)
+    assert.equal(undone.document.annotations.length, opened.document.annotations.length)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('exact repeated range reuses existing marks; partial overlap rejects the whole request', async () => {
+  const { state, opened, writes, target } = await rangeFixture()
+  try {
+    const first = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal)
+    const again = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: first.revision, subtype: 'Highlight', target }, agent, signal)
+    assert.equal(again.status, 'already_annotated')
+    assert.equal(again.revision, first.revision)
+    assert.deepEqual(again.annotationIds, first.annotationIds)
+    assert.ok(again.coverage.pages.every(item => item.action === 'existing'))
+    await assert.rejects(writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: again.revision, subtype: 'Highlight', target,
+      comment: 'A new comment was requested' }, agent, signal),
+    { code: 'pdf/annotation-already-exists' })
+    await assert.rejects(writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: again.revision, subtype: 'Highlight',
+      target: { kind: 'pdf-text-range', start: { page: 1, quote: 'Middle A' },
+        end: { page: 3, quote: 'Stop here' } } }, agent, signal),
+    { code: 'pdf/annotation-overlap' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, first.revision)
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.length,
+      opened.document.annotations.length + 3)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('a partially completed multi-page range adds only missing pages as one draft change', async () => {
+  const { state, opened, writes, target } = await rangeFixture()
+  try {
+    const first = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal)
+    const removed = await writes.deleteAnnotation(sessionId, { documentId: opened.id,
+      expectedRevision: first.revision, annotationId: first.annotationIds[1]! }, agent, signal)
+    const completed = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: removed.revision, subtype: 'Highlight', target }, agent, signal)
+    assert.equal(completed.status, 'updated')
+    assert.equal(completed.revision, removed.revision + 1)
+    assert.deepEqual(completed.coverage.pages.map(item => item.action), ['existing', 'added', 'existing'])
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.length,
+      opened.document.annotations.length + 3)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('an unpositioned middle page rejects the entire cross-page range without a partial draft', async () => {
+  const { state, opened, pages, target } = await rangeFixture()
+  const writes = createModelWriteService(state.workspaces, {
+    async readPageText(owner, id, page, abort) {
+      const read = await pages.readPageText(owner, id, page)
+      return page === 2 ? { ...read, content: { ...read.content, items: [] } } : read
+    },
+  })
+  try {
+    await assert.rejects(writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal),
+    { code: 'pdf/invalid-text-range' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+const nativeExecutable = resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
+test('real PDFium page text creates a complete two-page model mark',
+  { skip: !existsSync(nativeExecutable) }, async () => {
+    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
+    const first = pdf.addPage([300, 400])
+    first.drawText('Before native', { x: 60, y: 280, size: 12, font })
+    first.drawText('Start native', { x: 60, y: 250, size: 12, font })
+    first.drawText('Middle native', { x: 60, y: 230, size: 12, font })
+    const second = pdf.addPage([300, 400])
+    second.drawText('More native', { x: 60, y: 280, size: 12, font })
+    second.drawText('Finish native', { x: 60, y: 250, size: 12, font })
+    second.drawText('After native', { x: 60, y: 230, size: 12, font })
+    const bytes = await pdf.save(), state = memoryWorkspace(bytes)
+    const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
+    assert.ok('bytes' in opened)
+    const worker = new NativeWorker(nativeExecutable, nativeTestSubprocess)
+    await worker.request({ command: 'open', documentId: 'range-native-test' }, bytes)
+    const pages = { async readPageText(_owner: string, _id: string, page: number) {
+      const response = await worker.request({ command: 'text', documentId: 'range-native-test', pageIndex: page - 1 })
+      return { snapshot: state.workspaces.readSnapshot(sessionId, opened.id), content: response.value as NativeTextContent }
+    } }
+    const writes = createModelWriteService(state.workspaces, pages)
+    try {
+      const result = await writes.annotate(sessionId, { documentId: opened.id,
+        expectedRevision: opened.revision, subtype: 'Highlight',
+        target: { kind: 'pdf-text-range', start: { page: 1, quote: 'Start native' },
+          end: { page: 2, quote: 'Finish native' } } }, agent, signal)
+      assert.deepEqual(result.coverage.pages.map(item => item.page), [1, 2])
+      assert.match(result.coverage.pages[0]!.text!, /Middle native/)
+      assert.match(result.coverage.pages[1]!.text!, /More native/)
+      assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision + 1)
+    } finally { writes.dispose(); await worker.dispose(); await state.workspaces.dispose() }
+  })
 
 test('model edit immediately creates one undoable draft without changing the source PDF; save still needs approval', async () => {
   const { state, opened, writes } = await fixture()
