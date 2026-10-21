@@ -3701,6 +3701,9 @@ it('keeps active pages bounded while navigating to a distant page through the in
     await pageInput.press('Enter')
     await reader.locator('.dsh-pdf-windowed-pages > [data-page-number="81"]').waitFor({ state: 'attached', timeout: 20_000 })
     await expect.poll(() => pageInput.getAttribute('title')).toBe(`81 / ${LARGE_PAGE_COUNT}`)
+    // The title updates as soon as page 81 becomes current, while the jump
+    // still disables the input until navigation has fully settled.
+    await expect.poll(() => pageInput.isEnabled()).toBe(true)
     await pageInput.focus()
     expect(await pageInput.evaluate(input => input === document.activeElement)).toBe(true)
     await reader.locator('.dsh-pdf-scroll').evaluate(scroll => {
