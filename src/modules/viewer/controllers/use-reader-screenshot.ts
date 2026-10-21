@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
-import type { PdfAnnotation, PdfRect } from '../../../core/pdf-types.js'
+import type { PdfRect } from '../../../core/pdf-types.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { NativeDocument } from '../rendering/document.js'
 import type { ReaderSelection } from '../model/reader-selection.js'
@@ -12,7 +12,6 @@ export type ReaderRegion = { rect: PdfRect; quadPoints: number[] }
 export interface ReaderScreenshotOptions {
   pdf: NativeDocument | null
   snapshot: WorkspaceSnapshot | null
-  sourceAnnotations: readonly PdfAnnotation[]
   tabSignal: AbortSignal
   /** Token of the content currently mounted in the document preview. */
   displayOwnerToken: number | null
@@ -85,7 +84,7 @@ export function useReaderScreenshot(options: ReaderScreenshotOptions) {
 
   const takeRegion = async (page: number, region: ReaderRegion): Promise<void> => {
     const { pdf, snapshot, displayOwnerToken, ownerSequence, documentReady, tabSignal,
-      regionPurpose, setMode, setSelection, clearError, onError, t, sourceAnnotations,
+      regionPurpose, setMode, setSelection, clearError, onError, t,
       captureRegion = capturePdfRegion } = latest.current
     // Screenshot mode is one action: resume text selection even if the native
     // document became unavailable before the drag completed.
@@ -108,11 +107,7 @@ export function useReaderScreenshot(options: ReaderScreenshotOptions) {
     clearError()
     const run = async () => {
       try {
-        const image = await captureRegion(pdf, page, region.rect, {
-          signal: taskController.signal,
-          annotations: snapshot.document.annotations.filter(annotation => annotation.page === page),
-          sourceAnnotations: sourceAnnotations.filter(annotation => annotation.page === page),
-        })
+        const image = await captureRegion(pdf, page, region.rect, { signal: taskController.signal })
         const current = latest.current.currentSnapshot()
         if (!taskController.signal.aborted && latest.current.ownerSequence.current === owner
           && current?.id === snapshot.id && current.revision === revision) {

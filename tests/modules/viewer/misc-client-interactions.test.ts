@@ -238,6 +238,7 @@ test('page comment card stays attached above its mark and tolerates transient mi
       assert.equal(visible, 1)
       let committedMove: { x: number; y: number } | undefined
       const noteProps = { ...props, connector: false, cardKind: 'note' as const,
+        sizeKey: 'document:note-1', resizeLabel: 'Resize note',
         onMove: (delta: { x: number; y: number }) => { committedMove = delta; return true } }
       await render(React.createElement(AnnotationCommentCard, noteProps))
       assert.equal(card.dataset.cardKind, 'note')
@@ -280,6 +281,32 @@ test('page comment card stays attached above its mark and tolerates transient mi
         await new Promise(resolve => setTimeout(resolve, 5))
       })
       assert.equal(card.dataset.moving, undefined, 'failed keyboard persistence releases its moving state')
+      anchor = rect(20, 20, 20, 20)
+      await render(React.createElement(AnnotationCommentCard, noteProps))
+      const originalCardBounds = card.getBoundingClientRect
+      card.getBoundingClientRect = () => rect(Number.parseFloat(card.style.left), Number.parseFloat(card.style.top),
+        Number.parseFloat(card.style.width), Number.parseFloat(card.style.height) || 130)
+      const resize = card.querySelector<HTMLButtonElement>('[data-note-card-resize-handle]')!
+      await act(async () => {
+        resize.dispatchEvent(pointer('pointerdown', 250, 200))
+        resize.dispatchEvent(pointer('pointermove', 290, 230))
+        resize.dispatchEvent(pointer('pointerup', 290, 230))
+      })
+      const savedSize = JSON.parse(dom.localStorage.getItem('dsh-pdf:note-card-size:v1:document:note-1')!)
+      assert.ok(savedSize.width >= 330, 'dragging the resize corner expands the note')
+      assert.ok(savedSize.height >= 160)
+      await act(async () => { resize.dispatchEvent(new dom.KeyboardEvent('keydown', {
+        bubbles: true, cancelable: true, key: 'ArrowLeft', shiftKey: true,
+      })) })
+      assert.equal(JSON.parse(dom.localStorage.getItem('dsh-pdf:note-card-size:v1:document:note-1')!).width,
+        savedSize.width - 10, 'keyboard resizing persists the new width')
+      card.getBoundingClientRect = originalCardBounds
+      await render(React.createElement(AnnotationCommentCard, props))
+      await render(React.createElement(AnnotationCommentCard, noteProps))
+      assert.equal(Number.parseFloat(card.style.width), savedSize.width - 10,
+        'reopening the note restores its individually saved width')
+      assert.equal(Number.parseFloat(card.style.height), savedSize.height,
+        'reopening the note restores its individually saved height')
       await render(React.createElement(AnnotationCommentCard, props))
       const toolbar = dom.document.createElement('div')
       toolbar.className = 'dsh-pdf-annotation-toolbar'

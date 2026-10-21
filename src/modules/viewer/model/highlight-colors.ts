@@ -1,6 +1,7 @@
 /** A small, user-editable set of highlight colors shared by PDF reader tabs. */
 export const MAX_HIGHLIGHT_QUICK_COLORS = 5
 export const HIGHLIGHT_QUICK_COLORS_KEY = 'dsh-pdf:highlight-quick-colors:v1'
+export const NOTE_QUICK_COLORS_KEY = 'dsh-pdf:note-quick-colors:v1'
 export const DEFAULT_HIGHLIGHT_QUICK_COLORS = [
   '#ffff00', // yellow
   '#ff9f0a', // orange
@@ -8,6 +9,7 @@ export const DEFAULT_HIGHLIGHT_QUICK_COLORS = [
   '#80bfff', // blue
   '#d1a2ff', // purple
 ] as const
+export const DEFAULT_NOTE_QUICK_COLORS = ['#ffd900', '#ff9f0a', '#75d86a', '#80bfff', '#d1a2ff'] as const
 
 const hexColor = /^#[0-9a-f]{6}$/i
 
@@ -16,8 +18,8 @@ export function normalizeHighlightColor(value: string): string | null {
 }
 
 /** Invalid or obsolete stored data must not prevent the reader from opening. */
-export function parseHighlightQuickColors(stored: string | null): string[] {
-  if (stored === null) return [...DEFAULT_HIGHLIGHT_QUICK_COLORS]
+function parseQuickColors(stored: string | null, defaults: readonly string[]): string[] {
+  if (stored === null) return [...defaults]
   try {
     const value: unknown = JSON.parse(stored)
     if (!Array.isArray(value) || value.length > MAX_HIGHLIGHT_QUICK_COLORS) throw new Error('Invalid quick colors')
@@ -25,8 +27,16 @@ export function parseHighlightQuickColors(stored: string | null): string[] {
     if (colors.some((entry) => entry === null) || new Set(colors).size !== colors.length) throw new Error('Invalid quick colors')
     return colors as string[]
   } catch {
-    return [...DEFAULT_HIGHLIGHT_QUICK_COLORS]
+    return [...defaults]
   }
+}
+
+export function parseHighlightQuickColors(stored: string | null): string[] {
+  return parseQuickColors(stored, DEFAULT_HIGHLIGHT_QUICK_COLORS)
+}
+
+export function parseNoteQuickColors(stored: string | null): string[] {
+  return parseQuickColors(stored, DEFAULT_NOTE_QUICK_COLORS)
 }
 
 export function readHighlightQuickColors(): string[] {
@@ -34,6 +44,14 @@ export function readHighlightQuickColors(): string[] {
     return parseHighlightQuickColors(localStorage.getItem(HIGHLIGHT_QUICK_COLORS_KEY))
   } catch {
     return [...DEFAULT_HIGHLIGHT_QUICK_COLORS]
+  }
+}
+
+export function readNoteQuickColors(): string[] {
+  try {
+    return parseNoteQuickColors(localStorage.getItem(NOTE_QUICK_COLORS_KEY))
+  } catch {
+    return [...DEFAULT_NOTE_QUICK_COLORS]
   }
 }
 

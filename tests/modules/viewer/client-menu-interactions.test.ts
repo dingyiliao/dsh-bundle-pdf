@@ -3,9 +3,10 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import React, { act } from 'react'
+import React, { act, createRef } from 'react'
 import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
-import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
+import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderNoteEditor.tsx'
+import { HIGHLIGHT_QUICK_COLORS_KEY, NOTE_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
 import { TranslationLanguageMenu } from '../../../src/modules/viewer/components/TranslationLanguageMenu.tsx'
 import { PersonalBookmarks, type BookmarkAccess } from '../../../src/modules/viewer/components/PersonalBookmarks.tsx'
 import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.tsx'
@@ -73,6 +74,37 @@ test('highlight quick-color menu dismisses by Escape and outside pointer without
     assert.deepEqual(applied, [], 'dismissal must not mark the selected text')
     await act(async () => { first.click() })
     assert.deepEqual(applied, ['#ffff00'])
+  })
+})
+
+test('note color opens its own editable quick palette before the native picker', async () => {
+  await withDom(async (dom, container, render) => {
+    dom.localStorage.setItem(HIGHLIGHT_QUICK_COLORS_KEY, JSON.stringify(['#123456']))
+    const applied: string[] = []
+    const props = { note: { id: 'note', page: 1, subtype: 'Text', flags: 4, supported: true, editable: true },
+      mode: 'read' as const, readOnly: false, editable: true, value: 'A note', color: '#abcdef',
+      textarea: createRef<HTMLTextAreaElement>(), onChange() {}, onColorChange: (color: string) => { applied.push(color) },
+      onEdit() {}, onSave() {}, onCancel() {}, onDismiss() {}, onDelete() {}, t: (key: string) => key }
+    await render(React.createElement(ReaderNoteEditor, props))
+    const toggle = container.querySelector<HTMLButtonElement>('.dsh-pdf-note-color')!
+    assert.equal(container.querySelector('[data-testid="pdf-note-colors"]'), null)
+    await act(async () => { toggle.click() })
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true')
+    assert.equal(container.querySelectorAll('.dsh-pdf-highlight-swatch').length, 5)
+    assert.doesNotMatch(container.textContent ?? '', /#123456/, 'markup colors remain separate')
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-swatch-0"]')!.click() })
+    assert.deepEqual(applied, ['#ffd900'])
+    assert.equal(container.querySelector('[data-testid="pdf-note-colors"]'), null)
+
+    await act(async () => { toggle.click() })
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-swatch-0"]')!
+      .dispatchEvent(new dom.MouseEvent('contextmenu', { bubbles: true, cancelable: true })) })
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-delete-color"]')!.click() })
+    assert.equal(container.querySelectorAll('.dsh-pdf-highlight-swatch').length, 4)
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-add-color"]')!.click() })
+    assert.deepEqual(JSON.parse(dom.localStorage.getItem(NOTE_QUICK_COLORS_KEY)!),
+      ['#ff9f0a', '#75d86a', '#80bfff', '#d1a2ff', '#abcdef'])
+    assert.deepEqual(JSON.parse(dom.localStorage.getItem(HIGHLIGHT_QUICK_COLORS_KEY)!), ['#123456'])
   })
 })
 

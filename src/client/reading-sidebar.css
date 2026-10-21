@@ -2,15 +2,34 @@
   --pdf-sidebar-inset: 12px;
   --pdf-sidebar-control-radius: 6px;
   --pdf-sidebar-selected-bg: color-mix(in srgb, var(--pdf-accent) 12%, transparent);
+  /* Paper is white beneath this frame; match the toolbar's tint over the preview well. */
+  --pdf-sidebar-glass-tint: color-mix(in srgb, var(--dsw-alias-bg-document-preview) 68%, var(--pdf-border) 32%);
+  --pdf-glass-shell-top: color-mix(in srgb, var(--pdf-sidebar-glass-tint) 92%, transparent);
+  --pdf-glass-shell-fill: color-mix(in srgb, var(--pdf-sidebar-glass-tint) 82%, transparent);
   --pdf-sidebar-ease-out: cubic-bezier(.23, 1, .32, 1);
-  --pdf-sidebar-ease-drawer: cubic-bezier(.32, .72, 0, 1);
   position: absolute;
   z-index: 20;
   inset: 64px 12px 64px auto;
   margin: 0;
   border: 0;
+  border-radius: 16px;
   background: transparent;
   overflow: visible;
+}
+.dsh-pdf-sidebar::after {
+  /* Frame the visible width, not the full shell: a clipped shell border leaves
+     a short horizontal edge across the top of the collapsed rail. */
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: 0 0 0 auto;
+  box-sizing: border-box;
+  width: var(--pdf-sidebar-width, 320px);
+  border: 1px solid color-mix(in srgb, var(--pdf-border) 84%, var(--pdf-muted) 16%);
+  border-radius: inherit;
+  box-shadow: -8px 10px 24px rgb(18 24 34 / 10%);
+  pointer-events: none;
+  transition: width 270ms var(--pdf-sidebar-ease-drawer);
 }
 .dsh-pdf-sidebar-shell {
   /* Keep panel layout stable while revealing it; the 44px outer rail remains
@@ -20,13 +39,12 @@
   display: flex;
   width: var(--pdf-sidebar-expanded-width, 320px);
   min-height: 0;
-  border: 1px solid var(--pdf-glass-edge);
+  border: 0;
   border-radius: 16px;
   overflow: hidden;
   background: linear-gradient(155deg, var(--pdf-glass-shell-top), var(--pdf-glass-shell-fill));
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(24px) saturate(180%);
-  box-shadow: var(--pdf-glass-shadow);
+  -webkit-backdrop-filter: var(--pdf-glass-shell-filter);
+  backdrop-filter: var(--pdf-glass-shell-filter);
   clip-path: inset(0 0 0 0 round 16px);
   transition: clip-path 270ms var(--pdf-sidebar-ease-drawer);
 }
@@ -56,14 +74,14 @@
 .dsh-pdf-sidebar :is(.dsh-pdf-search-panel, .dsh-pdf-translation-panel, .dsh-pdf-ocr-scroll) .dsh-pdf-panel-heading {
   margin-inline: calc(-1 * var(--pdf-sidebar-inset));
 }
-.dsh-pdf-sidebar .dsh-pdf-search-panel > .dsh-pdf-panel-heading {
+.dsh-pdf-sidebar :is(.dsh-pdf-search-panel, .dsh-pdf-ocr-scroll) > .dsh-pdf-panel-heading {
   position: absolute; inset: 0 0 auto; margin-inline: 0;
 }
-.dsh-pdf-sidebar .dsh-pdf-search-panel > .dsh-pdf-panel-scroll {
+.dsh-pdf-sidebar :is(.dsh-pdf-search-panel, .dsh-pdf-ocr-scroll) > .dsh-pdf-panel-scroll {
   top: 48px; padding-top: 12px;
 }
 .dsh-pdf-sidebar :is(.dsh-pdf-search-panel, .dsh-pdf-translation-panel) .dsh-pdf-panel-heading { margin-bottom: 12px; }
-.dsh-pdf-sidebar .dsh-pdf-search-panel > .dsh-pdf-panel-heading { margin-bottom: 0; }
+.dsh-pdf-sidebar :is(.dsh-pdf-search-panel, .dsh-pdf-ocr-scroll) > .dsh-pdf-panel-heading { margin-bottom: 0; }
 .dsh-pdf-reader .dsh-pdf-sidebar-panels :is(button, input, select, textarea) { border-radius: var(--pdf-sidebar-control-radius); }
 .dsh-pdf-sidebar .dsh-pdf-search-panel form :is(input, button) { height: 28px; }
 
@@ -104,6 +122,7 @@
 .dsh-pdf-sidebar-toggle svg { transition: transform 160ms var(--pdf-sidebar-ease-out); }
 .dsh-pdf-sidebar.is-collapsed .dsh-pdf-sidebar-toggle svg { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) {
+  .dsh-pdf-sidebar::after { transition: none; }
   .dsh-pdf-sidebar-shell, .dsh-pdf-sidebar-main, .dsh-pdf-sidebar-panels,
   .dsh-pdf-sidebar .dsh-pdf-panel-heading, .dsh-pdf-sidebar-footer,
   .dsh-pdf-sidebar-compact-nav, .dsh-pdf-sidebar-toggle svg { transition: none; }
@@ -232,8 +251,12 @@
 .dsh-pdf-reader .dsh-pdf-bookmark-form button { flex: none; padding-inline: 5px; }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .dsh-pdf-sidebar::after { border-color: var(--pdf-border); box-shadow: none; }
   .dsh-pdf-sidebar-shell {
-    border-color: var(--pdf-border); background: var(--pdf-panel);
-    -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none;
+    background: var(--pdf-panel);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
   }
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .dsh-pdf-sidebar-shell { background: var(--pdf-panel); }
 }

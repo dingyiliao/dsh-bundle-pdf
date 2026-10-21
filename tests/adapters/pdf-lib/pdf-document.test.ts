@@ -142,6 +142,16 @@ test('moving a standalone note updates its PDF Rect and survives reload', async 
     (error: unknown) => error instanceof PdfDocumentError && error.code === 'unknown-annotation')
 })
 
+test('recoloring a standalone note updates its PDF color and survives reload', async () => {
+  const { bytes } = await fixture()
+  const added = await applyPdfOperations(bytes, [{ type: 'add', annotation: newMarkup('colored-note', 'Text') }])
+  const changed = await applyPdfOperations(added.bytes, [{ type: 'update', id: 'colored-note',
+    patch: { color: [0.2, 0.4, 0.8] } }])
+  assert.deepEqual(changed.document.annotations.find(annotation => annotation.id === 'colored-note')?.color, [0.2, 0.4, 0.8])
+  assert.deepEqual((await loadPdfDocument(changed.bytes)).annotations
+    .find(annotation => annotation.id === 'colored-note')?.color, [0.2, 0.4, 0.8])
+})
+
 test('comment-card placement survives saving and reloading the PDF', async () => {
   const { bytes } = await fixture()
   const before = await loadPdfDocument(bytes)

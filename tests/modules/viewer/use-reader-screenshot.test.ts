@@ -47,7 +47,6 @@ async function withScreenshot(run: (fixture: {
   const Harness = (props: ReaderScreenshotOptions) => { latest = useReaderScreenshot(props); return null }
   const options: ReaderScreenshotOptions = {
     pdf: {} as ReaderScreenshotOptions['pdf'], snapshot,
-    sourceAnnotations: [annotation('baseline-2', 2), annotation('baseline-3', 3)],
     tabSignal: tab.signal, displayOwnerToken: 1, ownerSequence: { current: 1 }, regionPurpose: purpose,
     currentSnapshot: () => snapshot, documentReady: () => true,
     setMode(value) { mode = typeof value === 'function' ? value(mode as 'text' | 'region' | 'note') : value },
@@ -90,20 +89,19 @@ test('screenshot begins only for the mounted owner and clears competing contextu
   })
 })
 
-test('screenshot captures the selected region and projects only annotations on that page', async () => {
+test('screenshot captures the selected region without sending annotations to the renderer', async () => {
   await withScreenshot(async ({ state, options, render, mode, selection, events }) => {
-    let captured: { page: number; annotations: readonly PdfAnnotation[]; sourceAnnotations: readonly PdfAnnotation[] } | undefined
+    let captured: { page: number; options: object } | undefined
     await render({ ...options, captureRegion: async (_pdf, page, _rect, captureOptions) => {
-      captured = { page, annotations: captureOptions?.annotations ?? [], sourceAnnotations: captureOptions?.sourceAnnotations ?? [] }
+      captured = { page, options: captureOptions ?? {} }
       return image()
     } })
     await act(async () => { state().begin(false) })
     await act(async () => { await state().takeRegion(2, region) })
     assert.equal(mode(), 'text')
     assert.equal(options.regionPurpose.current, null)
-    assert.deepEqual(captured && { page: captured.page, annotations: captured.annotations.map(item => item.id),
-      sourceAnnotations: captured.sourceAnnotations.map(item => item.id) },
-    { page: 2, annotations: ['current-2'], sourceAnnotations: ['baseline-2'] })
+    assert.equal(captured?.page, 2)
+    assert.deepEqual(Object.keys(captured?.options ?? {}), ['signal'])
     assert.deepEqual(selection(), { kind: 'region', revision: 7, text: '', fragments: [{ page: 2, ...region }] })
     assert.equal(state().screenshot?.page, 2)
     assert.equal(state().screenshot?.revision, 7)

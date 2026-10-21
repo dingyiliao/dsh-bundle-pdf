@@ -4,6 +4,9 @@ import { BackHistoryControl } from './BackHistoryControl.js'
 import { ZoomMenu } from './ZoomMenu.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 import { ToolbarTooltip } from './ToolbarTooltip.js'
+import { ReaderModeControl, type ReaderModeStatus } from './ReaderModeControl.js'
+import type { ExplanationStatusBarProps } from './ExplanationStatusBar.js'
+import { FloatingStatusRail, type FloatingStatus } from './FloatingStatusRail.js'
 
 type History = React.ComponentProps<typeof BackHistoryControl>['history']
 type Fit = 'custom' | 'width' | 'page'
@@ -51,15 +54,19 @@ export interface ReaderToolbarActions {
 }
 
 /** Visual controls only; application commands and navigation locks stay in Reader. */
-export function ReaderToolbar({ t, menuRef, state, actions }: {
+export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, statuses = [] }: {
   t(key: string): string
   menuRef: React.RefObject<HTMLDetailsElement>
   state: ReaderToolbarState
   actions: ReaderToolbarActions
+  mode?: ReaderModeStatus | null
+  explanation?: ExplanationStatusBarProps
+  statuses?: readonly FloatingStatus[]
 }) {
   const disabledDiscard = !state.hasDocument || state.busy || state.saveAsPicking || state.colorPending
     || (!state.dirty && !state.conflict && !state.canRedo && !state.hasUnappliedAnnotation)
   return <ToolbarTooltip><div className="dsh-pdf-toolbar dsh-pdf-main-toolbar" role="toolbar" aria-label={t('reader.sidebar.toolbar')}>
+    <ReaderModeControl mode={mode} explanation={explanation} t={t} />
     <details className="dsh-pdf-tools" ref={menuRef} onToggle={event => {
       if (event.currentTarget.open) actions.onOpenMenu()
     }} onBlur={event => {
@@ -69,6 +76,11 @@ export function ReaderToolbar({ t, menuRef, state, actions }: {
       <div className="dsh-pdf-tools-menu" role="group" aria-label={t('reader.tools')}>
         <button disabled={!state.hasDocument || !state.canPromptExplanation || state.explanationSending || state.screenshotPreparing || state.screenshotActive}
           onClick={actions.onToggleExplanation}>{t(state.explanationActive ? 'reader.explain.exit' : 'reader.explain.start')}</button>
+        {explanation && <button className="dsh-pdf-ultra-menu-action"
+          disabled={!explanation.imageAvailable || explanation.sending || explanation.disabled}
+          onClick={explanation.onSelectArea}>
+          {t(explanation.selectingArea ? 'reader.explain.cancelArea' : 'reader.explain.selectArea')}
+        </button>}
         <button disabled={!state.hasDocument || state.busy || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
           onClick={actions.onScreenshot}>{t('reader.regionScreenshot')}</button>
         <button disabled={!state.editable || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
@@ -85,6 +97,9 @@ export function ReaderToolbar({ t, menuRef, state, actions }: {
         <button className="dsh-pdf-minimal-menu-action" disabled={!state.canRedo || state.busy || state.colorPending} onClick={actions.onRedo}>{t('reader.redo')}</button>
         <button className="dsh-pdf-tiny-menu-action" disabled={!state.editable || !state.dirty} onClick={actions.onSave}>{t('reader.save')}</button>
         <button className="dsh-pdf-micro-menu-action" disabled={!state.canGoBack || state.busy || state.navigating} onClick={actions.onBack}>{t('reader.back')}</button>
+        <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom('width'); if (menuRef.current) menuRef.current.open = false }}>{t('reader.fitWidth')}</button>
+        <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom('page'); if (menuRef.current) menuRef.current.open = false }}>{t('reader.fitPage')}</button>
+        <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom(1); if (menuRef.current) menuRef.current.open = false }}>100%</button>
       </div>
     </details>
     <div className="dsh-pdf-toolbar-controls">
@@ -104,5 +119,6 @@ export function ReaderToolbar({ t, menuRef, state, actions }: {
       <button className="dsh-pdf-toolbar-discard" disabled={disabledDiscard}
         aria-label={t('reader.discard')} data-tooltip={t('reader.discardHelp')} onClick={actions.onDiscard}><ToolbarIcon name="discard" /></button>
     </div>
+    <FloatingStatusRail statuses={statuses} t={t} />
   </div></ToolbarTooltip>
 }

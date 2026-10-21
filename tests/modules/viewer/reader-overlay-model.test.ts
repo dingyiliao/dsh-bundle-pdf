@@ -16,12 +16,12 @@ function fixture() {
   } as unknown as ReaderOverlayModelOptions['explanation']
   const annotations = {
     selected: undefined, selectedNote: undefined, pendingNote: null, commentCardOpen: false,
-    noteCardOpen: false, noteMode: 'read', noteText: '', noteTextarea: { current: null }, commentMode: 'read',
+    noteCardOpen: false, noteMode: 'read', noteText: '', noteColor: '#ffd900', noteTextarea: { current: null }, commentMode: 'read',
     thread: undefined, editingCommentId: undefined, comment: '',
     commentTextarea: { current: null },
     onCommentCardVisible() {}, onNoteCardVisible() {}, setComment() {}, setNoteText() {}, updateColor() {},
     deleteAnnotation() {}, openCommentEditor() {}, editComment() {}, deleteComment() {}, dismissCommentCard() {},
-    editNote() {}, cancelNoteEdit() {}, dismissNoteCard() {}, deleteNote() {},
+    editNote() {}, cancelNoteEdit() {}, dismissNoteCard() {}, deleteNote() {}, updateNoteColor(color: string) { calls.push(`note-color:${color}`) },
   } as unknown as ReaderOverlayModelOptions['annotations']
   const options: ReaderOverlayModelOptions = {
     explanation, annotations, viewport: null, mode: 'text', regionPurpose: null,
@@ -90,7 +90,7 @@ test('a saved markup comment card exposes its persisted move callback', async ()
 })
 
 test('a standalone note gets a distinct card with no comment-thread editor', () => {
-  const { options } = fixture()
+  const { options, calls } = fixture()
   const note = { id: 'note', subtype: 'Text', page: 1, contents: 'A sticky note', editable: false }
   const annotations = { ...options.annotations, selected: note, selectedNote: note,
     noteCardOpen: true, noteMode: 'read', noteText: 'A sticky note',
@@ -100,6 +100,9 @@ test('a standalone note gets a distinct card with no comment-thread editor', () 
   assert.equal(model.note?.editor.note?.id, 'note')
   assert.equal(model.note?.editor.editable, false)
   assert.equal(model.note?.editor.mode, 'read')
+  assert.equal(model.note?.noteColor, '#ffd900')
+  model.note?.editor.onColorChange('#ff99aa')
+  assert.deepEqual(calls, ['note-color:#ff99aa'])
   assert.ok(model.note?.onMove)
   model.note?.onMove({ x: 12, y: -4 })
   assert.deepEqual(options.annotations.deleteNote instanceof Function, true)

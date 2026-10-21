@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { readerToolbarModel, type ReaderToolbarModelOptions } from '../../../src/modules/viewer/controllers/reader-toolbar-model.ts'
-import { readerFloatingStatuses, type ReaderFloatingStatusesOptions } from '../../../src/modules/viewer/controllers/reader-floating-statuses.ts'
+import { readerFloatingStatuses, readerModeStatus, type ReaderFloatingStatusesOptions } from '../../../src/modules/viewer/controllers/reader-floating-statuses.ts'
 
 function toolbarFixture() {
   const calls: string[] = []
@@ -84,17 +84,20 @@ function floatingFixture(): ReaderFloatingStatusesOptions {
   }
 }
 
-test('floating statuses preserve save occurrence and mode/action ordering', () => {
+test('activity statuses preserve save occurrence while input modes stay separate', () => {
   const expired: number[] = []
   const statuses = readerFloatingStatuses({ ...floatingFixture(), mode: 'note',
     saveFeedback: { kind: 'saved', durationMs: 2600, occurrence: 9 },
     ocrProgress: 'recognizing', onSaveExpired: occurrence => expired.push(occurrence) })
-  assert.deepEqual(statuses.map(item => item.id), ['save', 'note-mode', 'ocr'])
+  assert.deepEqual(statuses.map(item => item.id), ['save', 'ocr'])
+  const mode = readerModeStatus({ ...floatingFixture(), mode: 'note' })
+  assert.equal(mode?.kind, 'note')
+  assert.equal(mode?.label, 'reader.placeNote')
   assert.equal(statuses[0].title, '/document.pdf')
   assert.equal(statuses[0].content, 'reader.saved')
   statuses[0].onExpire?.()
   assert.deepEqual(expired, [9])
-  assert.equal(statuses[2].actions?.[0].disabled, false)
+  assert.equal(statuses[1].actions?.[0].disabled, false)
 })
 
 test('floating statuses suppress conflicting mode hints and disable cancel while stopping', () => {
@@ -102,6 +105,9 @@ test('floating statuses suppress conflicting mode hints and disable cancel while
     regionPurpose: 'screenshot', explanationActive: true, screenshotPhase: 'cancelling',
     ocrProgress: 'cancelling' })
   assert.deepEqual(statuses.map(item => item.id), ['screenshot', 'ocr'])
+  assert.equal(readerModeStatus({ ...floatingFixture(), mode: 'region', regionPurpose: 'screenshot',
+    explanationActive: true }), null)
+  assert.equal(readerModeStatus({ ...floatingFixture(), mode: 'region', regionPurpose: 'screenshot' })?.kind, 'region')
   assert.equal(statuses[0].actions?.[0].disabled, true)
   assert.equal(statuses[1].actions?.[0].disabled, true)
 })

@@ -408,6 +408,36 @@ test('standalone notes reject markup-color updates', async () => {
   }, snapshot([note]))
 })
 
+test('standalone note color changes persist independently of markup color', async () => {
+  const note: PdfAnnotation = { ...existing, id: 'note-color', subtype: 'Text',
+    color: [1, 0.85, 0], contents: 'A note' }
+  await withAnnotations(async ({ state, operations }) => {
+    await act(async () => state().selectAnnotation(note.id))
+    await act(async () => state().updateNoteColor('#ff99aa'))
+    assert.equal(state().noteColor, '#ff99aa')
+    assert.equal(state().annotationColor, '#ffff00')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.deepEqual(operations, [[{ type: 'update', id: note.id,
+      patch: { color: [1, 153 / 255, 170 / 255] } }]])
+  }, snapshot([note]))
+})
+
+test('failed note recoloring restores its saved color', async () => {
+  const note: PdfAnnotation = { ...existing, id: 'failed-note-color', subtype: 'Text',
+    color: [1, 0.85, 0], contents: 'A note' }
+  await withAnnotations(async ({ state, options, render, operations }) => {
+    await render({ ...options, snapshot: snapshot([note]), pdfAnnotations: [note],
+      change: async next => { operations.push(next); return undefined } })
+    await act(async () => state().selectAnnotation(note.id))
+    await act(async () => state().updateNoteColor('#3366cc'))
+    assert.equal(state().noteColor, '#3366cc')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(state().noteColor, '#ffd900')
+    assert.equal(state().colorPending, false)
+    assert.equal(operations.length, 1)
+  }, snapshot([note]))
+})
+
 test('failed color write restores the saved color and removes its unload guard', async () => {
   await withAnnotations(async ({ state, options, render, operations }) => {
     let finishWrite!: () => void

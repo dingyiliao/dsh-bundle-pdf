@@ -19,7 +19,7 @@ export { useReaderSelection, type ReaderSelectionOptions } from './controllers/u
 export { useReaderMutations, type ReaderMutationsOptions } from './controllers/use-reader-mutations.js'
 export { useReaderPageTracking, type ReaderPageTrackingOptions } from './controllers/use-reader-page-tracking.js'
 export { readerToolbarModel, type ReaderToolbarModelOptions } from './controllers/reader-toolbar-model.js'
-export { readerFloatingStatuses, type ReaderFloatingStatusesOptions } from './controllers/reader-floating-statuses.js'
+export { readerFloatingStatuses, readerModeStatus, type ReaderFloatingStatusesOptions } from './controllers/reader-floating-statuses.js'
 export { readerOverlayModel, type ReaderOverlayModelOptions } from './controllers/reader-overlay-model.js'
 export { useReaderOcr, type ReaderOcrOptions } from './controllers/use-reader-ocr.js'
 export { ReaderToolbar, type ReaderToolbarState, type ReaderToolbarActions } from './components/ReaderToolbar.js'

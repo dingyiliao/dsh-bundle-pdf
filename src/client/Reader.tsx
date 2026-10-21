@@ -6,7 +6,7 @@ import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReade
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
   usePdfWheelZoom, usePdfViewportSize,
   clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition,
-  readerToolbarModel, readerFloatingStatuses, readerOverlayModel, readerSidebarPanels,
+  readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels,
   } from '../modules/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
 
@@ -82,7 +82,8 @@ export function Reader(props: ReaderProps) {
       jump: page => jump(page),
     })
   }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump])
-  const sidebar = useReaderSidebarLayout({ bodyRef: readerBody, navigationLock, navigating })
+  const sidebar = useReaderSidebarLayout({ bodyRef: readerBody, navigationLock, navigating,
+    resourceAddress: props.resourceAddress, visible: tab.visible })
   const { section: sidebarSection, expanded: sidebarExpanded,
     changeExpanded: changeSidebarExpanded, show: showSidebar } = sidebar
   const translation = useReaderTranslation({ translation: props.translation, sessionId,
@@ -153,7 +154,7 @@ export function Reader(props: ReaderProps) {
     saveAsOpen, setSaveAsOpen, saveAsPicking, savePath, setSavePath, overwrite, setOverwrite,
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs } = saveFlow
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
-  const screenshotCtl = useReaderScreenshot({ pdf, snapshot, sourceAnnotations: pdfAnnotations,
+  const screenshotCtl = useReaderScreenshot({ pdf, snapshot,
     tabSignal: tab.signal, displayOwnerToken: displayOwner?.token ?? null, ownerSequence,
     regionPurpose, currentSnapshot: () => state.current.snapshot,
     documentReady,
@@ -340,14 +341,16 @@ export function Reader(props: ReaderProps) {
       save: () => { void save() },
     },
   })
-  const floatingStatuses = readerFloatingStatuses({
+  const floatingOptions = {
     saveFeedback, documentPath: snapshot?.path, mode, explanationActive: !!activeExplanation,
     regionPurpose: regionPurpose.current, screenshotPhase, ocrProgress, t,
-    onSaveExpired: occurrence => setSaveFeedback(current => current?.occurrence === occurrence ? null : current),
+    onSaveExpired: (occurrence: number) => setSaveFeedback(current => current?.occurrence === occurrence ? null : current),
     onExitNote: () => setMode('text'), onCancelScreenshot: cancelScreenshot, onCancelOcr: cancelOcr,
-  })
+  }
+  const floatingStatuses = readerFloatingStatuses(floatingOptions)
+  const activeModeStatus = readerModeStatus(floatingOptions)
   const overlays = readerOverlayModel({
-    explanation, annotations, viewport: scrollRoot, mode, regionPurpose: regionPurpose.current,
+    explanation, annotations, viewport: scrollRoot, documentPath: snapshot?.path, mode, regionPurpose: regionPurpose.current,
     editable, readOnly: !!snapshot?.document.readOnly,
     getExplanationAnchor: explanationEditorAnchor, getCommentAnchor: commentAnchor, getCommentPosition: commentPosition,
     getNoteAnchor: noteAnchor, moveNote: moveNoteCard, moveCommentCard,
@@ -384,7 +387,7 @@ export function Reader(props: ReaderProps) {
       beginSaveAs: () => { void beginSaveAs() },
       reload: () => { void act(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
     }}
-    floating={{ statuses: floatingStatuses, explanation: overlays.explanationStatus }}
+    floating={{ statuses: floatingStatuses, mode: activeModeStatus, explanation: overlays.explanationStatus }}
     question={overlays.question} comment={overlays.comment} note={overlays.note}
     pages={{
       scrollRef, onScroll: updateScrolledPage, mode, setDraggingPage,

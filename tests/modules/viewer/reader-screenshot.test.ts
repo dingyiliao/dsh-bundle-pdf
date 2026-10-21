@@ -3,7 +3,6 @@ import test from 'node:test'
 import { capturePdfRegion } from '../../../src/modules/viewer/rendering/reader-screenshot.ts'
 import type { ReaderDocument, ReaderPage, ReaderRenderOptions, ReaderRenderTask } from '../../../src/modules/viewer/ports/reader-document.ts'
 import type { NativeViewport } from '../../../src/modules/viewer/index.ts'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
 
 function fakePage(render: (options: ReaderRenderOptions) => ReaderRenderTask, view = [0, 0, 100, 100]): ReaderPage {
   return {
@@ -60,7 +59,7 @@ test('region screenshot clips reversed PDF coordinates, caps scale and releases 
     assert.equal(result.blob, png)
     assert.deepEqual([result.width, result.height], [20, 20])
     assert.equal(calls.length, 1)
-    assert.equal(calls[0].annotations, true)
+    assert.equal(calls[0].annotations, false)
     assert.deepEqual(calls[0].transform, [1, 0, 0, 1, -180, -180])
     assert.deepEqual([canvases[0].width, canvases[0].height], [0, 0])
   })
@@ -123,42 +122,17 @@ test('huge region screenshot respects both canvas dimension and total pixel limi
   })
 })
 
-test('region screenshot repairs native markup and replaces native note icons with reader markers', async () => {
-  const draws: unknown[][] = []
-  const operations: string[] = []
-  const context = new Proxy({} as CanvasRenderingContext2D, {
-    get: (_target, key) => (...args: unknown[]) => {
-      operations.push(String(key))
-      if (key === 'drawImage') draws.push(args)
-    },
-    set: () => true,
-  })
-  const annotation = (id: string, subtype: string, rect: [number, number, number, number]): PdfAnnotation =>
-    ({ id, page: 1, subtype, rect, flags: 0, supported: true, editable: true })
-  const removed = annotation('removed', 'Highlight', [10, 10, 20, 20])
-  const retained = annotation('retained', 'Highlight', [15, 15, 19, 19])
-  const existingNote = annotation('existing-note', 'Text', [16, 16, 20, 20])
-  const newMark = annotation('new-mark', 'Underline', [30, 30, 35, 35])
-  const newNote = annotation('new-note', 'Text', [40, 40, 45, 45])
-  const sourceAnnotations = [removed, retained, existingNote]
-  const annotations = [retained, existingNote, newMark, newNote]
+test('region screenshot requests bare PDF pixels and never composites annotation markers', async () => {
   const calls: ReaderRenderOptions[] = []
-  let cancelCount = 0
   const page = fakePage(options => {
     calls.push(options)
-    return { promise: Promise.resolve(), cancel: () => { cancelCount++ } }
+    return { promise: Promise.resolve(), cancel() {} }
   })
   const png = new Blob(['png'], { type: 'image/png' })
   await withCanvas(callback => callback(png), async canvases => {
-    const result = await capturePdfRegion(fakeDocument(page), 1, [0, 0, 50, 50], { annotations, sourceAnnotations })
+    const result = await capturePdfRegion(fakeDocument(page), 1, [0, 0, 50, 50])
     assert.equal(result.blob, png)
-    assert.deepEqual(calls.map(call => call.annotations), [true, false])
-    assert.equal(draws.length, 2, 'the old markup and original note icon are cleaned separately')
-    assert.ok(operations.includes('fill'))
-    assert.ok(operations.includes('stroke'))
-    assert.equal(operations.filter(operation => operation === 'fillText').length, 2,
-      'both the existing and newly added notes use the same reader marker')
-    assert.equal(cancelCount, 1)
-    assert.deepEqual(canvases.map(canvas => [canvas.width, canvas.height]), [[0, 0], [0, 0]])
-  }, context)
+    assert.deepEqual(calls.map(call => call.annotations), [false])
+    assert.deepEqual(canvases.map(canvas => [canvas.width, canvas.height]), [[0, 0]])
+  })
 })

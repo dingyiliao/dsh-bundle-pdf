@@ -1,5 +1,7 @@
-import React, { useId, useLayoutEffect, useRef, type ReactNode } from 'react'
+import React, { useId, useLayoutEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { MIN_NOTE_CARD_HEIGHT, MIN_NOTE_CARD_WIDTH, readNoteCardSize, saveNoteCardSize,
+  type NoteCardSize } from '../model/note-card-size.js'
 
 export interface AnnotationCommentCardProps {
   /** The scrollable PDF reading column, excluding the sidebar. */
@@ -14,6 +16,9 @@ export interface AnnotationCommentCardProps {
   /** Notes use the same bounded floating-card placement, but never draw a connector. */
   connector?: boolean
   cardKind?: 'comment' | 'note'
+  noteColor?: string
+  sizeKey?: string
+  resizeLabel?: string
   /** Persist a note anchor or comment-card placement after a drag. */
   onMove?(delta: { x: number; y: number }, position: { left: number; top: number }): boolean | Promise<boolean>
   /** Fired once when a previously hidden card becomes visible. */
@@ -31,7 +36,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 /** Keep one comment attached to its PDF mark without making the page wider. */
 export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label, children, connectorColor,
-  connector: connectorEnabled = true, cardKind = 'comment', onMove, onVisible }: AnnotationCommentCardProps) {
+  connector: connectorEnabled = true, cardKind = 'comment', noteColor, sizeKey, resizeLabel, onMove, onVisible }: AnnotationCommentCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const connectorRef = useRef<SVGSVGElement>(null)
   const pathRef = useRef<SVGPathElement>(null)
@@ -39,6 +44,8 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
   const scheduleRef = useRef<(() => void) | null>(null)
   const dragOffsetRef = useRef({ x: 0, y: 0 })
   const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; offsetX: number; offsetY: number } | null>(null)
+  const sizeRef = useRef<NoteCardSize | null>(null)
+  const resizeRef = useRef<{ pointerId: number; x: number; y: number; width: number; height: number } | null>(null)
   const anchorRef = useRef(getAnchor)
   anchorRef.current = getAnchor
   const positionRef = useRef(getPosition)
@@ -54,6 +61,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
   // A reused floating-card instance must not carry a note drag into a mark's
   // comment placement (or vice versa). They have different anchors and owners.
   useLayoutEffect(() => { dragOffsetRef.current = { x: 0, y: 0 } }, [cardKind])
+  useLayoutEffect(() => { sizeRef.current = readNoteCardSize(sizeKey); refreshRef.current?.() }, [sizeKey])
 
   useLayoutEffect(() => {
     const card = cardRef.current
@@ -111,13 +119,18 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
       const rightRoom = rightEdge - anchor.right - GAP
       const leftRoom = anchor.left - leftEdge - GAP
       const sideRoom = rightRoom >= MIN_SIDE_WIDTH ? rightRoom : leftRoom >= MIN_SIDE_WIDTH ? leftRoom : 0
-      const width = Math.min(MAX_WIDTH, sideRoom || rightEdge - leftEdge)
+      const availableWidth = rightEdge - leftEdge
+      const width = Math.min(cardKind === 'note' ? sizeRef.current?.width ?? MAX_WIDTH : MAX_WIDTH,
+        cardKind === 'note' ? availableWidth : sideRoom || availableWidth)
       if (width < 80 || bottomEdge - topEdge < 60) { hide(); return }
 
       // Measure the real content after constraining it to this reader viewport.
       // No state update is needed on scroll or zoom; only the DOM position moves.
       card.style.width = `${width}px`
       card.style.maxHeight = `${bottomEdge - topEdge}px`
+      card.style.minHeight = cardKind === 'note' ? `${Math.min(MIN_NOTE_CARD_HEIGHT, bottomEdge - topEdge)}px` : ''
+      card.style.height = cardKind === 'note' && sizeRef.current
+        ? `${Math.min(sizeRef.current.height, bottomEdge - topEdge)}px` : ''
       const height = card.offsetHeight
       const belowRoom = bottomEdge - anchor.bottom - GAP
       const aboveRoom = anchor.top - topEdge - GAP
@@ -235,6 +248,15 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.stopPropagation()
     if (movingRef.current || event.button !== 0 || event.isPrimary === false || !(event.target instanceof Element)) return
+    if (cardKind === 'note' && event.target.closest('[data-note-card-resize-handle]')) {
+      event.preventDefault()
+      const bounds = event.currentTarget.getBoundingClientRect()
+      resizeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+        width: bounds.width, height: bounds.height }
+      event.currentTarget.dataset.resizing = 'true'
+      try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* Embedded test hosts may not support capture. */ }
+      return
+    }
     const handle = event.target.closest('[data-comment-card-drag-handle]')
     if (!handle || event.target.closest('button:not([data-comment-card-drag-handle])')) return
     event.preventDefault()
@@ -246,12 +268,29 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
     scheduleRef.current?.()
   }
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current
+    if (resize?.pointerId === event.pointerId) {
+      const bounds = viewport?.getBoundingClientRect()
+      const card = cardRef.current?.getBoundingClientRect()
+      const maxWidth = bounds && card ? Math.max(MIN_NOTE_CARD_WIDTH, bounds.right - card.left - EDGE) : Infinity
+      const maxHeight = bounds && card ? Math.max(MIN_NOTE_CARD_HEIGHT, bounds.bottom - card.top - EDGE) : Infinity
+      sizeRef.current = { width: clamp(resize.width + event.clientX - resize.x, MIN_NOTE_CARD_WIDTH, maxWidth),
+        height: clamp(resize.height + event.clientY - resize.y, MIN_NOTE_CARD_HEIGHT, maxHeight) }
+      refreshRef.current?.()
+      return
+    }
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dragOffsetRef.current = { x: drag.offsetX + event.clientX - drag.x, y: drag.offsetY + event.clientY - drag.y }
     scheduleRef.current?.()
   }
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (resizeRef.current?.pointerId === event.pointerId) {
+      resizeRef.current = null
+      delete event.currentTarget.dataset.resizing
+      if (sizeKey && sizeRef.current) saveNoteCardSize(sizeKey, sizeRef.current)
+      return
+    }
     const drag = dragRef.current
     if (drag?.pointerId !== event.pointerId) return
     dragRef.current = null
@@ -277,6 +316,24 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
     })()
   }
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (cardKind === 'note' && event.target instanceof Element && event.target.closest('[data-note-card-resize-handle]')) {
+      const step = event.shiftKey ? 10 : 2
+      const delta = event.key === 'ArrowLeft' ? [-step, 0] : event.key === 'ArrowRight' ? [step, 0]
+        : event.key === 'ArrowUp' ? [0, -step] : event.key === 'ArrowDown' ? [0, step] : null
+      if (!delta) return
+      event.preventDefault()
+      event.stopPropagation()
+      const card = cardRef.current?.getBoundingClientRect()
+      const bounds = viewport?.getBoundingClientRect()
+      if (!card || !bounds) return
+      sizeRef.current = { width: clamp((sizeRef.current?.width ?? card.width) + delta[0]!, MIN_NOTE_CARD_WIDTH,
+        Math.max(MIN_NOTE_CARD_WIDTH, bounds.right - card.left - EDGE)),
+      height: clamp((sizeRef.current?.height ?? card.height) + delta[1]!, MIN_NOTE_CARD_HEIGHT,
+        Math.max(MIN_NOTE_CARD_HEIGHT, bounds.bottom - card.top - EDGE)) }
+      refreshRef.current?.()
+      if (sizeKey) saveNoteCardSize(sizeKey, sizeRef.current)
+      return
+    }
     if (!(event.target instanceof Element) || !event.target.closest('[data-comment-card-drag-handle]')) return
     const distance = event.shiftKey ? 10 : 2
     const delta = event.key === 'ArrowLeft' ? [-distance, 0]
@@ -322,8 +379,14 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
     </svg>}
     <div ref={cardRef} className="dsh-pdf-page-comment-card" data-visible="false" aria-hidden="true"
       data-card-kind={cardKind}
+      style={cardKind === 'note' && noteColor ? { '--pdf-note-tint': noteColor } as CSSProperties : undefined}
       role="dialog" aria-label={label} aria-modal="false"
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={endDrag}
-      onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={onKeyDown}>{children}</div>
+      onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={onKeyDown}>{children}
+      {cardKind === 'note' && <button type="button" className="dsh-pdf-note-resize" data-note-card-resize-handle=""
+        aria-label={resizeLabel ?? label} title={resizeLabel ?? label}>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5"
+          strokeLinecap="round" aria-hidden="true"><path d="m7 13 6-6M11 13l2-2" /></svg>
+      </button>}</div>
   </>, readerRoot)
 }

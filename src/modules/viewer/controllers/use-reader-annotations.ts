@@ -46,6 +46,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   const [noteCardOpen, setNoteCardOpen] = useState(false)
   const [noteMode, setNoteMode] = useState<'read' | 'new' | 'edit'>('read')
   const [noteText, setNoteText] = useState('')
+  const [noteColor, setNoteColor] = useState('#ffd900')
   const [commentMode, setCommentMode] = useState<'read' | 'new' | 'edit'>('read')
   const [editingCommentId, setEditingCommentId] = useState<string>()
   const [comment, setComment] = useState('')
@@ -114,6 +115,11 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     if (noteMode === 'read' && selectedNote) setNoteText(selectedNote.contents ?? '')
   }, [noteMode, selectedNote?.id, selectedNote?.contents])
   useEffect(() => {
+    if (!selectedNote) return
+    const key = `${ownerSequence.current}:${snapshot?.id}:${selectedNote.id}`
+    if (!colorChanges.current.has(key)) setNoteColor(colorToHex(selectedNote.color))
+  }, [selectedNote?.id, selectedNote?.color?.join(',')])
+  useEffect(() => {
     if (!selected || selected.subtype === 'Text') return
     const key = `${ownerSequence.current}:${snapshot?.id}:${selected.id}`
     if (!colorChanges.current.has(key)) setAnnotationColor(colorToHex(selected.color))
@@ -177,7 +183,10 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
         if (colorChanges.current.get(key) === queued) {
           colorChanges.current.delete(key)
           if (selectedAnnotationRef.current === queued.annotationId && queued.owner === ownerSequence.current
-            && currentSnapshot()?.id === queued.documentId) setAnnotationColor(colorToHex(annotation.color))
+            && currentSnapshot()?.id === queued.documentId) {
+            if (isStandaloneNote(annotation)) setNoteColor(colorToHex(annotation.color))
+            else setAnnotationColor(colorToHex(annotation.color))
+          }
         }
       } else if (colorChanges.current.get(key)?.color === appliedColor) colorChanges.current.delete(key)
     }
@@ -193,6 +202,18 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     const firstChange = colorChanges.current.size === 0
     const key = `${ownerSequence.current}:${snapshot.id}:${selected.id}`
     colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id, annotationId: selected.id, color: nextColor })
+    setColorPending(true)
+    scheduleColorFlush(firstChange && Date.now() - lastColorWrite.current > 300 ? 0 : 200)
+  }
+
+  const updateNoteColor = (nextColor: string) => {
+    if (!/^#[0-9a-f]{6}$/i.test(nextColor) || !selectedNote?.editable || !snapshot
+      || snapshot.document.readOnly) return
+    setNoteColor(nextColor)
+    const firstChange = colorChanges.current.size === 0
+    const key = `${ownerSequence.current}:${snapshot.id}:${selectedNote.id}`
+    colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id,
+      annotationId: selectedNote.id, color: nextColor })
     setColorPending(true)
     scheduleColorFlush(firstChange && Date.now() - lastColorWrite.current > 300 ? 0 : 200)
   }
@@ -388,6 +409,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     setCommentMode('read')
     setEditingCommentId(undefined)
     setNoteText('')
+    setNoteColor('#ffd900')
     setNoteMode('new')
     setNoteCardOpen(true)
     setNoteFocusRequest(current => current + 1)
@@ -436,7 +458,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     selectedNote, pendingNote, setPendingNote, commentCardOpen, setCommentCardOpen, commentMode, editingCommentId,
     thread, editingComment, blockedCommentDeleteIds, editComment, deleteComment, comment, setComment,
     annotationColor, setAnnotationColor, commentFocusRequest, setCommentFocusRequest, commentTextarea,
-    noteCardOpen, noteMode, noteText, setNoteText, noteTextarea, noteFocusRequest,
+    noteCardOpen, noteMode, noteText, setNoteText, noteColor, updateNoteColor, noteTextarea, noteFocusRequest,
     colorPending, displayAnnotations, annotationItems, annotationsByPage, renderedAnnotationsByPage,
     hasUnappliedAnnotation, resetResource, resetContent, clearPending, updateColor, openCommentEditor,
     onCommentCardVisible, closeCommentEditor, dismissCommentCard, applyComment,

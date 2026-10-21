@@ -11,7 +11,6 @@ export interface OcrTranscriptPanelProps {
 export function OcrTranscriptPanel({ result, region, t }: OcrTranscriptPanelProps) {
   const [copyError, setCopyError] = useState('')
   return <div className="dsh-pdf-ocr-panel">
-    <div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.ocr')}</h3></div>
     {!result ? <p className="dsh-pdf-muted">{t('reader.ocrHint')}</p> : <>
       <div className="dsh-pdf-ocr-meta">
         <span>{t('reader.page')} {result.page} · {t(region ? 'reader.ocrRegion' : 'reader.ocrPage')}</span>

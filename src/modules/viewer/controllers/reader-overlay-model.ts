@@ -7,6 +7,7 @@ export interface ReaderOverlayModelOptions {
   explanation: ReturnType<typeof useReaderExplanation>
   annotations: ReturnType<typeof useReaderAnnotations>
   viewport: HTMLElement | null
+  documentPath?: string
   mode: 'text' | 'region' | 'note'
   regionPurpose: 'explanation' | 'screenshot' | null
   editable: boolean
@@ -29,12 +30,12 @@ type OverlayModel = Pick<ReaderViewProps, 'question' | 'comment' | 'note'> & {
 
 /** Convert feature-owned draft/editor state into anchored overlay bindings. */
 export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayModel {
-  const { explanation, annotations, viewport, mode, regionPurpose, editable, readOnly,
+  const { explanation, annotations, viewport, documentPath, mode, regionPurpose, editable, readOnly,
     getExplanationAnchor, getCommentAnchor, getCommentPosition, getNoteAnchor, moveNote, moveCommentCard,
     applyComment, closeComment, applyNote, t } = options
   const { active, editor, sending, saving, imageAvailability } = explanation
   const { selected, selectedNote, pendingNote, commentCardOpen, noteCardOpen, noteMode, noteText,
-    noteTextarea, commentMode, editingCommentId, thread, comment, commentTextarea } = annotations
+    noteColor, noteTextarea, commentMode, editingCommentId, thread, comment, commentTextarea } = annotations
   const explanationStatus = active ? {
     count: active.excerpts.length, max: MAX_EXPLANATION_EXCERPTS,
     sending: sending || saving, disabled: !!editor,
@@ -78,13 +79,15 @@ export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayM
   } : undefined
   const noteBinding = noteCardOpen && (selectedNote || pendingNote) ? {
     key: selectedNote?.id ?? pendingNote!.id,
+    sizeKey: JSON.stringify([documentPath ?? '', selectedNote?.id ?? pendingNote!.id]),
     viewport, getAnchor: getNoteAnchor, onVisible: annotations.onNoteCardVisible,
-    onMove: moveNote,
+    onMove: moveNote, noteColor,
     editor: {
       note: selectedNote, mode: noteMode, readOnly,
       editable: editable && (!!pendingNote || !!selectedNote?.editable),
-      value: noteText, textarea: noteTextarea,
+      value: noteText, color: noteColor, textarea: noteTextarea,
       onChange: annotations.setNoteText, onEdit: annotations.editNote,
+      onColorChange: annotations.updateNoteColor,
       onSave: applyNote, onCancel: annotations.cancelNoteEdit,
       onDismiss: annotations.dismissNoteCard,
       onDelete: () => { void annotations.deleteNote() }, t,

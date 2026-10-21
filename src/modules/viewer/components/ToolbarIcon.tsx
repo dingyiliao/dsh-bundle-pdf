@@ -1,7 +1,7 @@
 import React from 'react'
 
 export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'comment' | 'commentedMark' | 'move' | 'close'
-  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'chevronDown'
+  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send'
 
 /** Compact reader controls use the same stroke weight as the sidebar rail. */
 export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: string }) {
@@ -37,8 +37,14 @@ export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: 
       <path d="M17 5c-1.4-1-3.2-1.5-5-1.5-3.3 0-5.5 1.6-5.5 4 0 1.9 1.5 2.9 5.5 4 4 1.1 5.5 2.1 5.5 4.1S15.3 20 12 20c-2.2 0-4.2-.6-5.5-1.7M3 12h18" />
     </> : name === 'note' ? <>
       <path d="M4 3h16v13l-5 5H4V3ZM15 21v-5h5M8 8h8M8 12h5" />
+    </> : name === 'crop' ? <>
+      <path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5" />
     </> : name === 'chevronDown' ? <>
       <path d="m6 9 6 6 6-6" />
+    </> : name === 'activity' ? <>
+      <path d="M4 6h12M4 12h16M4 18h12" /><circle cx="19" cy="6" r="1.5" fill="currentColor" stroke="none" />
+    </> : name === 'send' ? <>
+      <path d="m4 19 16-7L4 5l2 7-2 7ZM6 12h8" />
     </> : name === 'tools' ? <>
       <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
       <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />

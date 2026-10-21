@@ -3,13 +3,16 @@ import {
   addHighlightQuickColor,
   editHighlightQuickColor,
   HIGHLIGHT_QUICK_COLORS_KEY,
+  NOTE_QUICK_COLORS_KEY,
   MAX_HIGHLIGHT_QUICK_COLORS,
   normalizeHighlightColor,
   readHighlightQuickColors,
+  readNoteQuickColors,
   removeHighlightQuickColor,
 } from '../model/highlight-colors.js'
 
 interface AnnotationColorBarProps {
+  palette?: 'markup' | 'note'
   value: string
   disabled?: boolean
   /** Clicking a saved color immediately applies it to the current selection. */
@@ -21,20 +24,22 @@ interface AnnotationColorBarProps {
   t: (key: string) => string
 }
 
-const changeEvent = 'dsh-pdf:highlight-quick-colors-change'
+const changeEvent = 'dsh-pdf:quick-colors-change'
 
-function persistColors(colors: string[]): void {
-  try { localStorage.setItem(HIGHLIGHT_QUICK_COLORS_KEY, JSON.stringify(colors)) } catch { /* Private-mode storage may be unavailable. */ }
-  window.dispatchEvent(new CustomEvent<string[]>(changeEvent, { detail: colors }))
+function persistColors(key: string, colors: string[]): void {
+  try { localStorage.setItem(key, JSON.stringify(colors)) } catch { /* Private-mode storage may be unavailable. */ }
+  window.dispatchEvent(new CustomEvent(changeEvent, { detail: { key, colors } }))
 }
 
 /**
  * Five editable quick slots plus a native palette. No silent replacement at
- * capacity. Highlight, underline and strike-out share one bar and one saved
- * palette, so the mark color is chosen the same way whichever action created it.
+ * capacity. Text marks share one saved palette; standalone notes reuse the
+ * interaction with a separate set so paper colors do not edit markup colors.
  */
-export function AnnotationColorBar({ value, disabled = false, onQuickColor, onPaletteColor, label, t }: AnnotationColorBarProps) {
-  const [colors, setColors] = useState(readHighlightQuickColors)
+export function AnnotationColorBar({ palette = 'markup', value, disabled = false, onQuickColor, onPaletteColor, label, t }: AnnotationColorBarProps) {
+  const storageKey = palette === 'note' ? NOTE_QUICK_COLORS_KEY : HIGHLIGHT_QUICK_COLORS_KEY
+  const readColors = palette === 'note' ? readNoteQuickColors : readHighlightQuickColors
+  const [colors, setColors] = useState(readColors)
   const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [menuError, setMenuError] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
@@ -47,11 +52,13 @@ export function AnnotationColorBar({ value, disabled = false, onQuickColor, onPa
 
   useEffect(() => {
     const synchronize = (event: Event) => {
-      const next = event instanceof CustomEvent ? event.detail as string[] : readHighlightQuickColors()
+      const detail = event instanceof CustomEvent ? event.detail as { key: string; colors: string[] } : null
+      if (detail && detail.key !== storageKey) return
+      const next = detail?.colors ?? readColors()
       setColors((current) => current.length === next.length && current.every((color, index) => color === next[index]) ? current : next)
     }
     const synchronizeStorage = (event: StorageEvent) => {
-      if (event.key === HIGHLIGHT_QUICK_COLORS_KEY || event.key === null) synchronize(event)
+      if (event.key === storageKey || event.key === null) synchronize(event)
     }
     window.addEventListener(changeEvent, synchronize)
     window.addEventListener('storage', synchronizeStorage)
@@ -59,7 +66,7 @@ export function AnnotationColorBar({ value, disabled = false, onQuickColor, onPa
       window.removeEventListener(changeEvent, synchronize)
       window.removeEventListener('storage', synchronizeStorage)
     }
-  }, [])
+  }, [storageKey, readColors])
 
   useEffect(() => {
     if (menuIndex === null) return
@@ -87,10 +94,10 @@ export function AnnotationColorBar({ value, disabled = false, onQuickColor, onPa
 
   const updateColors = (next: string[]) => {
     setColors(next)
-    persistColors(next)
+    persistColors(storageKey, next)
   }
 
-  return <div className="dsh-pdf-highlight-colors" data-testid="pdf-highlight-colors" role="group" aria-label={t('reader.quickColor')}>
+  return <div className="dsh-pdf-highlight-colors" data-testid={palette === 'note' ? 'pdf-note-colors' : 'pdf-highlight-colors'} role="group" aria-label={t('reader.quickColor')}>
     {colors.length > 0 && <div className="dsh-pdf-highlight-swatches">
       {colors.map((hex, index) => <span className="dsh-pdf-highlight-swatch-wrap" key={index}>
         <button type="button" ref={(element) => { swatchRefs.current[index] = element }}

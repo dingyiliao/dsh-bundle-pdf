@@ -5,7 +5,7 @@ import type { PdfOcrTextPart } from '../../../ocr/mapping.js'
 import type { ExplanationExcerpt } from '../../explanation/index.js'
 import { annotationPolygons, markupOverlappingPatches, pendingMarkupAnnotations, visibleAnnotation,
   type AnnotationPoint } from '../model/reader-annotations.js'
-import { noteMarkerViewportPosition, pdfRectToViewport, type PageViewport, type ReaderSelection } from '../model/reader-selection.js'
+import { colorToHex, noteMarkerViewportPosition, pdfRectToViewport, type PageViewport, type ReaderSelection } from '../model/reader-selection.js'
 import { namedLinkAction, safeLinkUrl, type PdfLink } from '../model/reader-links.js'
 import { mergeSelectionRects } from '../model/selection-highlight.js'
 import { createAnnotationThreadIndex, isStandaloneNote } from '../model/annotation-thread.js'
@@ -101,7 +101,8 @@ function NoteMarker({ annotation, viewport, width, height, pageNumber, onOpen, o
   }
 
   return <button ref={marker} type="button" className="dsh-pdf-note-marker" data-pdf-note-id={annotation.id}
-    style={{ left, top, width: NOTE_MARKER_SIZE, height: NOTE_MARKER_SIZE }}
+    style={{ left, top, width: NOTE_MARKER_SIZE, height: NOTE_MARKER_SIZE,
+      '--pdf-note-tint': colorToHex(annotation.color) } as React.CSSProperties}
     title={annotation.contents || label} aria-label={annotation.contents || label}
     data-editable={annotation.editable && !!onMove ? 'true' : 'false'}
     onPointerDown={event => {

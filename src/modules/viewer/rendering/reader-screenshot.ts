@@ -1,7 +1,6 @@
-import type { PdfAnnotation, PdfRect } from '../../../core/pdf-types.js'
+import type { PdfRect } from '../../../core/pdf-types.js'
 import type { ReaderDocument, ReaderRenderTask } from '../ports/reader-document.js'
 import { pdfRectToViewport } from '../model/reader-selection.js'
-import { markupOverlappingPatches, nativeAppearancePatchBoxes, paintMarkupAnnotations, paintNoteMarkers, pendingMarkupAnnotations } from '../model/reader-annotations.js'
 
 export interface CapturePdfRegionOptions {
   signal?: AbortSignal
@@ -9,9 +8,6 @@ export interface CapturePdfRegionOptions {
   rotation?: number
   /** Pixels per PDF unit before UserUnit; defaults to 2 and cannot exceed 2. */
   scale?: number
-  /** Current operation projection and immutable annotations baked into pdf. */
-  annotations?: readonly PdfAnnotation[]
-  sourceAnnotations?: readonly PdfAnnotation[]
 }
 
 export interface PdfRegionScreenshot {
@@ -51,8 +47,8 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /**
  * Render a PDF-space rectangle directly into a clipped PNG canvas. The supplied
  * native document is shared with the reader; this never changes PDF data or frees
- * shared page resources. Native appearances outside edited regions are retained;
- * operation changes are composed over the unannotated page only where needed.
+ * shared page resources. The crop contains PDF page content only, never native
+ * annotation appearances or Reader overlay marks, notes, and comment markers.
  */
 export async function capturePdfRegion(
   pdf: ReaderDocument,
@@ -136,53 +132,12 @@ export async function capturePdfRegion(
       canvas,
       viewport,
       transform: [1, 0, 0, 1, -left, -top],
-      annotations: true,
+      annotations: false,
       background: '#ffffff',
     })
     await task.promise
     renderFinished = true
     signal?.throwIfAborted()
-    if (options.annotations && options.sourceAnnotations) {
-      const context = canvas.getContext('2d')!
-      const patchBoxes = nativeAppearancePatchBoxes(options.annotations, options.sourceAnnotations, viewport)
-      if (patchBoxes.length) {
-        const clean = document.createElement('canvas')
-        clean.width = width
-        clean.height = height
-        const bare = page.render({ canvas: clean, viewport, transform: [1, 0, 0, 1, -left, -top],
-          annotations: false, background: '#ffffff' })
-        const cancelBare = () => bare.cancel()
-        signal?.addEventListener('abort', cancelBare, { once: true })
-        try {
-          await bare.promise
-          signal?.throwIfAborted()
-          for (const box of patchBoxes) {
-            const x = Math.max(left, box[0]), y = Math.max(top, box[1])
-            const right = Math.min(left + width, box[2]), bottom = Math.min(top + height, box[3])
-            if (right <= x || bottom <= y) continue
-            context.drawImage(clean, x - left, y - top, right - x, bottom - y,
-              x - left, y - top, right - x, bottom - y)
-          }
-        } finally {
-          signal?.removeEventListener('abort', cancelBare)
-          bare.cancel()
-          clean.width = 0
-          clean.height = 0
-        }
-      }
-      const pending = pendingMarkupAnnotations(options.annotations, options.sourceAnnotations)
-      const overlapping = markupOverlappingPatches(options.annotations, pending, patchBoxes, viewport)
-      if (overlapping.length) {
-        context.save()
-        context.beginPath()
-        for (const box of patchBoxes) context.rect(box[0] - left, box[1] - top, box[2] - box[0], box[3] - box[1])
-        context.clip()
-        paintMarkupAnnotations(context, overlapping, viewport, left, top)
-        context.restore()
-      }
-      paintMarkupAnnotations(context, pending, viewport, left, top)
-      paintNoteMarkers(context, options.annotations, viewport, left, top)
-    }
     const blob = await abortable(new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((result) => {
         if (result) resolve(result)

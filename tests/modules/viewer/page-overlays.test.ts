@@ -44,6 +44,17 @@ test('context layers keep note, comment, explanation and region targets distinct
   assert.match(html, /dsh-pdf-region/)
 })
 
+test('a note marker uses the PDF annotation color', () => {
+  const note: PdfAnnotation = { id: 'blue-note', page: 1, subtype: 'Text', rect: [10, 20, 30, 40],
+    color: [0.2, 0.4, 0.8], flags: 4, supported: true, editable: true }
+  const html = renderToStaticMarkup(React.createElement(PageContextOverlays, {
+    near: true, textActive: false, viewport, width: 300, height: 400, pageNumber: 1, mode: 'text',
+    annotations: [note], selection: null, ocrWords: [], ocrHost: React.createRef<HTMLDivElement>(),
+    keyboardLinks: [], drag: null, followLink() {}, onAnnotation() {}, t: key => key,
+  }))
+  assert.match(html, /data-pdf-note-id="blue-note"[^>]*--pdf-note-tint:#3366cc/)
+})
+
 test('opening a standalone note replaces its page marker without showing a selection outline', () => {
   const note: PdfAnnotation = { id: 'note-open', page: 1, subtype: 'Text', rect: [10, 20, 30, 40],
     flags: 0, supported: true, editable: true, contents: 'A standalone note' }

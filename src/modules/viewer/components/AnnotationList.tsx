@@ -140,7 +140,8 @@ function AnnotationPageGroup({ group, first, end, pinned, totalRows, selectedId,
           className={`dsh-pdf-comment-item${selectedId === annotation.id ? ' is-selected' : ''}`}
           aria-pressed={selectedId === annotation.id} onClick={() => onSelect(annotation)}>
           {isStandaloneNote(annotation)
-            ? <span className="dsh-pdf-comment-note-icon" aria-hidden="true"><ToolbarIcon name="note" /></span>
+            ? <span className="dsh-pdf-comment-note-icon" aria-hidden="true"
+              style={{ '--pdf-note-tint': colorToHex(annotation.color) } as React.CSSProperties}><ToolbarIcon name="note" /></span>
             : <span className="dsh-pdf-comment-color" style={{ backgroundColor: colorToHex(annotation.color) }} aria-hidden="true" />}
           <span className="dsh-pdf-comment-content">
             <span className="dsh-pdf-comment-preview" title={primary}>{primary}</span>

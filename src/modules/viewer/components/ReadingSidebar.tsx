@@ -3,7 +3,8 @@ import type { ReaderDocument } from '../ports/reader-document.js'
 import { BookmarkPanel, type BookmarkAccess } from './BookmarkPanel.js'
 import { PageThumbnailPanel } from './PageThumbnailPanel.js'
 
-export type ReadingSidebarSection = 'pages' | 'bookmarks' | 'translation' | 'annotations' | 'search' | 'ocr'
+export const readingSidebarSections = ['pages', 'bookmarks', 'annotations', 'search', 'translation', 'ocr'] as const
+export type ReadingSidebarSection = typeof readingSidebarSections[number]
 
 export interface ReadingSidebarProps {
   activeSection: ReadingSidebarSection
@@ -25,7 +26,7 @@ export interface ReadingSidebarProps {
   t: (key: string) => string
 }
 
-const sections: readonly ReadingSidebarSection[] = ['pages', 'bookmarks', 'annotations', 'search', 'translation', 'ocr']
+const sections = readingSidebarSections
 const railWidth = 44
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
@@ -132,6 +133,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   const tabs = useRef(new Map<ReadingSidebarSection, HTMLButtonElement>())
   const drag = useRef<{ pointerId: number; x: number; width: number }>()
   const frame = useRef(0)
+  const toggleMotionTimer = useRef<ReturnType<typeof setTimeout>>()
   const requestedWidth = useRef(320)
   const [width, setWidth] = useState(320)
   const [maximumWidth, setMaximumWidth] = useState(420)
@@ -144,19 +146,29 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     const sidebar = root.current
     const reader = sidebar?.closest<HTMLElement>('.dsh-pdf-reader')
     if (!sidebar || !reader) return
+    const content = reader.querySelector<HTMLElement>('.dsh-pdf-content')
     // The CSS max-width clamp can make the rendered sidebar narrower than its
     // requested width. Track its laid-out width so the floating toolbar reserves
     // exactly the space the panel occupies.
-    const updateWidth = () => reader.style.setProperty(
-      '--pdf-sidebar-open-width', `${sidebar.getBoundingClientRect().width}px`)
+    const updateWidth = () => {
+      // During the drawer transition, the target width is already published.
+      // Feeding each intermediate frame back into another right transition
+      // makes the floating controls lag behind and overlap the drawer.
+      if (sidebar.hasAttribute('data-toggle-motion')) return
+      reader.style.setProperty('--pdf-sidebar-open-width', `${sidebar.getBoundingClientRect().width}px`)
+      if (content) reader.style.setProperty('--pdf-sidebar-overlap',
+        `${Math.max(0, content.getBoundingClientRect().right - sidebar.getBoundingClientRect().left)}px`)
+    }
     const observer = new ResizeObserver(updateWidth)
     observer.observe(sidebar)
+    if (content) observer.observe(content)
     updateWidth()
     return () => {
       observer.disconnect()
       reader.style.removeProperty('--pdf-sidebar-open-width')
+      reader.style.removeProperty('--pdf-sidebar-overlap')
     }
-  }, [currentWidth])
+  }, [])
 
   useEffect(() => {
     const parent = root.current?.parentElement
@@ -176,6 +188,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     if (expanded || !drag.current) return
     if (divider.current?.hasPointerCapture(drag.current.pointerId)) divider.current.releasePointerCapture(drag.current.pointerId)
     drag.current = undefined
+    root.current?.removeAttribute('data-resizing')
   }, [expanded])
 
   useEffect(() => {
@@ -184,11 +197,35 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     const element = divider.current
     return () => {
       cancelAnimationFrame(frame.current)
+      clearTimeout(toggleMotionTimer.current)
       if (drag.current && element?.hasPointerCapture(drag.current.pointerId)) {
         element.releasePointerCapture(drag.current.pointerId)
       }
+      root.current?.removeAttribute('data-resizing')
     }
   }, [])
+
+  const animateToggle = () => {
+    const sidebar = root.current
+    if (!sidebar) return
+    const reader = sidebar.closest<HTMLElement>('.dsh-pdf-reader')
+    const targetWidth = expanded ? railWidth : expandedWidth
+    sidebar.setAttribute('data-toggle-motion', '')
+    // Install the transition before changing its target. When both updates
+    // land in one style recalculation Chromium jumps directly to the end.
+    reader?.querySelector<HTMLElement>('.dsh-pdf-floating-controls')?.getBoundingClientRect()
+    reader?.style.setProperty('--pdf-sidebar-open-width', `${targetWidth}px`)
+    const content = reader?.querySelector<HTMLElement>('.dsh-pdf-content')
+    if (reader && content) reader.style.setProperty('--pdf-sidebar-overlap',
+      `${Math.max(0, content.getBoundingClientRect().right - reader.getBoundingClientRect().right + 12 + targetWidth)}px`)
+    clearTimeout(toggleMotionTimer.current)
+    toggleMotionTimer.current = setTimeout(() => {
+      sidebar.removeAttribute('data-toggle-motion')
+      reader?.style.setProperty('--pdf-sidebar-open-width', `${sidebar.getBoundingClientRect().width}px`)
+      if (reader && content) reader.style.setProperty('--pdf-sidebar-overlap',
+        `${Math.max(0, content.getBoundingClientRect().right - sidebar.getBoundingClientRect().left)}px`)
+    }, 320)
+  }
 
   const resize = (nextWidth: number) => {
     requestedWidth.current = Math.max(minimumWidth, Math.min(maximumWidth, nextWidth))
@@ -200,6 +237,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
 
   const select = (section: ReadingSidebarSection) => {
     onSectionChange(section)
+    if (!expanded) animateToggle()
     onExpandedChange(true)
   }
 
@@ -213,7 +251,10 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
       onPointerDown={event => {
         if (event.button !== 0) return
         event.preventDefault()
+        clearTimeout(toggleMotionTimer.current)
+        root.current?.removeAttribute('data-toggle-motion')
         drag.current = { pointerId: event.pointerId, x: event.clientX, width: currentWidth }
+        root.current?.setAttribute('data-resizing', '')
         event.currentTarget.setPointerCapture(event.pointerId)
       }}
       onPointerMove={event => {
@@ -223,10 +264,11 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
       onPointerUp={event => {
         if (drag.current?.pointerId !== event.pointerId) return
         drag.current = undefined
+        root.current?.removeAttribute('data-resizing')
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
       }}
-      onPointerCancel={() => { drag.current = undefined }}
-      onLostPointerCapture={() => { drag.current = undefined }}
+      onPointerCancel={() => { drag.current = undefined; root.current?.removeAttribute('data-resizing') }}
+      onLostPointerCapture={() => { drag.current = undefined; root.current?.removeAttribute('data-resizing') }}
       onKeyDown={event => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
           event.preventDefault()
@@ -257,7 +299,10 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     <div className="dsh-pdf-sidebar-rail">
       <button type="button" className="dsh-pdf-sidebar-toggle" aria-controls={panelId} aria-expanded={expanded}
         aria-label={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')}
-        title={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => onExpandedChange(!expanded)}>
+        title={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => {
+          animateToggle()
+          onExpandedChange(!expanded)
+        }}>
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
           strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m9 5 7 7-7 7" />

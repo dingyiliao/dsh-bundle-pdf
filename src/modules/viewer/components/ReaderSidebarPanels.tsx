@@ -46,7 +46,8 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
         onDeselect={clearAnnotation}
         onSelect={annotation => { selectAnnotation(annotation.id)
           jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }} />,
-    ocr: <ScrollablePanel className="dsh-pdf-ocr-scroll" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
+    ocr: <ScrollablePanel className="dsh-pdf-ocr-scroll" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
+      header={<div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.ocr')}</h3></div>}>
       <OcrTranscriptPanel result={activeTranscript?.result ?? null} region={!!activeTranscript?.region} t={t} />
     </ScrollablePanel>,
     search: <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}

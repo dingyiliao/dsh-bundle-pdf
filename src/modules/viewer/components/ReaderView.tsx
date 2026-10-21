@@ -2,8 +2,9 @@ import React, { type ReactNode, type RefObject } from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import { AnnotationCommentCard } from './AnnotationCommentCard.js'
 import { ExplanationQuestionEditor, type ExplanationQuestionEditorProps } from './ExplanationQuestionEditor.js'
-import { ExplanationStatusBar, type ExplanationStatusBarProps } from './ExplanationStatusBar.js'
-import { FloatingStatusRail, type FloatingStatus } from './FloatingStatusRail.js'
+import type { ExplanationStatusBarProps } from './ExplanationStatusBar.js'
+import type { FloatingStatus } from './FloatingStatusRail.js'
+import type { ReaderModeStatus } from './ReaderModeControl.js'
 import { OverlayScrollbars } from './OverlayScrollbar.js'
 import { ReadingSidebar, type ReadingSidebarProps } from './ReadingSidebar.js'
 import { ScreenshotPreview, type ScreenshotPreviewProps } from './ScreenshotPreview.js'
@@ -32,7 +33,7 @@ export interface ReaderViewProps {
   selectionBar: ReaderSelectionBarProps
   annotationBar: ReaderAnnotationBarProps
   alerts: ReaderAlertsProps
-  floating: { statuses: readonly FloatingStatus[]; explanation?: ExplanationStatusBarProps }
+  floating: { statuses: readonly FloatingStatus[]; mode?: ReaderModeStatus | null; explanation?: ExplanationStatusBarProps }
   question?: { key: string; props: ExplanationQuestionEditorProps }
   comment?: {
     key: string
@@ -45,10 +46,12 @@ export interface ReaderViewProps {
   }
   note?: {
     key: string
+    sizeKey: string
     viewport: HTMLElement | null
     getAnchor(): DOMRect | null
     onVisible(): void
     onMove(delta: { x: number; y: number }): boolean | Promise<boolean>
+    noteColor: string
     editor: ReaderNoteEditorProps
   }
   pages: {
@@ -103,10 +106,8 @@ export function ReaderView(props: ReaderViewProps) {
       <div className="dsh-pdf-content" aria-label={t('reader.sidebar.pdfContent')}>
         <div className="dsh-pdf-floating-controls">
           <div className="dsh-pdf-floating-controls-layout">
-            <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions} />
-            <FloatingStatusRail statuses={floating.statuses}>
-              {floating.explanation && <ExplanationStatusBar {...floating.explanation} />}
-            </FloatingStatusRail>
+            <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions}
+              mode={floating.mode} explanation={floating.explanation} statuses={floating.statuses} />
           </div>
         </div>
         {question && <ExplanationQuestionEditor key={question.key} {...question.props} />}
@@ -115,7 +116,8 @@ export function ReaderView(props: ReaderViewProps) {
           <ReaderCommentEditor {...comment.editor} />
         </AnnotationCommentCard>}
         {note && <AnnotationCommentCard key={note.key} viewport={note.viewport} getAnchor={note.getAnchor}
-          label={t('reader.note')} onVisible={note.onVisible} onMove={note.onMove} connector={false} cardKind="note">
+          label={t('reader.note')} onVisible={note.onVisible} onMove={note.onMove} connector={false}
+          cardKind="note" noteColor={note.noteColor} sizeKey={note.sizeKey} resizeLabel={t('reader.resizeNote')}>
           <ReaderNoteEditor {...note.editor} />
         </AnnotationCommentCard>}
         <div className="dsh-pdf-scroll" ref={pages.scrollRef} tabIndex={0} onScroll={pages.onScroll}

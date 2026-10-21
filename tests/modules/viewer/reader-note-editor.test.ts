@@ -6,8 +6,8 @@ import { ReaderNoteEditor, type ReaderNoteEditorProps } from '../../../src/modul
 
 function props(overrides: Partial<ReaderNoteEditorProps> = {}): ReaderNoteEditorProps {
   return {
-    mode: 'new', readOnly: false, editable: true, value: '', textarea: createRef<HTMLTextAreaElement>(),
-    onChange() {}, onEdit() {}, onSave() {}, onCancel() {}, onDismiss() {}, onDelete() {}, t: key => key,
+    mode: 'new', readOnly: false, editable: true, value: '', color: '#ffd900', textarea: createRef<HTMLTextAreaElement>(),
+    onChange() {}, onColorChange() {}, onEdit() {}, onSave() {}, onCancel() {}, onDismiss() {}, onDelete() {}, t: key => key,
     ...overrides,
   }
 }
@@ -32,5 +32,17 @@ test('saved note editor displays one standalone note with edit affordance', () =
   assert.match(html, /reader\.editNote/)
   assert.match(html, /reader\.moveNoteCard/)
   assert.match(html, /reader\.delete/)
+  assert.match(html, /reader\.changeNoteColor/)
+  assert.match(html, /class="dsh-pdf-note-color"/)
+  assert.match(html, /aria-expanded="false"/)
+  assert.doesNotMatch(html, /type="color"/, 'the native palette opens only after choosing the color control')
+  assert.ok(html.indexOf('dsh-pdf-note-color') < html.indexOf('dsh-pdf-comment-editor-delete'))
   assert.doesNotMatch(html, /reader\.comments|dsh-pdf-comment-thread|reader\.annotationColor/)
+})
+
+test('read-only notes do not expose color editing or deletion', () => {
+  const html = renderToStaticMarkup(React.createElement(ReaderNoteEditor, props({
+    mode: 'read', readOnly: true, editable: true,
+  })))
+  assert.doesNotMatch(html, /dsh-pdf-note-color|dsh-pdf-comment-editor-delete/)
 })

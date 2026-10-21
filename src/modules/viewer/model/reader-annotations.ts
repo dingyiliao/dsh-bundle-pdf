@@ -1,4 +1,4 @@
-import { DEFAULT_HIGHLIGHT_OPACITY, type PdfAnnotation } from '../../../core/pdf-types.js'
+import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import type { PageViewport } from './reader-selection.js'
 import { isReply } from './annotation-thread.js'
 
@@ -204,68 +204,4 @@ export function markupOverlappingPatches(
   return current.filter(annotation => markupTypes.has(annotation.subtype) && visibleAnnotation(annotation)
     && !pendingIds.has(annotation.id) && annotationPatchBoxes(annotation, viewport).some(box => patches.some(patch =>
       box[0] < patch[2] && box[2] > patch[0] && box[1] < patch[3] && box[3] > patch[1])))
-}
-
-/** Paint an SVG-equivalent edit preview into a cropped screenshot canvas. */
-export function paintMarkupAnnotations(
-  context: CanvasRenderingContext2D, annotations: readonly PdfAnnotation[], viewport: PageViewport,
-  offsetX = 0, offsetY = 0,
-): void {
-  context.save()
-  context.translate(-offsetX, -offsetY)
-  for (const annotation of annotations) {
-    if (!markupTypes.has(annotation.subtype) || !visibleAnnotation(annotation)) continue
-    const color = `rgb(${(annotation.color ?? [1, 0.85, 0]).map(value => Math.round(value * 255)).join(',')})`
-    const polygons = annotationPolygons(annotation, viewport)
-    context.save()
-    context.strokeStyle = color
-    context.fillStyle = color
-    context.globalAlpha = annotation.opacity ?? (annotation.subtype === 'Highlight' ? DEFAULT_HIGHLIGHT_OPACITY : 1)
-    if (annotation.subtype === 'Highlight') context.globalCompositeOperation = 'multiply'
-    if (annotation.subtype === 'Highlight') context.beginPath()
-    for (const points of polygons) {
-      if (annotation.subtype === 'Highlight') {
-        points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y))
-        context.closePath()
-      } else {
-        const ratio = annotation.subtype === 'StrikeOut' ? 0.5 : 0.06
-        const interpolate = (bottom: AnnotationPoint, top: AnnotationPoint): AnnotationPoint =>
-          [bottom[0] + (top[0] - bottom[0]) * ratio, bottom[1] + (top[1] - bottom[1]) * ratio]
-        const first = interpolate(points[3], points[0]), second = interpolate(points[2], points[1])
-        context.lineWidth = Math.max(0.75, Math.hypot(points[0][0] - points[3][0], points[0][1] - points[3][1]) * 0.065)
-        context.beginPath()
-        context.moveTo(first[0], first[1])
-        context.lineTo(second[0], second[1])
-        context.stroke()
-      }
-    }
-    if (annotation.subtype === 'Highlight') context.fill()
-    context.restore()
-  }
-  context.restore()
-}
-
-export function paintNoteMarkers(
-  context: CanvasRenderingContext2D, annotations: readonly PdfAnnotation[], viewport: PageViewport,
-  offsetX = 0, offsetY = 0,
-): void {
-  context.save()
-  context.translate(-offsetX, -offsetY)
-  for (const annotation of annotations) {
-    if (annotation.subtype !== 'Text' || isReply(annotation) || !annotation.rect || !visibleAnnotation(annotation)) continue
-    const box = annotationPatchBoxes(annotation, viewport)[0]
-    if (!box) continue
-    const [left, top, right, bottom] = box
-    const width = Math.max(12, right - left - 4), height = Math.max(12, bottom - top - 4)
-    // Match the note palette in reader.css for captured regions sent to the model.
-    context.fillStyle = '#fff1a8'
-    context.strokeStyle = '#a88100'
-    context.lineWidth = 1
-    context.fillRect(left + 2, top + 2, width, height)
-    context.strokeRect(left + 2.5, top + 2.5, width - 1, height - 1)
-    context.fillStyle = '#443500'
-    context.font = '14px sans-serif'
-    context.fillText('▤', left + 3, top + Math.min(height - 1, 14))
-  }
-  context.restore()
 }

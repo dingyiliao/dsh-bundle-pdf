@@ -72,12 +72,9 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
       const height = editor.offsetHeight
       const center = anchor.left + anchor.width / 2
       const left = Math.min(Math.max(center - width / 2, leftEdge), Math.max(leftEdge, rightEdge - width))
-      const status = viewport.closest('.dsh-pdf-reader')?.querySelector<HTMLElement>('.dsh-pdf-explanation-status')
-      const statusBottom = status?.getBoundingClientRect().bottom ?? 0
-      const rail = viewport.closest('.dsh-pdf-reader')?.querySelector<HTMLElement>('.dsh-pdf-floating-status-rail')
-      const railBottom = rail ? Math.max(0, ...Array.from(rail.children, item => item.getBoundingClientRect())
-        .filter(item => item.left < left + width && item.right > left).map(item => item.bottom)) : 0
-      const topEdge = Math.max(bounds.top + EDGE_GAP, statusBottom + (status ? 8 : 0), railBottom + (railBottom ? 8 : 0))
+      const controls = viewport.closest('.dsh-pdf-reader')?.querySelector<HTMLElement>('.dsh-pdf-floating-controls-layout')
+      const controlsBottom = controls?.getBoundingClientRect().bottom ?? 0
+      const topEdge = Math.max(bounds.top + EDGE_GAP, controlsBottom + (controls ? 8 : 0))
       const bottomEdge = Math.min(bounds.bottom - EDGE_GAP, window.innerHeight - EDGE_GAP)
       const above = anchor.top - height - ANCHOR_GAP
       const below = anchor.bottom + ANCHOR_GAP
@@ -104,16 +101,16 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
     observer?.observe(viewport)
     observer?.observe(editor)
     observer?.observe(portalRoot)
-    const rail = portalRoot.querySelector<HTMLElement>('.dsh-pdf-floating-status-rail')
-    if (rail) observer?.observe(rail)
-    const railObserver = rail ? new MutationObserver(schedule) : null
-    if (rail) railObserver?.observe(rail, { childList: true, subtree: true, characterData: true })
+    const controls = portalRoot.querySelector<HTMLElement>('.dsh-pdf-floating-controls-layout')
+    if (controls) observer?.observe(controls)
+    const controlsObserver = controls ? new MutationObserver(schedule) : null
+    if (controls) controlsObserver?.observe(controls, { childList: true, subtree: true, characterData: true })
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     return () => {
       if (frame) cancelAnimationFrame(frame)
       observer?.disconnect()
-      railObserver?.disconnect()
+      controlsObserver?.disconnect()
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
     }

@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, type ReactNode } from 'react'
+import React, { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { ToolbarIcon } from './ToolbarIcon.js'
 
 export interface FloatingStatusAction {
   label: string
@@ -21,7 +22,7 @@ export interface FloatingStatus {
   onExpire?: () => void
 }
 
-/** Existing statuses keep their places; newly visible ones join at the right. */
+/** Existing tasks keep their places while work starts and finishes independently. */
 export function floatingStatusOrder(previous: readonly string[], active: readonly string[]): string[] {
   const activeSet = new Set(active)
   const ordered = previous.filter(id => activeSet.has(id))
@@ -48,15 +49,18 @@ function FloatingStatusCard({ status }: { status: FloatingStatus }) {
     data-status-id={status.id} data-kind={status.kind} title={status.title}>
     {status.activity === 'progress' && <span className="dsh-pdf-floating-status-spinner" aria-hidden="true" />}
     {status.activity === 'dot' && <span className="dsh-pdf-floating-status-dot" aria-hidden="true" />}
-    <span className="dsh-pdf-floating-status-content" role="status" aria-live="polite" aria-atomic="true">{status.content}</span>
+    <span className="dsh-pdf-floating-status-content">{status.content}</span>
     {status.actions?.map((action, index) => <button key={`${action.label}:${index}`} type="button" disabled={action.disabled}
       onClick={action.onClick}>{action.label}</button>)}
   </div>
 }
 
-/** Layout and lifetime for temporary reader feedback, independent of the page layout. */
-export function FloatingStatusRail({ statuses, children }: { statuses: readonly FloatingStatus[]; children?: ReactNode }) {
+/** One fixed activity anchor; task timers run even when its popover is closed. */
+export function FloatingStatusRail({ statuses, t }: { statuses: readonly FloatingStatus[]; t(key: string): string }) {
   const [order, setOrder] = useState<string[]>([])
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const popoverId = useId()
   const activeIds = statuses.map(status => status.id)
   const activeKey = JSON.stringify(activeIds)
   const ordered = floatingStatusOrder(order, activeIds)
@@ -66,10 +70,36 @@ export function FloatingStatusRail({ statuses, children }: { statuses: readonly 
       return next.length === previous.length && next.every((id, index) => id === previous[index]) ? previous : next
     })
   }, [activeKey])
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
   const byId = new Map(statuses.map(status => [status.id, status]))
-  return <div className="dsh-pdf-floating-status-rail">
-    {children}
-    {ordered.map(id => byId.get(id)).filter((status): status is FloatingStatus => !!status)
-      .map(status => <FloatingStatusCard key={status.id} status={status} />)}
+  const visible = ordered.map(id => byId.get(id)).filter((status): status is FloatingStatus => !!status)
+  const primary = visible.find(status => status.kind === 'error')
+    ?? visible.find(status => status.activity === 'progress') ?? visible.at(-1)
+  return <div className="dsh-pdf-floating-status-rail" ref={root} onKeyDown={event => {
+    if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); root.current?.querySelector('button')?.focus() }
+  }}>
+    <button type="button" className={`dsh-pdf-activity-trigger${primary?.id === 'save' ? ' dsh-pdf-save-feedback' : ''}`}
+      data-kind={primary?.kind} aria-label={`${t('reader.activity')}${visible.length ? `: ${visible.length}` : ''}`}
+      aria-expanded={open} aria-controls={popoverId} data-tooltip={t('reader.activity')}
+      onClick={() => setOpen(value => !value)}>
+      {primary?.activity === 'progress' ? <span className="dsh-pdf-floating-status-spinner" aria-hidden="true" />
+        : <ToolbarIcon name="activity" />}
+      <span className="dsh-pdf-activity-summary" role="status" aria-live="polite" aria-atomic="true">
+        {primary?.content ?? t('reader.activity')}
+      </span>
+      {visible.length > 1 && <span className="dsh-pdf-activity-count" aria-hidden="true">{visible.length}</span>}
+    </button>
+    <div id={popoverId} className="dsh-pdf-activity-popover" role="group" aria-label={t('reader.activity')}
+      hidden={!open}>
+      {visible.length ? visible.map(status => <FloatingStatusCard key={status.id} status={status} />)
+        : <p className="dsh-pdf-activity-empty">{t('reader.activityEmpty')}</p>}
+    </div>
   </div>
 }

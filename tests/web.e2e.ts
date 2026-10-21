@@ -64,14 +64,16 @@ async function expectIconOnlyMainToolbar(toolbar: Locator) {
         }
       })
     const toolsLabel = element.querySelector<HTMLElement>('.dsh-pdf-tools > summary .dsh-pdf-toolbar-label')!
-    return { actions, toolsLabelWidth: toolsLabel.getBoundingClientRect().width }
+    const toolsIcon = element.querySelector<HTMLElement>('.dsh-pdf-tools > summary .dsh-pdf-toolbar-icon')!
+    return { actions, toolsLabelWidth: toolsLabel.getBoundingClientRect().width,
+      toolsIconWidth: toolsIcon.getBoundingClientRect().width }
   })
-  expect(presentation.actions.length).toBeGreaterThan(0)
+  // At ultra-narrow widths, all actions move into Tools beside the fixed activity button.
   expect(presentation.actions.every(action => action.ariaLabel?.trim())).toBe(true)
   expect(presentation.actions.every(action => action.tooltip?.trim())).toBe(true)
   expect(presentation.actions.every(action => action.hasIcon)).toBe(true)
   expect(presentation.actions.every(action => !action.visibleLabel)).toBe(true)
-  expect(presentation.toolsLabelWidth).toBeGreaterThan(20)
+  expect(presentation.toolsLabelWidth > 20 || presentation.toolsIconWidth > 15).toBe(true)
 }
 
 /** Sample the composited browser image, not just the SVG's declared fill. */
@@ -93,8 +95,8 @@ async function highlightPixels(page: BrowserPage) {
   }, [...png])
 }
 
-/** The screenshot action uses the separate Canvas annotation painter. */
-async function screenshotHighlightPixels(page: BrowserPage) {
+/** Sample the raw PDF crop returned by the screenshot action. */
+async function screenshotPagePixels(page: BrowserPage) {
   return page.getByRole('dialog', { name: 'Screenshot preview' }).getByRole('img').evaluate(async element => {
     const image = element as HTMLImageElement
     await image.decode()
@@ -120,6 +122,13 @@ function expectUniformHighlight(rows: Awaited<ReturnType<typeof highlightPixels>
       expect(Math.max(...row.left.map((channel, index) => Math.abs(channel - other[index]))), JSON.stringify(row))
         .toBeLessThanOrEqual(4)
     }
+  }
+}
+
+function expectUnannotatedPage(rows: Awaited<ReturnType<typeof screenshotPagePixels>>) {
+  for (const row of rows) for (const sample of [row.left, row.overlap, row.right]) {
+    expect(Math.max(...sample.map((channel, index) => Math.abs(channel - row.paper[index]))), JSON.stringify(row))
+      .toBeLessThanOrEqual(4)
   }
 }
 
@@ -322,7 +331,7 @@ async function savedHighlightColors(path: string): Promise<number[][]> {
   return colors
 }
 
-it('keeps concurrent floating statuses ordered, cancelable, timed, and inside a narrow reader', async () => {
+it('keeps concurrent activity ordered, cancelable, timed, and inside a narrow reader', async () => {
   const bundle = await build({ entryPoints: [join(ROOT, 'tests', 'modules', 'viewer', 'floating-status.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const browser = await launchBrowser()
@@ -333,7 +342,7 @@ it('keeps concurrent floating statuses ordered, cancelable, timed, and inside a 
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
     const rail = page.locator('.dsh-pdf-floating-status-rail')
     await rail.waitFor({ state: 'attached' })
-    const set = (items: { id: string; label: string; durationMs?: number; occurrence?: number }[]) => page.evaluate(next => {
+    const set = (items: { id: string; label: string; actionLabel?: string; durationMs?: number; occurrence?: number }[]) => page.evaluate(next => {
       const fixture = (window as typeof window & { __pdfFloatingStatusFixture?: { set(items: typeof next): void } }).__pdfFloatingStatusFixture
       fixture!.set(next)
     }, items)
@@ -341,38 +350,48 @@ it('keeps concurrent floating statuses ordered, cancelable, timed, and inside a 
     await expect.poll(() => rail.locator('.dsh-pdf-floating-status').count()).toBe(1)
     await set([{ id: 'ocr', label: 'Recognizing text' }, { id: 'save', label: 'Saved', occurrence: 1 }])
     await expect.poll(() => rail.locator('.dsh-pdf-floating-status').count()).toBe(2)
+    const activity = rail.locator('.dsh-pdf-activity-trigger')
+    expect(await activity.getAttribute('aria-expanded')).toBe('false')
+    await activity.click()
     expect(await rail.locator('.dsh-pdf-floating-status-content').allTextContents()).toEqual(['Saved', 'Recognizing text'])
+    const ocrLayout = await rail.locator('.dsh-pdf-floating-status').nth(1).evaluate(element => {
+      const content = element.querySelector('.dsh-pdf-floating-status-content')!.getBoundingClientRect()
+      const action = element.querySelector('button')!.getBoundingClientRect()
+      const popover = element.parentElement!.getBoundingClientRect()
+      return { contentRight: content.right, actionLeft: action.left, actionRight: action.right, popoverRight: popover.right }
+    })
+    expect(ocrLayout.actionLeft - ocrLayout.contentRight).toBeGreaterThanOrEqual(8)
+    expect(ocrLayout.popoverRight - ocrLayout.actionRight).toBeLessThanOrEqual(16)
     const [first, second] = await Promise.all([rail.locator('.dsh-pdf-floating-status').nth(0).boundingBox(),
       rail.locator('.dsh-pdf-floating-status').nth(1).boundingBox()])
-    expect(first!.x).toBeLessThan(second!.x)
+    expect(first!.y).toBeLessThan(second!.y)
     await page.setViewportSize({ width: 1000, height: 600 })
     await expect.poll(async () => {
-      const [wideStatus, wideToolbar] = await Promise.all([
-        rail.locator('.dsh-pdf-floating-status').first().boundingBox(),
+      const [wideActivity, wideToolbar] = await Promise.all([
+        activity.boundingBox(),
         page.locator('.dsh-pdf-main-toolbar').boundingBox(),
       ])
-      return Math.abs(wideStatus!.y - wideToolbar!.y)
-    }).toBeLessThanOrEqual(2)
-    const [alignedToolbar, alignedContent, alignedStatuses] = await Promise.all([
+      return Math.abs(wideActivity!.y - wideToolbar!.y)
+    }).toBeLessThanOrEqual(8)
+    const [alignedToolbar, alignedContent, alignedActivity] = await Promise.all([
       page.locator('.dsh-pdf-main-toolbar').boundingBox(),
       page.locator('.dsh-pdf-content').boundingBox(),
-      rail.locator('.dsh-pdf-floating-status').evaluateAll(elements => elements.map(element => {
-        const { left, right } = element.getBoundingClientRect()
-        return { left, right }
-      })),
+      activity.boundingBox(),
     ])
-    expect(alignedStatuses.every(status => status.left >= alignedToolbar!.x + alignedToolbar!.width + 7),
-      JSON.stringify({ alignedToolbar, alignedContent, alignedStatuses })).toBe(true)
-    expect(alignedStatuses.every(status => status.right <= alignedContent!.x + alignedContent!.width - 11)).toBe(true)
+    expect(alignedActivity!.x).toBeGreaterThanOrEqual(alignedToolbar!.x)
+    expect(alignedActivity!.x + alignedActivity!.width).toBeLessThanOrEqual(alignedToolbar!.x + alignedToolbar!.width)
+    expect(alignedToolbar!.x + alignedToolbar!.width).toBeLessThanOrEqual(alignedContent!.x + alignedContent!.width - 11)
     if (process.env.DSH_PDF_FLOATING_PREVIEW_PATH) {
       await page.screenshot({ path: process.env.DSH_PDF_FLOATING_PREVIEW_PATH.replace(/\.png$/, '-aligned.png') })
     }
     await page.setViewportSize({ width: 700, height: 600 })
-    const [stackedToolbar, stackedRail, stackedContent] = await Promise.all([
-      page.locator('.dsh-pdf-main-toolbar').boundingBox(), rail.boundingBox(), page.locator('.dsh-pdf-content').boundingBox(),
+    const [narrowToolbar, narrowActivity, narrowContent] = await Promise.all([
+      page.locator('.dsh-pdf-main-toolbar').boundingBox(), activity.boundingBox(), page.locator('.dsh-pdf-content').boundingBox(),
     ])
-    expect(stackedRail!.y).toBeGreaterThanOrEqual(stackedToolbar!.y + stackedToolbar!.height + 7)
-    expect(stackedRail!.x + stackedRail!.width).toBeLessThanOrEqual(stackedContent!.x + stackedContent!.width - 11)
+    expect(Math.abs(narrowActivity!.y - narrowToolbar!.y)).toBeLessThanOrEqual(8)
+    expect(narrowActivity!.x).toBeGreaterThanOrEqual(narrowToolbar!.x)
+    expect(narrowActivity!.x + narrowActivity!.width).toBeLessThanOrEqual(narrowToolbar!.x + narrowToolbar!.width)
+    expect(narrowActivity!.x + narrowActivity!.width).toBeLessThanOrEqual(narrowContent!.x + narrowContent!.width - 11)
     await page.setViewportSize({ width: 1200, height: 600 })
     await rail.getByRole('button', { name: 'Cancel ocr' }).click()
     await expect.poll(() => rail.locator('.dsh-pdf-floating-status').count()).toBe(1)
@@ -394,18 +413,32 @@ it('keeps concurrent floating statuses ordered, cancelable, timed, and inside a 
     }))
     const contentRight = await page.locator('.dsh-pdf-content').evaluate(element => element.getBoundingClientRect().right)
     expect(bounds.every(item => item.right <= contentRight - 10)).toBe(true)
-    expect(Math.abs(Math.max(...bounds.map(item => item.right)) - contentRight + 12)).toBeLessThanOrEqual(2)
-    expect(bounds[0]!.top).toBeLessThanOrEqual(bounds[1]!.top)
+    const popoverRight = await rail.locator('.dsh-pdf-activity-popover').evaluate(element => element.getBoundingClientRect().right)
+    const popoverLeft = await rail.locator('.dsh-pdf-activity-popover').evaluate(element => element.getBoundingClientRect().left)
+    const contentLeft = await page.locator('.dsh-pdf-content').evaluate(element => element.getBoundingClientRect().left)
+    const toolbarRight = await page.locator('.dsh-pdf-main-toolbar').evaluate(element => element.getBoundingClientRect().right)
+    expect(popoverLeft).toBeGreaterThanOrEqual(contentLeft + 11)
+    expect(popoverRight).toBeLessThanOrEqual(toolbarRight)
+    expect(bounds[0]!.top).toBeLessThan(bounds[1]!.top)
     await page.setViewportSize({ width: 200, height: 600 })
     const tinyBounds = await rail.locator('.dsh-pdf-floating-status').evaluateAll(elements => elements.map(element => {
       const { left, right } = element.getBoundingClientRect()
       return { left, right }
     }))
     const tinyContent = await page.locator('.dsh-pdf-content').boundingBox()
-    expect(tinyBounds.every(item => item.left >= tinyContent!.x + 11)).toBe(true)
+    expect(tinyBounds.every(item => item.left >= tinyContent!.x + 11),
+      JSON.stringify({ tinyBounds, tinyContent, toolbar: await page.locator('.dsh-pdf-main-toolbar').boundingBox() })).toBe(true)
     expect(tinyBounds.every(item => item.right <= tinyContent!.x + tinyContent!.width - 11)).toBe(true)
     await page.setViewportSize({ width: 380, height: 600 })
     if (process.env.DSH_PDF_FLOATING_PREVIEW_PATH) await page.screenshot({ path: process.env.DSH_PDF_FLOATING_PREVIEW_PATH })
+    await page.setViewportSize({ width: 1000, height: 600 })
+    await set([{ id: 'ocr', label: '正在识别文字…', actionLabel: '取消' }])
+    await expect.poll(() => rail.locator('.dsh-pdf-floating-status').count()).toBe(1)
+    const ocrPopover = await rail.locator('.dsh-pdf-activity-popover').boundingBox()
+    expect(ocrPopover!.width).toBeLessThanOrEqual(220)
+    if (process.env.DSH_PDF_FLOATING_PREVIEW_PATH) {
+      await page.screenshot({ path: process.env.DSH_PDF_FLOATING_PREVIEW_PATH.replace(/\.png$/, '-ocr.png') })
+    }
   } finally { await browser.close() }
 })
 
@@ -576,7 +609,7 @@ it('requires a question before saving an explanation passage, then edits or remo
     await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first()
       .waitFor({ state: 'visible', timeout: 20_000 })
     const mainToolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
-    const statusRail = reader.locator('.dsh-pdf-floating-status-rail')
+    const statusRail = reader.locator('.dsh-pdf-main-toolbar')
     await mainToolbar.locator('.dsh-pdf-tools > summary').click()
     await mainToolbar.getByRole('button', { name: 'Note', exact: true }).click()
     await statusRail.locator('[data-status-id="note-mode"]').waitFor({ state: 'visible' })
@@ -600,8 +633,8 @@ it('requires a question before saving an explanation passage, then edits or remo
       const [regionToolbarBox, regionStatusBox, regionContentBox] = await Promise.all([
         mainToolbar.boundingBox(), regionStatus.boundingBox(), regionContent.boundingBox(),
       ])
-      expect(Math.abs(regionStatusBox!.y - regionToolbarBox!.y)).toBeLessThanOrEqual(2)
-      expect(regionStatusBox!.x).toBeGreaterThanOrEqual(regionToolbarBox!.x + regionToolbarBox!.width + 7)
+      expect(regionStatusBox!.y).toBeGreaterThanOrEqual(regionToolbarBox!.y)
+      expect(regionStatusBox!.x).toBeGreaterThanOrEqual(regionToolbarBox!.x)
       expect(regionStatusBox!.x + regionStatusBox!.width)
         .toBeLessThanOrEqual(regionContentBox!.x + regionContentBox!.width - 11)
     } finally {
@@ -616,6 +649,7 @@ it('requires a question before saving an explanation passage, then edits or remo
     expect(await reader.locator('.dsh-pdf-mode-region').count()).toBe(0)
     await mainToolbar.locator('.dsh-pdf-tools > summary').click()
     await mainToolbar.getByRole('button', { name: 'Start explanation mode' }).click()
+    const modeControl = mainToolbar.locator('.dsh-pdf-mode-explanation')
     const status = reader.getByRole('region', { name: 'Explain passages' })
     await status.waitFor({ state: 'visible' })
     expect(await statusRail.locator('[data-status-id="region-selection"]').count()).toBe(0)
@@ -624,22 +658,21 @@ it('requires a question before saving an explanation passage, then edits or remo
     expect(await mainToolbar.getByRole('button', { name: 'Region screenshot' }).isDisabled()).toBe(true)
     await mainToolbar.locator('.dsh-pdf-tools > summary').click()
     expect(await status.getByRole('button', { name: 'Send for explanation' }).isDisabled()).toBe(true)
-    const [toolbarBox, statusBox, railBox, contentBox, controlsBox] = await Promise.all([
-      mainToolbar.boundingBox(), status.boundingBox(), statusRail.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
+    const [toolbarBox, statusBox, modeBox, contentBox, controlsBox] = await Promise.all([
+      mainToolbar.boundingBox(), status.boundingBox(), modeControl.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
       reader.locator('.dsh-pdf-floating-controls').boundingBox(),
     ])
     expect(toolbarBox).not.toBeNull()
     expect(statusBox).not.toBeNull()
-    expect(railBox).not.toBeNull()
+    expect(modeBox).not.toBeNull()
     expect(contentBox).not.toBeNull()
     expect(controlsBox).not.toBeNull()
-    expect(Math.abs(railBox!.x + railBox!.width - controlsBox!.x - controlsBox!.width)).toBeLessThanOrEqual(2)
+    expect(modeBox!.x).toBeGreaterThanOrEqual(toolbarBox!.x)
+    expect(modeBox!.x + modeBox!.width).toBeLessThanOrEqual(toolbarBox!.x + toolbarBox!.width)
     expect(statusBox!.x).toBeGreaterThanOrEqual(contentBox!.x + 11)
     expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(contentBox!.x + contentBox!.width - 11)
-    if (controlsBox!.width > 800) {
-      expect(Math.abs(statusBox!.y - toolbarBox!.y)).toBeLessThanOrEqual(2)
-      expect(statusBox!.x).toBeGreaterThanOrEqual(toolbarBox!.x + toolbarBox!.width + 7)
-    } else expect(statusBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y + toolbarBox!.height + 7)
+    expect(statusBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y)
+    expect(statusBox!.y + statusBox!.height).toBeLessThanOrEqual(toolbarBox!.y + toolbarBox!.height)
     if (process.env.DSH_PDF_FLOATING_PREVIEW_PATH) {
       await reader.screenshot({ path: process.env.DSH_PDF_FLOATING_PREVIEW_PATH.replace(/\.png$/, '-explanation.png') })
     }
@@ -655,8 +688,9 @@ it('requires a question before saving an explanation passage, then edits or remo
         mainToolbar.boundingBox(), status.boundingBox(), content.boundingBox(),
       ])
       expect(wideContent!.width).toBe(1000)
-      expect(Math.abs(wideStatus!.y - wideToolbar!.y)).toBeLessThanOrEqual(2)
-      expect(wideStatus!.x).toBeGreaterThanOrEqual(wideToolbar!.x + wideToolbar!.width + 7)
+      expect(wideStatus!.y).toBeGreaterThanOrEqual(wideToolbar!.y)
+      expect(wideStatus!.y + wideStatus!.height).toBeLessThanOrEqual(wideToolbar!.y + wideToolbar!.height)
+      expect(wideStatus!.x).toBeGreaterThanOrEqual(wideToolbar!.x)
       expect(wideStatus!.x + wideStatus!.width).toBeLessThanOrEqual(wideContent!.x + wideContent!.width - 11)
       const overflowingActions = await status.evaluate(element => {
         const card = element.getBoundingClientRect()
@@ -669,6 +703,22 @@ it('requires a question before saving an explanation passage, then edits or remo
         if (style === null) element.removeAttribute('style')
         else element.setAttribute('style', style)
       }, originalContentStyle)
+    }
+    const originalReaderStyle = await reader.getAttribute('style')
+    try {
+      await reader.evaluate(element => { (element as HTMLElement).style.width = '365px' })
+      await expect.poll(() => reader.evaluate(element => element.clientWidth)).toBe(365)
+      const [narrowToolbar, narrowMode, narrowSidebar] = await Promise.all([
+        mainToolbar.boundingBox(), modeControl.boundingBox(), reader.locator('.dsh-pdf-sidebar').boundingBox(),
+      ])
+      expect(narrowToolbar).not.toBeNull(); expect(narrowMode).not.toBeNull(); expect(narrowSidebar).not.toBeNull()
+      expect(narrowMode!.x + narrowMode!.width).toBeLessThanOrEqual(narrowToolbar!.x + narrowToolbar!.width)
+      expect(narrowToolbar!.x + narrowToolbar!.width).toBeLessThanOrEqual(narrowSidebar!.x - 11)
+    } finally {
+      await reader.evaluate((element, style) => {
+        if (style === null) element.removeAttribute('style')
+        else element.setAttribute('style', style)
+      }, originalReaderStyle)
     }
     const selectFirstWordForExplanation = () => reader.evaluate(element => {
       const layer = element.querySelector('[data-pdf-page="1"] [data-pdf-text="active"]')
@@ -928,6 +978,7 @@ it('stops accepting explanation passages and image regions at the visible item l
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
     await toolbar.locator('.dsh-pdf-tools > summary').click()
     await toolbar.getByRole('button', { name: 'Start explanation mode' }).click()
+    const modeControl = toolbar.locator('.dsh-pdf-mode-explanation')
     const status = reader.getByRole('region', { name: 'Explain passages' })
     await status.waitFor({ state: 'visible' })
     const editor = reader.getByRole('dialog', { name: 'Ask about this passage' })
@@ -959,7 +1010,7 @@ it('stops accepting explanation passages and image regions at the visible item l
       await editor.getByRole('textbox').fill(`Question ${index} about the same passage?`)
       await editor.getByRole('button', { name: 'Save', exact: true }).click()
       await editor.waitFor({ state: 'hidden' })
-      await expect.poll(() => status.locator('.dsh-pdf-explanation-status-count').textContent()).toBe(`${index}/20`)
+      await expect.poll(() => modeControl.textContent()).toContain(`${index}/20`)
     }
     await expect.poll(() => status.getByRole('button', { name: 'Select image region' }).isEnabled()).toBe(true)
     await selectPassage()
@@ -968,7 +1019,7 @@ it('stops accepting explanation passages and image regions at the visible item l
     expect(await editor.count()).toBe(0)
     await status.getByRole('button', { name: 'Select image region' }).click()
     await expect.poll(() => reader.locator('.dsh-pdf-mode-region').count()).toBe(0)
-    expect(await status.locator('.dsh-pdf-explanation-status-count').textContent()).toBe('20/20')
+    expect(await modeControl.textContent()).toContain('20/20')
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -977,6 +1028,7 @@ it('stops accepting explanation passages and image regions at the visible item l
 }, 90_000)
 
 it('recognizes the current PDF page through Host OCR and searches its page-level transcript', async () => {
+  const recognizedText = ['Quartz OCR proof on page one.', ...Array(80).fill('Additional recognized line.')].join('\n')
   const scaffold = await launchWebScaffold({
     profile: { packages: [{ dir: ROOT, enabled: true }] },
     replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
@@ -1019,7 +1071,7 @@ it('recognizes the current PDF page through Host OCR and searches its page-level
         yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', message: 'fixture rate limit' } } }
         return
       }
-      yield { type: 'text-delta', index: 0, text: 'Quartz OCR proof on page one.' }
+      yield { type: 'text-delta', index: 0, text: recognizedText }
       yield { type: 'finish', reason: { kind: 'stop' } }
     }
 
@@ -1046,7 +1098,19 @@ it('recognizes the current PDF page through Host OCR and searches its page-level
     await expect.poll(() => recognizePage.isEnabled(), { timeout: 10_000 }).toBe(true)
     await recognizePage.click()
     await expect.poll(() => reader.locator('.dsh-pdf-ocr-transcript').textContent(), { timeout: 20_000 })
-      .toBe('Quartz OCR proof on page one.')
+      .toBe(recognizedText)
+    if (process.env.PDF_OCR_SCREENSHOT_PATH) {
+      await reader.locator('.dsh-pdf-ocr-scroll > .dsh-pdf-panel-heading').waitFor({ state: 'visible' })
+      await expect.poll(() => reader.locator('.dsh-pdf-sidebar').evaluate(element => element.hasAttribute('data-toggle-motion'))).toBe(false)
+      await page.waitForTimeout(450)
+      await reader.locator('.dsh-pdf-sidebar').screenshot({ path: process.env.PDF_OCR_SCREENSHOT_PATH })
+    }
+    const ocrScroll = reader.locator('.dsh-pdf-ocr-scroll > .dsh-pdf-panel-scroll')
+    const ocrHeading = reader.locator('.dsh-pdf-ocr-scroll > .dsh-pdf-panel-heading')
+    await ocrScroll.evaluate(element => { element.scrollTop = element.scrollHeight })
+    expect(await ocrScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    const [headingBox, scrollBox] = await Promise.all([ocrHeading.boundingBox(), ocrScroll.boundingBox()])
+    expect(scrollBox!.y).toBeGreaterThanOrEqual(headingBox!.y + headingBox!.height - 1)
     expect(modelCalls).toEqual([{ provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp',
       sessionId, mediaType: 'image/png' }])
     expect(await reader.locator('.dsh-pdf-ocr-meta').innerText()).toContain('Page 1')
@@ -1065,17 +1129,18 @@ it('recognizes the current PDF page through Host OCR and searches its page-level
     await recognizePage.click()
     await expect.poll(() => modelCalls.length).toBe(2)
     const ocrStatus = reader.locator('[data-status-id="ocr"]')
+    await reader.locator('.dsh-pdf-activity-trigger').click()
     await ocrStatus.waitFor({ state: 'visible' })
     await ocrStatus.getByRole('button', { name: 'Cancel' }).click()
     await ocrStatus.waitFor({ state: 'hidden', timeout: 10_000 })
-    expect(await reader.locator('.dsh-pdf-ocr-transcript').textContent()).toBe('Quartz OCR proof on page one.')
+    expect(await reader.locator('.dsh-pdf-ocr-transcript').textContent()).toBe(recognizedText)
     holdNextOcr = false
     failNextOcr = true
     await toolbar.locator('.dsh-pdf-tools > summary').click()
     await recognizePage.click()
     const ocrError = reader.locator('.dsh-pdf-error[role="alert"]')
     await expect.poll(() => ocrError.textContent()).toContain('request or usage limit')
-    expect(await reader.locator('.dsh-pdf-ocr-transcript').textContent()).toBe('Quartz OCR proof on page one.')
+    expect(await reader.locator('.dsh-pdf-ocr-transcript').textContent()).toBe(recognizedText)
     await ocrError.getByRole('button', { name: 'Dismiss' }).click()
     await ocrError.waitFor({ state: 'hidden' })
     expect(tripwire.pageErrors).toEqual([])
@@ -1114,12 +1179,14 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     const sidebarMaterial = await sidebar.evaluate(element => {
       const style = getComputedStyle(element.querySelector('.dsh-pdf-sidebar-shell')!)
       const position = getComputedStyle(element)
+      const frame = getComputedStyle(element, '::after')
       const heading = element.querySelector('.dsh-pdf-panel-heading')!
       const footer = element.querySelector('.dsh-pdf-sidebar-footer')!
       return { backgroundImage: style.backgroundImage, backgroundColor: style.backgroundColor,
         backdropFilter: style.backdropFilter, position: position.position,
         top: position.top, right: position.right, bottom: position.bottom,
-        borderRadius: style.borderRadius, boxShadow: style.boxShadow,
+        borderRadius: style.borderRadius, shellBorder: style.borderTopWidth, shellShadow: style.boxShadow,
+        frameBorder: frame.borderTopWidth, frameShadow: frame.boxShadow,
         heading: getComputedStyle(heading).backgroundColor,
         footer: getComputedStyle(footer).backgroundColor }
     })
@@ -1130,7 +1197,10 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     expect(sidebarMaterial.right).toBe('12px')
     expect(sidebarMaterial.bottom).toBe(sidebarMaterial.top)
     expect(sidebarMaterial.borderRadius).toBe('16px')
-    expect(sidebarMaterial.boxShadow).not.toBe('none')
+    expect(sidebarMaterial.shellBorder).toBe('0px')
+    expect(sidebarMaterial.shellShadow).toBe('none')
+    expect(sidebarMaterial.frameBorder).toBe('1px')
+    expect(sidebarMaterial.frameShadow).not.toBe('none')
     expect(sidebarMaterial.heading).toBe('rgba(0, 0, 0, 0)')
     expect(sidebarMaterial.footer).toBe('rgba(0, 0, 0, 0)')
     await page.emulateMedia({ contrast: 'more' })
@@ -1162,6 +1232,13 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
         expect(geometry.fontSize, `${name} heading font`).toBe(baseline.fontSize)
         expect(Math.abs(geometry.footerTop - baseline.footerTop), `${name} footer position`).toBeLessThanOrEqual(1)
       } else baseline = geometry
+      if (name === 'OCR') {
+        const scroll = panel.locator('.dsh-pdf-ocr-scroll > .dsh-pdf-panel-scroll')
+        const [headerBounds, scrollBounds] = await Promise.all([heading.boundingBox(), scroll.boundingBox()])
+        const scrollTop = await scroll.evaluate(element => getComputedStyle(element).top)
+        expect(scrollBounds!.y, `OCR scroll top: ${scrollTop}`).toBeGreaterThanOrEqual(headerBounds!.y + headerBounds!.height - 1)
+        expect(await scroll.locator('.dsh-pdf-panel-heading').count()).toBe(0)
+      }
       if (process.env.PDF_SIDEBAR_SCREENSHOT_DIR) {
         await sidebar.screenshot({ path: join(process.env.PDF_SIDEBAR_SCREENSHOT_DIR, `${name.toLowerCase()}.png`) })
       }
@@ -1189,12 +1266,16 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
         return color
       }, [...png])
     }
-    const [toolbarTint, sidebarTint] = await Promise.all([
+    const [toolbarTint, sidebarTint, paperTint] = await Promise.all([
       sampleMaterial(toolbarBounds!.x + 45, toolbarBounds!.y + toolbarBounds!.height - 12),
       sampleMaterial(sidebarBounds!.x + sidebarBounds!.width / 2, sidebarBounds!.y + sidebarBounds!.height / 2),
+      sampleMaterial(sidebarBounds!.x - 20, sidebarBounds!.y + sidebarBounds!.height / 2),
     ])
     expect(Math.max(...toolbarTint.map((channel, index) => Math.abs(channel - sidebarTint[index]))),
       JSON.stringify({ toolbarTint, sidebarTint })).toBeLessThanOrEqual(4)
+    expect(paperTint.reduce((total, value) => total + value, 0) / 3
+      - sidebarTint.reduce((total, value) => total + value, 0) / 3,
+    JSON.stringify({ paperTint, sidebarTint })).toBeGreaterThan(8)
     expect(await reader.getByRole('button', { name: 'Bookmark current location' })
       .evaluate(element => getComputedStyle(element).borderRadius)).toBe('6px')
     await reader.getByRole('tab', { name: 'Annotations' }).click()
@@ -1292,6 +1373,11 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     expect(await sidebar.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(55)
     await expect.poll(() => sidebar.evaluate(element => getComputedStyle(element.querySelector('.dsh-pdf-sidebar-shell')!).clipPath))
       .toContain('44px')
+    await expect.poll(() => sidebar.evaluate(element => Math.round(parseFloat(getComputedStyle(element, '::after').width))))
+      .toBe(44)
+    if (process.env.PDF_SIDEBAR_SCREENSHOT_DIR) {
+      await sidebar.screenshot({ path: join(process.env.PDF_SIDEBAR_SCREENSHOT_DIR, 'sidebar-collapsed.png') })
+    }
     const compact = sidebar.locator('.dsh-pdf-sidebar-compact-nav')
     expect(await compact.getAttribute('aria-hidden')).toBe('false')
     expect(await compact.evaluate(element => (element as HTMLElement).inert)).toBe(false)
@@ -1302,6 +1388,7 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await expect.poll(() => main.evaluate(element => getComputedStyle(element).opacity)).toBe('1')
     await page.emulateMedia({ reducedMotion: 'reduce' })
     expect(await sidebar.locator('.dsh-pdf-sidebar-shell').evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
+    expect(await sidebar.evaluate(element => getComputedStyle(element, '::after').transitionDuration)).toBe('0s')
     expect(await sidebar.locator('.dsh-pdf-sidebar-panels').evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
     expect(await toggle.locator('svg').evaluate(element => getComputedStyle(element).transitionProperty)).toBe('none')
     const setReaderWidth = async (width: number) => {
@@ -1313,6 +1400,67 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
     await setReaderWidth(700)
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+    const floatingControls = reader.locator('.dsh-pdf-floating-controls')
+    expect(await floatingControls.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const toolbarResize = await reader.evaluate(async element => {
+      const controls = element.querySelector<HTMLElement>('.dsh-pdf-floating-controls')!
+      const toolbar = element.querySelector<HTMLElement>('.dsh-pdf-main-toolbar')!
+      const toggle = element.querySelector<HTMLButtonElement>('.dsh-pdf-sidebar-toggle')!
+      const width = () => controls.getBoundingClientRect().width
+      const before = width()
+      const toolbarBefore = toolbar.getBoundingClientRect().width
+      toggle.click()
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      await new Promise<void>(resolve => setTimeout(resolve, 90))
+      const during = width()
+      const toolbarDuring = toolbar.getBoundingClientRect().width
+      const property = getComputedStyle(controls).transitionProperty
+      await new Promise<void>(resolve => setTimeout(resolve, 260))
+      return { before, during, after: width(), toolbarBefore, toolbarDuring,
+        toolbarAfter: toolbar.getBoundingClientRect().width, property }
+    })
+    expect(toolbarResize.property).toContain('right')
+    expect(toolbarResize.during, JSON.stringify(toolbarResize)).toBeLessThan(toolbarResize.before - 10)
+    expect(toolbarResize.during, JSON.stringify(toolbarResize)).toBeGreaterThan(toolbarResize.after + 10)
+    expect(toolbarResize.toolbarDuring, JSON.stringify(toolbarResize)).toBeLessThan(toolbarResize.toolbarBefore - 10)
+    expect(toolbarResize.toolbarDuring, JSON.stringify(toolbarResize)).toBeGreaterThan(toolbarResize.toolbarAfter + 10)
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+    const toolbarRestore = await reader.evaluate(async element => {
+      const controls = element.querySelector<HTMLElement>('.dsh-pdf-floating-controls')!
+      const toolbar = element.querySelector<HTMLElement>('.dsh-pdf-main-toolbar')!
+      const toggle = element.querySelector<HTMLButtonElement>('.dsh-pdf-sidebar-toggle')!
+      const width = () => controls.getBoundingClientRect().width
+      const before = width()
+      const toolbarBefore = toolbar.getBoundingClientRect().width
+      toggle.click()
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      await new Promise<void>(resolve => setTimeout(resolve, 90))
+      const during = width()
+      const toolbarDuring = toolbar.getBoundingClientRect().width
+      await new Promise<void>(resolve => setTimeout(resolve, 260))
+      return { before, during, after: width(), toolbarBefore, toolbarDuring, toolbarAfter: toolbar.getBoundingClientRect().width }
+    })
+    expect(toolbarRestore.during).toBeGreaterThan(toolbarRestore.before + 10)
+    expect(toolbarRestore.during).toBeLessThan(toolbarRestore.after - 10)
+    expect(toolbarRestore.toolbarDuring, JSON.stringify(toolbarRestore)).toBeGreaterThan(toolbarRestore.toolbarBefore + 10)
+    expect(toolbarRestore.toolbarDuring, JSON.stringify(toolbarRestore)).toBeLessThan(toolbarRestore.toolbarAfter - 10)
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+    await toggle.click()
+    await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+    await sidebar.locator('.dsh-pdf-sidebar-shell').evaluate(element =>
+      Promise.all(element.getAnimations().map(animation => animation.finished)))
+    const dividerBounds = await sidebar.locator('.dsh-pdf-sidebar-divider').boundingBox()
+    expect(dividerBounds).not.toBeNull()
+    const dividerPoint = { x: dividerBounds!.x + dividerBounds!.width - 0.5, y: dividerBounds!.y + dividerBounds!.height / 2 }
+    expect(await page.evaluate(point => document.elementFromPoint(point.x, point.y)?.className, dividerPoint))
+      .toContain('dsh-pdf-sidebar-divider')
+    await page.mouse.move(dividerPoint.x, dividerPoint.y)
+    await page.mouse.down()
+    await expect.poll(() => sidebar.getAttribute('data-resizing')).toBe('')
+    expect(await floatingControls.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
+    await page.mouse.up()
+    await expect.poll(() => sidebar.getAttribute('data-resizing')).toBeNull()
     await setReaderWidth(960)
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
   } finally {
@@ -1496,7 +1644,8 @@ it('reads, edits, saves and reopens an external PDF /IRT comment thread', async 
     await save.click()
     // Disabled also means "saving". Wait for the completed transaction before
     // reading the on-disk PDF or reloading the browser.
-    await reader.locator('[data-status-id="save"][data-kind="saved"]').waitFor({ state: 'visible' })
+    await reader.locator('.dsh-pdf-activity-trigger.dsh-pdf-save-feedback[data-kind="saved"]')
+      .waitFor({ state: 'visible' })
     await expect.poll(() => save.isDisabled()).toBe(true)
 
     const savedDocument = await loadPdfDocument(await readFile(join(scaffold.workspaceCwd, filename)))
@@ -1841,7 +1990,9 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     expect(toolbarBox).not.toBeNull()
     expect(contentBox).not.toBeNull()
     expect(controlsBox).not.toBeNull()
-    expect(Math.abs(toolbarBox!.x + toolbarBox!.width / 2 - controlsBox!.x - controlsBox!.width / 2)).toBeLessThanOrEqual(2)
+    expect(Math.abs(toolbarBox!.x + toolbarBox!.width / 2 - controlsBox!.x - controlsBox!.width / 2),
+      JSON.stringify({ toolbarBox, controlsBox, activity: await reader.locator('.dsh-pdf-activity-trigger').boundingBox() }))
+      .toBeLessThanOrEqual(2)
     expect(Math.abs(toolbarBox!.y - contentBox!.y - 12)).toBeLessThanOrEqual(2)
     expect(toolbarBox!.x).toBeGreaterThanOrEqual(contentBox!.x + 11)
     expect(toolbarBox!.x + toolbarBox!.width).toBeLessThanOrEqual(contentBox!.x + contentBox!.width - 11)
@@ -1858,7 +2009,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
         containerBackdropFilter: getComputedStyle(element).backdropFilter }
     })
     expect(material.backgroundImage).toContain('linear-gradient')
-    expect(material.backdropFilter).toContain('blur(14px)')
+    expect(material.backdropFilter).toContain('blur(24px)')
     expect(material.containerBackdropFilter).toBe('none')
     await page.emulateMedia({ contrast: 'more' })
     expect(await toolbar.evaluate(element => getComputedStyle(element, '::before').backdropFilter)).toBe('none')
@@ -1915,7 +2066,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await chooseZoom(reader, 'Fit width')
     await reader.evaluate(element => { element.style.maxHeight = '' })
     await page.mouse.move(0, 0)
-    const saveFeedback = reader.locator('.dsh-pdf-save-feedback')
+    const saveFeedback = reader.locator('.dsh-pdf-activity-trigger.dsh-pdf-save-feedback')
     expect(await saveFeedback.count()).toBe(0)
     expect(await save.isDisabled()).toBe(true)
     // This tab can mount below the responsive threshold. The wide-reader
@@ -1990,6 +2141,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await translationPanel.locator('.dsh-pdf-translation-content').waitFor({ state: 'hidden' })
     await toolbar.locator('.dsh-pdf-tools > summary').click()
     await toolbar.getByRole('button', { name: 'Start explanation mode' }).click()
+    const modeControl = toolbar.locator('.dsh-pdf-mode-explanation')
     const explanationStatus = reader.getByRole('region', { name: 'Explain passages' })
     await explanationStatus.waitFor({ state: 'visible' })
     const explanationEditor = reader.getByRole('dialog', { name: 'Ask about this passage' })
@@ -2032,7 +2184,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     // evidence persistence); the mark appears after that completes.
     await expect.poll(() => explanationMarks.count()).toBeGreaterThan(0)
     await explanationEditor.waitFor({ state: 'hidden' })
-    await expect.poll(() => explanationStatus.innerText()).toContain('1/20')
+    await expect.poll(() => modeControl.textContent()).toContain('1/20')
     expect(await explanationMarks.first().evaluate(element => element.tagName)).toBe('DIV')
     expect(await explanationMarks.first().evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)')
     expect(await reader.locator('.dsh-pdf-explanation-overlay polygon').count()).toBe(0)
@@ -2098,25 +2250,22 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     })
     expect(noteMarkerPalette).toEqual(noteCardPalette)
     await expect.poll(() => saveFeedback.getAttribute('data-kind')).toBe('unsaved')
-    expect(await saveFeedback.locator('[role="status"]').innerText()).toBe('Unsaved changes')
+    expect(await saveFeedback.locator('[role="status"]').textContent()).toBe('Unsaved changes')
     const [feedbackBox, feedbackContentBox, feedbackToolbarBox, feedbackControlsBox] = await Promise.all([
       saveFeedback.boundingBox(), content.boundingBox(), toolbar.boundingBox(), reader.locator('.dsh-pdf-floating-controls').boundingBox(),
     ])
     expect(feedbackBox).not.toBeNull()
     expect(feedbackContentBox).not.toBeNull()
     expect(feedbackToolbarBox).not.toBeNull()
-    // When the floating sidebar is open at narrow widths, toolbar and status
-    // share its reduced safe area; otherwise that area spans the content.
+    // The activity anchor stays on the toolbar row and within its safe area,
+    // even while the sidebar reserves space at narrow widths.
     expect(feedbackControlsBox).not.toBeNull()
-    expect(Math.abs(feedbackBox!.x + feedbackBox!.width - feedbackControlsBox!.x - feedbackControlsBox!.width)).toBeLessThanOrEqual(2)
-    if (feedbackControlsBox!.width <= 800) {
-      await expect.poll(async () => {
-        const [notice, bar] = await Promise.all([saveFeedback.boundingBox(), toolbar.boundingBox()])
-        return notice && bar ? notice.y - bar.y - bar.height : 0
-      }).toBeGreaterThanOrEqual(7)
-    } else {
-      expect(Math.abs(feedbackBox!.y - feedbackToolbarBox!.y)).toBeLessThanOrEqual(2)
-    }
+    expect(feedbackBox!.x).toBeGreaterThanOrEqual(feedbackToolbarBox!.x)
+    expect(feedbackBox!.x + feedbackBox!.width).toBeLessThanOrEqual(feedbackToolbarBox!.x + feedbackToolbarBox!.width)
+    expect(feedbackToolbarBox!.x + feedbackToolbarBox!.width)
+      .toBeLessThanOrEqual(feedbackControlsBox!.x + feedbackControlsBox!.width)
+    expect(feedbackBox!.y).toBeGreaterThanOrEqual(feedbackToolbarBox!.y)
+    expect(feedbackBox!.y + feedbackBox!.height).toBeLessThanOrEqual(feedbackToolbarBox!.y + feedbackToolbarBox!.height)
     await expect.poll(() => save.isEnabled()).toBe(true).catch(async failure => {
       throw new Error(`${String(failure)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
@@ -2174,32 +2323,37 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       })
       expect(fit.clipped, `visible controls at ${paneWidth}px: ${JSON.stringify(fit)}`).toEqual([])
       expect(fit.overflow, `horizontal control overflow at ${paneWidth}px`).toBeLessThanOrEqual(1)
-      const zoomWidth = await zoomTrigger.evaluate(element => Math.round(element.getBoundingClientRect().width))
-      // getBoundingClientRect may round fractional flex distribution to an
-      // adjacent CSS pixel at narrow widths; allow a 2px rounding envelope.
-      expect(Math.abs(zoomWidth - 52), `zoom control width at ${paneWidth}px`).toBeLessThanOrEqual(2)
-      expect(await zoomTrigger.locator('svg').isVisible()).toBe(true)
+      const zoomVisible = await zoomTrigger.isVisible()
+      if (zoomVisible) {
+        const zoomWidth = await zoomTrigger.evaluate(element => Math.round(element.getBoundingClientRect().width))
+        // getBoundingClientRect may round fractional flex distribution to an
+        // adjacent CSS pixel at narrow widths; allow a 2px rounding envelope.
+        expect(Math.abs(zoomWidth - 52), `zoom control width at ${paneWidth}px`).toBeLessThanOrEqual(2)
+        expect(await zoomTrigger.locator('svg').isVisible()).toBe(true)
+      }
       if (process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR) {
         await toolbar.screenshot({ path: join(process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR, `pdf-toolbar-${paneWidth}.png`) })
       }
-      await toolbar.locator('.dsh-pdf-toolbar-zoom > summary').waitFor({ state: 'visible' })
-      if (paneWidth === 400) {
-        // The overlay panel leaves a micro-width toolbar; navigation and edit
-        // actions intentionally move into Tools instead of overflowing.
+      if (zoomVisible) await toolbar.locator('.dsh-pdf-toolbar-zoom > summary').waitFor({ state: 'visible' })
+      else {
+        await toolbar.locator('.dsh-pdf-tools > summary').click()
+        const menu = toolbar.locator('.dsh-pdf-tools > .dsh-pdf-tools-menu')
+        for (const name of ['Fit width', 'Fit page', '100%'])
+          expect(await menu.getByRole('button', { name, exact: true }).count()).toBe(1)
+        await toolbar.locator('.dsh-pdf-tools > summary').click()
+      }
+      const moved: (string | RegExp)[] = []
+      for (const name of [/Back$/, /^Undo/, /^Redo/, 'Save']) {
+        if (await toolbar.locator('.dsh-pdf-toolbar-controls').getByRole('button', { name, exact: true }).count() === 0) moved.push(name)
+      }
+      if (moved.length) {
         await toolbar.locator('.dsh-pdf-tools > summary').click()
         const compactMenu = toolbar.locator('.dsh-pdf-tools > .dsh-pdf-tools-menu')
-        for (const name of [/Back$/, /^Undo/, /^Redo/, 'Save']) {
-          expect(await compactMenu.getByRole('button', { name, exact: true }).count(),
-            `accessible ${String(name)} in compact Tools menu`).toBe(1)
-        }
+        for (const name of moved) expect(await compactMenu.getByRole('button', { name, exact: true }).count(),
+          `accessible ${String(name)} in compact Tools menu at ${paneWidth}px`).toBe(1)
         await toolbar.locator('.dsh-pdf-tools > summary').click()
-      } else {
-        for (const name of [/Back$/, /^Undo/, /^Redo/, 'Save']) {
-          expect(await toolbar.getByRole('button', { name, exact: true }).count(),
-            `accessible ${String(name)} at ${paneWidth}px`).toBe(1)
-        }
       }
-      if (paneWidth === 400 || paneWidth === 200) {
+      if ((paneWidth === 400 || paneWidth === 200) && zoomVisible) {
         await zoomControl.click()
         const popup = await zoomTrigger.locator('.dsh-pdf-zoom-menu').boundingBox()
         expect(popup).not.toBeNull()
@@ -2334,7 +2488,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     expect(await toolbar.getByRole('button', { name: 'OCR page' }).isDisabled()).toBe(true)
     await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
     await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
-    await expect.poll(() => reader.locator('.dsh-pdf-floating-status-rail').innerText()).toContain('Drag to capture an area')
+    await expect.poll(() => reader.locator('.dsh-pdf-mode-inline').getAttribute('aria-label')).toBe('Drag to capture an area')
     expect(await reader.locator('.dsh-pdf-notice').filter({ hasText: 'Drag to capture an area' }).count()).toBe(0)
     // The region hint no longer changes the page layout; wait for the new
     // floating card before calculating where to begin the drag.
@@ -2365,7 +2519,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await page.mouse.move(shotText.x + visibleTextWidth, shotText.y + shotText.height + 3, { steps: 8 })
     await page.mouse.up()
     const screenshotStatus = reader.locator('[data-status-id="screenshot"]')
-    await screenshotStatus.waitFor({ state: 'visible', timeout: 5_000 }).catch(async failure => {
+    await screenshotStatus.waitFor({ state: 'attached', timeout: 5_000 }).catch(async failure => {
       throw new Error(`${String(failure)}\nScreenshot did not enter capture phase: ${JSON.stringify({ shotText,
         mode: await reader.locator('.dsh-pdf-mode-region').count(), errors: tripwire.pageErrors })}`)
     })
@@ -2508,12 +2662,14 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
       await reader.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     }
     const assertToolbarClearOfSidebar = async () => {
+      await expect.poll(() => sidebar.getAttribute('data-toggle-motion')).toBeNull()
       const [bar, content, rail] = await Promise.all([
         toolbar.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(), sidebar.boundingBox(),
       ])
       expect(bar).not.toBeNull(); expect(content).not.toBeNull(); expect(rail).not.toBeNull()
       expect(bar!.x).toBeGreaterThanOrEqual(content!.x + 11)
-      expect(bar!.x + bar!.width).toBeLessThanOrEqual(rail!.x - 11)
+      expect(bar!.x + bar!.width, `Toolbar must stay clear of sidebar: ${JSON.stringify({ bar, rail })}`)
+        .toBeLessThanOrEqual(rail!.x - 11)
       const clipped = await toolbar.evaluate(element => {
         const bounds = element.getBoundingClientRect()
         return [...element.querySelectorAll<HTMLElement>(
@@ -2527,29 +2683,21 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
       expect(clipped).toEqual([])
     }
     const assertFeedbackClearOfToolbarAndSidebar = async () => {
+      await expect.poll(() => sidebar.getAttribute('data-toggle-motion')).toBeNull()
       const rail = reader.locator('.dsh-pdf-floating-status-rail')
-      await rail.evaluate(element => {
-        const feedback = document.createElement('div')
-        feedback.className = 'dsh-pdf-floating-status dsh-pdf-save-feedback'
-        feedback.dataset.testFeedback = 'true'
-        feedback.textContent = 'Unsaved changes'
-        element.append(feedback)
-      })
-      const feedback = rail.locator('[data-test-feedback]')
-      const [bar, notice, content, railBox] = await Promise.all([
-        toolbar.boundingBox(), feedback.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(), rail.boundingBox(),
+      const feedback = rail.locator('.dsh-pdf-activity-trigger')
+      if (await feedback.getAttribute('aria-expanded') === 'false') await feedback.click()
+      const [bar, notice, content, sidebarBox, popover] = await Promise.all([
+        toolbar.boundingBox(), feedback.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
+        sidebar.boundingBox(), rail.locator('.dsh-pdf-activity-popover').boundingBox(),
       ])
-      expect(bar).not.toBeNull(); expect(notice).not.toBeNull(); expect(content).not.toBeNull(); expect(railBox).not.toBeNull()
-      expect(notice!.x).toBeGreaterThanOrEqual(content!.x + 11)
-      expect(notice!.x + notice!.width).toBeLessThanOrEqual(content!.x + content!.width - 11)
-      if (content!.width > 800) {
-        expect(Math.abs(railBox!.y - bar!.y)).toBeLessThanOrEqual(2)
-        expect(notice!.x).toBeGreaterThanOrEqual(bar!.x + bar!.width + 7)
-      } else {
-        expect(railBox!.y - (bar!.y + bar!.height)).toBeGreaterThanOrEqual(7)
-        expect(railBox!.y - (bar!.y + bar!.height)).toBeLessThanOrEqual(9)
-      }
-      await feedback.evaluate(element => element.remove())
+      expect(bar).not.toBeNull(); expect(notice).not.toBeNull(); expect(content).not.toBeNull()
+      expect(sidebarBox).not.toBeNull(); expect(popover).not.toBeNull()
+      expect(notice!.x).toBeGreaterThanOrEqual(bar!.x)
+      expect(notice!.x + notice!.width).toBeLessThanOrEqual(bar!.x + bar!.width)
+      expect(popover!.x).toBeGreaterThanOrEqual(content!.x + 11)
+      expect(popover!.x + popover!.width).toBeLessThanOrEqual(sidebarBox!.x - 11)
+      expect(Math.abs(notice!.y - bar!.y)).toBeLessThanOrEqual(6)
     }
 
     // The host may initially mount a narrower tab; explicitly start this
@@ -2557,6 +2705,8 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
     await setReaderWidth(960)
     if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click()
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+    await assertToolbarClearOfSidebar()
+    await assertFeedbackClearOfToolbarAndSidebar()
     await expectIconOnlyMainToolbar(toolbar)
     if (process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR) {
       await toolbar.screenshot({ path: join(process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR, 'pdf-main-toolbar-wide.png') })
@@ -2669,6 +2819,8 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
     await setReaderWidth(960)
     expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    await assertToolbarClearOfSidebar()
+    await assertFeedbackClearOfToolbarAndSidebar()
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -3790,7 +3942,7 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     await page.mouse.up()
     const preview = reader.getByRole('dialog', { name: 'Screenshot preview' })
     await preview.waitFor({ state: 'visible' })
-    expectUniformHighlight(await screenshotHighlightPixels(page))
+    expectUnannotatedPage(await screenshotPagePixels(page))
     await preview.getByRole('button', { name: 'Close', exact: true }).click()
 
     const save = toolbar.getByRole('button', { name: 'Save', exact: true })
@@ -3814,12 +3966,48 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     const noteToolbar = reader.getByRole('toolbar', { name: 'Selected annotation' })
     await expect.poll(() => noteToolbar.count()).toBe(0)
     const noteCard = reader.locator('.dsh-pdf-page-comment-card[data-card-kind="note"]')
+    await noteCard.getByRole('button', { name: 'Change note color' }).click()
+    const noteColors = noteCard.locator('[data-testid="pdf-note-colors"]')
+    await noteColors.waitFor({ state: 'visible' })
+    expect(await noteColors.locator('.dsh-pdf-highlight-swatch').count()).toBe(5)
+    await noteColors.locator('[data-testid="pdf-highlight-swatch-1"]').click()
+    await expect.poll(() => noteCard.evaluate(element => (element as HTMLElement).style.getPropertyValue('--pdf-note-tint')))
+      .toBe('#ff9f0a')
     const closeNote = noteCard.getByRole('button', { name: 'Close note', exact: true })
     await closeNote.click()
     const noteMarker = reader.locator('[data-pdf-note-id]')
     await expect.poll(() => noteMarker.count()).toBe(1)
     const markerBefore = await noteMarker.boundingBox()
     expect(markerBefore).not.toBeNull()
+    // A region containing the visible note marker must contain only the PDF
+    // page pixels, not the Reader marker or the native note appearance.
+    await toolbar.locator('.dsh-pdf-tools > summary').click()
+    await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
+    const noteCenter = { x: markerBefore!.x + markerBefore!.width / 2,
+      y: markerBefore!.y + markerBefore!.height / 2 }
+    await page.mouse.move(noteCenter.x - 28, noteCenter.y - 28)
+    await page.mouse.down()
+    await page.mouse.move(noteCenter.x + 28, noteCenter.y + 28, { steps: 8 })
+    await page.mouse.up()
+    const barePreview = reader.getByRole('dialog', { name: 'Screenshot preview' })
+    await barePreview.waitFor({ state: 'visible' })
+    const yellowPixels = await barePreview.getByRole('img').evaluate(async element => {
+      const image = element as HTMLImageElement
+      await image.decode()
+      const canvas = document.createElement('canvas')
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight
+      const context = canvas.getContext('2d', { willReadFrequently: true })!
+      context.drawImage(image, 0, 0)
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+      let yellow = 0
+      for (let index = 0; index < pixels.length; index += 4) {
+        if (pixels[index] > 225 && pixels[index + 1] > 185 && pixels[index + 2] < 155) yellow++
+      }
+      canvas.width = 0; canvas.height = 0
+      return yellow
+    })
+    expect(yellowPixels).toBe(0)
+    await barePreview.getByRole('button', { name: 'Close', exact: true }).click()
     await noteMarker.click()
     await noteCard.waitFor({ state: 'visible' })
     await expect.poll(() => noteMarker.count()).toBe(0)
@@ -3849,7 +4037,7 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
       sidebarBox!.x - 19)
     const bottom = Math.min(pageBox!.y + pageBox!.height - 13, scrollBox!.y + scrollBox!.height - 13)
     const top = Math.max(pageBox!.y + 13, scrollBox!.y + 13)
-    for (const corner of [{ x: right, y: bottom }, { x: pageBox!.x + 13, y: top }]) {
+    for (const [index, corner] of [{ x: right, y: bottom }, { x: pageBox!.x + 13, y: top }].entries()) {
       const before = await noteMarker.boundingBox()
       expect(before).not.toBeNull()
       await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2)
@@ -3872,6 +4060,23 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
       expect(cardBox!.y).toBeGreaterThanOrEqual(readerBox!.y)
       expect(cardBox!.x + cardBox!.width).toBeLessThanOrEqual(readerBox!.x + readerBox!.width)
       expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(readerBox!.y + readerBox!.height)
+      if (index === 1) {
+        const resize = noteCard.getByRole('button', { name: /Resize note/ })
+        const grip = await resize.boundingBox()
+        expect(grip).not.toBeNull()
+        await page.mouse.move(grip!.x + grip!.width / 2, grip!.y + grip!.height / 2)
+        await page.mouse.down()
+        await page.mouse.move(grip!.x + grip!.width / 2 + 48, grip!.y + grip!.height / 2 + 32, { steps: 6 })
+        await page.mouse.up()
+        await expect.poll(async () => (await noteCard.boundingBox())?.width ?? 0).toBeGreaterThan(cardBox!.width + 20)
+        const enlarged = await noteCard.boundingBox()
+        expect(enlarged!.height).toBeGreaterThan(cardBox!.height + 12)
+        await noteCard.getByRole('button', { name: 'Close note', exact: true }).click()
+        await noteMarker.click()
+        const reopened = await noteCard.boundingBox()
+        expect(reopened!.width).toBeCloseTo(enlarged!.width, 0)
+        expect(reopened!.height).toBeCloseTo(enlarged!.height, 0)
+      }
       await noteCard.getByRole('button', { name: 'Close note', exact: true }).click()
       await expect.poll(() => noteMarker.count()).toBe(1)
     }
