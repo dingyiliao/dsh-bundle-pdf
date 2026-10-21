@@ -5,6 +5,9 @@ import { colorToHex } from '../model/reader-selection.js'
 import { formatAnnotationListDate } from '../model/reader-dates.js'
 import { annotationExcerpt } from '../../../shared/annotation-excerpt.js'
 import type { NativeDocument } from '../rendering/document.js'
+import { isStandaloneNote } from '../model/annotation-thread.js'
+import { ToolbarIcon } from './ToolbarIcon.js'
+import { ScrollablePanel } from './ScrollablePanel.js'
 
 type AnnotationFilter = 'all' | 'Highlight' | 'Underline' | 'StrikeOut' | 'Text'
 const filters: readonly AnnotationFilter[] = ['all', 'Highlight', 'Underline', 'StrikeOut', 'Text']
@@ -136,7 +139,9 @@ function AnnotationPageGroup({ group, first, end, pinned, totalRows, selectedId,
         <button type="button" data-annotation-index={group.firstIndex + index}
           className={`dsh-pdf-comment-item${selectedId === annotation.id ? ' is-selected' : ''}`}
           aria-pressed={selectedId === annotation.id} onClick={() => onSelect(annotation)}>
-          <span className="dsh-pdf-comment-color" style={{ backgroundColor: colorToHex(annotation.color) }} aria-hidden="true" />
+          {isStandaloneNote(annotation)
+            ? <span className="dsh-pdf-comment-note-icon" aria-hidden="true"><ToolbarIcon name="note" /></span>
+            : <span className="dsh-pdf-comment-color" style={{ backgroundColor: colorToHex(annotation.color) }} aria-hidden="true" />}
           <span className="dsh-pdf-comment-content">
             <span className="dsh-pdf-comment-preview" title={primary}>{primary}</span>
             {excerpt && comment && <span className="dsh-pdf-comment-note" title={comment}>{comment}</span>}
@@ -269,8 +274,7 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
   const visibleStart = Math.max(0, viewport.top - overscan)
   const visibleEnd = Math.max(0, viewport.top + viewport.height + overscan)
 
-  return <>
-    <div className="dsh-pdf-panel-heading dsh-pdf-annotations-heading">
+  const heading = <div className="dsh-pdf-panel-heading dsh-pdf-annotations-heading">
       <h3>{t('reader.comments')} <span className="dsh-pdf-annotation-count">{annotations.length}</span></h3>
       <select aria-label={t('reader.filterAnnotations')} value={filter} onChange={event => {
         const next = event.target.value as AnnotationFilter
@@ -283,6 +287,8 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
         {filters.map(value => <option key={value} value={value}>{value === 'all' ? t('reader.allAnnotations') : t(`reader.type.${value}`)}</option>)}
       </select>
     </div>
+  return <ScrollablePanel className="dsh-pdf-comments" header={heading}
+    verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
     {details}
     {!!layout.groups.length && <div ref={list} className="dsh-pdf-annotation-virtual" role="list" tabIndex={0}
       aria-label={t('reader.comments')} onKeyDown={onKeyDown}
@@ -305,5 +311,5 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
     {!layout.groups.length && (annotations.length > 0 || !details) && <p className="dsh-pdf-sidebar-empty">
       {t(annotations.length ? 'reader.noMatchingAnnotations' : 'reader.noAnnotations')}
     </p>}
-  </>
+  </ScrollablePanel>
 }

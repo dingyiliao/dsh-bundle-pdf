@@ -26,6 +26,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   // Once a Client has opened a copy it must never be evicted by an Agent tool.
   const uiOwned = new Set<string>()
   const queues = new Map<string, Promise<unknown>>()
+  const revisionListeners = new Map<string, Set<() => void>>()
   const hashes = new WeakMap<Uint8Array, string>()
   let closing = false
   let disposal: Promise<void> | undefined
@@ -277,10 +278,10 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     if (input.action !== 'change') fail('pdf/invalid-action', 'Unknown PDF operation')
     if (record.cursor >= 500) fail('pdf/history-limit', 'Save the PDF before making more edits')
     if (input.expectedSourceHash !== undefined) {
-      // Model proposals use a fresh source check *inside* this session's
-      // mutation queue. Ordinary UI changes retain their established behavior.
+      // Model edits use a fresh source check inside this session's mutation
+      // queue. Ordinary UI changes retain their established behavior.
       if (input.expectedSourceHash !== record.sourceHash) {
-        fail('pdf/source-conflict', 'The PDF source identity changed since the proposal was reviewed')
+        fail('pdf/source-conflict', 'The PDF source identity changed since the model edit began')
       }
       const source = await files.read(agent, record.path, signal)
       if (source.version !== input.expectedSourceHash) {
@@ -301,6 +302,10 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     queues.set(sessionId, task)
     try {
       const value = await task
+      if (value && typeof value === 'object' && 'id' in value && 'revision' in value
+        && input.action !== 'open' && input.action !== 'inspectTarget') {
+        for (const listener of revisionListeners.get(`${sessionId}\0${String(value.id)}`) ?? []) listener()
+      }
       return value
     } catch (error) {
       span.end(signal.aborted ? 'cancelled' : 'error')
@@ -312,6 +317,40 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   }
   return {
     execute,
+    async waitForRevision(sessionId: string, id: string, knownRevision: number, signal: AbortSignal): Promise<number> {
+      const current = () => {
+        const copy = copies.get(id)
+        if (closing || !copy || copy.record.sessionId !== sessionId) fail('pdf/unknown-document', 'PDF working copy is unavailable in this session')
+        return copy.snapshot.revision
+      }
+      signal.throwIfAborted()
+      const first = current()
+      if (first !== knownRevision) return first
+      return new Promise<number>((resolve, reject) => {
+        const key = `${sessionId}\0${id}`
+        let set = revisionListeners.get(key)
+        if (!set) { set = new Set(); revisionListeners.set(key, set) }
+        const cleanup = () => {
+          clearTimeout(timer)
+          signal.removeEventListener('abort', onAbort)
+          set!.delete(onChange)
+          if (!set!.size) revisionListeners.delete(key)
+        }
+        const onChange = () => {
+          try {
+            const next = current()
+            if (next === knownRevision) return
+            cleanup(); resolve(next)
+          } catch (error) { cleanup(); reject(error) }
+        }
+        const onAbort = () => { cleanup(); reject(signal.reason) }
+        const timer = setTimeout(() => { cleanup(); resolve(knownRevision) }, 15_000)
+        set.add(onChange)
+        signal.addEventListener('abort', onAbort, { once: true })
+        // Close the race between the first revision check and registration.
+        onChange()
+      })
+    },
     isUiOwned(sessionId: string, id: string): boolean {
       const copy = copies.get(id)
       if (!copy || copy.record.sessionId !== sessionId) fail('pdf/unknown-document', 'PDF working copy is unavailable in this session')
@@ -346,9 +385,12 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     dispose(): Promise<void> {
       if (disposal) return disposal
       closing = true
+      for (const listeners of [...revisionListeners.values()]) {
+        for (const listener of [...listeners]) listener()
+      }
       disposal = (async () => {
         await Promise.allSettled([...queues.values()])
-        copies.clear(); byPath.clear(); uiOwned.clear(); queues.clear()
+        copies.clear(); byPath.clear(); uiOwned.clear(); queues.clear(); revisionListeners.clear()
       })()
       return disposal
     },

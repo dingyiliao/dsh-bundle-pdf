@@ -5,6 +5,7 @@ import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReade
   useReaderAnnotations, useReaderScreenshot, useReaderSearch, useReaderSave, useReaderSidebarLayout, useReaderPages,
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
   usePdfWheelZoom, usePdfViewportSize,
+  clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition,
   readerToolbarModel, readerFloatingStatuses, readerOverlayModel, readerSidebarPanels,
   } from '../modules/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
@@ -51,7 +52,7 @@ export function Reader(props: ReaderProps) {
       return explanation.captureTask.current
     } })
   const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, documentReady } = documentState
-  const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput,
+  const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
     views, registerView, scrollRef, updateScrolledPage } = useReaderPageTracking({ snapshot,
     readerElement, scrollportRef: props.scrollportRef })
   const readerSelection = useReaderSelection({ mode, scrollRoot, snapshot, views, ownerSequence,
@@ -92,7 +93,13 @@ export function Reader(props: ReaderProps) {
   const { begin: beginTranslation, close: closeTranslation } = translation
   useReaderContextLease({ sessionId, tabId: tab.id, visible: tab.visible, tabSignal: tab.signal,
     snapshot, currentPage, documentReady: documentReady(),
-    enabled: !!props.allowReadingContext, report: props.reportReadingContext })
+    enabled: !!props.allowReadingContext, report: props.reportReadingContext,
+    agentNavigation: props.agentNavigation,
+    onAgentNavigate: async page => {
+      if (!tab.visible || tab.signal.aborted || state.current.snapshot?.id !== snapshot?.id
+        || state.current.snapshot?.contentVersion !== snapshot?.contentVersion) return false
+      return jump(page)
+    } })
   useLayoutEffect(() => () => {
     // Layout cleanup captures geometry before React detaches the page elements.
     navigation.persistOnUnmount()
@@ -132,12 +139,11 @@ export function Reader(props: ReaderProps) {
     clearError: () => setError(''), onError: notifyError })
   const annotations = useReaderAnnotations({ snapshot, pdfAnnotations, selection, setSelection, setMode,
     ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, change, t })
-  const { color, setColor, selectedAnnotation, setSelectedAnnotation, selected,
-    pendingNote, setPendingNote, setCommentCardOpen, thread, comment,
-    setComment, commentColor, setCommentColor, commentTextarea, colorPending,
-    commentItems, annotationsByPage, renderedAnnotationsByPage, hasUnappliedComment,
+  const { color, setColor, selectedAnnotation, setSelectedAnnotation, selected, selectedNote,
+    pendingNote, thread, comment, setComment, annotationColor, commentTextarea, colorPending,
+    annotationItems, annotationsByPage, renderedAnnotationsByPage, hasUnappliedAnnotation,
     mark, beginNote, selectAnnotation, clearAnnotation, deleteAnnotation,
-    updateColor: updateAnnotationColor, openCommentEditor, closeCommentEditor, applyComment } = annotations
+    updateColor: updateAnnotationColor, openCommentEditor, closeCommentEditor, applyComment, applyNote } = annotations
   const saveFlow = useReaderSave({ api, sessionId, resourceAddress: props.resourceAddress, tabSignal: tab.signal,
     snapshot, ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, act,
     pickSavePath: props.pickSavePath, openResource: address => tab.actions.openResource(address, { replaceTab: true }),
@@ -170,6 +176,9 @@ export function Reader(props: ReaderProps) {
   const cancelOcr = ocr.cancel
   const explanation = useReaderExplanation({ sessionId, tabSignal: tab.signal, visible: tab.visible,
     snapshot, pdf, promptExplanation: props.promptExplanation,
+    promptTemplate: settings.explanationPromptTemplate,
+    promptGuidance: { general: settings.explanationGeneralInstruction,
+      text: settings.explanationTextInstruction, image: settings.explanationImageInstruction },
     regionEvidence: props.regionEvidence, textSelectionEvidence: props.textSelectionEvidence,
     imageUnderstanding: props.imageUnderstanding, allowReadingContext: props.allowReadingContext !== false,
     screenshotBusy: !!screenshotController.current || !!screenshotPhase || !!screenshot,
@@ -185,10 +194,10 @@ export function Reader(props: ReaderProps) {
     cancelEditor: cancelExplanationEditor, deleteQuestion: deleteExplanationQuestion,
     submit: submitExplanation, beginRegion: beginExplanationRegion, selectRegion: selectExplanationRegion } = explanation
   const dismissContext = useCallback(() => {
-    if (hasUnappliedComment) return
+    if (hasUnappliedAnnotation) return
     regionPurpose.current = null
     clearAnnotation(); clearSelection(); explanation.setEditor(null); setComment(''); setMode('text')
-  }, [hasUnappliedComment, clearAnnotation, clearSelection])
+  }, [hasUnappliedAnnotation, clearAnnotation, clearSelection])
   useEffect(() => {
     const dismissOutside = (event: PointerEvent) => {
       if (event.button !== 0 || !(event.target instanceof Node)) return
@@ -210,8 +219,62 @@ export function Reader(props: ReaderProps) {
     : hasTextSelection ? selection!.fragments
       : selected?.rect ? [{ page: selected.page, rect: selected.rect, quadPoints: selected.quadPoints ?? [] }] : [])
   const commentAnchor = () => {
-    const annotation = pendingNote ?? selected
+    const annotation = selected && !selectedNote ? selected : undefined
     return annotation?.rect ? fragmentAnchor([{ page: annotation.page, rect: annotation.rect, quadPoints: annotation.quadPoints ?? [] }]) : null
+  }
+  const commentPosition = () => {
+    const annotation = selected && !selectedNote ? selected : undefined
+    const view = annotation && views.current.get(annotation.page)
+    const pageBounds = view?.element.getBoundingClientRect()
+    if (!annotation?.commentPosition || !view || !pageBounds) return null
+    const [x, y] = view.viewport.convertToViewportPoint(...annotation.commentPosition)
+    return new DOMRect(pageBounds.left + x * pageBounds.width / view.viewport.width,
+      pageBounds.top + y * pageBounds.height / view.viewport.height, 0, 0)
+  }
+  const moveCommentCard = async (_delta: { x: number; y: number }, position: { left: number; top: number }) => {
+    const annotation = selected && !selectedNote ? selected : undefined
+    const view = annotation && views.current.get(annotation.page)
+    const pageBounds = view?.element.getBoundingClientRect()
+    if (!annotation || !view || !pageBounds) return false
+    const point = view.viewport.convertToPdfPoint(
+      (position.left - pageBounds.left) * view.viewport.width / pageBounds.width,
+      (position.top - pageBounds.top) * view.viewport.height / pageBounds.height,
+    )
+    return annotations.moveCommentCard([point[0], point[1]])
+  }
+  const noteAnchor = () => {
+    const annotation = pendingNote ?? selectedNote
+    const view = annotation && views.current.get(annotation.page)
+    const pageBounds = view?.element.getBoundingClientRect()
+    if (!annotation?.rect || !view || !pageBounds) return null
+    const position = noteMarkerViewportPosition(view.viewport, annotation.rect)
+    const scaleX = pageBounds.width / view.viewport.width, scaleY = pageBounds.height / view.viewport.height
+    return new DOMRect(pageBounds.left + position.left * scaleX, pageBounds.top + position.top * scaleY,
+      22 * scaleX, 22 * scaleY)
+  }
+  const moveNoteCard = async (delta: { x: number; y: number }) => {
+    const annotation = pendingNote ?? selectedNote
+    if (!annotation?.rect) return false
+    const view = views.current.get(annotation.page)
+    const pageBounds = view?.element.getBoundingClientRect()
+    if (!view || !pageBounds || pageBounds.width <= 0 || pageBounds.height <= 0) return false
+    const moved = movePdfNoteRectByMarker(view.viewport, annotation.rect,
+      delta.x * view.viewport.width / pageBounds.width,
+      delta.y * view.viewport.height / pageBounds.height)
+    const cropBox = state.current.snapshot?.document.pages[annotation.page - 1]?.cropBox
+    return annotations.moveNote(cropBox ? clampPdfRectToBounds(moved, cropBox) : moved)
+  }
+  const moveNoteMarker = async (id: string, page: number, delta: { x: number; y: number }) => {
+    const document = state.current.snapshot?.document
+    const annotation = document?.annotations.find(item => item.id === id && item.page === page)
+    const view = views.current.get(page)
+    const pageBounds = view?.element.getBoundingClientRect()
+    if (!annotation?.rect || !view || !pageBounds || pageBounds.width <= 0 || pageBounds.height <= 0) return false
+    const moved = movePdfNoteRectByMarker(view.viewport, annotation.rect,
+      delta.x * view.viewport.width / pageBounds.width,
+      delta.y * view.viewport.height / pageBounds.height)
+    const cropBox = document?.pages[page - 1]?.cropBox
+    return annotations.moveNoteMarker(id, cropBox ? clampPdfRectToBounds(moved, cropBox) : moved)
   }
   const explanationEditorAnchor = () => {
     if (activeExplanationEditor?.kind === 'edit') {
@@ -227,7 +290,7 @@ export function Reader(props: ReaderProps) {
     scrollRoot, mode, t, pageScale, registerView, destination, jump,
     currentPageCount: () => state.current.snapshot?.document.pageCount, beginNote,
     takeScreenshot, selectExplanationRegion, editExplanationQuestion: explanation.editQuestion,
-    selectAnnotation, dismissContext, notifyError })
+    selectAnnotation, moveNoteMarker, dismissContext, notifyError })
 
   const wheelScale = useCallback((page: number) => {
     const geometry = state.current.snapshot?.document.pages[page - 1]
@@ -239,7 +302,7 @@ export function Reader(props: ReaderProps) {
   usePdfViewportSize({ root: scrollRoot, size, onSize: setSize,
     preserveAnchor: !!pdf && fit !== 'custom' && !navigating,
     ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${fit}` })
-  const sidebarPanels = readerSidebarPanels({ snapshot, pdf, annotations: commentItems,
+  const sidebarPanels = readerSidebarPanels({ snapshot, pdf, annotations: annotationItems,
     selectedAnnotation, clearAnnotation, selectAnnotation,
     jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
@@ -249,7 +312,7 @@ export function Reader(props: ReaderProps) {
   const closeToolsMenu = () => { if (toolsMenu.current) toolsMenu.current.open = false }
   const toolbar = readerToolbarModel({
     snapshot, sessionId, signal: tab.signal, api, act, busy, editable, colorPending,
-    saveAsPicking, hasUnappliedComment,
+    saveAsPicking, hasUnappliedAnnotation,
     explanation: {
       allowed: !!props.promptExplanation && props.allowReadingContext !== false,
       active: !!activeExplanation, sending: explanationSending,
@@ -286,8 +349,10 @@ export function Reader(props: ReaderProps) {
   const overlays = readerOverlayModel({
     explanation, annotations, viewport: scrollRoot, mode, regionPurpose: regionPurpose.current,
     editable, readOnly: !!snapshot?.document.readOnly,
-    getExplanationAnchor: explanationEditorAnchor, getCommentAnchor: commentAnchor,
-    applyComment: () => { void applyComment() }, closeComment: closeCommentEditor, t,
+    getExplanationAnchor: explanationEditorAnchor, getCommentAnchor: commentAnchor, getCommentPosition: commentPosition,
+    getNoteAnchor: noteAnchor, moveNote: moveNoteCard, moveCommentCard,
+    applyComment: () => { void applyComment() }, closeComment: closeCommentEditor,
+    applyNote: () => { void applyNote() }, t,
   })
   return <ReaderView t={t} readerElement={readerElement} readerBody={readerBody} scrollRoot={scrollRoot}
     menuRef={toolsMenu} editable={editable} selected={selected} onDismissContext={dismissContext}
@@ -308,7 +373,7 @@ export function Reader(props: ReaderProps) {
     }}
     annotationBar={{
       viewport: scrollRoot, getAnchor: contextualAnchor, selected,
-      commentActionAvailable: (!!selected?.editable && editable) || !!thread?.comments.length, commentColor,
+      commentActionAvailable: (!!selected?.editable && editable) || !!thread?.comments.length, annotationColor,
       readOnly: !!snapshot?.document.readOnly, editable, updateColor: updateAnnotationColor,
       openCommentEditor, deleteAnnotation: () => { void deleteAnnotation() }, clearAnnotation, t,
     }}
@@ -320,7 +385,7 @@ export function Reader(props: ReaderProps) {
       reload: () => { void act(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
     }}
     floating={{ statuses: floatingStatuses, explanation: overlays.explanationStatus }}
-    question={overlays.question} comment={overlays.comment}
+    question={overlays.question} comment={overlays.comment} note={overlays.note}
     pages={{
       scrollRef, onScroll: updateScrolledPage, mode, setDraggingPage,
       setSelection, clearSelection, clearAnnotation, scheduleCaptureSelection,
@@ -328,7 +393,7 @@ export function Reader(props: ReaderProps) {
     }}
     sidebar={{
       activeSection: sidebarSection, onSectionChange: showSidebar, expanded: sidebarExpanded,
-      pdf, currentPage, pageInput, navigating, onPageInputChange: setPageInput,
+      pdf, currentPage, pageInput, navigating, onPageInputChange: editPageInput,
       onPageInputSubmit: value => {
         const page = Number(value)
         setPageInput(String(page))

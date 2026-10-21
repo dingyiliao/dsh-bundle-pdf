@@ -114,11 +114,11 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
     'loader', 'tools', 'pdfNative', 'subprocess'])
   await apply(runtime.ctx, runtime.config, assets)
   try {
-    assert.equal(runtime.routes.size, 12)
+    assert.equal(runtime.routes.size, 14)
     assert.deepEqual(runtime.registrations, [
-      '/api/pdf.dispatch.v2', '/api/pdf.native', '/api/pdf.bookmarks', '/api/pdf.position',
+      '/api/pdf.dispatch.v2', '/api/pdf.watch', '/api/pdf.native', '/api/pdf.bookmarks', '/api/pdf.position',
       '/api/pdf.translation', '/api/pdf.ocr', '/api/pdf.region', '/api/pdf.selection',
-      '/api/pdf.readercontext', '/api/pdf.evidence',
+      '/api/pdf.readercontext', '/api/pdf.navigation', '/api/pdf.evidence',
       '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info',
     ])
     assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
@@ -126,6 +126,8 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
     assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
     assert.ok(runtime.tools.includes('pdf_read_page'))
+    assert.ok(runtime.tools.includes('pdf_find_related'))
+    assert.ok(runtime.tools.includes('pdf_navigate'))
     assert.deepEqual(runtime.injections, [['systemPrompt']])
     assert.equal(runtime.effects.length, 6)
 
@@ -147,6 +149,29 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
   assert.equal(runtime.routes.size, 0)
   assert.deepEqual(runtime.releases, [...runtime.registrations].reverse())
   assert.deepEqual(runtime.closed, [...runtime.opened].reverse())
+})
+
+test('Host watch endpoint validates document and revision before waiting for a working copy', async (t) => {
+  const assets = await assetFixture(t)
+  const runtime = host({ agentSessionId: 'watch-session' })
+  await apply(runtime.ctx, runtime.config, assets)
+  try {
+    const route = runtime.routes.get('/api/pdf.watch')!
+    async function watch(payload: Record<string, unknown>) {
+      const response = await route.fetch(infoRequest({ type: 'client-request', method: 'pdf.watch',
+        rpcId: 'watch-test', payload }))
+      return (await response.json() as { result: { ok: boolean; error?: { code: string } } }).result
+    }
+    for (const payload of [
+      { sessionId: 'watch-session', id: '', knownRevision: 0 },
+      { sessionId: 'watch-session', id: 'missing', knownRevision: -1 },
+      { sessionId: 'watch-session', id: 'missing', knownRevision: 1.5 },
+    ]) {
+      assert.deepEqual((await watch(payload)).error?.code, 'pdf/invalid-request')
+    }
+    const missing = await watch({ sessionId: 'watch-session', id: 'missing', knownRevision: 0 })
+    assert.equal(missing.ok, false)
+  } finally { await runtime.disposeEffects() }
 })
 
 test('Host info route rejects wrong content type, malformed and oversized requests without revealing settings', async (t) => {

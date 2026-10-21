@@ -7,63 +7,66 @@ import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 const signal = new AbortController().signal
 const sessionId = 'pdf-model-write'
 const agent = { session: { id: sessionId, header: {} } }
-const target = { kind: 'pdf-region' as const, page: 1, rectPdf: [60, 80, 120, 100] as [number, number, number, number] }
+const quote = 'MMFAR title'
+const target = { kind: 'pdf-text' as const, page: 1, quote }
 
-async function fixture(now?: () => number) {
+async function fixture() {
   const state = memoryWorkspace(await nativeFixture())
   const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
     address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
   assert.ok('bytes' in opened)
-  const writes = createModelWriteService(state.workspaces, now)
-  return { state, opened, writes }
+  const pages = { async readPageText() { return { snapshot: state.workspaces.readSnapshot(sessionId, opened.id), content: {
+    items: [{ str: quote, transform: [12, 0, 0, 12, 60, 90], width: quote.length * 6, height: 12,
+      dir: 'ltr', fontName: 'test', hasEOL: false,
+      glyphs: Array.from(quote, (_, index) => [60 + index * 6, 90, 6] as [number, number, number]) }],
+    styles: { test: { fontFamily: 'sans-serif', ascent: 0.8, descent: -0.2, vertical: false } }, lang: null,
+  } } } }
+  const writes = createModelWriteService(state.workspaces, pages)
+  return { state, opened, writes, pages }
 }
 
-function proposal(id: string, revision: number) {
+function annotation(id: string, revision: number) {
   return { documentId: id, expectedRevision: revision,
     subtype: 'Highlight' as const, target, color: [1, 1, 0] as [number, number, number], comment: 'AI suggestion' }
 }
 
-test('model write preview is pure; reviewed commit creates one undoable draft; save separately changes bytes', async () => {
+test('model edit immediately creates one undoable draft without changing the source PDF; save still needs approval', async () => {
   const { state, opened, writes } = await fixture()
   try {
     const source = state.current().slice()
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    assert.equal(proposed.status, 'preview')
-    assert.equal(proposed.preview.beforeAnnotations! + 1, proposed.preview.afterAnnotations)
+    const updated = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    assert.equal(updated.status, 'updated')
+    assert.equal(updated.dirty, true)
+    assert.equal(updated.canUndo, true)
+    assert.equal(updated.savedToFile, false)
+    assert.equal(updated.resolvedTarget.quote, quote)
+    assert.ok(updated.resolvedTarget.rectPdf[1] < 90 && updated.resolvedTarget.rectPdf[3] > 90)
     assert.equal(state.writes(), 0)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
     assert.deepEqual(state.current(), source)
-    let inspected = false
-    const committed = await writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async detail => {
-      inspected = detail.kind === 'annotation' && detail.page === 1 && detail.subtype === 'Highlight'
-        && detail.comment === 'AI suggestion' && detail.path === '/fixtures/native.pdf'
-        && detail.beforeAnnotations! + 1 === detail.afterAnnotations
-      assert.equal(state.writes(), 0)
-      return true
-    })
-    assert.equal(inspected, true)
-    assert.equal(committed.dirty, true)
-    assert.equal(committed.approval, 'user-questions-selected')
-    assert.equal(committed.canUndo, true)
-    assert.equal(state.writes(), 0, 'commit changes only the persisted draft')
-    assert.deepEqual(state.current(), source)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.length,
-      opened.document.annotations.length + 1)
-    assert.deepEqual(await writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal,
-      async () => { throw Error('replay must not ask or duplicate') }), committed)
-    const saved = await writes.save(sessionId, { documentId: opened.id, expectedRevision: committed.revision },
+    const draft = state.workspaces.readSnapshot(sessionId, opened.id)
+    assert.equal(draft.revision, updated.revision)
+    assert.equal(draft.document.annotations.length, opened.document.annotations.length + 1)
+    assert.ok(draft.document.annotations.some(item => item.id === updated.annotationId))
+    const undone = await state.workspaces.execute(sessionId, { action: 'undo', sessionId,
+      id: opened.id, revision: draft.revision }, agent, signal)
+    assert.ok('bytes' in undone)
+    assert.equal(undone.document.annotations.length, opened.document.annotations.length)
+    const redone = await state.workspaces.execute(sessionId, { action: 'redo', sessionId,
+      id: opened.id, revision: undone.revision }, agent, signal)
+    assert.ok('bytes' in redone)
+    assert.ok(redone.document.annotations.some(item => item.id === updated.annotationId))
+    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: redone.revision },
       agent, signal, async detail => {
         assert.equal(detail.kind, 'save')
         assert.equal(detail.path, '/fixtures/native.pdf')
-        assert.equal(detail.revision, committed.revision)
-        assert.equal(detail.dirty, true)
         assert.equal(detail.saveChangeCount, 1)
         assert.match(detail.saveDiffText!, /AI suggestion/)
-        assert.equal(state.writes(), 0)
-        return true
-      })
+        return false
+      }), { code: 'pdf/approval-rejected' })
+    assert.equal(state.writes(), 0)
+    const saved = await writes.save(sessionId, { documentId: opened.id, expectedRevision: redone.revision },
+      agent, signal, async () => true)
     assert.equal(saved.status, 'saved')
-    assert.equal(saved.approval, 'user-questions-selected')
     assert.equal(saved.dirty, false)
     assert.equal(state.writes(), 1)
     assert.notDeepEqual(state.current(), source)
@@ -72,240 +75,225 @@ test('model write preview is pure; reviewed commit creates one undoable draft; s
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 
-test('declined annotation and save never mutate draft or file', async () => {
+test('model edit validates verified text geometry, note content, revision, session and source before mutation', async () => {
   const { state, opened, writes } = await fixture()
   try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async () => false),
-      { code: 'pdf/approval-rejected' })
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async () => true),
-      { code: 'pdf/proposal-rejected' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), target: { kind: 'reference', refId: 'pdfref_123' },
+    }, agent, signal), { code: 'pdf/approximate-target' })
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), target: { kind: 'pdf-region', page: 1, rectPdf: [60, 80, 120, 100] },
+    }, agent, signal), { code: 'pdf/unverified-region' })
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), target: { ...target, quote: 'missing' },
+    }, agent, signal), { code: 'pdf/text-not-found' })
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), subtype: 'Text', comment: '   ',
+    }, agent, signal), { code: 'pdf/invalid-comment' })
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), subtype: 'Text',
+      target: { kind: 'pdf-text', page: 1, quote },
+    }, agent, signal), { code: 'pdf/invalid-target' })
+    await assert.rejects(writes.annotate(sessionId, {
+      ...annotation(opened.id, opened.revision), subtype: 'Text',
+      target: { kind: 'pdf-region', page: 1, rectPdf: [60, 80, 60, 100] }, comment: 'invalid position',
+    }, agent, signal), { code: 'pdf/invalid-region' })
+    await assert.rejects(writes.annotate('other-session', annotation(opened.id, opened.revision), agent, signal),
+      /session|belong/i)
+    const first = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    await assert.rejects(writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal),
+      { code: 'pdf/stale-revision' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, first.revision)
     assert.equal(state.writes(), 0)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('model write refuses stale text geometry and a noneditable existing annotation', async () => {
+  const { state, opened, writes, pages } = await fixture()
+  try {
+    const staleGeometry = createModelWriteService(state.workspaces, {
+      async readPageText() {
+        const result = await pages.readPageText()
+        return { ...result, snapshot: { ...result.snapshot, revision: result.snapshot.revision + 1 } }
+      },
+    } as never)
+    try {
+      await assert.rejects(staleGeometry.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal),
+        { code: 'pdf/stale-revision' })
+    } finally { staleGeometry.dispose() }
+
+    const added = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    const locked = createModelWriteService({
+      readSnapshot(owner, id) {
+        const snapshot = state.workspaces.readSnapshot(owner, id)
+        return { ...snapshot, document: { ...snapshot.document,
+          annotations: snapshot.document.annotations.map(item => item.id === added.annotationId
+            ? { ...item, editable: false } : item) } }
+      },
+      execute: state.workspaces.execute,
+    }, pages)
+    try {
+      await assert.rejects(locked.updateAnnotation(sessionId, { documentId: opened.id,
+        expectedRevision: added.revision, annotationId: added.annotationId, comment: 'changed' }, agent, signal),
+      { code: 'pdf/annotation-read-only' })
+    } finally { locked.dispose() }
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('model can update and delete an existing mark in the shared undoable draft', async () => {
+  const { state, opened, writes } = await fixture()
+  try {
+    const originalBytes = state.current().slice()
+    const added = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    const changed = await writes.updateAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: added.revision, annotationId: added.annotationId,
+      color: [0, 0.5, 1], comment: '  revised comment  ',
+    }, agent, signal)
+    assert.equal(changed.status, 'updated')
+    assert.equal(changed.dirty, true)
+    assert.equal(changed.canUndo, true)
+    assert.equal(changed.savedToFile, false)
+    const edited = state.workspaces.readSnapshot(sessionId, opened.id)
+    const mark = edited.document.annotations.find(item => item.id === added.annotationId)
+    assert.deepEqual(mark?.color, [0, 0.5, 1])
+    assert.equal(mark?.contents, 'revised comment')
+    assert.equal(state.writes(), 0)
+    assert.deepEqual(state.current(), originalBytes)
+
+    const removed = await writes.deleteAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: changed.revision, annotationId: added.annotationId,
+    }, agent, signal)
+    assert.equal(removed.status, 'deleted')
+    assert.equal(removed.savedToFile, false)
+    assert.ok(!state.workspaces.readSnapshot(sessionId, opened.id).document.annotations
+      .some(item => item.id === added.annotationId))
+    const restored = await state.workspaces.execute(sessionId, { action: 'undo', sessionId,
+      id: opened.id, revision: removed.revision }, agent, signal)
+    assert.ok('bytes' in restored)
+    assert.equal(restored.document.annotations.find(item => item.id === added.annotationId)?.contents,
+      'revised comment')
+    assert.equal(state.writes(), 0)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('model annotation changes require an exact editable ID and current revision', async () => {
+  const { state, opened, writes } = await fixture()
+  try {
+    const added = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    const base = { documentId: opened.id, expectedRevision: added.revision, annotationId: added.annotationId }
+    await assert.rejects(writes.updateAnnotation(sessionId, base, agent, signal),
+      { code: 'pdf/invalid-patch' })
+    await assert.rejects(writes.updateAnnotation(sessionId, { ...base, annotationId: 'missing', color: [1, 0, 0] },
+      agent, signal), { code: 'pdf/unknown-annotation' })
+    await assert.rejects(writes.deleteAnnotation('other-session', base, agent, signal), /session|belong/i)
+    await assert.rejects(writes.deleteAnnotation(sessionId, { ...base, expectedRevision: opened.revision },
+      agent, signal), { code: 'pdf/stale-revision' })
+
+    const note = await writes.annotate(sessionId, { documentId: opened.id, expectedRevision: added.revision,
+      subtype: 'Text', target: { kind: 'pdf-region', page: 1, rectPdf: [60, 80, 90, 100] },
+      comment: 'A note' }, agent, signal)
+    await assert.rejects(writes.updateAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: note.revision, annotationId: note.annotationId,
+      color: [1, 0, 0],
+    }, agent, signal), { code: 'pdf/invalid-color' })
+    await assert.rejects(writes.updateAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: note.revision, annotationId: note.annotationId,
+      comment: '   ',
+    }, agent, signal), { code: 'pdf/invalid-comment' })
+    const cleared = await writes.updateAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: note.revision, annotationId: added.annotationId,
+      comment: '',
+    }, agent, signal)
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations
+      .find(item => item.id === added.annotationId)?.contents, '')
+    await assert.rejects(writes.deleteAnnotation(sessionId, {
+      documentId: opened.id, expectedRevision: note.revision, annotationId: note.annotationId,
+    }, agent, signal), { code: 'pdf/stale-revision' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, cleared.revision)
+    assert.equal(state.writes(), 0)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('an external source change and concurrent UI edit fail closed for model annotations', async () => {
+  const { state, opened, writes, pages } = await fixture()
+  try {
     const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
       id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
         id: 'human-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'manual',
       } }] }, agent, signal)
     assert.ok('bytes' in changed)
-    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: changed.revision },
-      agent, signal, async () => false), { code: 'pdf/approval-rejected' })
-    assert.equal(state.writes(), 0)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, true)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('proposal expires, is session-bound, rejects approximate reference and invalid regions', async () => {
-  let time = 1000
-  const { state, opened, writes } = await fixture(() => time)
-  try {
-    await assert.rejects(writes.preview(sessionId, {
-      ...proposal(opened.id, opened.revision), target: { kind: 'reference', refId: 'pdfref_123' },
-    }, agent, signal), { code: 'pdf/approximate-target' })
-    await assert.rejects(writes.preview(sessionId, {
-      ...proposal(opened.id, opened.revision), target: { ...target, rectPdf: [5, 80, 120, 100] },
-    }, agent, signal), { code: 'pdf/invalid-region' })
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit('different-session', { proposalId: proposed.proposalId }, agent, signal,
-      async () => true), { code: 'pdf/proposal-unavailable' })
-    time += 5 * 60_000
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal,
-      async () => true), { code: 'pdf/proposal-expired' })
+    await assert.rejects(writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal),
+      { code: 'pdf/stale-revision' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.length,
+      opened.document.annotations.length + 1)
+    const staleSource = createModelWriteService({
+      readSnapshot: state.workspaces.readSnapshot,
+      async execute(owner, input, caller, abort) {
+        if (input.action === 'inspectTarget') return { version: `sha256:${'0'.repeat(64)}` }
+        return state.workspaces.execute(owner, input, caller, abort)
+      },
+    }, pages)
+    try {
+      await assert.rejects(staleSource.annotate(sessionId, annotation(opened.id, changed.revision), agent, signal),
+        { code: 'pdf/source-conflict' })
+    } finally { staleSource.dispose() }
     assert.equal(state.writes(), 0)
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 
-test('a proposal that expires while the human reviews cannot be committed', async () => {
-  let time = 1000
-  const { state, opened, writes } = await fixture(() => time)
-  try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async () => {
-      time += 5 * 60_000
-      return true
-    }), { code: 'pdf/proposal-expired' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('a change while human reviews invalidates annotation and save approval before mutation', async () => {
+test('save refuses a changed working copy during approval, an oversized review, and a disposed service', async () => {
   const { state, opened, writes } = await fixture()
   try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async () => {
-      await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
-        revision: opened.revision, operations: [{ type: 'add', annotation: {
-          id: 'concurrent-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100],
-        } }] }, agent, signal)
-      return true
-    }), { code: 'pdf/stale-revision' })
-    const dirty = state.workspaces.readSnapshot(sessionId, opened.id)
-    assert.equal(dirty.document.annotations.length, opened.document.annotations.length + 1)
-    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: dirty.revision },
+    const updated = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: updated.revision },
       agent, signal, async () => {
         await state.workspaces.execute(sessionId, { action: 'undo', sessionId, id: opened.id,
-          revision: dirty.revision }, agent, signal)
+          revision: updated.revision }, agent, signal)
         return true
       }), { code: 'pdf/stale-revision' })
     assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('abort and review failure fail closed without writes', async () => {
-  const { state, opened, writes } = await fixture()
-  try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    const controller = new AbortController()
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, controller.signal,
-      async () => { controller.abort(); return true }), /abort/i)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('external source change during review is rejected before draft mutation', async () => {
-  const { state, opened } = await fixture()
-  let externalChange = false
-  const writes = createModelWriteService({
-    readSnapshot: state.workspaces.readSnapshot,
-    async execute(owner, input, caller, abort) {
-      if (externalChange && input.action === 'inspectTarget') return { version: `sha256:${'0'.repeat(64)}` }
-      return state.workspaces.execute(owner, input, caller, abort)
-    },
-  })
-  try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal, async () => {
-      externalChange = true
-      return true
-    }), { code: 'pdf/source-conflict' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('preview refuses a working-copy change between source check and projected review', async () => {
-  const { state, opened } = await fixture()
-  let reads = 0
-  const writes = createModelWriteService({
-    readSnapshot(owner, id) {
-      const snapshot = state.workspaces.readSnapshot(owner, id)
-      return ++reads === 2 ? { ...snapshot, contentVersion: 'concurrent-content' } : snapshot
-    },
-    execute: state.workspaces.execute,
-  })
-  try {
-    await assert.rejects(writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal),
-      { code: 'pdf/stale-revision' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('commit rejects a proposal when its source identity changes without a revision bump', async () => {
-  const { state, opened } = await fixture()
-  let moved = false
-  const writes = createModelWriteService({
-    readSnapshot(owner, id) {
-      const snapshot = state.workspaces.readSnapshot(owner, id)
-      return moved ? { ...snapshot, path: '/other-file.pdf' } : snapshot
-    },
-    execute: state.workspaces.execute,
-  })
-  try {
-    const proposed = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    moved = true
+    const dirty = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: opened.id, revision: updated.revision + 1, operations: Array.from({ length: 9 }, (_, index) => ({
+        type: 'add', annotation: { id: `manual-${index}`, page: 1, subtype: 'Text',
+          rect: [60 + index, 80, 90 + index, 100], contents: `manual ${index}` },
+      })) }, agent, signal)
+    assert.ok('bytes' in dirty)
     let asked = false
-    await assert.rejects(writes.commit(sessionId, { proposalId: proposed.proposalId }, agent, signal,
-      async () => { asked = true; return true }), { code: 'pdf/stale-proposal' })
-    assert.equal(asked, false, 'a stale proposal never reaches the approval UI')
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('save refuses annotation changes that occur during review without advancing revision', async () => {
-  const { state, opened } = await fixture()
-  const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
-    id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
-      id: 'manual-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'reviewed text',
-    } }] }, agent, signal)
-  assert.ok('bytes' in changed)
-  let altered = false
-  const writes = createModelWriteService({
-    readSnapshot(owner, id) {
-      const snapshot = state.workspaces.readSnapshot(owner, id)
-      if (!altered) return snapshot
-      return { ...snapshot, document: { ...snapshot.document,
-        annotations: snapshot.document.annotations.map(annotation => annotation.id === 'manual-note'
-          ? { ...annotation, contents: 'unreviewed text' } : annotation),
-      } }
-    },
-    execute: state.workspaces.execute,
-  })
-  try {
-    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: changed.revision },
-      agent, signal, async detail => {
-        assert.match(detail.saveDiffText!, /reviewed text/)
-        altered = true
-        return true
-      }), { code: 'pdf/stale-revision' })
-    assert.equal(state.writes(), 0)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, true)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('disposed model-write service cannot request save approval or publish a reviewed save', async () => {
-  const { state, opened } = await fixture()
-  const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
-    id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
-      id: 'unsaved-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'keep in draft',
-    } }] }, agent, signal)
-  assert.ok('bytes' in changed)
-  try {
-    const alreadyDisposed = createModelWriteService(state.workspaces)
-    alreadyDisposed.dispose()
-    let asked = false
-    await assert.rejects(alreadyDisposed.save(sessionId, { documentId: opened.id,
-      expectedRevision: changed.revision }, agent, signal,
-    async () => { asked = true; return true }), { code: 'pdf/write-unavailable' })
+    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: dirty.revision },
+      agent, signal, async () => { asked = true; return true }), { code: 'pdf/review-too-large' })
     assert.equal(asked, false)
-
-    const disposedDuringReview = createModelWriteService(state.workspaces)
-    await assert.rejects(disposedDuringReview.save(sessionId, { documentId: opened.id,
-      expectedRevision: changed.revision }, agent, signal, async () => {
-      disposedDuringReview.dispose()
-      return true
-    }), { code: 'pdf/write-unavailable' })
-    assert.equal(state.writes(), 0)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, true)
-  } finally { await state.workspaces.dispose() }
-})
-
-test('the shared working-copy change queue enforces optional source CAS for model edits', async () => {
-  const { state, opened, writes } = await fixture()
-  try {
-    await assert.rejects(state.workspaces.execute(sessionId, { action: 'change', sessionId,
-      id: opened.id, revision: opened.revision, expectedSourceHash: `sha256:${'0'.repeat(64)}`,
-      operations: [{ type: 'add', annotation: { id: 'must-not-exist', page: 1, subtype: 'Text',
-        rect: [60, 80, 90, 100], contents: 'blocked' } }],
-    }, agent, signal), { code: 'pdf/source-conflict' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
+    writes.dispose()
+    await assert.rejects(writes.annotate(sessionId, annotation(opened.id, dirty.revision), agent, signal),
+      { code: 'pdf/write-unavailable' })
+    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: dirty.revision },
+      agent, signal, async () => true), { code: 'pdf/write-unavailable' })
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 
-test('a model-authored text note requires visible, non-empty comment content', async () => {
+test('save rejects a changed review even when a faulty store keeps its revision unchanged', async () => {
   const { state, opened, writes } = await fixture()
   try {
-    await assert.rejects(writes.preview(sessionId, {
-      ...proposal(opened.id, opened.revision), subtype: 'Text', comment: '   ',
-    }, agent, signal), { code: 'pdf/invalid-comment' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
+    const updated = await writes.annotate(sessionId, annotation(opened.id, opened.revision), agent, signal)
+    let alterReview = false
+    const guarded = createModelWriteService({
+      readSnapshot(owner, id) {
+        const snapshot = state.workspaces.readSnapshot(owner, id)
+        return alterReview ? { ...snapshot, document: { ...snapshot.document,
+          annotations: snapshot.document.annotations.map(item => item.id === updated.annotationId
+            ? { ...item, contents: 'changed after approval' } : item) } } : snapshot
+      },
+      execute: state.workspaces.execute,
+    })
+    try {
+      await assert.rejects(guarded.save(sessionId, { documentId: opened.id,
+        expectedRevision: updated.revision }, agent, signal,
+      async () => { alterReview = true; return true }), { code: 'pdf/stale-revision' })
+      assert.equal(state.writes(), 0)
+    } finally { guarded.dispose() }
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 
-test('save review covers final manual and AI changes, including add, update and delete', async () => {
+test('save review describes add, update and delete without silently dropping changes', async () => {
   const { state, opened, writes } = await fixture()
   try {
     const baseline = state.workspaces.readSnapshot(sessionId, opened.id)
@@ -320,122 +308,24 @@ test('save review covers final manual and AI changes, including add, update and 
     const review = buildSaveReview(synthetic)
     assert.equal(review.count, 4)
     assert.match(review.text, /评论："before" → "after"/)
-    assert.match(review.text, /颜色：\[1,0,0\] → \[0,1,0\]/)
     assert.match(review.text, /删除批注 ID："removed-comment"/)
-    assert.match(review.text, /新增批注 ID："manual-comment"/)
-    assert.match(review.text, /新增批注 ID："ai-comment"/)
-
+    assert.throws(() => buildSaveReview({ ...synthetic, baselineAnnotations: [], document: {
+      ...synthetic.document, annotations: [{ ...synthetic.document.annotations[0]!, id: 'oversized',
+        contents: 'x'.repeat(6100) }],
+    } }), { code: 'pdf/review-too-large' })
     const manual = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
       id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
         id: 'manual-real', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'manual draft',
       } }] }, agent, signal)
     assert.ok('bytes' in manual)
-    const preview = await writes.preview(sessionId, proposal(opened.id, manual.revision), agent, signal)
-    const committed = await writes.commit(sessionId, { proposalId: preview.proposalId }, agent, signal,
-      async () => true)
-    const saved = await writes.save(sessionId, { documentId: opened.id, expectedRevision: committed.revision },
+    const updated = await writes.annotate(sessionId, annotation(opened.id, manual.revision), agent, signal)
+    await writes.save(sessionId, { documentId: opened.id, expectedRevision: updated.revision },
       agent, signal, async detail => {
         assert.equal(detail.saveChangeCount, 2)
         assert.match(detail.saveDiffText!, /manual draft/)
         assert.match(detail.saveDiffText!, /AI suggestion/)
-        assert.match(detail.saveDiffText!, /页码：∅ → 1/)
-        assert.equal(state.writes(), 0)
         return true
       })
-    assert.equal(saved.status, 'saved')
     assert.equal(state.writes(), 1)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('model save refuses an over-limit review before asking for approval or writing', async () => {
-  const { state, opened, writes } = await fixture()
-  try {
-    const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
-      id: opened.id, revision: opened.revision, operations: Array.from({ length: 9 }, (_, index) => ({
-        type: 'add', annotation: { id: `manual-${index}`, page: 1, subtype: 'Text',
-          rect: [60 + index, 80, 90 + index, 100], contents: `manual ${index}` },
-      })) }, agent, signal)
-    assert.ok('bytes' in changed)
-    let asked = false
-    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: changed.revision },
-      agent, signal, async () => { asked = true; return true }), { code: 'pdf/review-too-large' })
-    assert.equal(asked, false)
-    assert.equal(state.writes(), 0)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, true)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('model save also refuses an oversized comment instead of silently truncating review text', async () => {
-  const { state, opened, writes } = await fixture()
-  try {
-    const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
-      id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
-        id: 'long-manual-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100],
-        contents: 'x'.repeat(6500),
-      } }] }, agent, signal)
-    assert.ok('bytes' in changed)
-    let asked = false
-    await assert.rejects(writes.save(sessionId, { documentId: opened.id, expectedRevision: changed.revision },
-      agent, signal, async () => { asked = true; return true }), { code: 'pdf/review-too-large' })
-    assert.equal(asked, false)
-    assert.equal(state.writes(), 0)
-  } finally { writes.dispose(); await state.workspaces.dispose() }
-})
-
-test('proposal being reviewed is not evicted and a full busy ledger refuses new previews', async () => {
-  const { state, opened, writes } = await fixture()
-  let releaseFirst!: () => void
-  const firstDecision = new Promise<void>(resolve => { releaseFirst = resolve })
-  let firstStarted!: () => void
-  const firstReviewStarted = new Promise<void>(resolve => { firstStarted = resolve })
-  let releaseOthers!: () => void
-  const otherDecision = new Promise<void>(resolve => { releaseOthers = resolve })
-  const pending: Array<Promise<unknown>> = []
-  try {
-    const first = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    const firstCommit = writes.commit(sessionId, { proposalId: first.proposalId }, agent, signal,
-      async () => { firstStarted(); await firstDecision; return true })
-    await firstReviewStarted
-    const ready = []
-    for (let index = 0; index < 127; index++) {
-      ready.push(await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal))
-    }
-    const extra = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: ready[0]!.proposalId }, agent, signal,
-      async () => true), { code: 'pdf/proposal-unavailable' })
-    let started = 0
-    let allStarted!: () => void
-    const everyReviewStarted = new Promise<void>(resolve => { allStarted = resolve })
-    for (const entry of [...ready.slice(1), extra]) {
-      pending.push(writes.commit(sessionId, { proposalId: entry.proposalId }, agent, signal,
-        async () => { if (++started === 127) allStarted(); await otherDecision; return false })
-        .catch(error => error))
-    }
-    await everyReviewStarted
-    await assert.rejects(writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal),
-      { code: 'pdf/proposals-full' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    releaseOthers()
-    await Promise.all(pending)
-    releaseFirst()
-    assert.equal((await firstCommit).status, 'committed', 'oldest busy proposal remains live')
-    assert.equal(state.writes(), 0)
-  } finally {
-    releaseOthers?.()
-    releaseFirst?.()
-    await Promise.allSettled(pending)
-    writes.dispose()
-    await state.workspaces.dispose()
-  }
-})
-
-test('disposing a model-write service during approval invalidates the proposal', async () => {
-  const { state, opened, writes } = await fixture()
-  try {
-    const preview = await writes.preview(sessionId, proposal(opened.id, opened.revision), agent, signal)
-    await assert.rejects(writes.commit(sessionId, { proposalId: preview.proposalId }, agent, signal,
-      async () => { writes.dispose(); return true }), { code: 'pdf/proposal-unavailable' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    assert.equal(state.writes(), 0)
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })

@@ -6,9 +6,16 @@ export interface AnnotationCommentCardProps {
   viewport: HTMLElement | null
   /** Current annotation geometry in window coordinates. */
   getAnchor(): DOMRect | null
+  /** Optional persisted top-left card position in window coordinates. */
+  getPosition?(): DOMRect | null
   label: string
   children: ReactNode
   connectorColor?: string
+  /** Notes use the same bounded floating-card placement, but never draw a connector. */
+  connector?: boolean
+  cardKind?: 'comment' | 'note'
+  /** Persist a note anchor or comment-card placement after a drag. */
+  onMove?(delta: { x: number; y: number }, position: { left: number; top: number }): boolean | Promise<boolean>
   /** Fired once when a previously hidden card becomes visible. */
   onVisible?(): void
 }
@@ -23,26 +30,36 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 /** Keep one comment attached to its PDF mark without making the page wider. */
-export function AnnotationCommentCard({ viewport, getAnchor, label, children, connectorColor, onVisible }: AnnotationCommentCardProps) {
+export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label, children, connectorColor,
+  connector: connectorEnabled = true, cardKind = 'comment', onMove, onVisible }: AnnotationCommentCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const connectorRef = useRef<SVGSVGElement>(null)
   const pathRef = useRef<SVGPathElement>(null)
   const refreshRef = useRef<(() => void) | null>(null)
   const scheduleRef = useRef<(() => void) | null>(null)
   const dragOffsetRef = useRef({ x: 0, y: 0 })
-  const dragRef = useRef<{ pointerId: number; x: number; y: number; offsetX: number; offsetY: number } | null>(null)
+  const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; offsetX: number; offsetY: number } | null>(null)
   const anchorRef = useRef(getAnchor)
   anchorRef.current = getAnchor
+  const positionRef = useRef(getPosition)
+  positionRef.current = getPosition
   const onVisibleRef = useRef(onVisible)
   onVisibleRef.current = onVisible
+  const onMoveRef = useRef(onMove)
+  onMoveRef.current = onMove
+  const movingRef = useRef(false)
   const markerId = `dsh-pdf-comment-arrow-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
   const readerRoot = viewport?.closest<HTMLElement>('.dsh-pdf-reader') ?? null
+
+  // A reused floating-card instance must not carry a note drag into a mark's
+  // comment placement (or vice versa). They have different anchors and owners.
+  useLayoutEffect(() => { dragOffsetRef.current = { x: 0, y: 0 } }, [cardKind])
 
   useLayoutEffect(() => {
     const card = cardRef.current
     const connector = connectorRef.current
     const path = pathRef.current
-    if (!viewport || !readerRoot || !card || !connector || !path) return
+    if (!viewport || !readerRoot || !card || (connectorEnabled && (!connector || !path))) return
     let frame = 0
     let missingAnchorTimer: ReturnType<typeof setTimeout> | null = null
     const hide = () => {
@@ -54,7 +71,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       }
       card.dataset.visible = 'false'
       card.setAttribute('aria-hidden', 'true')
-      connector.dataset.visible = 'false'
+      if (connector) connector.dataset.visible = 'false'
     }
     const clearMissingAnchor = () => {
       if (missingAnchorTimer !== null) clearTimeout(missingAnchorTimer)
@@ -86,7 +103,9 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       const rightEdge = Math.min(bounds.right - EDGE, rootBounds.right - EDGE)
       const controls = readerRoot.querySelector<HTMLElement>('.dsh-pdf-floating-controls')
       const controlsBottom = controls?.getBoundingClientRect().bottom ?? bounds.top
-      if (anchor.bottom <= controlsBottom) { hide(); return }
+      // A note marker can sit at the page's top corner underneath the floating
+      // controls. Its opened card still needs a usable position below them.
+      if (anchor.bottom <= controlsBottom && cardKind !== 'note') { hide(); return }
       const topEdge = Math.max(bounds.top + EDGE, rootBounds.top + EDGE, controlsBottom + EDGE)
       const bottomEdge = Math.min(bounds.bottom - EDGE, rootBounds.bottom - EDGE)
       const rightRoom = rightEdge - anchor.right - GAP
@@ -102,7 +121,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       const height = card.offsetHeight
       const belowRoom = bottomEdge - anchor.bottom - GAP
       const aboveRoom = anchor.top - topEdge - GAP
-      const side = rightRoom >= MIN_SIDE_WIDTH ? 'right'
+      let side = rightRoom >= MIN_SIDE_WIDTH ? 'right'
         : leftRoom >= MIN_SIDE_WIDTH ? 'left'
           : belowRoom >= height ? 'below'
             : aboveRoom >= height ? 'above'
@@ -113,6 +132,14 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       let top = side === 'below' ? clamp(anchor.bottom + GAP, topEdge, bottomEdge - height)
         : side === 'above' ? clamp(anchor.top - GAP - height, topEdge, bottomEdge - height)
           : clamp(anchor.top - 4, topEdge, bottomEdge - height)
+
+      const savedPosition = positionRef.current?.()
+      if (savedPosition && Number.isFinite(savedPosition.left) && Number.isFinite(savedPosition.top)) {
+        left = clamp(savedPosition.left, leftEdge, rightEdge - width)
+        top = clamp(savedPosition.top, topEdge, bottomEdge - height)
+        side = left >= anchor.right + 2 ? 'right' : left + width <= anchor.left - 2 ? 'left'
+          : top >= anchor.bottom + 2 ? 'below' : top + height <= anchor.top - 2 ? 'above' : side
+      }
 
       // The mark action bar and the comment card can be visible together. On a
       // narrow PDF column their preferred placements may overlap; move the
@@ -134,43 +161,45 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       top = clamp(top + dragOffsetRef.current.y, topEdge, bottomEdge - height)
       dragOffsetRef.current = { x: left - baseLeft, y: top - baseTop }
 
-      const centerX = anchor.left + anchor.width / 2
-      const centerY = anchor.top + anchor.height / 2
-      // If a narrow viewport forced the card over the mark, connect along the
-      // actual free axis rather than drawing an arrow through the card itself.
-      const edge = left >= anchor.right + 2 ? 'right'
-        : left + width <= anchor.left - 2 ? 'left'
-          : top >= anchor.bottom + 2 ? 'below'
-            : top + height <= anchor.top - 2 ? 'above'
-              : side
-      let startX: number, startY: number, endX: number, endY: number
-      if (edge === 'right' || edge === 'left') {
-        startX = clamp(edge === 'right' ? anchor.right : anchor.left, bounds.left, bounds.right)
-        startY = clamp(centerY, bounds.top, bounds.bottom)
-        endX = edge === 'right' ? left : left + width
-        endY = clamp(startY, top + Math.min(20, height / 2), top + Math.max(height - 20, height / 2))
-      } else {
-        startX = clamp(centerX, bounds.left, bounds.right)
-        startY = clamp(edge === 'below' ? anchor.bottom : anchor.top, bounds.top, bounds.bottom)
-        endX = clamp(startX, left + Math.min(20, width / 2), left + Math.max(width - 20, width / 2))
-        endY = edge === 'below' ? top : top + height
-      }
-      const x1 = startX - rootBounds.left, y1 = startY - rootBounds.top
-      const x2 = endX - rootBounds.left, y2 = endY - rootBounds.top
-      const horizontal = edge === 'right' || edge === 'left'
-      const curve = horizontal ? clamp(Math.abs(x2 - x1) * .42, 12, 80) : clamp(Math.abs(y2 - y1) * .42, 12, 80)
-      const direction = horizontal ? Math.sign(x2 - x1) || 1 : Math.sign(y2 - y1) || 1
-      const d = horizontal
-        ? `M ${x1} ${y1} C ${x1 + direction * curve} ${y1}, ${x2 - direction * curve} ${y2}, ${x2} ${y2}`
-        : `M ${x1} ${y1} C ${x1} ${y1 + direction * curve}, ${x2} ${y2 - direction * curve}, ${x2} ${y2}`
       card.style.left = `${left - rootBounds.left}px`
       card.style.top = `${top - rootBounds.top}px`
       const wasVisible = card.dataset.visible === 'true'
       card.dataset.visible = 'true'
       card.setAttribute('aria-hidden', 'false')
-      connector.setAttribute('viewBox', `0 0 ${rootBounds.width} ${rootBounds.height}`)
-      path.setAttribute('d', d)
-      connector.dataset.visible = 'true'
+      if (connectorEnabled && connector && path) {
+        const centerX = anchor.left + anchor.width / 2
+        const centerY = anchor.top + anchor.height / 2
+        // If a narrow viewport forced the card over the mark, connect along the
+        // actual free axis rather than drawing an arrow through the card itself.
+        const edge = left >= anchor.right + 2 ? 'right'
+          : left + width <= anchor.left - 2 ? 'left'
+            : top >= anchor.bottom + 2 ? 'below'
+              : top + height <= anchor.top - 2 ? 'above'
+                : side
+        let startX: number, startY: number, endX: number, endY: number
+        if (edge === 'right' || edge === 'left') {
+          startX = clamp(edge === 'right' ? anchor.right : anchor.left, bounds.left, bounds.right)
+          startY = clamp(centerY, bounds.top, bounds.bottom)
+          endX = edge === 'right' ? left : left + width
+          endY = clamp(startY, top + Math.min(20, height / 2), top + Math.max(height - 20, height / 2))
+        } else {
+          startX = clamp(centerX, bounds.left, bounds.right)
+          startY = clamp(edge === 'below' ? anchor.bottom : anchor.top, bounds.top, bounds.bottom)
+          endX = clamp(startX, left + Math.min(20, width / 2), left + Math.max(width - 20, width / 2))
+          endY = edge === 'below' ? top : top + height
+        }
+        const x1 = startX - rootBounds.left, y1 = startY - rootBounds.top
+        const x2 = endX - rootBounds.left, y2 = endY - rootBounds.top
+        const horizontal = edge === 'right' || edge === 'left'
+        const curve = horizontal ? clamp(Math.abs(x2 - x1) * .42, 12, 80) : clamp(Math.abs(y2 - y1) * .42, 12, 80)
+        const direction = horizontal ? Math.sign(x2 - x1) || 1 : Math.sign(y2 - y1) || 1
+        const d = horizontal
+          ? `M ${x1} ${y1} C ${x1 + direction * curve} ${y1}, ${x2 - direction * curve} ${y2}, ${x2} ${y2}`
+          : `M ${x1} ${y1} C ${x1} ${y1 + direction * curve}, ${x2} ${y2 - direction * curve}, ${x2} ${y2}`
+        connector.setAttribute('viewBox', `0 0 ${rootBounds.width} ${rootBounds.height}`)
+        path.setAttribute('d', d)
+        connector.dataset.visible = 'true'
+      }
       if (!wasVisible) onVisibleRef.current?.()
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
@@ -200,16 +229,17 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
     }
-  }, [viewport, readerRoot])
+  }, [viewport, readerRoot, connectorEnabled, cardKind])
   useLayoutEffect(() => { refreshRef.current?.() })
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.stopPropagation()
-    if (event.button !== 0 || event.isPrimary === false || !(event.target instanceof Element)) return
+    if (movingRef.current || event.button !== 0 || event.isPrimary === false || !(event.target instanceof Element)) return
     const handle = event.target.closest('[data-comment-card-drag-handle]')
     if (!handle || event.target.closest('button:not([data-comment-card-drag-handle])')) return
     event.preventDefault()
-    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+    const bounds = event.currentTarget.getBoundingClientRect()
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: bounds.left, top: bounds.top,
       offsetX: dragOffsetRef.current.x, offsetY: dragOffsetRef.current.y }
     event.currentTarget.dataset.dragging = 'true'
     try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* Pointer capture may be unavailable in embedded test hosts. */ }
@@ -222,9 +252,29 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
     scheduleRef.current?.()
   }
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return
+    const drag = dragRef.current
+    if (drag?.pointerId !== event.pointerId) return
     dragRef.current = null
     delete event.currentTarget.dataset.dragging
+    const move = onMoveRef.current
+    if (!move) return
+    const delta = { x: dragOffsetRef.current.x - drag.offsetX, y: dragOffsetRef.current.y - drag.offsetY }
+    if (Math.abs(delta.x) < 0.5 && Math.abs(delta.y) < 0.5) return
+    const card = event.currentTarget
+    movingRef.current = true
+    card.dataset.moving = 'true'
+    void (async () => {
+      let committed = false
+      try { committed = await move(delta, { left: drag.left + delta.x, top: drag.top + delta.y }) }
+      catch { /* The owner reports persistence failures. */ }
+      // Let the updated PDF rect become the new anchor before removing the
+      // temporary drag offset; this keeps the card visually attached in flight.
+      if (committed) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      dragOffsetRef.current = { x: drag.offsetX, y: drag.offsetY }
+      movingRef.current = false
+      if (card.isConnected) delete card.dataset.moving
+      scheduleRef.current?.()
+    })()
   }
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!(event.target instanceof Element) || !event.target.closest('[data-comment-card-drag-handle]')) return
@@ -236,19 +286,42 @@ export function AnnotationCommentCard({ viewport, getAnchor, label, children, co
     if (!delta) return
     event.preventDefault()
     event.stopPropagation()
-    dragOffsetRef.current = { x: dragOffsetRef.current.x + delta[0]!, y: dragOffsetRef.current.y + delta[1]! }
+    if (movingRef.current) return
+    const base = { ...dragOffsetRef.current }
+    const bounds = cardRef.current?.getBoundingClientRect()
+    if (!bounds) return
+    dragOffsetRef.current = { x: base.x + delta[0]!, y: base.y + delta[1]! }
     refreshRef.current?.()
+    const move = onMoveRef.current
+    if (move) {
+      const card = cardRef.current
+      if (!card) return
+      movingRef.current = true
+      card.dataset.moving = 'true'
+      void (async () => {
+        let committed = false
+        try { committed = await move({ x: delta[0]!, y: delta[1]! },
+          { left: bounds.left + delta[0]!, top: bounds.top + delta[1]! }) }
+        catch { /* The owner reports persistence failures. */ }
+        if (committed) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+        dragOffsetRef.current = base
+        movingRef.current = false
+        if (card.isConnected) delete card.dataset.moving
+        scheduleRef.current?.()
+      })()
+    }
   }
 
   if (!readerRoot) return null
   return createPortal(<>
-    <svg ref={connectorRef} className="dsh-pdf-comment-connector" data-visible="false" aria-hidden="true"
+    {connectorEnabled && <svg ref={connectorRef} className="dsh-pdf-comment-connector" data-visible="false" aria-hidden="true"
       style={connectorColor ? { '--pdf-comment-connector-color': connectorColor } as React.CSSProperties : undefined}>
       <defs><marker id={markerId} markerWidth="7" markerHeight="7" refX="6" refY="3.5"
         orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 1 L 6 3.5 L 0 6 Z" fill="currentColor" /></marker></defs>
       <path ref={pathRef} markerEnd={`url(#${markerId})`} />
-    </svg>
+    </svg>}
     <div ref={cardRef} className="dsh-pdf-page-comment-card" data-visible="false" aria-hidden="true"
+      data-card-kind={cardKind}
       role="dialog" aria-label={label} aria-modal="false"
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={endDrag}
       onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={onKeyDown}>{children}</div>

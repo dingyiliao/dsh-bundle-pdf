@@ -88,7 +88,7 @@ test('existing annotation actions respect editability and comment access', async
       editable: true, color: [1, 1, 0] } as PdfAnnotation
     const props: ReaderAnnotationBarProps = {
       viewport: null, getAnchor: () => null, selected, commentActionAvailable: true,
-      commentColor: '#ffff00', readOnly: false, editable: true,
+      annotationColor: '#ffff00', readOnly: false, editable: true,
       updateColor: value => actions.push(`color:${value}`),
       openCommentEditor: () => actions.push('comment'), deleteAnnotation: () => actions.push('delete'),
       clearAnnotation: () => actions.push('clear'), t: key => key,
@@ -107,5 +107,20 @@ test('existing annotation actions respect editability and comment access', async
     assert.equal(container.querySelector<HTMLButtonElement>('button[aria-label="reader.commentText"]')?.disabled, true)
     await render(React.createElement(ReaderAnnotationBar, { ...props, selected: undefined }))
     assert.equal(container.querySelector('[role="toolbar"]'), null)
+  })
+})
+
+test('standalone notes are represented by their marker/card, not a separate toolbar', async () => {
+  await withBars(async ({ container, render }) => {
+    const note = { id: 'note', page: 1, subtype: 'Text', supported: true, editable: true } as PdfAnnotation
+    await render(React.createElement(ReaderAnnotationBar, {
+      viewport: null, getAnchor: () => null, selected: note, commentActionAvailable: true,
+      annotationColor: '#ffff00', readOnly: false, editable: true,
+      updateColor() {}, openCommentEditor() {}, deleteAnnotation() {}, clearAnnotation() {}, t: key => key,
+    }))
+    assert.equal(container.querySelector('[role="toolbar"]'), null)
+    assert.equal(container.querySelector('[aria-label="reader.annotationColor"]'), null)
+    assert.equal(container.querySelector('[aria-label="reader.commentText"]'), null)
+    assert.equal(container.querySelector('[aria-label="reader.delete"]'), null)
   })
 })

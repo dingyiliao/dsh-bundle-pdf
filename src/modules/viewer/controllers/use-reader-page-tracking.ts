@@ -14,7 +14,8 @@ export interface ReaderPageTrackingOptions {
 export function useReaderPageTracking({ snapshot, readerElement, scrollportRef }: ReaderPageTrackingOptions) {
   const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageInput, setPageInput] = useState('1')
+  const [pageInput, setPageInputState] = useState('1')
+  const hasUnsubmittedPageInput = useRef(false)
   const views = useRef(new Map<number, PageView>())
   const scrollFrame = useRef<number | undefined>(undefined)
   const latest = useRef({ snapshot, scrollRoot, currentPage, readerElement })
@@ -29,6 +30,14 @@ export function useReaderPageTracking({ snapshot, readerElement, scrollportRef }
     setScrollRoot(node)
     scrollportRef(node)
   }, [scrollportRef])
+  const setPageInput = useCallback((value: string) => {
+    hasUnsubmittedPageInput.current = false
+    setPageInputState(value)
+  }, [])
+  const editPageInput = useCallback((value: string) => {
+    hasUnsubmittedPageInput.current = true
+    setPageInputState(value)
+  }, [])
   const updateScrolledPage = useCallback(() => {
     if (scrollFrame.current !== undefined) return
     scrollFrame.current = requestAnimationFrame(() => {
@@ -38,18 +47,18 @@ export function useReaderPageTracking({ snapshot, readerElement, scrollportRef }
       const numeric = windowLayout(root)
       if (!numeric?.length) return
       const number = numeric[pageIndexAtOffset(numeric, root.scrollTop + readingPageProbe(root.clientHeight))].page
-      if (number === previousPage) return
-      setCurrentPage(number)
-      // A late layout frame must not overwrite a page number the user is typing.
-      if (!reader.current?.querySelector('.dsh-pdf-page-input:focus')) {
-        setPageInput(draft => draft === String(previousPage) ? String(number) : draft)
-      }
+      if (number !== previousPage) setCurrentPage(number)
+      // Focus alone is not an edit: Enter leaves the page field focused after
+      // committing a jump, so subsequent scrolling must still update it.
+      if (hasUnsubmittedPageInput.current && reader.current?.querySelector('.dsh-pdf-page-input:focus')) return
+      hasUnsubmittedPageInput.current = false
+      setPageInputState(String(number))
     })
   }, [])
   useEffect(() => () => {
     if (scrollFrame.current !== undefined) cancelAnimationFrame(scrollFrame.current)
   }, [])
 
-  return { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput,
+  return { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
     views, registerView, scrollRef, updateScrolledPage }
 }

@@ -57,3 +57,39 @@ test('an absent reading position reads as null rather than an error', async () =
   const api = createPdfApi({ rpc: { async call() { return { ok: true, value: { position: null } } } } }, new AbortController().signal)
   assert.equal(await api.positions.get('session', 'doc-1'), null)
 })
+
+test('an external Host draft edit refreshes an already-open Reader snapshot', async () => {
+  const lifetime = new AbortController()
+  let revision = 0
+  let wake!: (value: unknown) => void
+  let watchStarted!: () => void
+  const watching = new Promise<void>(resolve => { watchStarted = resolve })
+  const api = createPdfApi({ rpc: { async call(_path, method) {
+    if (method === 'pdf.watch') {
+      watchStarted()
+      return new Promise(resolve => { wake = resolve })
+    }
+    assert.equal(method, 'pdf.dispatch.v2')
+    return { ok: true, value: {
+      id: 'doc', path: '/document.pdf', sourceVersion: 'source', contentVersion: 'content', revision,
+      dirty: revision > 0, canUndo: revision > 0, canRedo: false, conflict: false,
+      reader: { bytesHash: `sha256:${'a'.repeat(64)}`, generation: 1, protocolVersion: 1 },
+      document: { pageCount: 1, signed: false, encrypted: false, readOnly: false,
+        pages: [{ page: 1, cropBox: [0, 0, 100, 100], rotation: 0, userUnit: 1 }],
+        annotations: revision ? [{ id: 'ai-edit', page: 1, subtype: 'Highlight', flags: 4,
+          supported: true, editable: true }] : [] },
+    } }
+  } } }, lifetime.signal)
+  try {
+    const opened = await api.open('session', 'dsh-resource://file/session/session/document.pdf')
+    assert.equal(opened.revision, 0)
+    let refreshed!: (value: number) => void
+    const received = new Promise<number>(resolve => { refreshed = resolve })
+    const unsubscribe = api.subscribe(opened.id, value => { if (value.revision > 0) refreshed(value.revision) })
+    await watching
+    revision = 1
+    wake({ ok: true, value: { revision } })
+    assert.equal(await received, 1)
+    unsubscribe()
+  } finally { lifetime.abort() }
+})

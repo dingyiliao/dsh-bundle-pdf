@@ -22,6 +22,8 @@ export interface ReaderExplanationOptions {
   snapshot: WorkspaceSnapshot | null
   pdf: NativeDocument | null
   promptExplanation?: ReaderPromptExplanation
+  promptTemplate: string
+  promptGuidance?: { general: string; text: string; image: string }
   imageUnderstanding: ImageUnderstandingApi
   regionEvidence?: PdfRegionEvidenceApi
   textSelectionEvidence?: PdfTextSelectionEvidenceApi
@@ -57,6 +59,7 @@ function sameSelection(left: ReaderSelection, right: ReaderSelection): boolean {
 /** One reader occurrence owns question drafts, image capture, model capability and turn submission. */
 export function useReaderExplanation(options: ReaderExplanationOptions) {
   const { sessionId, tabSignal, visible, snapshot, pdf, promptExplanation, imageUnderstanding,
+    promptTemplate, promptGuidance,
     regionEvidence, textSelectionEvidence,
     allowReadingContext, screenshotBusy, displayReady, mode, regionPurpose, ownerSequence,
     currentSnapshot, inspectSource, documentReady, setMode, setSelection,
@@ -290,7 +293,7 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
     setError('')
     try {
       const prompt = await buildMixedExplanationPrompt(source.path, active.excerpts, t, {
-        sessionId, documentId: source.documentId,
+        sessionId, documentId: source.documentId, template: promptTemplate, guidance: promptGuidance,
         prepareReference: (request, signal) => imageUnderstanding.prepareReference(request, signal),
         signal: tabSignal,
       })

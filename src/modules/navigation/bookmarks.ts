@@ -20,12 +20,19 @@ export type BookmarkRecord = z.infer<typeof bookmarkRecordSchema>
 
 const requests = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'), sessionId: id, id }).strict(),
-  z.object({ action: z.literal('add'), sessionId: id, id, title, position: bookmarkPositionSchema }).strict(),
-  z.object({ action: z.literal('rename'), sessionId: id, id, bookmarkId: z.string().uuid(), title }).strict(),
-  z.object({ action: z.literal('remove'), sessionId: id, id, bookmarkId: z.string().uuid() }).strict(),
+  z.object({ action: z.literal('add'), sessionId: id, id, title, position: bookmarkPositionSchema,
+    expectedRevision: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ action: z.literal('rename'), sessionId: id, id, bookmarkId: z.string().uuid(), title,
+    expectedUpdatedAt: z.string().datetime().optional() }).strict(),
+  z.object({ action: z.literal('remove'), sessionId: id, id, bookmarkId: z.string().uuid(),
+    expectedUpdatedAt: z.string().datetime().optional() }).strict(),
 ])
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
+
+function nextUpdatedAt(previous: string): string {
+  return new Date(Math.max(Date.now(), Date.parse(previous) + 1)).toISOString()
+}
 
 /** Each document path owns a durable, serialized plugin-only bookmark list. */
 export function createBookmarks(workspaces: NavigationWorkspaces, table: NavigationStore<BookmarkRecord>) {
@@ -35,17 +42,21 @@ export function createBookmarks(workspaces: NavigationWorkspaces, table: Navigat
     if (closed) fail('pdf/unavailable', 'The PDF plugin is unloading')
     const input = requests.parse(raw)
     if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
-    const snapshot = workspaces.readSnapshot(sessionId, input.id)
-    const path = snapshot.path
+    const path = workspaces.readSnapshot(sessionId, input.id).path
     const key = table.key(path)
     const before = queues.get(key) ?? Promise.resolve()
     const task = before.catch(() => undefined).then(async (): Promise<PdfUserBookmark[]> => {
       signal.throwIfAborted()
+      const snapshot = workspaces.readSnapshot(sessionId, input.id)
+      if (!table.samePath(snapshot.path, path)) fail('pdf/bookmark-identity', 'The PDF path changed while editing bookmarks')
       const stored = table.get(key)
       if (stored && !table.samePath(stored.path, path)) fail('pdf/bookmark-identity', 'Stored bookmarks belong to another PDF path')
       const entries = stored?.entries ?? []
       let next = entries
       if (input.action === 'add') {
+        if (input.expectedRevision !== undefined && snapshot.revision !== input.expectedRevision) {
+          fail('pdf/stale-revision', 'The PDF changed before this bookmark was created; read its status again')
+        }
         if (entries.length >= 1000) fail('pdf/bookmark-limit', 'This PDF has reached the bookmark limit')
         if (input.position.page > snapshot.document.pageCount) fail('pdf/invalid-page', 'Bookmark page is outside the document')
         const now = new Date().toISOString()
@@ -54,12 +65,20 @@ export function createBookmarks(workspaces: NavigationWorkspaces, table: Navigat
       } else if (input.action === 'rename' || input.action === 'remove') {
         const index = entries.findIndex(bookmark => bookmark.id === input.bookmarkId)
         if (index < 0) fail('pdf/bookmark-missing', 'This plugin bookmark no longer exists')
+        if (input.expectedUpdatedAt !== undefined && entries[index]!.updatedAt !== input.expectedUpdatedAt) {
+          fail('pdf/bookmark-stale', 'This bookmark changed; list it again before editing')
+        }
         next = input.action === 'rename'
-          ? entries.map((bookmark, item) => item === index ? { ...bookmark, title: input.title, updatedAt: new Date().toISOString() } : bookmark)
+          ? entries.map((bookmark, item) => item === index
+            ? { ...bookmark, title: input.title, updatedAt: nextUpdatedAt(bookmark.updatedAt) } : bookmark)
           : entries.filter((_, item) => item !== index)
       }
       if (next !== entries) {
         signal.throwIfAborted()
+        if (input.action === 'add' && input.expectedRevision !== undefined
+          && workspaces.readSnapshot(sessionId, input.id).revision !== input.expectedRevision) {
+          fail('pdf/stale-revision', 'The PDF changed before this bookmark was stored; read its status again')
+        }
         if (next.length) await table.put(key, { format: 1, path, entries: next })
         else await table.delete(key)
       }

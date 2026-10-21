@@ -24,7 +24,7 @@ test('request envelope and response share the existing Connection RPC shape', ()
 })
 
 test('workspace wire contract accepts full snapshots and ordered annotation deltas', () => {
-  assert.equal(wireAnnotationSchema.parse(annotation).id, 'mark-1')
+  assert.deepEqual(wireAnnotationSchema.parse({ ...annotation, commentPosition: [120, 240] }).commentPosition, [120, 240])
   const full = wireSnapshotSchema.parse({ ...status, baselineAnnotations: [annotation], document: {
     pageCount: 1, signed: false, encrypted: false, readOnly: false,
     pages: [{ page: 1, cropBox: [0, 0, 400, 560], rotation: 0, userUnit: 1 }],

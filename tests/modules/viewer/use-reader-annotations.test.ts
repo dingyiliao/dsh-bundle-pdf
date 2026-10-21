@@ -131,7 +131,7 @@ test('selecting a mark with comments opens the read card; adding enters a separa
     assert.equal(state().comment, '')
     assert.equal(selected(), null)
     await act(async () => state().setComment('draft edit'))
-    assert.equal(state().hasUnappliedComment, true)
+    assert.equal(state().hasUnappliedAnnotation, true)
     await act(async () => state().selectAnnotation(existing.id, 'comment'))
     assert.equal(state().comment, 'draft edit', 're-clicking the same mark must not throw away a draft')
     assert.equal(state().commentMode, 'new')
@@ -199,15 +199,76 @@ test('locked marks only reopen saved comments and never offer a new draft', asyn
   })
 })
 
-test('beginNote clamps the marker to the page and opens a comment draft', async () => {
+test('beginNote clamps a standalone note and opens its independent editor', async () => {
   await withAnnotations(async ({ state, mode }) => {
     await act(async () => state().beginNote(1, [150, -10]))
     assert.equal(state().pendingNote?.subtype, 'Text')
     assert.deepEqual(state().pendingNote?.rect, [80, 0, 100, 20])
-    assert.equal(state().commentCardOpen, true)
-    assert.equal(state().hasUnappliedComment, true)
+    assert.equal(state().noteCardOpen, true)
+    assert.equal(state().commentCardOpen, false)
+    assert.equal(state().noteMode, 'new')
+    assert.equal(state().hasUnappliedAnnotation, false, 'an empty note draft is not yet a document change')
+    assert.equal(state().annotationColor, '#ffff00', 'standalone notes do not own markup color')
     assert.equal(mode(), 'text')
   })
+})
+
+test('moving an open draft note changes its anchor rectangle before it is saved', async () => {
+  await withAnnotations(async ({ state, options, render, operations }) => {
+    await act(async () => state().beginNote(1, [10, 20]))
+    const id = state().pendingNote!.id
+    await act(async () => { assert.equal(await state().moveNote([22, 33, 42, 53]), true) })
+    assert.equal(state().pendingNote?.id, id)
+    assert.deepEqual(state().pendingNote?.rect, [22, 33, 42, 53])
+    assert.deepEqual(operations, [], 'an unsaved note move stays in its local draft instead of writing early')
+    assert.ok(options.snapshot)
+  })
+})
+
+test('moving a saved markup comment card writes its page-space position', async () => {
+  await withAnnotations(async ({ state, options, render, operations }) => {
+    await render({ ...options, snapshot: snapshot([existing]), pdfAnnotations: [existing] })
+    await act(async () => state().selectAnnotation(existing.id))
+    assert.equal(state().canPersistCommentPosition, true)
+    await act(async () => { assert.equal(await state().moveCommentCard([75, 120]), true) })
+    assert.deepEqual(operations, [[{ type: 'update', id: existing.id, patch: { commentPosition: [75, 120] } }]])
+  }, snapshot([existing]))
+})
+
+test('selecting a saved standalone note opens a note card, never a comment thread', async () => {
+  const note: PdfAnnotation = { id: 'note', page: 1, subtype: 'Text', rect: [30, 40, 50, 60],
+    contents: 'Read this later', flags: 4, supported: true, editable: true }
+  await withAnnotations(async ({ state, options, render }) => {
+    await render({ ...options, snapshot: snapshot([note]), pdfAnnotations: [note] })
+    await act(async () => state().selectAnnotation(note.id, 'note'))
+    assert.equal(state().selectedNote?.id, note.id)
+    assert.equal(state().noteCardOpen, true)
+    assert.equal(state().commentCardOpen, false)
+    assert.equal(state().thread, undefined)
+    assert.equal(state().noteText, 'Read this later')
+  }, snapshot([note]))
+})
+
+test('standalone note edits can be cancelled, committed and deleted through the shared draft', async () => {
+  const note: PdfAnnotation = { id: 'editable-note', page: 1, subtype: 'Text', rect: [30, 40, 50, 60],
+    contents: 'Original', flags: 4, supported: true, editable: true }
+  await withAnnotations(async ({ state, options, render, operations }) => {
+    await render({ ...options, snapshot: snapshot([note]), pdfAnnotations: [note] })
+    await act(async () => state().selectAnnotation(note.id, 'note'))
+    await act(async () => state().editNote())
+    await act(async () => state().setNoteText('Discard this'))
+    await act(async () => state().cancelNoteEdit())
+    assert.equal(state().noteText, 'Original')
+    assert.equal(state().noteMode, 'read')
+    await act(async () => state().editNote())
+    await act(async () => state().setNoteText('Revised'))
+    await act(async () => { await state().applyNote() })
+    assert.deepEqual(operations[0], [{ type: 'update', id: note.id, patch: { contents: 'Revised' } }])
+    await act(async () => { await state().deleteNote() })
+    assert.deepEqual(operations[1], [{ type: 'delete', id: note.id }])
+    assert.equal(state().selectedAnnotation, undefined)
+    assert.equal(state().noteCardOpen, false)
+  }, snapshot([note]))
 })
 
 test('editing an existing comment updates only that entry and cancel restores read mode', async () => {
@@ -274,7 +335,7 @@ test('external nested replies form one thread and one sidebar root', async () =>
     const second = { ...existing, id: 'reply-2', subtype: 'Text', replyToId: first.id,
       contents: 'Bob follows up', author: 'Bob' }
     await render({ ...options, snapshot: snapshot([existing, first, second]), pdfAnnotations: [existing, first, second] })
-    assert.deepEqual(state().commentItems.map(item => item.id), [existing.id])
+    assert.deepEqual(state().annotationItems.map(item => item.id), [existing.id])
     await act(async () => state().selectAnnotation(second.id, 'comment'))
     assert.equal(state().selectedAnnotation, existing.id)
     assert.deepEqual(state().thread?.comments.map(item => item.id), [existing.id, first.id, second.id])
@@ -315,17 +376,36 @@ test('a reply with child replies cannot be deleted from the card', async () => {
   })
 })
 
-test('pending page note is added with its comment and clears the draft after commit', async () => {
+test('pending page note is added independently without an annotation color', async () => {
   await withAnnotations(async ({ state, operations }) => {
     await act(async () => state().beginNote(1, [30, 40]))
     const id = state().pendingNote!.id
-    await act(async () => state().setComment('new note'))
-    await act(async () => { await state().applyComment() })
+    await act(async () => state().setNoteText('new note'))
+    await act(async () => { await state().applyNote() })
     assert.equal(operations[0][0]?.type, 'add')
     assert.equal(operations[0][0]?.type === 'add' && operations[0][0].annotation.id, id)
     assert.equal(operations[0][0]?.type === 'add' && operations[0][0].annotation.contents, 'new note')
+    assert.equal(operations[0][0]?.type === 'add' && operations[0][0].annotation.color, undefined)
     assert.equal(state().pendingNote, null)
+    assert.equal(state().noteMode, 'read')
+    assert.equal(state().noteCardOpen, true)
+    assert.equal(state().commentCardOpen, false)
   })
+})
+
+test('standalone notes reject markup-color updates', async () => {
+  const note: PdfAnnotation = { ...existing, id: 'note', subtype: 'Text', color: undefined, contents: 'A note' }
+  await withAnnotations(async ({ state, options, render }) => {
+    await render({ ...options, snapshot: snapshot([note]), pdfAnnotations: [note] })
+    await act(async () => state().selectAnnotation(note.id))
+    options.operationLock.current = true
+    await act(async () => state().updateColor('#123456'))
+    assert.equal(state().annotationColor, '#ffff00')
+    assert.equal(state().color, '#ffff00')
+    assert.equal(state().noteCardOpen, true)
+    await act(async () => state().resetResource())
+    options.operationLock.current = false
+  }, snapshot([note]))
 })
 
 test('failed color write restores the saved color and removes its unload guard', async () => {
@@ -336,7 +416,7 @@ test('failed color write restores the saved color and removes its unload guard',
       change: async next => { operations.push(next); await writeFinished; return undefined } })
     await act(async () => state().selectAnnotation(existing.id))
     await act(async () => state().updateColor('#ff8000'))
-    assert.equal(state().commentColor, '#ff8000')
+    assert.equal(state().annotationColor, '#ff8000')
     assert.equal(state().colorPending, true)
     const before = new window.Event('beforeunload', { cancelable: true })
     window.dispatchEvent(before)
@@ -344,7 +424,7 @@ test('failed color write restores the saved color and removes its unload guard',
     finishWrite()
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
     assert.deepEqual(operations, [[{ type: 'update', id: existing.id, patch: { color: [1, 128 / 255, 0] } }]])
-    assert.equal(state().commentColor, '#ffff00')
+    assert.equal(state().annotationColor, '#ffff00')
     assert.equal(state().colorPending, false)
     const after = new window.Event('beforeunload', { cancelable: true })
     window.dispatchEvent(after)

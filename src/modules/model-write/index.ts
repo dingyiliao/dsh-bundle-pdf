@@ -1,29 +1,39 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { projectPdfOperations } from '../annotations/index.js'
 import { evidenceSha256 } from '../evidence/index.js'
+import type { AgentPageReadPort } from '../evidence/index.js'
 import { buildSaveReview } from './save-review.js'
-import type { PdfAnnotationOperation, PdfColor, PdfRect } from '../../core/pdf-types.js'
+import { locateTextTarget } from './text-target.js'
+import type { PdfAnnotation, PdfAnnotationOperation, PdfColor, PdfRect } from '../../core/pdf-types.js'
 import type { HostWorkspaceSnapshot, WorkingCopyAgent } from '../working-copy/index.js'
 
 const coordinate = z.number().finite()
 const rect = z.tuple([coordinate, coordinate, coordinate, coordinate])
 const color = z.tuple([coordinate.min(0).max(1), coordinate.min(0).max(1), coordinate.min(0).max(1)])
 const documentId = z.string().min(1).max(512)
+const annotationId = z.string().min(1).max(512)
 const revision = z.number().int().nonnegative()
+const editableMarkup = new Set(['Highlight', 'Underline', 'StrikeOut'])
 
-export const annotationPreviewSchema = z.object({
+export const modelAnnotationSchema = z.object({
   documentId, expectedRevision: revision,
   subtype: z.enum(['Highlight', 'Underline', 'StrikeOut', 'Text']),
   target: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('pdf-region'), page: z.number().int().min(1).max(100_000), rectPdf: rect }).strict(),
+    z.object({ kind: z.literal('pdf-text'), page: z.number().int().min(1).max(100_000),
+      quote: z.string().min(2).max(512) }).strict(),
     z.object({ kind: z.literal('reference'), refId: z.string().min(1).max(128) }).strict(),
   ]),
   color: color.optional(), comment: z.string().max(2000).optional(),
 }).strict()
-export type AnnotationPreviewInput = z.infer<typeof annotationPreviewSchema>
-
-export const annotationCommitSchema = z.object({ proposalId: z.string().regex(/^pdfprop_[0-9a-f-]{36}$/) }).strict()
+export type ModelAnnotationInput = z.infer<typeof modelAnnotationSchema>
+export const modelAnnotationUpdateSchema = z.object({
+  documentId, expectedRevision: revision, annotationId,
+  color: color.optional(), comment: z.string().max(2000).optional(),
+}).strict()
+export type ModelAnnotationUpdateInput = z.infer<typeof modelAnnotationUpdateSchema>
+export const modelAnnotationDeleteSchema = z.object({ documentId, expectedRevision: revision, annotationId }).strict()
+export type ModelAnnotationDeleteInput = z.infer<typeof modelAnnotationDeleteSchema>
 export const modelSaveSchema = z.object({ documentId, expectedRevision: revision }).strict()
 
 export interface ModelWritePort {
@@ -33,94 +43,78 @@ export interface ModelWritePort {
 }
 
 export interface ModelWriteReview {
-  kind: 'annotation' | 'save'
+  kind: 'save'
   documentId: string
   path: string
-  page?: number
-  subtype?: AnnotationPreviewInput['subtype']
-  rectPdf?: PdfRect
-  color?: PdfColor
-  comment?: string
   revision: number
   dirty: boolean
-  beforeAnnotations?: number
-  afterAnnotations?: number
-  proposalId?: string
   saveDiffText?: string
   saveChangeCount?: number
 }
 
-type Proposal = {
-  id: string; sessionId: string; documentId: string; path: string; contentVersion: string
-  sourceVersion: string; sourceDigest: string; revision: number; createdAt: number; expiresAt: number
-  operation: PdfAnnotationOperation; review: ModelWriteReview
-  state: 'ready' | 'busy' | 'rejected' | 'committed'
-  result?: { status: 'committed'; documentId: string; revision: number; dirty: true; canUndo: boolean;
-    approval: 'user-questions-selected' }
-}
-
-const PROPOSAL_TTL_MS = 5 * 60_000
-const MAX_PROPOSALS = 128
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
 function checkRevision(snapshot: HostWorkspaceSnapshot, expectedRevision: number): void {
-  if (snapshot.revision !== expectedRevision) fail('pdf/stale-revision', 'The PDF working copy changed; preview it again')
+  if (snapshot.revision !== expectedRevision) fail('pdf/stale-revision', 'The PDF working copy changed; read its status again')
   if (snapshot.conflict) fail('pdf/source-conflict', 'The PDF source changed outside this working copy')
   if (snapshot.document.readOnly) fail('pdf/read-only', snapshot.document.readOnlyReason ?? 'This PDF is read-only')
-  // The exact destination must be legible in the human review card. Do not
-  // truncate it there: a truncated path could authorize the wrong file.
-  if (snapshot.path.length > 1024) fail('pdf/review-too-large', 'PDF path is too long for a reviewable write approval')
 }
 
-function regionOperation(snapshot: HostWorkspaceSnapshot, input: AnnotationPreviewInput): Extract<PdfAnnotationOperation, { type: 'add' }> {
-  if (input.subtype === 'Text' && !input.comment?.trim()) {
-    fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
+function editableAnnotation(snapshot: HostWorkspaceSnapshot, id: string): PdfAnnotation {
+  const annotation = snapshot.document.annotations.find(item => item.id === id)
+  if (!annotation) fail('pdf/unknown-annotation', 'This annotation no longer exists; list the page again')
+  if (!annotation.editable || !annotation.supported
+    || (!editableMarkup.has(annotation.subtype) && annotation.subtype !== 'Text')) {
+    fail('pdf/annotation-read-only', 'This annotation cannot be edited by the PDF Reader')
   }
+  return annotation
+}
+
+async function annotationOperation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<Extract<PdfAnnotationOperation, { type: 'add' }>> {
+  if (input.subtype === 'Text' && !input.comment?.trim()) fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
   if (input.target.kind === 'reference') {
-    // Current text references have approximate glyph-origin boxes, not a verified
-    // PDF quadrilateral. They are useful for reading, but never for writing.
+    // References have approximate glyph-origin boxes, not verified PDF geometry.
     return fail('pdf/approximate-target', 'This text reference does not have verified PDF geometry; select an explicit region')
   }
-  const { page, rectPdf } = input.target
+  const { page } = input.target
   const bounds = snapshot.document.pages[page - 1]?.cropBox
   if (!bounds) fail('pdf/invalid-page', 'Annotation page is outside this document')
+  if (input.target.kind === 'pdf-region' && input.subtype !== 'Text') {
+    fail('pdf/unverified-region', 'Text markup requires an exact pdf-text quote; guessed rectangles are not safe annotation targets')
+  }
+  if (input.target.kind === 'pdf-text' && input.subtype === 'Text') {
+    fail('pdf/invalid-target', 'A standalone text note requires a PDF position, not a quoted text span')
+  }
+  let rectPdf: PdfRect
+  let quadPoints: number[] | undefined
+  if (input.target.kind === 'pdf-text') {
+    if (!pages) fail('pdf/text-geometry-unavailable', 'The PDF text geometry reader is unavailable')
+    const read = await pages.readPageText(sessionId, snapshot.id, page, signal)
+    if (read.snapshot.contentVersion !== snapshot.contentVersion || read.snapshot.revision !== snapshot.revision) {
+      fail('pdf/stale-revision', 'The PDF changed while locating the quoted text; read its status again')
+    }
+    const geometry = locateTextTarget(read.content, input.target.quote)
+    rectPdf = geometry.rect
+    quadPoints = geometry.quadPoints
+  } else rectPdf = input.target.rectPdf
   const [left, bottom, right, top] = rectPdf
   if (!(right > left && top > bottom) || left < bounds[0] || bottom < bounds[1]
     || right > bounds[2] || top > bounds[3]) {
     fail('pdf/invalid-region', 'Annotation rectangle must lie inside the PDF page crop box')
   }
-  const annotation = {
+  return { type: 'add', annotation: {
     id: `ai_${randomUUID()}`, page, subtype: input.subtype, rect: [...rectPdf] as PdfRect,
-    ...(input.subtype === 'Text' ? {} : { quadPoints: [left, top, right, top, left, bottom, right, bottom] }),
+    ...(quadPoints ? { quadPoints } : {}),
     ...(input.color ? { color: [...input.color] as PdfColor } : {}),
-    ...(input.comment !== undefined ? { contents: input.comment } : {}),
-    author: 'AI suggestion',
-  }
-  return { type: 'add', annotation }
+    ...(input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
+  } }
 }
 
-/** A volatile, bounded proposal ledger. All mutations use the existing V1 working-copy transaction. */
-export function createModelWriteService(workspaces: ModelWritePort, now: () => number = Date.now) {
-  const proposals = new Map<string, Proposal>()
+/** Model edits join the same durable, undoable working copy used by the Reader. */
+export function createModelWriteService(workspaces: ModelWritePort, pages?: AgentPageReadPort) {
   let disposed = false
-
-  function collect(): void {
-    const at = now()
-    for (const [id, proposal] of proposals) {
-      if (proposal.state !== 'busy' && proposal.expiresAt <= at) proposals.delete(id)
-    }
-    for (const [id, proposal] of proposals) {
-      if (proposals.size < MAX_PROPOSALS) break
-      if (proposal.state !== 'busy') proposals.delete(id)
-    }
-    if (proposals.size >= MAX_PROPOSALS) fail('pdf/proposals-full', 'Too many PDF annotations are awaiting review; retry after a review completes')
-  }
-
-  function assertLiveProposal(proposal: Proposal): void {
-    if (disposed || proposals.get(proposal.id) !== proposal) {
-      fail('pdf/proposal-unavailable', 'Annotation proposal is no longer available; preview it again')
-    }
-  }
+  const assertOpen = () => { if (disposed) fail('pdf/write-unavailable', 'PDF model-write service has been disposed') }
 
   async function currentSource(sessionId: string, snapshot: HostWorkspaceSnapshot,
     agent: WorkingCopyAgent, signal: AbortSignal): Promise<string> {
@@ -132,104 +126,80 @@ export function createModelWriteService(workspaces: ModelWritePort, now: () => n
     return sourceDigest
   }
 
-  async function preview(sessionId: string, raw: AnnotationPreviewInput, agent: WorkingCopyAgent,
+  async function applyDraft(sessionId: string, snapshot: HostWorkspaceSnapshot, expectedRevision: number,
+    operation: PdfAnnotationOperation, agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
+    const sourceDigest = await currentSource(sessionId, snapshot, agent, signal)
+    assertOpen()
+    // The working-copy queue rechecks revision and source hash against UI edits.
+    const value = await workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: snapshot.id, revision: expectedRevision,
+      expectedSourceHash: sourceDigest, operations: [operation] }, agent, signal)
+    if (!isSnapshot(value)) fail('pdf/invalid-response', 'PDF change did not return a working copy')
+    return value
+  }
+
+  async function annotate(sessionId: string, raw: ModelAnnotationInput, agent: WorkingCopyAgent,
     signal: AbortSignal) {
-    if (disposed) fail('pdf/proposal-unavailable', 'PDF model-write service has been disposed')
-    const input = annotationPreviewSchema.parse(raw)
+    assertOpen()
+    const input = modelAnnotationSchema.parse(raw)
     const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
     checkRevision(snapshot, input.expectedRevision)
-    const sourceDigest = await currentSource(sessionId, snapshot, agent, signal)
-    const operation = regionOperation(snapshot, input)
-    const projected = projectPdfOperations(snapshot.document, [operation], new Date(now()).toISOString())
-    const after = workspaces.readSnapshot(sessionId, input.documentId)
-    if (after.revision !== snapshot.revision || after.contentVersion !== snapshot.contentVersion
-      || after.path !== snapshot.path || evidenceSha256(after.bytes) !== sourceDigest) {
-      fail('pdf/stale-revision', 'The PDF changed while creating the preview')
-    }
-    collect()
-    const id = `pdfprop_${randomUUID()}`
-    const createdAt = now(), expiresAt = createdAt + PROPOSAL_TTL_MS
-    const annotation = operation.annotation
-    const review: ModelWriteReview = { kind: 'annotation', documentId: snapshot.id, path: snapshot.path,
-      page: annotation.page, subtype: annotation.subtype, rectPdf: annotation.rect,
-      ...(annotation.color ? { color: annotation.color } : {}),
-      ...(annotation.contents !== undefined ? { comment: annotation.contents } : {}),
-      revision: snapshot.revision, dirty: snapshot.dirty,
-      beforeAnnotations: snapshot.document.annotations.length, afterAnnotations: projected.annotations.length,
-      proposalId: id }
-    proposals.set(id, { id, sessionId, documentId: snapshot.id, path: snapshot.path,
-      contentVersion: snapshot.contentVersion, sourceVersion: snapshot.sourceVersion, sourceDigest,
-      revision: snapshot.revision, createdAt, expiresAt, operation, review, state: 'ready' })
-    return { status: 'preview' as const, proposalId: id, expiresAt: new Date(expiresAt).toISOString(),
-      sourceDigest, contentVersion: snapshot.contentVersion, revision: snapshot.revision,
-      preview: { ...review }, limitations: [
-        'This is a metadata-only preview; no PDF or draft has changed.',
-        'The target is a PDF-space rectangle. It does not prove that a particular phrase is covered.',
-        'Only a separate user-reviewed commit will create one undoable draft batch; saving is separate.',
-      ] }
+    const operation = await annotationOperation(snapshot, input, sessionId, pages, signal)
+    const value = await applyDraft(sessionId, snapshot, input.expectedRevision, operation, agent, signal)
+    return { status: 'updated' as const, documentId: value.id, annotationId: operation.annotation.id,
+      resolvedTarget: { page: operation.annotation.page, rectPdf: operation.annotation.rect,
+        ...(input.target.kind === 'pdf-text' ? { quote: input.target.quote } : {}) },
+      revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
-  async function commit(sessionId: string, raw: { proposalId: string }, agent: WorkingCopyAgent,
-    signal: AbortSignal, review: (details: ModelWriteReview) => Promise<boolean>) {
-    if (disposed) fail('pdf/proposal-unavailable', 'PDF model-write service has been disposed')
-    const { proposalId } = annotationCommitSchema.parse(raw)
-    const proposal = proposals.get(proposalId)
-    if (!proposal || proposal.sessionId !== sessionId) fail('pdf/proposal-unavailable', 'Annotation proposal is unavailable in this session')
-    if (proposal.expiresAt <= now()) { proposals.delete(proposalId); fail('pdf/proposal-expired', 'Annotation proposal expired; preview it again') }
-    if (proposal.state === 'committed') return proposal.result!
-    if (proposal.state === 'busy') fail('pdf/proposal-busy', 'Annotation proposal is already being reviewed')
-    if (proposal.state === 'rejected') fail('pdf/proposal-rejected', 'This annotation proposal was already declined')
-    const initial = workspaces.readSnapshot(sessionId, proposal.documentId)
-    checkProposal(initial, proposal)
-    await currentSource(sessionId, initial, agent, signal)
-    proposal.state = 'busy'
-    try {
-      const accepted = await review(proposal.review)
-      assertLiveProposal(proposal)
-      if (!accepted) { proposal.state = 'rejected'; return fail('pdf/approval-rejected', 'The user did not approve this annotation') }
-      signal.throwIfAborted()
-      if (proposal.expiresAt <= now()) fail('pdf/proposal-expired', 'Annotation proposal expired during review; preview it again')
-      const latest = workspaces.readSnapshot(sessionId, proposal.documentId)
-      checkProposal(latest, proposal)
-      await currentSource(sessionId, latest, agent, signal)
-      assertLiveProposal(proposal)
-      if (proposal.expiresAt <= now()) fail('pdf/proposal-expired', 'Annotation proposal expired before commit; preview it again')
-      const value = await workspaces.execute(sessionId, { action: 'change', sessionId,
-        id: proposal.documentId, revision: proposal.revision,
-        expectedSourceHash: proposal.sourceDigest, operations: [proposal.operation] }, agent, signal)
-      if (!isSnapshot(value)) fail('pdf/invalid-response', 'PDF change did not return a working copy')
-      const result = { status: 'committed' as const, documentId: value.id, revision: value.revision,
-        dirty: true as const, canUndo: value.canUndo, approval: 'user-questions-selected' as const }
-      proposal.state = 'committed'; proposal.result = result
-      return result
-    } catch (error) {
-      if (proposal.state === 'busy') proposal.state = 'rejected'
-      throw error
+  async function updateAnnotation(sessionId: string, raw: ModelAnnotationUpdateInput,
+    agent: WorkingCopyAgent, signal: AbortSignal) {
+    assertOpen()
+    const input = modelAnnotationUpdateSchema.parse(raw)
+    if (input.color === undefined && input.comment === undefined) {
+      fail('pdf/invalid-patch', 'Specify a color or comment to update')
     }
+    const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    checkRevision(snapshot, input.expectedRevision)
+    const annotation = editableAnnotation(snapshot, input.annotationId)
+    if (input.color !== undefined && (!editableMarkup.has(annotation.subtype) || annotation.replyToId)) {
+      fail('pdf/invalid-color', 'Only a root text-mark annotation has an editable color')
+    }
+    const comment = input.comment?.trim()
+    if (comment === '' && annotation.subtype === 'Text') {
+      fail('pdf/invalid-comment', 'A note or comment reply cannot have empty text; delete it instead')
+    }
+    const patch = { ...(input.color !== undefined ? { color: [...input.color] as PdfColor } : {}),
+      ...(comment !== undefined ? { contents: comment } : {}) }
+    const value = await applyDraft(sessionId, snapshot, input.expectedRevision,
+      { type: 'update', id: input.annotationId, patch }, agent, signal)
+    return { status: 'updated' as const, documentId: value.id, annotationId: input.annotationId,
+      revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
-  function checkProposal(snapshot: HostWorkspaceSnapshot, proposal: Proposal): void {
-    checkRevision(snapshot, proposal.revision)
-    if (snapshot.id !== proposal.documentId || snapshot.path !== proposal.path
-      || snapshot.contentVersion !== proposal.contentVersion
-      || snapshot.sourceVersion !== proposal.sourceVersion
-      || evidenceSha256(snapshot.bytes) !== proposal.sourceDigest) {
-      fail('pdf/stale-proposal', 'The PDF source or working copy changed; preview the annotation again')
-    }
+  async function deleteAnnotation(sessionId: string, raw: ModelAnnotationDeleteInput,
+    agent: WorkingCopyAgent, signal: AbortSignal) {
+    assertOpen()
+    const input = modelAnnotationDeleteSchema.parse(raw)
+    const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    checkRevision(snapshot, input.expectedRevision)
+    editableAnnotation(snapshot, input.annotationId)
+    const value = await applyDraft(sessionId, snapshot, input.expectedRevision,
+      { type: 'delete', id: input.annotationId }, agent, signal)
+    return { status: 'deleted' as const, documentId: value.id, annotationId: input.annotationId,
+      revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
   async function save(sessionId: string, raw: { documentId: string; expectedRevision: number },
     agent: WorkingCopyAgent, signal: AbortSignal,
     review: (details: ModelWriteReview) => Promise<boolean>) {
-    const assertOpen = () => {
-      if (disposed) fail('pdf/write-unavailable', 'PDF model-write service has been disposed')
-    }
     assertOpen()
     const input = modelSaveSchema.parse(raw)
     const initial = workspaces.readSnapshot(sessionId, input.documentId)
     checkRevision(initial, input.expectedRevision)
     if (!initial.dirty) return { status: 'no_changes' as const, documentId: initial.id,
       revision: initial.revision, dirty: false as const }
+    if (initial.path.length > 1024) fail('pdf/review-too-large', 'PDF path is too long for a reviewable save approval')
     const saveDiff = buildSaveReview(initial)
     const sourceDigest = await currentSource(sessionId, initial, agent, signal)
     assertOpen()
@@ -258,7 +228,7 @@ export function createModelWriteService(workspaces: ModelWritePort, now: () => n
       ...(value.warning ? { warning: value.warning } : {}) }
   }
 
-  return { preview, commit, save, dispose() { disposed = true; proposals.clear() } }
+  return { annotate, updateAnnotation, deleteAnnotation, save, dispose() { disposed = true } }
 }
 
 function isSnapshot(value: unknown): value is HostWorkspaceSnapshot {

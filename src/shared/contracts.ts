@@ -1,6 +1,7 @@
 import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.js'
 import type { NativeReaderApi, ReaderDescriptor } from './native.js'
 import type { NavigationPosition } from '../navigation/index.js'
+import { defaultExplanationPromptTemplate } from './explanation-template.js'
 
 /** User bookmark locations stay in plugin storage; they are not embedded in the PDF. */
 export type PdfBookmarkPosition = Omit<NavigationPosition, 'documentVersion'>
@@ -44,12 +45,19 @@ export interface PdfSettings {
   translationTimeoutMs: number
   historyCapacity: number
   maxFileBytes: number
+  explanationGeneralInstruction: string
+  explanationTextInstruction: string
+  explanationImageInstruction: string
+  /** Legacy layout template retained for existing profile patches. */
+  explanationPromptTemplate: string
 }
 
 export const defaultSettings: PdfSettings = {
   ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
+  explanationGeneralInstruction: '', explanationTextInstruction: '', explanationImageInstruction: '',
+  explanationPromptTemplate: defaultExplanationPromptTemplate,
 }
 
 /** Older settings used `none` to disable translation; keep those profiles usable. */

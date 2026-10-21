@@ -40,8 +40,8 @@ function newText(id: string, page: number): NewPdfAnnotation {
 }
 
 function visible(annotations: readonly PdfAnnotation[]) {
-  return annotations.map(({ id, page, subtype, rect, quadPoints, color, contents, createdAt, modifiedAt, editable }) => ({
-    id, page, subtype, rect, quadPoints, color, contents, createdAt, modifiedAt, editable,
+  return annotations.map(({ id, page, subtype, rect, quadPoints, color, commentPosition, contents, createdAt, modifiedAt, editable }) => ({
+    id, page, subtype, rect, quadPoints, color, commentPosition, contents, createdAt, modifiedAt, editable,
   }))
 }
 
@@ -86,6 +86,33 @@ test('editing either alias updates every reference to the same PDF dictionary', 
     assert.ok(annotation?.modifiedAt)
   }
   assert.equal(projected.annotations.find(item => item.contents === 'other')?.modifiedAt, undefined)
+})
+
+test('only standalone Text notes can be moved, and projection updates their PDF-space rectangle', async () => {
+  const bytes = await fixture()
+  const baseline = await loadPdfDocument(bytes)
+  const note = baseline.annotations.find(item => item.contents === 'other')!
+  const moved = await assertMatchesSaved(bytes, baseline, [
+    { type: 'update', id: note.id, patch: { rect: [90, 120, 110, 140] } },
+  ])
+  assert.deepEqual(moved.annotations.find(item => item.id === note.id)?.rect, [90, 120, 110, 140])
+  const mark = baseline.annotations.find(item => item.subtype === 'Highlight')!
+  assert.throws(() => projectPdfOperations(baseline,
+    [{ type: 'update', id: mark.id, patch: { rect: [90, 120, 110, 140] } }], when), /Only standalone notes/)
+})
+
+test('comment-card positions belong to root markups and project as PDF user-space points', async () => {
+  const bytes = await fixture()
+  const baseline = await loadPdfDocument(bytes)
+  const mark = baseline.annotations.find(item => item.subtype === 'Highlight')!
+  const position: [number, number] = [240, 310]
+  const projected = await assertMatchesSaved(bytes, baseline, [
+    { type: 'update', id: mark.id, patch: { commentPosition: position } },
+  ])
+  assert.deepEqual(projected.annotations.find(item => item.id === mark.id)?.commentPosition, position)
+  const note = baseline.annotations.find(item => item.subtype === 'Text' && !item.replyToId)!
+  assert.throws(() => projectPdfOperations(baseline,
+    [{ type: 'update', id: note.id, patch: { commentPosition: position } }], when), /Only a root markup annotation/)
 })
 
 test('deleting an alias removes every reference and its associated popup', async () => {

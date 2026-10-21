@@ -2,7 +2,7 @@ import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } f
 import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../../../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../../../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type ReaderSelection } from '../model/reader-selection.js'
-import { annotationAtPoint, annotationPatchBoxes, createAnnotationHitTester, createRectHitIndex, staleNativeAnnotations } from '../model/reader-annotations.js'
+import { annotationAtPoint, createAnnotationHitTester, createRectHitIndex, nativeAppearancePatchBoxes } from '../model/reader-annotations.js'
 import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from '../model/reader-links.js'
 import { TileSurface } from './TileSurface.js'
 import { renderNativeTextLayer } from './text-layer.js'
@@ -33,7 +33,8 @@ export interface PageProps {
   onView(page: number, view: PageView | null): void
   onDestination(destination: unknown): void
   onNamedAction(action: string): void
-  onAnnotation(id: string, intent?: 'select' | 'comment'): void
+  onAnnotation(id: string, intent?: 'select' | 'comment' | 'note'): void
+  onMoveNoteMarker?(id: string, page: number, delta: { x: number; y: number }): Promise<boolean>
   onBackground?(): void
   onRegion(page: number, geometry: { rect: PdfRect; quadPoints: number[] }): void
   onNote(page: number, point: number[]): void
@@ -82,9 +83,8 @@ export function Page(props: PageProps) {
   const width = viewport?.width ?? (quarterTurn ? baseHeight : baseWidth) * scale
   const height = viewport?.height ?? (quarterTurn ? baseWidth : baseHeight) * scale
   const sourceAnnotations = props.renderedAnnotations ?? noAnnotations
-  const staleNative = useMemo(() => staleNativeAnnotations(props.annotations, sourceAnnotations), [props.annotations, sourceAnnotations])
-  const patchBoxes = useMemo(() => viewport ? staleNative.flatMap(annotation => annotationPatchBoxes(annotation, viewport)) : [],
-    [staleNative, viewport])
+  const patchBoxes = useMemo(() => viewport ? nativeAppearancePatchBoxes(props.annotations, sourceAnnotations, viewport) : [],
+    [props.annotations, sourceAnnotations, viewport])
 
   useEffect(() => {
     const root = props.scrollRoot, element = outer.current
@@ -373,7 +373,8 @@ export function Page(props: PageProps) {
         pageNumber={geometry.page} mode={props.mode} annotations={props.annotations} selectedAnnotation={props.selectedAnnotation}
         selection={props.selection} explanationExcerpts={props.explanationExcerpts} explanationDraft={props.explanationDraft}
         ocrWords={visibleOcrWords} ocrHost={ocrHost} keyboardLinks={keyboardLinks} drag={drag}
-        followLink={followLink} onAnnotation={props.onAnnotation} onExplanationMark={props.onExplanationMark} t={t} />
+        followLink={followLink} onAnnotation={props.onAnnotation} onMoveNoteMarker={props.onMoveNoteMarker}
+        onExplanationMark={props.onExplanationMark} t={t} />
     </div>
   </div>
 }

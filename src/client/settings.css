@@ -1,0 +1,229 @@
+/* The PDF section follows DSH's settings shell and field rhythm. */
+.dsh-pdf-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+}
+
+.dsh-pdf-settings-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-header p {
+  margin: 4px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-form {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dsh-pdf-settings-group {
+  min-width: 0;
+  padding: 16px 0;
+}
+
+.dsh-pdf-settings-group + .dsh-pdf-settings-group {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-pdf-settings-group h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-group > .dsh-pdf-settings-hint {
+  display: block;
+  margin: 6px 0 0;
+}
+
+.dsh-pdf-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 0;
+}
+
+.dsh-pdf-settings-field + .dsh-pdf-settings-field {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-pdf-settings-label {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-control {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-control:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.dsh-pdf-settings-control:disabled {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+}
+
+.dsh-pdf-settings-control[aria-invalid='true'] {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.dsh-pdf-settings-control::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-pdf-settings textarea.dsh-pdf-settings-control {
+  display: block;
+  resize: vertical;
+}
+
+.dsh-pdf-settings-hint,
+.dsh-pdf-settings-status {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-status {
+  margin: 0;
+}
+
+.dsh-pdf-settings-error {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-notice {
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-notice p {
+  margin: 0 0 8px;
+}
+
+.dsh-pdf-settings-notice ul {
+  padding-left: 20px;
+}
+
+.dsh-pdf-settings-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.dsh-pdf-settings-secondary {
+  padding: 5px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dsh-pdf-settings-secondary:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dsh-pdf-settings-form-error {
+  margin: 4px 0 0;
+}
+
+.dsh-pdf-settings-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-pdf-settings-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dsh-pdf-settings-quiet {
+  padding: 5px 0;
+  border: 0;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dsh-pdf-settings-quiet:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-pdf-settings-save-status {
+  flex: 1;
+  min-width: 110px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.dsh-pdf-settings-save {
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-3);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dsh-pdf-settings button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dsh-pdf-settings button:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}

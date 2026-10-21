@@ -117,3 +117,43 @@ test('saving a read-only PDF fails before choosing or publishing a destination',
     assert.equal(destinationResolved, false)
   } finally { await service.dispose() }
 })
+
+test('revision watch wakes after a durable model-style edit and rejects another session', async () => {
+  const records = new Map<string, DraftRecord>()
+  const drafts = createV1DraftRepository({
+    get: key => records.get(key),
+    async put(key, value) { records.set(key, structuredClone(value)) },
+    async delete(key) { records.delete(key) },
+  })
+  const files: WorkingCopyFilePort = {
+    async resolvePath() { return path },
+    async read() { return { path, bytes: source, version: digestPdfBytes(source), fsVersion: 'fs-1', size: source.length } },
+    async save() { throw new Error('No file save expected') },
+  }
+  const pdf: PdfDocumentPort = {
+    async inspect() { return info },
+    async materialize() { throw new Error('No materialization expected') },
+  }
+  const service = createWorkingCopyService(files, drafts, pdf)
+  try {
+    const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
+    assert.ok('document' in opened)
+    await assert.rejects(service.waitForRevision('other-session', opened.id, opened.revision, signal),
+      { code: 'pdf/unknown-document' })
+    const pending = service.waitForRevision(sessionId, opened.id, opened.revision, signal)
+    const changed = await service.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'model-note', page: 1, subtype: 'Text', rect: [10, 10, 20, 20], contents: 'model',
+      } }] }, agent, signal)
+    assert.ok('document' in changed)
+    assert.equal(await pending, changed.revision)
+    assert.equal(await service.waitForRevision(sessionId, opened.id, opened.revision, signal), changed.revision)
+    const abort = new AbortController()
+    const cancelled = service.waitForRevision(sessionId, opened.id, changed.revision, abort.signal)
+    abort.abort(new Error('reader closed'))
+    await assert.rejects(cancelled, /reader closed/)
+    const closing = service.waitForRevision(sessionId, opened.id, changed.revision, signal)
+    await service.dispose()
+    await assert.rejects(closing, { code: 'pdf/unknown-document' })
+  } finally { await service.dispose() }
+})

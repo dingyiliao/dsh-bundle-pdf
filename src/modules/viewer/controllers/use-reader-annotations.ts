@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
-import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation } from '../../../core/pdf-types.js'
+import type { NewPdfAnnotation, PdfAnnotation, PdfAnnotationOperation, PdfRect } from '../../../core/pdf-types.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { ReaderSelection } from '../model/reader-selection.js'
 import { colorFromHex, colorToHex } from '../model/reader-selection.js'
-import { createAnnotationThreadIndex, isReply } from '../model/annotation-thread.js'
+import { createAnnotationThreadIndex, isReply, isStandaloneNote } from '../model/annotation-thread.js'
 
 const noAnnotations: PdfAnnotation[] = []
 const initialColor = '#ffff00'
@@ -43,13 +43,19 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   const [pendingAnnotations, setPendingAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
   const [pendingNote, setPendingNote] = useState<NewPdfAnnotation | null>(null)
   const [commentCardOpen, setCommentCardOpen] = useState(false)
+  const [noteCardOpen, setNoteCardOpen] = useState(false)
+  const [noteMode, setNoteMode] = useState<'read' | 'new' | 'edit'>('read')
+  const [noteText, setNoteText] = useState('')
   const [commentMode, setCommentMode] = useState<'read' | 'new' | 'edit'>('read')
   const [editingCommentId, setEditingCommentId] = useState<string>()
   const [comment, setComment] = useState('')
-  const [commentColor, setCommentColor] = useState(initialColor)
+  const [annotationColor, setAnnotationColor] = useState(initialColor)
   const [commentFocusRequest, setCommentFocusRequest] = useState(0)
   const handledCommentFocus = useRef(0)
   const commentTextarea = useRef<HTMLTextAreaElement>(null)
+  const [noteFocusRequest, setNoteFocusRequest] = useState(0)
+  const handledNoteFocus = useRef(0)
+  const noteTextarea = useRef<HTMLTextAreaElement>(null)
   const [colorPending, setColorPending] = useState(false)
   const colorChanges = useRef(new Map<string, { owner: number; documentId: string; annotationId: string; color: string }>())
   const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -65,13 +71,17 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   const threadIndex = useMemo(() => createAnnotationThreadIndex(displayAnnotations), [displayAnnotations])
   const annotationsById = threadIndex.byId
   const selected = selectedAnnotation ? annotationsById.get(selectedAnnotation) : undefined
-  const thread = useMemo(() => selected ? threadIndex.thread(selected) : undefined, [selected, threadIndex])
+  const selectedNote = selected && isStandaloneNote(selected) ? selected : undefined
+  const thread = useMemo(() => selected && !isStandaloneNote(selected) ? threadIndex.thread(selected) : undefined,
+    [selected, threadIndex])
   const blockedCommentDeleteIds = useMemo(() => new Set(displayAnnotations.filter(isReply)
     .map(annotation => annotation.replyToId!)), [displayAnnotations])
   const editingComment = editingCommentId ? annotationsById.get(editingCommentId) : undefined
-  const hasUnappliedComment = !!pendingNote || (commentCardOpen && (commentMode === 'new' ? !!comment.trim()
-    : commentMode === 'edit' && comment !== (editingComment?.contents ?? '')))
-  const commentItems = useMemo(() => {
+  const hasUnappliedAnnotation = !!(pendingNote && noteText.trim())
+    || (noteCardOpen && noteMode === 'edit' && noteText !== (selectedNote?.contents ?? ''))
+    || (commentCardOpen && (commentMode === 'new' ? !!comment.trim()
+      : commentMode === 'edit' && comment !== (editingComment?.contents ?? '')))
+  const annotationItems = useMemo(() => {
     const items = snapshot?.document.annotations ?? noAnnotations
     const index = createAnnotationThreadIndex(items)
     const commentedRoots = new Set(items.filter(annotation => isReply(annotation) && annotation.contents?.trim())
@@ -90,13 +100,23 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     handledCommentFocus.current = commentFocusRequest
     if (!textarea.disabled) textarea.focus()
   }, [commentFocusRequest, commentCardOpen, commentMode, selected?.id, pendingNote?.id])
+  useLayoutEffect(() => {
+    if (noteFocusRequest === handledNoteFocus.current || !noteCardOpen || noteMode === 'read') return
+    const textarea = noteTextarea.current
+    if (!textarea || textarea.closest<HTMLElement>('.dsh-pdf-page-comment-card')?.dataset.visible !== 'true') return
+    handledNoteFocus.current = noteFocusRequest
+    if (!textarea.disabled) textarea.focus()
+  }, [noteFocusRequest, noteCardOpen, noteMode, selectedNote?.id, pendingNote?.id])
   useEffect(() => {
     if (commentMode === 'edit' && editingComment) setComment(editingComment.contents ?? '')
   }, [editingComment?.id, editingComment?.contents])
   useEffect(() => {
-    if (!selected) return
+    if (noteMode === 'read' && selectedNote) setNoteText(selectedNote.contents ?? '')
+  }, [noteMode, selectedNote?.id, selectedNote?.contents])
+  useEffect(() => {
+    if (!selected || selected.subtype === 'Text') return
     const key = `${ownerSequence.current}:${snapshot?.id}:${selected.id}`
-    if (!colorChanges.current.has(key)) setCommentColor(colorToHex(selected.color))
+    if (!colorChanges.current.has(key)) setAnnotationColor(colorToHex(selected.color))
   }, [selected?.id, selected?.color?.join(',')])
   useEffect(() => {
     if (selectedAnnotation && snapshot && !selected) setSelectedAnnotation(undefined)
@@ -114,6 +134,9 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     setSelectedAnnotation(undefined)
     setPendingNote(null)
     setCommentCardOpen(false)
+    setNoteCardOpen(false)
+    setNoteMode('read')
+    setNoteText('')
     setCommentMode('read')
     setEditingCommentId(undefined)
     setPendingAnnotations(noAnnotations)
@@ -126,6 +149,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   }
   const resetContent = () => {
     setSelectedAnnotation(undefined); setPendingNote(null); setCommentCardOpen(false)
+    setNoteCardOpen(false); setNoteMode('read'); setNoteText('')
     setCommentMode('read'); setEditingCommentId(undefined)
   }
   const clearPending = () => setPendingAnnotations(noAnnotations)
@@ -153,7 +177,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
         if (colorChanges.current.get(key) === queued) {
           colorChanges.current.delete(key)
           if (selectedAnnotationRef.current === queued.annotationId && queued.owner === ownerSequence.current
-            && currentSnapshot()?.id === queued.documentId) setCommentColor(colorToHex(annotation.color))
+            && currentSnapshot()?.id === queued.documentId) setAnnotationColor(colorToHex(annotation.color))
         }
       } else if (colorChanges.current.get(key)?.color === appliedColor) colorChanges.current.delete(key)
     }
@@ -162,9 +186,10 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   }
 
   const updateColor = (nextColor: string) => {
-    if (!selected || !snapshot || snapshot.document.readOnly || !selected.editable) return
-    setCommentColor(nextColor)
-    setColor(nextColor)
+    if (!selected || isStandaloneNote(selected) || selected.subtype === 'Text'
+      || !snapshot || snapshot.document.readOnly || !selected.editable) return
+    setAnnotationColor(nextColor)
+    if (selected.subtype !== 'Text') setColor(nextColor)
     const firstChange = colorChanges.current.size === 0
     const key = `${ownerSequence.current}:${snapshot.id}:${selected.id}`
     colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id, annotationId: selected.id, color: nextColor })
@@ -204,9 +229,7 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   }
   const closeCommentEditor = () => {
     if (commentMode !== 'read') {
-      if (pendingNote) {
-        setPendingNote(null); setCommentCardOpen(false); setSelectedAnnotation(undefined)
-      } else setCommentCardOpen(!!thread?.comments.length)
+      setCommentCardOpen(!!thread?.comments.length)
       setComment('')
       setCommentMode('read')
       setEditingCommentId(undefined)
@@ -216,8 +239,8 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     setSelectedAnnotation(undefined)
   }
   const dismissCommentCard = () => {
-    if (hasUnappliedComment && comment.trim() && !window.confirm(t('reader.discardCommentDraft'))) return
-    setPendingNote(null)
+    if (commentCardOpen && commentMode !== 'read' && comment.trim()
+      && !window.confirm(t('reader.discardCommentDraft'))) return
     setCommentCardOpen(false)
     setSelectedAnnotation(undefined)
     setComment('')
@@ -228,20 +251,92 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     if (!comment.trim() || operationLock.current) return
     if (commentMode === 'edit' && editingComment?.hasRichText
       && !window.confirm(t('reader.richTextConversionConfirm'))) return
-    const next = pendingNote ? await change([{ type: 'add', annotation: {
-      ...pendingNote, contents: comment.trim(), color: colorFromHex(commentColor), author: 'DSH',
-    } }]) : commentMode === 'edit' && editingComment ? await change([{
+    const next = commentMode === 'edit' && editingComment ? await change([{
       type: 'update', id: editingComment.id, patch: { contents: comment.trim() },
     }]) : selected && thread?.comments.length ? await change([{ type: 'add', annotation: {
       id: crypto.randomUUID(), page: selected.page, subtype: 'Text', rect: selected.rect ?? [0, 0, 16, 16],
       replyToId: selected.id, contents: comment.trim(), author: 'DSH',
     } }]) : selected ? await change([{ type: 'update', id: selected.id, patch: { contents: comment.trim() } }]) : undefined
     if (!next) return
-    if (pendingNote) { setSelectedAnnotation(pendingNote.id); setPendingNote(null) }
     setCommentMode('read')
     setEditingCommentId(undefined)
     setComment('')
     setCommentCardOpen(true)
+  }
+
+  const editNote = () => {
+    if (!selectedNote?.editable || snapshot?.document.readOnly) return
+    setNoteText(selectedNote.contents ?? '')
+    setNoteMode('edit')
+    setNoteFocusRequest(current => current + 1)
+  }
+  const onNoteCardVisible = () => {
+    if (handledNoteFocus.current !== noteFocusRequest) setNoteFocusRequest(current => current + 1)
+  }
+  const cancelNoteEdit = () => {
+    if (noteMode === 'new') {
+      if (noteText.trim() && !window.confirm(t('reader.discardNoteDraft'))) return
+      setPendingNote(null)
+      setNoteCardOpen(false)
+      setSelectedAnnotation(undefined)
+      setNoteText('')
+    } else if (noteMode === 'edit') {
+      setNoteText(selectedNote?.contents ?? '')
+      setNoteMode('read')
+    }
+  }
+  const dismissNoteCard = () => {
+    if (((pendingNote && noteText.trim()) || (noteMode === 'edit' && noteText !== (selectedNote?.contents ?? '')))
+      && !window.confirm(t('reader.discardNoteDraft'))) return
+    setPendingNote(null)
+    setNoteCardOpen(false)
+    setNoteMode('read')
+    setNoteText('')
+    setSelectedAnnotation(undefined)
+  }
+  const applyNote = async () => {
+    if (!noteText.trim() || operationLock.current) return
+    const next = pendingNote ? await change([{ type: 'add', annotation: {
+      ...pendingNote, contents: noteText.trim(), author: 'DSH',
+    } }]) : noteMode === 'edit' && selectedNote ? await change([{
+      type: 'update', id: selectedNote.id, patch: { contents: noteText.trim() },
+    }]) : undefined
+    if (!next) return
+    if (pendingNote) { setSelectedAnnotation(pendingNote.id); setPendingNote(null) }
+    setNoteMode('read')
+    setNoteText(noteText.trim())
+    setNoteCardOpen(true)
+  }
+  const moveNote = async (rect: PdfRect): Promise<boolean> => {
+    if (operationLock.current || snapshot?.document.readOnly) return false
+    if (pendingNote) {
+      setPendingNote(current => current ? { ...current, rect: [...rect] } : current)
+      return true
+    }
+    if (!selectedNote?.editable) return false
+    return !!await change([{ type: 'update', id: selectedNote.id, patch: { rect } }])
+  }
+  const moveNoteMarker = async (id: string, rect: PdfRect): Promise<boolean> => {
+    const document = currentSnapshot()?.document
+    const note = document?.annotations.find(annotation => annotation.id === id)
+    if (operationLock.current || document?.readOnly || !note?.editable || !isStandaloneNote(note)) return false
+    return !!await change([{ type: 'update', id, patch: { rect } }])
+  }
+  const canPersistCommentPosition = !!selected && selected.subtype !== 'Text' && selected.subtype !== 'Popup'
+    && !selected.replyToId && !!selected.editable && !snapshot?.document.readOnly
+    && !!snapshot?.document.annotations.some(annotation => annotation.id === selected.id)
+  const moveCommentCard = async (position: [number, number]): Promise<boolean> => {
+    if (!canPersistCommentPosition || !selected || operationLock.current) return false
+    return !!await change([{ type: 'update', id: selected.id, patch: { commentPosition: position } }])
+  }
+  const deleteNote = async () => {
+    if (!selectedNote?.editable || snapshot?.document.readOnly || operationLock.current) return
+    const next = await change([{ type: 'delete', id: selectedNote.id }])
+    if (!next) return
+    setSelectedAnnotation(undefined)
+    setNoteCardOpen(false)
+    setNoteMode('read')
+    setNoteText('')
   }
   const deleteComment = async (id: string) => {
     const entry = thread?.comments.find(item => item.id === id)
@@ -288,45 +383,64 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
     const y = Math.max(bounds[1] + height, Math.min(bounds[3], point[1]))
     setPendingNote({ id: crypto.randomUUID(), page, subtype: 'Text', rect: [x, y - height, x + width, y] })
     setSelectedAnnotation(undefined)
+    setCommentCardOpen(false)
     setComment('')
-    setCommentColor(color)
-    showCommentEditor()
+    setCommentMode('read')
+    setEditingCommentId(undefined)
+    setNoteText('')
+    setNoteMode('new')
+    setNoteCardOpen(true)
+    setNoteFocusRequest(current => current + 1)
     setMode('text')
   }
 
-  const selectAnnotation = useCallback((id: string, intent: 'select' | 'comment' = 'select') => {
+  const selectAnnotation = useCallback((id: string, intent: 'select' | 'comment' | 'note' = 'select') => {
     const target = annotationsById.get(id)
     if (!target) return
     const root = threadIndex.rootOf(target)
-    if (selectedAnnotationRef.current === root.id && hasUnappliedComment) return
-    if (selectedAnnotationRef.current !== root.id && hasUnappliedComment
-      && !window.confirm(t('reader.discardCommentDraft'))) return
-    const hasComments = threadIndex.thread(root).comments.length > 0
+    if (selectedAnnotationRef.current === root.id && hasUnappliedAnnotation) return
+    if (selectedAnnotationRef.current !== root.id && hasUnappliedAnnotation
+      && !window.confirm(t(pendingNote || noteMode !== 'read' ? 'reader.discardNoteDraft' : 'reader.discardCommentDraft'))) return
+    const isNote = isStandaloneNote(root)
+    const hasComments = !isNote && threadIndex.thread(root).comments.length > 0
     setPendingNote(null)
     setSelection(null)
     window.getSelection()?.removeAllRanges()
     setSelectedAnnotation(root.id)
+    if (isNote) {
+      setCommentCardOpen(false)
+      setNoteText(root.contents ?? '')
+      setNoteMode('read')
+      setNoteCardOpen(true)
+      return
+    }
+    setNoteCardOpen(false)
+    setNoteMode('read')
     setComment('')
     setCommentMode('read')
     setEditingCommentId(undefined)
     setCommentCardOpen(hasComments)
     if (!hasComments && intent === 'comment') showCommentEditor()
-  }, [annotationsById, threadIndex, hasUnappliedComment, t, setSelection, showCommentEditor])
+  }, [annotationsById, threadIndex, hasUnappliedAnnotation, pendingNote, noteMode, t, setSelection, showCommentEditor])
   const clearAnnotation = useCallback(() => {
-    if (hasUnappliedComment) return
+    if (hasUnappliedAnnotation) return
     setSelectedAnnotation(undefined); setPendingNote(null); setCommentCardOpen(false)
+    setNoteCardOpen(false); setNoteMode('read'); setNoteText('')
     setCommentMode('read'); setEditingCommentId(undefined)
-  }, [hasUnappliedComment])
+  }, [hasUnappliedAnnotation])
   const deleteAnnotation = async () => {
     if (selected?.editable && await change([{ type: 'delete', id: selected.id }])) clearAnnotation()
   }
 
   return { color, setColor, selectedAnnotation, setSelectedAnnotation, selected, pendingAnnotations,
-    pendingNote, setPendingNote, commentCardOpen, setCommentCardOpen, commentMode, editingCommentId,
+    selectedNote, pendingNote, setPendingNote, commentCardOpen, setCommentCardOpen, commentMode, editingCommentId,
     thread, editingComment, blockedCommentDeleteIds, editComment, deleteComment, comment, setComment,
-    commentColor, setCommentColor, commentFocusRequest, setCommentFocusRequest, commentTextarea,
-    colorPending, displayAnnotations, commentItems, annotationsByPage, renderedAnnotationsByPage,
-    hasUnappliedComment, resetResource, resetContent, clearPending, updateColor, openCommentEditor,
+    annotationColor, setAnnotationColor, commentFocusRequest, setCommentFocusRequest, commentTextarea,
+    noteCardOpen, noteMode, noteText, setNoteText, noteTextarea, noteFocusRequest,
+    colorPending, displayAnnotations, annotationItems, annotationsByPage, renderedAnnotationsByPage,
+    hasUnappliedAnnotation, resetResource, resetContent, clearPending, updateColor, openCommentEditor,
     onCommentCardVisible, closeCommentEditor, dismissCommentCard, applyComment,
+    editNote, onNoteCardVisible, cancelNoteEdit, dismissNoteCard, applyNote, moveNote, moveNoteMarker, deleteNote,
+    canPersistCommentPosition, moveCommentCard,
     mark, beginNote, selectAnnotation, clearAnnotation, deleteAnnotation }
 }

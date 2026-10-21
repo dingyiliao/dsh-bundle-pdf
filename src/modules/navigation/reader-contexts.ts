@@ -76,5 +76,13 @@ export function createReaderContexts(workspaces: WorkingCopyReadPort,
       ({ tabId, documentId, contentVersion, page }))
   }
 
-  return { update, current, dispose() { bySession.clear(); latest.clear() } }
+  function hasLease(sessionId: string, tabId: string, leaseId: string,
+    documentId: string, contentVersion: string): boolean {
+    purge(sessionId)
+    const current = bySession.get(sessionId)?.get(tabId)
+    return current?.leaseId === leaseId && current.documentId === documentId
+      && current.contentVersion === contentVersion
+  }
+
+  return { update, current, hasLease, dispose() { bySession.clear(); latest.clear() } }
 }

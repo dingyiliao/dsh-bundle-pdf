@@ -24,7 +24,7 @@
 | 长文档内部架构 | 已接入，待性能验收 | 仅使用原生 PDFium 阅读；数字页布局与有界页面挂载使可见页优先绘制，选择相关页可保留文字层。没有后台全页文字/低清预览预热；搜索按需读取并使用有界缓存。沿用现有 PDF 预览入口。 |
 | 阅读布局与鼠标缩放 | 已实现，悬浮样式待交互验收 | PDF 内容区顶部悬浮文档工具栏，页码与翻页控件位于阅读辅助栏底部；左 PDF、右可折叠及调宽的阅读辅助栏；Ctrl 配合滚轮在 PDF 内容区进行 10%～500% 缩放。 |
 | 页面缩略图和 PDF 书签 | 已实现，用户交互验收通过 | 右栏按需绘制页面缩略图；读取 PDF 内置目录；插件个人书签支持新增、改名、删除与持久化，并明确与 PDF 文件分离。复杂目录和失效目标仍待专项验证。 |
-| 会话发送与模型 PDF 工具 | P3 只读与审批写入已接入；真实模型调用待验收 | 解释模式可暂存带必填问题的文字选段或单页框选区域，并按原顺序组成一轮用户提词；区域图像经已鉴权的 `pdf.region` 由 Host 绘制和签发引用，文字选段经 `pdf.selection` 由 Host 重新提取并签发引用；区域发送前再经 `pdf.image` 的 `prepare-reference` 重验会话、源文件、附件与摘要，直送图片只使用 Host 字节。Host 保留原有九个 PDF 工具，新增 `pdf_status`、`pdf_locate`、`pdf_context` 和 `pdf_image_context`：前三项查询副本、定位原文和组装有限文字上下文，后一项在本会话重验页图/OCR/辅助视觉引用。文字与图像来源记录存于独立的有界 Storage Domain；图像字节由受保护附件存储持有，证据域只存句柄或派生文字。`pdf_read_page`、`pdf_locate`、`pdf_context` 有可回放工具卡，只有当前可见且重新校验过的 PDF 才可从卡片跳页。`pdf_render_page` 可显式使用所选图像理解后端，默认行为不变；工具读取不会自动打开侧栏。`pdf_annotate` 支持无副作用预演和用户批准后写入可撤销草稿，`pdf_save` 单独批准后仅覆盖原路径。每段文字和区域选段已有 Host 签发的会话限定引用，但整轮提词仍不是可持久重放的完整 `PdfEvidence`。图像工具卡、模型主动控制阅读区导航及答案正文逐句引用仍未实现。 |
+| 会话发送与模型 PDF 工具 | P3 只读与模型草稿写入已接入；真实模型调用待验收 | 解释模式可暂存带必填问题的文字选段或单页框选区域，并按原顺序组成一轮用户提词；区域图像经已鉴权的 `pdf.region` 由 Host 绘制和签发引用，文字选段经 `pdf.selection` 由 Host 重新提取并签发引用；区域发送前再经 `pdf.image` 的 `prepare-reference` 重验会话、源文件、附件与摘要，直送图片只使用 Host 字节。Host 保留原有九个 PDF 工具，新增 `pdf_status`、`pdf_locate`、`pdf_context`、`pdf_find_related` 和 `pdf_image_context`：前三项查询副本、定位原文和组装有限文字上下文，`pdf_find_related` 用扩展词分窗返回候选，最后一项在本会话重验页图/OCR/辅助视觉引用。文字与图像来源记录存于独立的有界 Storage Domain；图像字节由受保护附件存储持有，证据域只存句柄或派生文字。`pdf_read_page`、`pdf_locate`、`pdf_context` 有可回放工具卡，只有当前可见且重新校验过的 PDF 才可从卡片跳页。`pdf_render_page` 可显式使用所选图像理解后端，默认行为不变；工具读取不会自动打开侧栏。`pdf_annotate` 直接写入与 Reader 共用的可撤销草稿并同步显示，`pdf_save` 单独请求批准后仅覆盖原路径。每段文字和区域选段已有 Host 签发的会话限定引用，但整轮提词仍不是可持久重放的完整 `PdfEvidence`。图像工具卡及答案正文逐句引用仍未实现；模型页级导航已接入但待 Desktop 验收。 |
 
 ## 1. 产品目标与约束
 
@@ -219,6 +219,8 @@ P3 模型回复默认显示在当前会话中。只有用户明确要求或执�
 用户主动发送文字、区域和整页，以及会话中的解读/翻译在 P3 交付。独立选区翻译另按 FR-13 提前提供，不属于向会话发送内容。
 
 **当前首版**：用户在工具菜单进入解释模式，状态条显示发送与退出操作。选中文字，或选择“框选区域”后在单页拖出矩形；两种选段都须在选区旁输入问题并保存，才计入临时选段。已保存选段可通过页上的编号标记重新编辑或删除；文字与区域可按选择顺序混合发送。同一 PDF 最多收集 20 个选段，其中区域图像最多 5 张，文字总计不超过 24000 字符；这些选段不会写入 PDF 批注或未保存状态。区域图像经 `pdf.region` 由 Host 基于已授权工作副本绘制、核对附件字节并产生会话限定的区域证据 `refId`；文字选段经 `pdf.selection` 由 Host 按 PDFium 字形位置重新提取、核对整页文字并签发引用。Client 仍负责临时选段、提词组合与发送前来源复核；发送区域图像时经 `pdf.image` 的 `prepare-reference` 再验证会话、文档、源文件、附件与摘要，直送图片只使用 Host 返回的字节。提交时只向该 PDF 所属且仍为当前激活的会话排队一轮普通用户提词；解释主模型固定跟随该会话模型，模型回复出现在聊天中。区域图像默认只在当前模型声明支持图像时直送；配置为 `ocr-text` 时先识别文字，配置为 `auxiliary-vision` 时先由第二个视觉模型生成描述，两者都只将带来源及局限说明的派生文字发送给当前会话。没有可用路线或转换失败时保留选段与问题并显示错误，不把空内容当成成功。此版尚未实现整页附件发送、聊天输入框草稿预览或另行指定解释主模型。下表是后续完整目标，并非全部已交付；真实模型与桌面交互尚待验收。
+
+解释模式在 PDF 设置中分别配置 `explanationGeneralInstruction`、`explanationTextInstruction`、`explanationImageInstruction`；每项是可选的普通文字，留空时沿用内置行为，不要求用户编写占位符。每项最多 2000 字符，可通过 profile patch 配置。插件负责按顺序插入已校验文字、问题和图片，不能把图片序列化为普通文字；来源警示、证据引用和 Host 校验始终保留。旧版 `explanationPromptTemplate` 仍供已有 profile 使用：只有三个新字段均为空时才生效；设置页可明确切换到分项提示词。旧模板仍要求恰好一次 `{{items}}`，并限制长度 8192 字符。
 
 选区提供三个入口：
 
@@ -455,9 +457,9 @@ Sidebar 的当前页面、缩放、选区和跳转返回栈是阅读状态；不
 
 ## 8. 模型工具能力草案（P3）
 
-面向 AI 阅读场景的阶段化工具设计见 [AI_READER_TOOLS.md](./docs/AI_READER_TOOLS.md)，配套的模块边界与实施记录见 [ARCHITECTURE_V2.md](./docs/ARCHITECTURE_V2.md)。它们将下述能力草案收束为兼容现有工具的增量方案；只读证据工具、主要目标目录以及用户批准的批注/保存工具已落地，模型主动导航仍未实现。
+面向 AI 阅读场景的阶段化工具设计见 [AI_READER_TOOLS.md](./docs/AI_READER_TOOLS.md)，配套的模块边界与实施记录见 [ARCHITECTURE_V2.md](./docs/ARCHITECTURE_V2.md)。它们将下述能力草案收束为兼容现有工具的增量方案；只读证据工具、主要目标目录以及直接写草稿的批注工具及用户批准的保存工具已落地，首版模型页级导航已接入，仍待 Desktop 验收。
 
-当前已注册 `pdf_open`、`pdf_close`、`pdf_current`、`pdf_read_page`、`pdf_search`、`pdf_page_annotations`、`pdf_bookmarks`、`pdf_render_page`、`pdf_ocr_page`，以及新增的 `pdf_status`、`pdf_locate`、`pdf_context`、`pdf_image_context`、`pdf_annotate`、`pdf_save`；独立 OCR 插件另注册 `ocr_recognize`，可读取由 PDF 页图工具暂存的会话限定图像句柄。`pdf_open` 在 Host 打开受会话权限约束的工作副本，不会在 Client 侧栏打开标签；后台副本有数量、内存及空闲时间上限，`pdf_close` 只释放后台所有权，不关闭阅读器标签或删除草稿。`pdf_render_page` 默认只向确认为视觉模型的当前路线提供图片附件；显式传入 `mode: configured-backend` 才调用 profile 选择的 `imageUnderstanding` 后端：直送图像仍要求当前模型支持视觉，`ocr-text` 或 `auxiliary-vision` 则返回注明来源、可用模型信息及局限的派生文字，不向当前会话提供图片，也不自动降级到另一后端。可选 `question` 传给选定后端以指导处理。`pdf_render_page` 和 `pdf_ocr_page` 都生成来源 `refId`；`pdf_image_context(documentId, refId)` 只在当前 Agent 会话及重新取得授权的工作副本中复用它：直送附件须再检查当前模型视觉能力，OCR/辅助视觉引用只给派生文字，来源或附件失效则报错。`pdf_ocr_page` 经当前 OCR 后端返回文字，不把转写当作经校验的 PDF 原文字层。首版 SessionLLM OCR 仍需要视觉模型，后续本地/远端后端才可能让文本模型使用 OCR。P0 阅读闭环不以模型调用作为验收路径。
+当前已注册 `pdf_open`、`pdf_close`、`pdf_current`、`pdf_read_page`、`pdf_search`、`pdf_page_annotations`、`pdf_bookmarks`、`pdf_render_page`、`pdf_ocr_page`，以及新增的 `pdf_status`、`pdf_locate`、`pdf_context`、`pdf_find_related`、`pdf_image_context`、`pdf_navigate`、`pdf_annotate`、`pdf_annotation_update`、`pdf_annotation_delete`、`pdf_bookmark_add`、`pdf_bookmark_rename`、`pdf_bookmark_remove`、`pdf_save`；独立 OCR 插件另注册 `ocr_recognize`，可读取由 PDF 页图工具暂存的会话限定图像句柄。标注修改/删除使用页标注列表给出的精确 ID，在与 Reader 共用的可撤销草稿中生效；个人书签使用独立存储，不修改 PDF，删除需用户确认。`pdf_open` 在 Host 打开受会话权限约束的工作副本，不会在 Client 侧栏打开标签；后台副本有数量、内存及空闲时间上限，`pdf_close` 只释放后台所有权，不关闭阅读器标签或删除草稿。`pdf_render_page` 默认只向确认为视觉模型的当前路线提供图片附件；显式传入 `mode: configured-backend` 才调用 profile 选择的 `imageUnderstanding` 后端：直送图像仍要求当前模型支持视觉，`ocr-text` 或 `auxiliary-vision` 则返回注明来源、可用模型信息及局限的派生文字，不向当前会话提供图片，也不自动降级到另一后端。可选 `question` 传给选定后端以指导处理。`pdf_render_page` 和 `pdf_ocr_page` 都生成来源 `refId`；`pdf_image_context(documentId, refId)` 只在当前 Agent 会话及重新取得授权的工作副本中复用它：直送附件须再检查当前模型视觉能力，OCR/辅助视觉引用只给派生文字，来源或附件失效则报错。`pdf_ocr_page` 经当前 OCR 后端返回文字，不把转写当作经校验的 PDF 原文字层。首版 SessionLLM OCR 仍需要视觉模型，后续本地/远端后端才可能让文本模型使用 OCR。P0 阅读闭环不以模型调用作为验收路径。
 
 下表是更完整的 P3 能力草案，不等于全部已实现。`pdf_read`、`pdf_render`、`pdf_ocr`、`pdf_annotations` 是概念名，现有具体入口分别为 `pdf_read_page`、`pdf_render_page`、`pdf_ocr_page`、`pdf_page_annotations` 和新工具 `pdf_annotate`。`pdf_save` 已注册，但只支持明确文档的原路径覆盖，并要求 DSH 受信交互渠道的单独批准；表中的“另存为目标”仍属未来能力。
 
@@ -468,7 +470,8 @@ Sidebar 的当前页面、缩放、选区和跳转返回栈是阅读状态；不
 | `pdf_search` | 文档句柄、查询及可选页范围、游标 | 原有文字/已识别 OCR 文字中的匹配、来源和位置；搜索实际覆盖页及未识别范围；总量或截断标识。 |
 | `pdf_render` | 文档句柄、物理页码、可选区域、清晰度/图像限额、标注策略 | 完整页或局部合成图像、实际尺寸、页面坐标、版本及继续放大读取信息；进入模型前检查图像能力。 |
 | `pdf_ocr` | 文档句柄、物理页码、可选区域、识别语言/选项、输出限额 | 经统一 OCR 功能调用当前配置引擎；返回文字块、位置、引擎来源、可用置信信息、识别范围及失败区域；NoneOCR 明确返回已关闭；不要求当前模型具备图像输入能力。 |
-| `pdf_annotations` | 文档句柄；list/add/update/delete；位置或标注身份 | 标注列表或变更结果，新的工作修订号及未保存状态。 |
+| `pdf_annotations` | 已实现 `pdf_page_annotations`、`pdf_annotate`、`pdf_annotation_update`、`pdf_annotation_delete`；位置、精确标注 ID 或预期修订 | 标注列表或可撤销草稿的增/改/删结果；复杂区域/结构定位仍是草案。 |
+| `pdf_bookmarks` | 已实现 `pdf_bookmarks`、`pdf_bookmark_add`、`pdf_bookmark_rename`、`pdf_bookmark_remove`；个人书签 ID 与版本 | 列出个人书签及 PDF 内嵌目录；可新增、改名、确认后删除个人书签，内嵌目录只读。 |
 | `pdf_save` | 已实现：文档句柄、预期工作修订号；其他目标路径仍是草案 | 用户批准后覆盖原路径；返回提交的修订号、新源版本、路径或明确的冲突/权限结果。 |
 | `pdf_status` | 文档句柄 | 当前路径、版本、未保存状态、能力限制和恢复状态。 |
 
@@ -665,7 +668,7 @@ P1 已选择插件私有存储保存个人书签、PDF 原生目录只读；以�
 3. **读取兼容**：PDF 自带显示页标签、需密码文件交互式解锁、加密保存和远程文件提供方均尚未实现。特殊 PDF、权限、签名与不支持标注继续按明确限制处理。
 4. **OCR 扩展**：厂商引擎、专属设置表单与凭据绑定尚未内置；LocalOCR 同源 HTTP / HTTPS 资源方案在自定义 scheme 场景仍需确认。批量 OCR、复杂目录兼容和更多标注类型没有确定交付阶段。
 5. **P1 书签**：右栏目录、个人书签与页面缩略图已接入，常规交互已经用户验收；仍需以真实嵌套目录、失效目标、文件变化及重启重开的样本完成专项验证。
-6. **P3 会话与模型工具**：解释模式支持文字与单页框选区域合并成一轮会话提词；区域 PNG 已改由 Host 的 `pdf.region` 按工作副本绘制并签发会话限定引用。Host 保留后台打开/关闭、当前文档、按页读原文、按页列标注、范围搜索、书签、页图与 OCR 工具，另有 `pdf_status`、`pdf_locate`、`pdf_context`、`pdf_image_context` 四个只读工具。文字与图像来源引用保存在独立证据域，按 30 天/总数 256 条清理；图像像素仍由受保护附件存储持有。运行时 `session/disposed` 只关闭临时后台句柄，不代表会话删除，不清理持久引用。三个文字工具卡已接入，但只在当前可见 Reader 中通过来源与原文校验后跳页；历史卡片可回放摘录，不会凭历史引用绕过文件授权。`pdf_image_context` 重新校验所属会话、工作副本源字节及附件或派生文字后再交给模型，当前没有图像工具卡。`pdf_annotate` 可预演显式坐标区域并在 DSH 用户批准后写入可撤销草稿；`pdf_save` 需要再次批准才覆盖原路径。工具与新卡片均待真实模型/桌面交互验收。区域/整页发到聊天输入框、完整的解释选段证据、答案正文内联引用、模型主动导航、图像理解设置卡片和翻译/OCR 模型独立配置仍待实现；解释主模型固定使用当前会话模型，辅助视觉模型按 profile patch 显式配置。详情见 [AI 阅读工具设计与状态](./docs/AI_READER_TOOLS.md)。
+6. **P3 会话与模型工具**：解释模式支持文字与单页框选区域合并成一轮会话提词；区域 PNG 已改由 Host 的 `pdf.region` 按工作副本绘制并签发会话限定引用。Host 保留后台打开/关闭、当前文档、按页读原文、按页列标注、范围搜索、书签、页图与 OCR 工具，另有 `pdf_status`、`pdf_locate`、`pdf_context`、`pdf_find_related`、`pdf_image_context` 五个只读工具。文字与图像来源引用保存在独立证据域，按 30 天/总数 256 条清理；图像像素仍由受保护附件存储持有。运行时 `session/disposed` 只关闭临时后台句柄，不代表会话删除，不清理持久引用。三个文字工具卡已接入，但只在当前可见 Reader 中通过来源与原文校验后跳页；历史卡片可回放摘录，不会凭历史引用绕过文件授权。`pdf_image_context` 重新校验所属会话、工作副本源字节及附件或派生文字后再交给模型，当前没有图像工具卡。`pdf_annotate` 直接写入与 Reader 共用的可撤销草稿，Reader 通过 `pdf.watch` 同步；`pdf_save` 才请求用户批准并覆盖原路径。`pdf_navigate` 的可见 Reader 页级跳转已接入，复用现有回退历史；工具与新卡片均待真实模型/桌面交互验收。区域/整页发到聊天输入框、完整的解释选段证据、答案正文内联引用、按证据精确页内导航、图像理解设置卡片和翻译/OCR 模型独立配置仍待实现；解释主模型固定使用当前会话模型，辅助视觉模型按 profile patch 显式配置。详情见 [AI 阅读工具设计与状态](./docs/AI_READER_TOOLS.md)。
 7. **自定义 UI 组件体系化**：现状清单与待办见 [第 9.1 节「自定义 UI 组件现状」](#91-自定义-ui-组件现状)。分类与 API 方案尚未确定；在确定触发口径、键盘规格和移动端取舍之前，不开始实现。
 8. **阅读提示词的真实触发率**：静态意图指引的注册、工具名、无状态播报及卸载行为由自动化测试覆盖。真实模型仍需验证：模糊指代时是否先检查 `pdf_current` 并按结果阅读；已有明确的非 PDF 目标时是否避免误触发；无文档、多文档或无法确定具体段落时是否恰当澄清。不以自动化文本断言代替模型行为验收，也不通过注入实时文档状态来强制触发。
 9. **续读位置的剩余边界**：正常恢复与"外部改写后跳过并提示"已有端到端覆盖。仍需确认：同一路径另存为或改名后是否应继承位置（当前按路径独立，不继承）；多标签同时打开同一文件时以最后一次写入为准是否符合预期；插件私有存储被清理后回退到第 1 页。当前不提供关闭该功能的设置。

@@ -28,11 +28,12 @@ test('a selection inside one text node includes surrounding context and its actu
     selected.setEnd(text, 11)
     dom.getSelection()!.addRange(selected)
     const createRange = dom.document.createRange.bind(dom.document)
+    let boxes = [
+      { left: 10, top: 20, right: 35, bottom: 30, width: 25, height: 10 },
+    ]
     dom.document.createRange = () => {
       const piece = createRange()
-      piece.getClientRects = () => ([
-        { left: 10, top: 20, right: 35, bottom: 30, width: 25, height: 10 },
-      ]) as unknown as DOMRectList
+      piece.getClientRects = () => boxes as unknown as DOMRectList
       return piece
     }
     page.getBoundingClientRect = () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100,
@@ -46,6 +47,23 @@ test('a selection inside one text node includes surrounding context and its actu
       revision: 7, kind: 'text', text: 'world',
       fragments: [{ page: 1, rect: [10, 70, 35, 80], quadPoints: [10, 80, 35, 80, 10, 70, 35, 70] }],
       selectionBefore: 'hello ', selectionAfter: ' again',
+    })
+    // A wrapped selection still needs one PDF quadrilateral per visual line.
+    // Turning the three rows into one tall quad would create an opaque underline.
+    boxes = [
+      { left: 10, top: 20, right: 35, bottom: 30, width: 25, height: 10 },
+      { left: 10, top: 32, right: 35, bottom: 42, width: 25, height: 10 },
+      { left: 10, top: 44, right: 35, bottom: 54, width: 25, height: 10 },
+    ]
+    const wrapped = createRange()
+    wrapped.selectNodeContents(text)
+    dom.getSelection()!.removeAllRanges()
+    dom.getSelection()!.addRange(wrapped)
+    assert.deepEqual(captureTextSelection(container, new Map([[1, view]]), 8)?.fragments[0], {
+      page: 1, rect: [10, 46, 35, 80],
+      quadPoints: [10, 80, 35, 80, 10, 70, 35, 70,
+        10, 68, 35, 68, 10, 58, 35, 58,
+        10, 56, 35, 56, 10, 46, 35, 46],
     })
   } finally {
     dom.close()

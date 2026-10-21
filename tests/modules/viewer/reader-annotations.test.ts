@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
 import {
-  annotationAtPoint, createAnnotationHitTester, createRectHitIndex, visibleAnnotation,
+  annotationAtPoint, createAnnotationHitTester, createRectHitIndex, nativeAppearancePatchBoxes, visibleAnnotation,
 } from '../../../src/modules/viewer/model/reader-annotations.ts'
 import type { PageViewport } from '../../../src/modules/viewer/model/reader-selection.ts'
 
@@ -50,4 +50,21 @@ test('annotation hit testing skips hidden and navigation marks and selects the n
   assert.equal(hit([10, 10])?.id, 'newer')
   assert.equal(hit([100, 100]), undefined)
   assert.equal(hit([-5, -5]), undefined)
+})
+
+test('native appearance repair hides the built-in note icon without erasing other unchanged annotations', () => {
+  const nativeNote = mark('note', { subtype: 'Text', rect: [50, 50, 72, 72] })
+  const nativeHighlight = mark('highlight', { rect: [100, 100, 120, 120] })
+  assert.deepEqual(nativeAppearancePatchBoxes([nativeNote, nativeHighlight], [nativeNote, nativeHighlight], viewport),
+    [[48, 48, 74, 74]])
+
+  const movedNote = { ...nativeNote, rect: [70, 70, 92, 92] as [number, number, number, number] }
+  assert.deepEqual(nativeAppearancePatchBoxes([movedNote, nativeHighlight], [nativeNote, nativeHighlight], viewport),
+    [[48, 48, 74, 74]], 'a moved note cleans the old native icon once; the custom marker renders at its new position')
+
+  const newNote = mark('draft-note', { subtype: 'Text', rect: [150, 150, 172, 172] })
+  assert.deepEqual(nativeAppearancePatchBoxes([newNote, nativeHighlight], [nativeHighlight], viewport), [],
+    'a draft note has no icon baked into the native document')
+  assert.deepEqual(nativeAppearancePatchBoxes([nativeHighlight], [nativeNote, nativeHighlight], viewport),
+    [[48, 48, 74, 74]], 'deleting a note also cleans its native icon')
 })

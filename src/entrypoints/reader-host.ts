@@ -17,7 +17,7 @@ import { pdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter
 import { createV1DraftRepository } from '../adapters/host/storage/v1-drafts.js'
 import { createV1NavigationStore } from '../adapters/host/storage/v1-navigation.js'
 import { createWorkingCopyService, draftSchema } from '../modules/working-copy/index.js'
-import { bookmarkRecordSchema, createBookmarks, createReaderContexts, createReadingPositions,
+import { bookmarkRecordSchema, createAgentNavigation, createBookmarks, createReaderContexts, createReadingPositions,
   readingPositionRecordSchema } from '../modules/navigation/index.js'
 import { createPdfService } from '../adapters/host/pdfium/index.js'
 import type { PdfNativeService } from './native-host.js'
@@ -92,6 +92,7 @@ export async function apply(
     subprocess: ctx.subprocess,
   })
   const readerContexts = createReaderContexts(workspaces)
+  const agentNavigation = createAgentNavigation(workspaces, readerContexts)
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
   // The image-understanding plugin may start before or after this reader.
   // Resolve the current agent and attachment store for each request, not at
@@ -121,6 +122,7 @@ export async function apply(
     const drain = workspaces.dispose()
     translations.registry.dispose()
     readerContexts.dispose()
+    agentNavigation.dispose()
     disposed = (async () => {
       const results = await Promise.allSettled(disposers.splice(0).reverse().map(close => close()))
       const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
@@ -139,6 +141,14 @@ export async function apply(
   try {
     ctx.effect(() => {
       disposers.push(registerPdfTransport(ctx, pdfService.dispatch))
+      disposers.push(registerPdfTransport(ctx, async (sessionId, input, _agent, signal) => {
+        const id = typeof input.id === 'string' && input.id.length <= 512 ? input.id : undefined
+        const knownRevision = input.knownRevision
+        if (!id || typeof knownRevision !== 'number' || !Number.isSafeInteger(knownRevision) || knownRevision < 0) {
+          throw Object.assign(new Error('A document ID and known revision are required'), { code: 'pdf/invalid-request' })
+        }
+        return { revision: await workspaces.waitForRevision(sessionId, id, knownRevision, signal) }
+      }, { endpoint: 'pdf.watch', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, bookmarks.dispatch, { endpoint: 'pdf.bookmarks', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, positions.dispatch, { endpoint: 'pdf.position', maxRequestBytes: 4096 }))
@@ -152,6 +162,9 @@ export async function apply(
         { endpoint: 'pdf.selection', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, async (sessionId, input) => readerContexts.update(sessionId, input),
         { endpoint: 'pdf.readercontext', maxRequestBytes: 4096 }))
+      disposers.push(registerPdfTransport(ctx, (sessionId, input, _agent, signal) =>
+        agentNavigation.dispatch(sessionId, input, signal),
+      { endpoint: 'pdf.navigation', maxRequestBytes: 4096 }))
       // A tool-result card may request navigation only after the currently
       // authorized working copy passes a fresh, whole-page evidence check.
       disposers.push(registerPdfTransport(ctx, async (sessionId, input, agent, signal) => {
@@ -174,7 +187,8 @@ export async function apply(
     ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
     ctx.effect(() => ctx.reflect.provide('pdfImageEvidence', imageEvidence), 'pdf: image evidence resolver')
     // ToolRuntime binds registrations to this plugin Fiber and removes them on unload.
-    ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, bookmarks, referenceStore, files),
+    ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, bookmarks, referenceStore, files,
+      agentNavigation),
       'pdf: agent tools and background documents')
     // Reader guidance is injected, not declared, so a Host without the
     // system-prompt service still loads the reader without this section.

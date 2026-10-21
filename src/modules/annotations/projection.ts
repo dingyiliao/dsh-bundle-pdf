@@ -22,6 +22,11 @@ function validRect(value: unknown): value is PdfRect {
     && value[2] > value[0] && value[3] > value[1]
 }
 
+function validPoint(value: unknown): value is [number, number] {
+  return Array.isArray(value) && value.length === 2
+    && value.every(item => typeof item === 'number' && Number.isFinite(item))
+}
+
 function validQuads(value: unknown): value is number[] {
   return Array.isArray(value) && value.length > 0 && value.length % 8 === 0
     && value.every(item => typeof item === 'number' && Number.isFinite(item))
@@ -156,12 +161,22 @@ function projectPdfOperationsImpl(
       continue
     }
     const patch = operation.patch
-    if (!patch || Object.keys(patch).some(key => key !== 'contents' && key !== 'color')) {
-      invalid('Only annotation color and contents can be changed.')
+    if (!patch || Object.keys(patch).some(key => key !== 'contents' && key !== 'color' && key !== 'rect' && key !== 'commentPosition')) {
+      invalid('Only annotation contents, color, note position, and comment-card position can be changed.')
     }
     if (patch.contents !== undefined && typeof patch.contents !== 'string') invalid('Annotation contents must be text.')
     if (patch.color !== undefined) validateColor(patch.color)
     if (existing.replyToId !== undefined && patch.color !== undefined) invalid('A comment reply has no editable page color.')
+    if (patch.rect !== undefined) {
+      if (existing.subtype !== 'Text' || existing.replyToId !== undefined) invalid('Only standalone notes can be repositioned.')
+      if (!validRect(patch.rect)) invalid('A note rectangle must have a positive width and height.')
+    }
+    if (patch.commentPosition !== undefined) {
+      if (existing.subtype === 'Text' || existing.subtype === 'Popup' || existing.replyToId !== undefined) {
+        invalid('Only a root markup annotation can store a comment-card position.')
+      }
+      if (!validPoint(patch.commentPosition)) invalid('A comment-card position must contain two finite coordinates.')
+    }
     for (const id of byObject.get(objectId(existing)) ?? []) {
       const item = entries.get(id)
       if (!item) continue
@@ -169,6 +184,8 @@ function projectPdfOperationsImpl(
         ...item,
         ...(patch.contents !== undefined ? { contents: patch.contents, hasRichText: undefined } : {}),
         ...(patch.color !== undefined ? { color: [...patch.color] as PdfColor } : {}),
+        ...(patch.rect !== undefined ? { rect: [...patch.rect] as PdfRect } : {}),
+        ...(patch.commentPosition !== undefined ? { commentPosition: [...patch.commentPosition] as [number, number] } : {}),
         modifiedAt: pdfDate,
       })
     }

@@ -7,7 +7,7 @@ import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { Reader } from '../client/Reader.tsx'
 import { Settings, settingsLocales } from '../client/Settings.tsx'
 import { readerLocales } from '../modules/viewer/index.js'
-import { createPdfApi, createReadingContextReporter, type PdfConnection } from '../adapters/client/remote/pdf-api.ts'
+import { createPdfApi, createPdfAgentNavigationApi, createReadingContextReporter, type PdfConnection } from '../adapters/client/remote/pdf-api.ts'
 import { createPdfEvidenceRevalidator } from '../adapters/client/remote/pdf-evidence.ts'
 import { createHostOcrApi } from '../adapters/client/remote/host-ocr-api.ts'
 import { createImageUnderstandingApi } from '../adapters/client/remote/image-understanding-api.ts'
@@ -24,6 +24,7 @@ import { createPdfEvidenceNavigation } from '../client/toolview/pdf-evidence-nav
 import { createPdfSessionLifecycle, type PdfSessionOwner, type PdfSessionSource, type PdfSidebarNavigation } from '../client/pdf-session-lifecycle.js'
 import { sendExplanationPrompt, type CurrentSessionSource } from '../adapters/client/dsh/index.js'
 import styles from '../client/reader.css'
+import settingsStyles from '../client/settings.css'
 import readingSidebarStyles from '../client/reading-sidebar.css'
 import windowedPagesStyles from '../client/windowed-pages.css'
 import annotationCommentCardStyles from '../client/annotation-comment-card.css'
@@ -59,6 +60,10 @@ const settingsSchema = z.object({
   ocrTimeoutMs: z.number(),
   translationEngine: z.string(), translationTargetLanguage: z.string(), translationTimeoutMs: z.number(),
   historyCapacity: z.number(), maxFileBytes: z.number(),
+  explanationGeneralInstruction: z.string().optional().default(''),
+  explanationTextInstruction: z.string().optional().default(''),
+  explanationImageInstruction: z.string().optional().default(''),
+  explanationPromptTemplate: z.string(),
 })
 
 export async function apply(ctx: ClientContext): Promise<void> {
@@ -97,6 +102,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => ctx.reflect.provide('pdfTranslation', translation), 'pdf: Client translation engines')
   const api = createPdfApi(ctx.connection, lifetime.signal)
   const reportReadingContext = createReadingContextReporter(ctx.connection, lifetime.signal)
+  const agentNavigation = createPdfAgentNavigationApi(ctx.connection, lifetime.signal)
   const sessionLifecycle = createPdfSessionLifecycle({
     currentSession: ctx.uiSession.adapter.current, sidebar: ctx.sidebarRight, api, signal: lifetime.signal,
     onError: error => { console.error('[pdf] Failed to discard PDFs after Session switch', error) },
@@ -111,7 +117,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.dshPlugin = ID
-    style.textContent = `${styles}\n${readingSidebarStyles}\n${windowedPagesStyles}\n${annotationCommentCardStyles}`
+    style.textContent = `${styles}\n${settingsStyles}\n${readingSidebarStyles}\n${windowedPagesStyles}\n${annotationCommentCardStyles}`
     document.head.append(style)
     return () => style.remove()
   }, 'pdf: reader stylesheet')
@@ -157,6 +163,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
       imageUnderstanding={imageUnderstanding} regionEvidence={regionEvidence}
       textSelectionEvidence={textSelectionEvidence} translation={translation}
       allowReadingContext={props.sessionId === file.sessionId} reportReadingContext={reportReadingContext}
+      agentNavigation={agentNavigation}
       promptExplanation={props.sessionId === file.sessionId
         ? (content, signal) => sendExplanationPrompt(ctx.uiSession.adapter.current, file.sessionId, content, signal) : undefined}
       pickSavePath={desktopSavePicker?.pick}

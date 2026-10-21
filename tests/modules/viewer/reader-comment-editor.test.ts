@@ -30,9 +30,9 @@ async function withEditor(run: (fixture: {
   const root = createRoot(container)
   const actions: string[] = []
   const props: ReaderCommentEditorProps = {
-    comments: [], mode: 'new', pendingNote: false, editable: true, readOnly: false,
-    comment: '', color: '#ffcc00', textarea: createRef<HTMLTextAreaElement>(),
-    onComment: value => actions.push(`comment:${value}`), onColor: value => actions.push(`color:${value}`),
+    comments: [], mode: 'new', editable: true, readOnly: false,
+    comment: '', textarea: createRef<HTMLTextAreaElement>(),
+    onComment: value => actions.push(`comment:${value}`),
     onAdd: () => actions.push('add'), onEdit: id => actions.push(`edit:${id}`),
     onDeleteComment: id => actions.push(`delete:${id}`), onApply: () => actions.push('apply'),
     onClose: () => actions.push('close'), onDismiss: () => actions.push('dismiss'), t: key => key,
@@ -97,12 +97,12 @@ test('read-only imported replies remain visible without edit controls', async ()
   })
 })
 
-test('new note composer requires text, offers color, and close is distinct from cancel', async () => {
+test('new comment composer requires only text, and close is distinct from cancel', async () => {
   await withEditor(async ({ container, props, render, actions }) => {
-    await render({ ...props, pendingNote: true })
+    await render(props)
     assert.equal(container.querySelector<HTMLButtonElement>('.dsh-pdf-comment-editor-apply')?.disabled, true)
-    assert.ok(container.querySelector('input[type=color]'))
-    await render({ ...props, pendingNote: true, comment: 'A note' })
+    assert.equal(container.querySelector('input[type=color]'), null)
+    await render({ ...props, comment: 'A comment' })
     assert.equal(container.querySelector<HTMLButtonElement>('.dsh-pdf-comment-editor-apply')?.disabled, false)
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.dsh-pdf-comment-editor-cancel')!.click()

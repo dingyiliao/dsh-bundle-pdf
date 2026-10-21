@@ -177,6 +177,22 @@ export function annotationPatchBoxes(annotation: PdfAnnotation, viewport: PageVi
   }).filter(([left, top, right, bottom]) => right > left && bottom > top)
 }
 
+/** Keep native note data, but replace PDFium's icon with the reader's one note marker.
+ * Removed/edited native appearances still need repair; dedupe a changed note. */
+export function nativeAppearancePatchBoxes(
+  current: readonly PdfAnnotation[], source: readonly PdfAnnotation[], viewport: PageViewport,
+): [number, number, number, number][] {
+  const stale = staleNativeAnnotations(current, source)
+  const patched = new Set(stale.map(annotation => annotation.id))
+  const appearances = [...stale]
+  for (const annotation of source) {
+    if (annotation.subtype !== 'Text' || !visibleAnnotation(annotation) || patched.has(annotation.id)) continue
+    appearances.push(annotation)
+    patched.add(annotation.id)
+  }
+  return appearances.flatMap(annotation => annotationPatchBoxes(annotation, viewport))
+}
+
 /** A repaired old appearance can cover a different, unchanged native mark. Draw
  * just that mark's intersection with the repaired boxes back into the overlay. */
 export function markupOverlappingPatches(
@@ -241,12 +257,13 @@ export function paintNoteMarkers(
     if (!box) continue
     const [left, top, right, bottom] = box
     const width = Math.max(12, right - left - 4), height = Math.max(12, bottom - top - 4)
-    context.fillStyle = '#ffec84'
-    context.strokeStyle = '#bc9400'
+    // Match the note palette in reader.css for captured regions sent to the model.
+    context.fillStyle = '#fff1a8'
+    context.strokeStyle = '#a88100'
     context.lineWidth = 1
     context.fillRect(left + 2, top + 2, width, height)
     context.strokeRect(left + 2.5, top + 2.5, width - 1, height - 1)
-    context.fillStyle = '#5d4900'
+    context.fillStyle = '#443500'
     context.font = '14px sans-serif'
     context.fillText('▤', left + 3, top + Math.min(height - 1, 14))
   }

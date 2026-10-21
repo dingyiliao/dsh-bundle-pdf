@@ -18,6 +18,9 @@ const { JSDOM } = testRequire('jsdom') as {
 
 test('page tracking follows the visible page but preserves a user-edited page number', async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  // React's legacy input-event fallback probes these methods in jsdom on focus.
+  Object.defineProperty(dom.HTMLElement.prototype, 'attachEvent', { configurable: true, value() {} })
+  Object.defineProperty(dom.HTMLElement.prototype, 'detachEvent', { configurable: true, value() {} })
   const saved = new Map<string, PropertyDescriptor | undefined>()
   const values = {
     window: dom, document: dom.document, Event: dom.Event,
@@ -60,11 +63,31 @@ test('page tracking follows the visible page but preserves a user-edited page nu
     await act(async () => { current().updateScrolledPage(); await new Promise(resolve => setTimeout(resolve, 5)) })
     assert.equal(current().currentPage, 2)
     assert.equal(current().pageInput, '2')
-    await act(async () => current().setPageInput('999'))
+    const input = dom.document.querySelector<HTMLInputElement>('.dsh-pdf-page-input')!
+    input.focus()
+    await act(async () => current().editPageInput('81'))
     scroll.scrollTop = 201
     await act(async () => { current().updateScrolledPage(); await new Promise(resolve => setTimeout(resolve, 5)) })
     assert.equal(current().currentPage, 3)
-    assert.equal(current().pageInput, '999')
+    assert.equal(current().pageInput, '81', 'unfinished input stays visible while the field is focused')
+
+    // Enter commits the draft but leaves focus in the field. Scrolling must
+    // replace the old destination, even though the input is still focused.
+    await act(async () => current().setPageInput('3'))
+    assert.equal(dom.document.activeElement, input)
+    scroll.scrollTop = 1
+    await act(async () => { current().updateScrolledPage(); await new Promise(resolve => setTimeout(resolve, 5)) })
+    assert.equal(current().currentPage, 1)
+    assert.equal(current().pageInput, '1')
+
+    await act(async () => current().editPageInput('81'))
+    scroll.scrollTop = 101
+    await act(async () => { current().updateScrolledPage(); await new Promise(resolve => setTimeout(resolve, 5)) })
+    assert.equal(current().pageInput, '81')
+    input.blur()
+    scroll.scrollTop = 201
+    await act(async () => { current().updateScrolledPage(); await new Promise(resolve => setTimeout(resolve, 5)) })
+    assert.equal(current().pageInput, '3', 'an abandoned draft cannot remain after focus leaves the field')
   } finally {
     await act(async () => root.unmount())
     dom.close()

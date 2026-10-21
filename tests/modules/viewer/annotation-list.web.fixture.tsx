@@ -33,13 +33,11 @@ function Fixture() {
   const [mode, setMode] = useState<'notes' | 'multi-page-notes' | 'highlights'>('notes')
   const [selectedId, setSelectedId] = useState<string>()
   Object.assign(window, { annotationListProbe: { setMode, reads } })
-  return <div className="dsh-pdf-reader"><div className="dsh-pdf-comments">
-    <div className="dsh-pdf-panel-scroll"><AnnotationList
+  return <div className="dsh-pdf-reader"><div className="dsh-pdf-sidebar"><AnnotationList
       annotations={mode === 'notes' ? notes : mode === 'multi-page-notes' ? multiPageNotes : highlights}
       selectedId={selectedId} pdf={mode === 'highlights' ? pdf as unknown as NativeDocument : null}
       details={<div id="annotation-test-editor"><textarea aria-label="Annotation editor" defaultValue="Comment" /></div>}
       onSelect={item => setSelectedId(item.id)} onDeselect={() => setSelectedId(undefined)} t={key => labels[key] ?? key} />
-    </div>
   </div></div>
 }
 

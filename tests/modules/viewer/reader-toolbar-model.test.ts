@@ -15,7 +15,7 @@ function toolbarFixture() {
   const options: ReaderToolbarModelOptions = {
     snapshot, sessionId: 'session', signal: new AbortController().signal, api,
     act: async operation => operation(snapshot), busy: false, editable: true,
-    colorPending: false, saveAsPicking: false, hasUnappliedComment: false,
+    colorPending: false, saveAsPicking: false, hasUnappliedAnnotation: false,
     explanation: { allowed: true, active: false, sending: false,
       start: () => calls.push('explain-start'), cancel: () => calls.push('explain-cancel') },
     screenshot: { active: false, preparing: false, begin: () => calls.push('screenshot'),

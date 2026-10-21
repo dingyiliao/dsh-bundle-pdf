@@ -25,7 +25,7 @@ export interface ReaderToolbarState {
   conflict: boolean
   colorPending: boolean
   saveAsPicking: boolean
-  hasUnappliedComment: boolean
+  hasUnappliedAnnotation: boolean
   canGoBack: boolean
   navigating: boolean
   history: History
@@ -58,7 +58,7 @@ export function ReaderToolbar({ t, menuRef, state, actions }: {
   actions: ReaderToolbarActions
 }) {
   const disabledDiscard = !state.hasDocument || state.busy || state.saveAsPicking || state.colorPending
-    || (!state.dirty && !state.conflict && !state.canRedo && !state.hasUnappliedComment)
+    || (!state.dirty && !state.conflict && !state.canRedo && !state.hasUnappliedAnnotation)
   return <ToolbarTooltip><div className="dsh-pdf-toolbar dsh-pdf-main-toolbar" role="toolbar" aria-label={t('reader.sidebar.toolbar')}>
     <details className="dsh-pdf-tools" ref={menuRef} onToggle={event => {
       if (event.currentTarget.open) actions.onOpenMenu()

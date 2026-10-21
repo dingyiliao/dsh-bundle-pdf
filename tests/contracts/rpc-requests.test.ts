@@ -14,6 +14,10 @@ test('working-copy RPC validates one-based annotations and strict request envelo
   assert.equal(operationSchema.safeParse({ ...operation, annotation: { ...operation.annotation, page: 0 } }).success, false)
   assert.equal(requestSchema.safeParse({ action: 'change', sessionId: 's', id: 'd', revision: 0,
     operations: [operation], unexpected: true }).success, false)
+  assert.equal(operationSchema.safeParse({ type: 'update', id: 'note-1', patch: { rect: [10, 20, 30, 40] } }).success, true)
+  assert.equal(operationSchema.safeParse({ type: 'update', id: 'note-1', patch: { rect: [10, 20, 10, 40] } }).success, false)
+  assert.equal(operationSchema.safeParse({ type: 'update', id: 'mark-1', patch: { commentPosition: [120, 240] } }).success, true)
+  assert.equal(operationSchema.safeParse({ type: 'update', id: 'mark-1', patch: { commentPosition: [120, Number.NaN] } }).success, false)
 })
 
 test('save request preserves explicit compare-and-swap and overwrite intent', () => {

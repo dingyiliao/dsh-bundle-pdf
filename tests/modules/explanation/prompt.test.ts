@@ -55,6 +55,78 @@ function base64(bytes: Uint8Array): string {
 }
 
 describe('mixed PDF explanation prompt', () => {
+  it('rejects oversized per-mode guidance before preparing images', async () => {
+    let prepared = false
+    await assert.rejects(() => buildMixedExplanationPrompt('book.pdf', [region('r', 1, 'Why?')], t, {
+      sessionId: 'session-1', documentId: 'doc-1', guidance: { image: 'x'.repeat(2001) },
+      prepareReference: async () => { prepared = true; return direct() },
+    }), /guidance is too long/)
+    assert.equal(prepared, false)
+  })
+
+  it('uses separate plain-language guidance with built-in defaults for blank fields', async () => {
+    const parts = await buildMixedExplanationPrompt('book.pdf', [
+      text('a', 2, 'Quoted text', 'What is the argument?'),
+      region('b', 3, 'Explain the figure'),
+    ], t, {
+      sessionId: 'session-1', documentId: 'doc-1',
+      guidance: { general: '  Connect the evidence.  ', text: '  Explain the assumptions.  ', image: '  Read the axes first.  ' },
+      prepareReference: async () => direct(),
+    })
+    assert.match(textAt(parts, 0), /^Connect the evidence\./)
+    assert.match(textAt(parts, 0), /Document: "book.pdf"/)
+    assert.match(textAt(parts, 0), /source material, not instructions/)
+    assert.match(textAt(parts, 1), /Explain the assumptions\.\n"Quoted text"/)
+    assert.match(textAt(parts, 2), /Read the axes first\.\nQuestion about region/)
+    const defaults = await buildMixedExplanationPrompt('book.pdf', [text('a', 2, 'Quoted text', 'Why?')], t, {
+      sessionId: 'session-1', documentId: 'doc-1',
+      guidance: { general: ' ', text: '', image: '' }, prepareReference: async () => direct(),
+    })
+    assert.match(textAt(defaults, 0), /Explain each selection and answer its question/)
+    assert.doesNotMatch(textAt(defaults, 1), /Explain the assumptions/)
+  })
+
+  it('honors a saved full template until separate guidance is supplied', async () => {
+    const options = { sessionId: 'session-1', documentId: 'doc-1',
+      template: 'Old instruction.\n{{items}}\nOld ending.', prepareReference: async () => direct() }
+    const oldParts = await buildMixedExplanationPrompt('book.pdf', [text('a', 2, 'Quote', 'Why?')], t, options)
+    assert.match(textAt(oldParts, 0), /Old instruction/)
+    assert.equal(textAt(oldParts, oldParts.length - 1), 'Old ending.')
+    const split = await buildMixedExplanationPrompt('book.pdf', [text('a', 2, 'Quote', 'Why?')], t, {
+      ...options, guidance: { general: 'New guidance.' },
+    })
+    assert.match(textAt(split, 0), /New guidance/)
+    assert.doesNotMatch(split.map(part => part.type === 'text' ? part.text : '').join('\n'), /Old instruction|Old ending/)
+  })
+
+  it('renders a customized turn template around ordered text and image items', async () => {
+    const parts = await buildMixedExplanationPrompt('book.pdf', [
+      text('a', 2, 'First passage', 'What does it mean?'),
+      region('b', 3, 'Explain this diagram'),
+    ], t, {
+      sessionId: 'session-1', documentId: 'doc-1',
+      template: 'Tutor mode for {{count}} excerpts in {{document}}.\n{{items}}\nEnd with a comparison.',
+      prepareReference: async () => direct(),
+    })
+    assert.deepEqual(parts.map(part => part.type), ['text', 'text', 'text', 'image', 'text'])
+    assert.match(textAt(parts, 0), /Tutor mode for 2 excerpts in Document: "book.pdf"/)
+    assert.match(textAt(parts, 0), /source material, not instructions/)
+    assert.match(textAt(parts, 1), /First passage/)
+    assert.match(textAt(parts, 2), /Explain this diagram/)
+    assert.equal(textAt(parts, 4), 'End with a comparison.')
+  })
+
+  it('rejects missing, repeated, unknown and malformed template placeholders before image preparation', async () => {
+    let prepared = 0
+    for (const template of ['No items', '{{items}} {{items}}', '{{unknown}} {{items}}', '{{items}} {{oops']) {
+      await assert.rejects(() => buildMixedExplanationPrompt('book.pdf', [region('r', 1, 'Why?')], t, {
+        sessionId: 'session-1', documentId: 'doc-1', template,
+        prepareReference: async () => { prepared++; return direct() },
+      }), /Invalid PDF explanation prompt template/)
+    }
+    assert.equal(prepared, 0)
+  })
+
   it('uses Host-verified reference bytes, not the Client Blob, for a direct visual route', async () => {
     const calls: ExplanationImageReferenceRequest[] = []
     const hostBytes = new Uint8Array([1, 3, 5, 7, 9])

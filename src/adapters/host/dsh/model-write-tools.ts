@@ -1,13 +1,9 @@
-import { z } from 'zod'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { annotationCommitSchema, annotationPreviewSchema, createModelWriteService,
-  modelSaveSchema, type ModelWritePort, type ModelWriteReview } from '../../../modules/model-write/index.js'
-
-const annotateArgs = z.discriminatedUnion('action', [
-  annotationPreviewSchema.extend({ action: z.literal('preview') }),
-  annotationCommitSchema.extend({ action: z.literal('commit') }),
-])
+import { modelAnnotationSchema, createModelWriteService,
+  modelAnnotationUpdateSchema, modelAnnotationDeleteSchema, modelSaveSchema,
+  type ModelWritePort, type ModelWriteReview } from '../../../modules/model-write/index.js'
+import type { AgentPageReadPort } from '../../../modules/evidence/index.js'
 
 const output = {
   schema: { type: 'object', additionalProperties: true } as const,
@@ -21,11 +17,11 @@ type UserQuestionService = {
     signal: AbortSignal }): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }>
 }
 
-const ANNOTATION_APPROVE = '批准写入 PDF 草稿'
 const SAVE_APPROVE = '批准覆盖保存此 PDF'
 
-// DSH renders question.detail as Markdown. Put all document-sourced values in
-// dynamically fenced code blocks so comments/paths cannot become links or images.
+// DSH renders question.detail as Markdown. Keep document-sourced values inert,
+// but use compact code spans for ordinary one-line values so the approval card
+// does not become a stack of full-sized code blocks.
 function inertBlock(value: unknown): string {
   const raw = typeof value === 'string' ? value : (JSON.stringify(value) ?? 'null')
   const longest = Math.max(0, ...[...raw.matchAll(/`+/g)].map(match => match[0].length))
@@ -33,26 +29,27 @@ function inertBlock(value: unknown): string {
   return `${fence}\n${raw}\n${fence}`
 }
 
-function field(label: string, value: unknown): string {
-  return `\n${label}：\n${inertBlock(value)}`
+function inertValue(value: unknown): string {
+  const raw = typeof value === 'string' ? value : (JSON.stringify(value) ?? 'null')
+  if (raw.length > 160 || /[\r\n]/.test(raw) || !raw.trim()) return inertBlock(raw)
+  const longest = Math.max(0, ...[...raw.matchAll(/`+/g)].map(match => match[0].length))
+  const fence = '`'.repeat(longest + 1)
+  return `${fence} ${raw} ${fence}`
+}
+
+function detailField(label: string, value: unknown): string {
+  const rendered = inertValue(value)
+  return rendered.startsWith('```')
+    ? `- **${label}**：\n\n${rendered}\n\n`
+    : `- **${label}**：${rendered}\n`
 }
 
 export function questionDetail(review: ModelWriteReview): string {
-  if (review.kind === 'save') {
-    return `操作：保存当前工作副本，覆盖其原路径文件。`
-      + field('文件', review.path) + field('文档 ID', review.documentId)
-      + `\n当前修订：${review.revision}\n未保存改动：${review.dirty ? '有' : '无'}`
-      + `\n将保存的最终批注变化（共 ${review.saveChangeCount} 项，含手工和模型草稿）：\n${inertBlock(review.saveDiffText ?? '')}`
-      + '\n保存前还会再次核对文件版本；不另存为其他路径。'
-  }
-  return `操作：将一条模型建议批注写入可撤销草稿，不立即修改 PDF 文件。`
-    + field('文件', review.path) + field('文档 ID', review.documentId) + field('提案', review.proposalId)
-    + `\n第 ${review.page} 页；类型：${review.subtype}\nPDF 坐标：${JSON.stringify(review.rectPdf)}`
-    + `\n颜色（RGB 0–1）：${review.color ? JSON.stringify(review.color) : '插件默认'}`
-    + field('评论', review.comment ?? '')
-    + `\n预演前/后批注数：${review.beforeAnnotations} → ${review.afterAnnotations}`
-    + `\n当前修订：${review.revision}\n此前有未保存改动：${review.dirty ? '有' : '无'}`
-    + '\n这是坐标区域，不保证覆盖模型所称的特定文字。批准后仍需单独保存。'
+  return `将当前草稿**覆盖保存到原 PDF 文件**，不会另存副本。\n\n`
+    + detailField('目标文件', review.path)
+    + `- **批注变更**：${review.saveChangeCount} 项，包含手工修改和模型草稿。\n\n`
+    + `**将保存的最终批注变化**\n\n${inertBlock(review.saveDiffText ?? '')}\n\n`
+    + '保存前会再次核对源文件版本；文件若已变化，本次保存会被拒绝。'
 }
 
 /** Only an exact DSH user-questions answer from the interactive provider authorizes the write. */
@@ -63,12 +60,12 @@ async function askHuman(ctx: Pick<Context, 'get'>, exec: ToolRunContext,
   const service = (ctx.get as (name: string) => unknown)('userQuestions') as UserQuestionService | undefined
   if (!service?.ask) throw Object.assign(new Error('No interactive user-questions service is available; PDF write denied'),
     { code: 'pdf/approval-unavailable' })
-  const approve = review.kind === 'save' ? SAVE_APPROVE : ANNOTATION_APPROVE
+  const approve = SAVE_APPROVE
   const response = await service.ask({ agent, signal: exec.signal, questions: [{ id: 'pdf-write-review',
-    header: review.kind === 'save' ? '确认保存 PDF' : '审阅模型建议的 PDF 批注',
-    question: review.kind === 'save' ? '是否覆盖保存此 PDF？' : '是否将此批注写入草稿？',
+    header: '确认保存 PDF',
+    question: '是否覆盖保存此 PDF？',
     detail: questionDetail(review), options: [
-      { label: approve, description: review.kind === 'save' ? '将当前草稿写入原 PDF 文件。' : '加入一个可撤销的批注批次，仍需单独保存。' },
+      { label: approve, description: '将当前草稿写入原 PDF 文件。' },
       { label: '取消', description: '不做任何更改。' },
     ],
   }] })
@@ -77,35 +74,61 @@ async function askHuman(ctx: Pick<Context, 'get'>, exec: ToolRunContext,
     && answer.selected.length === 1 && answer.selected[0] === approve
 }
 
-/** Model write tools are separate from read tools; approval runs inside the exact tool call. */
+/** Draft edits are immediate; only saving the source PDF requests approval. */
 export function registerPdfModelWriteTools(ctx: Pick<Context, 'tools' | 'get'>,
-  workspaces: ModelWritePort): () => void {
-  const writes = createModelWriteService(workspaces)
+  workspaces: ModelWritePort, pages?: AgentPageReadPort): () => void {
+  const writes = createModelWriteService(workspaces, pages)
   ctx.tools.register(defineTool({
     name: 'pdf_annotate',
-    description: 'Propose one PDF annotation. preview validates an explicit PDF-space region and returns an expiring, side-effect-free proposal. commit accepts only that proposalId, requests DSH user-questions approval through a trusted interactive provider, rechecks session, source file and revision, then creates one undoable draft batch. It does not save the PDF. Text references currently have approximate geometry and cannot be used as annotation targets. Never pass a model-authored confirmation flag.',
+    description: 'Add one annotation directly to the same durable, undoable, unsaved working copy used by the PDF Reader. No preview or approval step is needed for this draft edit. It does not save the source PDF; pdf_save requires separate user approval. Supply the latest revision from pdf_status. For Highlight, Underline or StrikeOut, use an exact, unique quote from pdf_read_page with a pdf-text target; Host locates the glyphs. Never estimate PDF coordinates from displayed page text. A pdf-region target is only for a standalone Text note.',
     parameters: {
-      action: { type: 'string', required: true, enum: ['preview', 'commit'], description: 'Preview without mutation, then commit the returned proposal only after human review.' },
-      documentId: { type: 'string', description: 'Explicit opened document ID for preview.' },
-      expectedRevision: { type: 'integer', description: 'Working-copy revision from pdf_status for preview.' },
-      subtype: { type: 'string', enum: ['Highlight', 'Underline', 'StrikeOut', 'Text'], description: 'Annotation type for preview.' },
-      target: { type: 'json', description: 'For preview: {kind:"pdf-region",page,rectPdf:[left,bottom,right,top]} in unrotated PDF user space. A text refId is not precise enough for writing.' },
+      documentId: { type: 'string', required: true, description: 'Explicit opened document ID.' },
+      expectedRevision: { type: 'integer', required: true, description: 'Working-copy revision from pdf_status.' },
+      subtype: { type: 'string', required: true, enum: ['Highlight', 'Underline', 'StrikeOut', 'Text'], description: 'Annotation type.' },
+      target: { type: 'json', required: true, description: 'For text marks: {kind:"pdf-text",page,quote:"exact unique text copied from pdf_read_page"}. For standalone Text notes only: {kind:"pdf-region",page,rectPdf:[left,bottom,right,top]} in unrotated PDF user space. Approximate text refIds and guessed rectangles are rejected.' },
       color: { type: 'array', items: { type: 'number' }, description: 'Optional RGB components 0–1; exactly three.' },
       comment: { type: 'string', description: 'Optional comment, at most 2000 characters.' },
-      proposalId: { type: 'string', description: 'For commit only: exact short-lived proposal ID returned by preview.' },
     }, output,
     async execute(raw, exec) {
-      const args = annotateArgs.parse(raw)
+      const args = modelAnnotationSchema.parse(raw)
       const sessionId = exec.agent?.session?.id
       if (!sessionId) throw Object.assign(new Error('PDF writes require an active session'), { code: 'pdf/session-required' })
       exec.signal.throwIfAborted()
-      if (args.action === 'preview') {
-        const { action: _action, ...preview } = args
-        return writes.preview(sessionId, preview, exec.agent!, exec.signal)
-      }
-      const { action: _action, ...commit } = args
-      return writes.commit(sessionId, commit, exec.agent!, exec.signal,
-        details => askHuman(ctx, exec, details))
+      return writes.annotate(sessionId, args, exec.agent!, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'pdf_annotation_update',
+    description: 'Change the color or comment text of an existing editable PDF annotation in the same undoable, unsaved Reader draft. Get its exact annotationId and revision from pdf_page_annotations. RGB color applies only to a root Highlight, Underline or StrikeOut; comment edits target the exact mark, standalone note or reply ID. An empty comment clears a root mark comment but cannot empty a note or reply. This does not save the PDF file.',
+    parameters: {
+      documentId: { type: 'string', required: true, description: 'Exact opened document ID.' },
+      expectedRevision: { type: 'integer', required: true, description: 'Current working-copy revision from pdf_status or pdf_page_annotations.' },
+      annotationId: { type: 'string', required: true, description: 'Exact, non-truncated ID from pdf_page_annotations.' },
+      color: { type: 'array', items: { type: 'number' }, description: 'Optional RGB components 0–1; exactly three. Root text marks only.' },
+      comment: { type: 'string', description: 'Optional replacement comment text, at most 2000 characters. Empty clears a root mark comment.' },
+    }, output,
+    async execute(raw, exec) {
+      const args = modelAnnotationUpdateSchema.parse(raw)
+      const sessionId = exec.agent?.session?.id
+      if (!sessionId) throw Object.assign(new Error('PDF writes require an active session'), { code: 'pdf/session-required' })
+      exec.signal.throwIfAborted()
+      return writes.updateAnnotation(sessionId, args, exec.agent!, exec.signal)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'pdf_annotation_delete',
+    description: 'Delete one existing editable PDF annotation by exact ID from pdf_page_annotations. This is an immediate, undoable, unsaved Reader draft edit; it does not save the source PDF. Delete comment replies before their parent mark or note. A stale revision or changed source is rejected.',
+    parameters: {
+      documentId: { type: 'string', required: true, description: 'Exact opened document ID.' },
+      expectedRevision: { type: 'integer', required: true, description: 'Current working-copy revision from pdf_status or pdf_page_annotations.' },
+      annotationId: { type: 'string', required: true, description: 'Exact, non-truncated ID from pdf_page_annotations.' },
+    }, output,
+    async execute(raw, exec) {
+      const args = modelAnnotationDeleteSchema.parse(raw)
+      const sessionId = exec.agent?.session?.id
+      if (!sessionId) throw Object.assign(new Error('PDF writes require an active session'), { code: 'pdf/session-required' })
+      exec.signal.throwIfAborted()
+      return writes.deleteAnnotation(sessionId, args, exec.agent!, exec.signal)
     },
   }))
   ctx.tools.register(defineTool({

@@ -57,3 +57,51 @@ test('a visible reader renews one page lease and clears it when hidden', async (
     }
   }
 })
+
+test('a visible Reader executes an agent jump through its history-aware callback and acknowledges it', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const root = createRoot(dom.document.getElementById('root')!)
+  const tab = new AbortController()
+  const snapshot = { id: 'doc-1', contentVersion: 'content-1', reader: { bytesHash: 'bytes', generation: 1 },
+    document: { pageCount: 8 } } as WorkspaceSnapshot
+  const jumped: number[] = []
+  let acknowledged: { status: string; leaseId: string } | undefined
+  let finish!: () => void
+  const completed = new Promise<void>(resolve => { finish = resolve })
+  let calls = 0
+  const Harness = (props: ReaderContextLeaseOptions) => { useReaderContextLease(props); return null }
+  const options: ReaderContextLeaseOptions = {
+    sessionId: 'session-1', tabId: 'tab-1', visible: true, tabSignal: tab.signal,
+    snapshot, currentPage: 1, documentReady: true, enabled: true,
+    report: async () => {},
+    agentNavigation: {
+      async wait(_context, signal) {
+        if (++calls === 1) return { requestId: 'request-1', page: 6,
+          documentId: 'doc-1', contentVersion: 'content-1' }
+        return new Promise<null>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('abort')), { once: true }))
+      },
+      async complete(context) { acknowledged = context; finish() },
+    },
+    onAgentNavigate: async page => { jumped.push(page); return true },
+  }
+  try {
+    await act(async () => { root.render(React.createElement(Harness, options)) })
+    await act(async () => { await completed })
+    assert.deepEqual(jumped, [6])
+    assert.equal(acknowledged?.status, 'opened')
+    assert.ok(acknowledged?.leaseId)
+  } finally {
+    await act(async () => root.unmount())
+    tab.abort()
+    dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
+})

@@ -15,7 +15,7 @@ export interface ReaderToolbarModelOptions {
   editable: boolean
   colorPending: boolean
   saveAsPicking: boolean
-  hasUnappliedComment: boolean
+  hasUnappliedAnnotation: boolean
   explanation: {
     allowed: boolean
     active: boolean
@@ -65,14 +65,14 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
   actions: ReaderToolbarActions
 } {
   const { snapshot, sessionId, signal, api, act, busy, editable, colorPending,
-    saveAsPicking, hasUnappliedComment, explanation, screenshot, ocr, navigation, commands } = options
+    saveAsPicking, hasUnappliedAnnotation, explanation, screenshot, ocr, navigation, commands } = options
   const state: ReaderToolbarState = {
     hasDocument: !!snapshot, canPromptExplanation: explanation.allowed,
     explanationActive: explanation.active, explanationSending: explanation.sending,
     screenshotActive: screenshot.active, screenshotPreparing: screenshot.preparing,
     busy, editable, ocrBusy: ocr.busy, ocrAvailability: ocr.availability,
     dirty: !!snapshot?.dirty, canUndo: !!snapshot?.canUndo, canRedo: !!snapshot?.canRedo,
-    conflict: !!snapshot?.conflict, colorPending, saveAsPicking, hasUnappliedComment,
+    conflict: !!snapshot?.conflict, colorPending, saveAsPicking, hasUnappliedAnnotation,
     canGoBack: navigation.canGoBack, navigating: navigation.navigating,
     history: navigation.history, fit: navigation.fit, zoom: navigation.zoom,
   }

@@ -5,7 +5,8 @@ import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy
 
 export type BookmarkSummary = {
   kind: 'personal' | 'embedded'; key: string; title: string; page: number | null
-  depth: number; children: number; stale?: PdfUserBookmark['stale']; externalLink?: boolean; titleTruncated?: boolean
+  depth: number; children: number; stale?: PdfUserBookmark['stale']; updatedAt?: string
+  externalLink?: boolean; titleTruncated?: boolean
 }
 
 export interface AgentOutlinePort {
@@ -43,7 +44,8 @@ export async function listAgentBookmarks(workspaces: WorkingCopyReadPort, outlin
   if (kind !== 'embedded') {
     const personal = await listPersonal(sessionId, documentId, signal)
     entries.push(...personal.map(item => ({ kind: 'personal' as const, key: item.id,
-      title: item.title, page: item.position.page, depth: 1, children: 0, stale: item.stale })))
+      title: item.title, page: item.position.page, depth: 1, children: 0, stale: item.stale,
+      updatedAt: item.updatedAt })))
   }
   if (kind !== 'personal') {
     const outline = await outlinePort.readOutline(sessionId, documentId, signal)

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { annotationRoot, annotationThread, createAnnotationThreadIndex, isReply } from '../../../src/modules/viewer/model/annotation-thread.ts'
+import { annotationRoot, annotationThread, createAnnotationThreadIndex, isReply, isStandaloneNote } from '../../../src/modules/viewer/model/annotation-thread.ts'
 
 const mark = (id: string, overrides: Partial<PdfAnnotation> = {}): PdfAnnotation => ({
   id, page: 1, subtype: 'Highlight', flags: 4, supported: true, editable: true,
@@ -18,6 +18,11 @@ test('PDF IRT replies belong to one markup thread, including nested replies', ()
   assert.equal(annotationRoot(second, byId), root)
   assert.deepEqual(annotationThread(root, all).comments.map(item => item.id), ['mark', 'first', 'second'])
   assert.equal(isReply(group), false)
+  assert.equal(isStandaloneNote(root), false)
+  assert.equal(isStandaloneNote(mark('note', { subtype: 'Text', contents: 'Sticky note' })), true)
+  assert.equal(isStandaloneNote(first), false, 'Text replies belong to the markup thread, not the standalone-note feature')
+  assert.deepEqual(annotationThread(mark('note', { subtype: 'Text', contents: 'Sticky note' }), []).comments, [],
+    'standalone note contents are not projected as a markup comment thread')
 })
 
 test('a deep out-of-order reply chain resolves parent-first without recursive stack growth', () => {

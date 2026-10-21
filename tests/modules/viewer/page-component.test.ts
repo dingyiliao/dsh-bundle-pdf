@@ -37,7 +37,7 @@ async function withPage(run: (env: {
   flush: () => Promise<void>
   setPageVisible(visible: boolean): Promise<void>
   pageLoads(): number
-  calls: { annotations: string[]; destinations: unknown[]; actions: string[]; errors: string[]; opened: string[] }
+  calls: { annotations: string[]; annotationIntents: string[]; destinations: unknown[]; actions: string[]; errors: string[]; opened: string[]; tileAnnotations: boolean[] }
 }) => Promise<void>) {
   const dom = new JSDOM('<!doctype html><html><body><div id="scroll"><div id="mount"></div></div></body></html>',
     { url: 'http://localhost' }).window
@@ -79,18 +79,22 @@ async function withPage(run: (env: {
     { id: 'named', subtype: 'Link', rect: [70, 350, 120, 380], action: 'NextPage' },
     { id: 'url', subtype: 'Link', rect: [130, 350, 180, 380], url: 'https://example.org/manual' },
   ]
+  const tileAnnotations: boolean[] = []
   const nativePage = { pageNumber: 1, rotate: 0, getViewport: ({ scale, rotation }: { scale: number; rotation: number }) =>
     new NativeViewport(geometry, scale, rotation),
     getAnnotations: async () => links,
     getTextContent: async () => ({ items: [{ str: 'linked', transform: [1, 0, 0, 1, 10, 350],
       width: 50, height: 10, dir: 'ltr', fontName: 'Helvetica', hasEOL: false }],
     styles: { Helvetica: { fontFamily: 'sans-serif', ascent: 0.8, descent: 0.2, vertical: false } }, lang: null }),
-    tile: async () => ({ width: 300, height: 400 }),
+    tile: async ({ annotations }: { annotations: boolean }) => {
+      tileAnnotations.push(annotations)
+      return { width: 300, height: 400 }
+    },
   } as unknown as NativePage
   let pageLoadCount = 0
   const pdf = { getPage: async () => { pageLoadCount++; return nativePage } } as unknown as NativeDocument
-  const calls = { annotations: [] as string[], destinations: [] as unknown[], actions: [] as string[],
-    errors: [] as string[], opened: [] as string[] }
+  const calls = { annotations: [] as string[], annotationIntents: [] as string[], destinations: [] as unknown[], actions: [] as string[],
+    errors: [] as string[], opened: [] as string[], tileAnnotations }
   dom.open = ((url?: string | URL) => { calls.opened.push(String(url)); return null }) as typeof dom.open
   const { createRoot } = await import('react-dom/client')
   const mount = dom.document.getElementById('mount')!
@@ -98,7 +102,9 @@ async function withPage(run: (env: {
   const baseProps: PageProps = {
     pdf, geometry, scale: 1, rotation: 0, mode: 'text', annotations: [], selection: null, scrollRoot,
     t: key => key, onView() {}, onDestination: value => calls.destinations.push(value),
-    onNamedAction: action => calls.actions.push(action), onAnnotation: id => calls.annotations.push(id),
+    onNamedAction: action => calls.actions.push(action), onAnnotation: (id, intent) => {
+      calls.annotations.push(id); calls.annotationIntents.push(intent ?? 'select')
+    },
     onRegion() {}, onNote() {}, onError: message => calls.errors.push(message),
   }
   const flush = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) }) }
@@ -151,18 +157,22 @@ test('page renders OCR text, repaired markup, note marker and native keyboard li
     const old = annotation('older', 'Highlight', [20, 350, 100, 370], { color: [1, 0, 0] })
     const changed = { ...old, color: [0, 1, 0] as [number, number, number] }
     const adjoining = annotation('adjoining', 'Highlight', [50, 350, 110, 370])
-    const emptyNote = annotation('empty-note', 'Text', [220, 200, 240, 220])
-    await render({ annotations: [changed, adjoining, emptyNote], renderedAnnotations: [old, adjoining],
+    const emptyNote = annotation('empty-note', 'Text', [220, 200, 240, 220], { contents: 'Saved note' })
+    await render({ annotations: [changed, adjoining, emptyNote], renderedAnnotations: [old, adjoining, emptyNote],
       ocrWords: [word('visible', [150, 100, 180, 120]), word('no-geometry', null)] })
     await flush()
     assert.equal(mount.querySelectorAll('.dsh-pdf-ocr-word').length, 1)
     assert.match(mount.querySelector('.dsh-pdf-ocr-word')?.textContent ?? '', /OCR visible/)
     assert.ok(mount.querySelector('.dsh-pdf-annotation-overlay clipPath rect'))
+    assert.ok(mount.querySelector('.dsh-pdf-annotation-overlay clipPath rect[x="218"][y="178"]'),
+      'the note icon baked into a native tile must be replaced by the custom marker')
+    assert.ok(calls.tileAnnotations.includes(false), 'a clean native tile must repaint the old icon region')
     assert.ok(mount.querySelectorAll('.dsh-pdf-annotation-overlay path').length >= 2)
     const note = mount.querySelector<HTMLButtonElement>('.dsh-pdf-note-marker')!
     assert.ok(note)
     await act(async () => { note.click() })
     assert.deepEqual(calls.annotations, ['empty-note'])
+    assert.deepEqual(calls.annotationIntents, ['note'])
     const keyboard = mount.querySelector('.dsh-pdf-keyboard-links')!
     assert.equal(keyboard.querySelectorAll('button').length, 2)
     assert.equal(keyboard.querySelectorAll('a').length, 1)
@@ -171,6 +181,36 @@ test('page renders OCR text, repaired markup, note marker and native keyboard li
     assert.deepEqual(calls.destinations, [[2, { name: 'Fit' }]])
     assert.deepEqual(calls.actions, ['NextPage'])
     assert.deepEqual(calls.errors, [])
+  })
+})
+
+test('note marker cancels an unfinished drag and persists accessible keyboard movement', async () => {
+  await withPage(async ({ mount, render, pointer, flush, dom }) => {
+    const moved: Array<{ x: number; y: number }> = []
+    const noteAnnotation = annotation('move-note', 'Text', [100, 200, 120, 220], { contents: 'Move me' })
+    await render({ annotations: [noteAnnotation], onMoveNoteMarker: async (_id, _page, delta) => {
+      moved.push(delta)
+      return true
+    } })
+    const note = mount.querySelector<HTMLButtonElement>('.dsh-pdf-note-marker')!
+    const layer = note.parentElement!
+    layer.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 400,
+      width: 300, height: 400, toJSON() {} }) as DOMRect
+    await pointer(note, 'pointerdown', 10, 10)
+    await pointer(note, 'pointermove', 25, 18)
+    assert.equal(note.dataset.dragging, 'true')
+    await pointer(note, 'pointercancel', 25, 18)
+    assert.equal(note.dataset.dragging, undefined)
+    assert.equal(note.style.transform, '')
+    assert.deepEqual(moved, [])
+    await act(async () => {
+      note.dispatchEvent(new dom.KeyboardEvent('keydown', {
+        key: 'ArrowLeft', bubbles: true, cancelable: true,
+      }))
+      await new Promise(resolve => setTimeout(resolve, 5))
+    })
+    await flush()
+    assert.deepEqual(moved, [{ x: -2, y: 0 }])
   })
 })
 

@@ -6,6 +6,7 @@ import { createBookmarkService, type BookmarkRecord } from '../../../src/host/bo
 import { createWorkspaces, type HostWorkspaceSnapshot } from '../../../src/host/workspaces.ts'
 import type { PdfUserBookmark } from '../../../src/shared/contracts.ts'
 import { nativeFixture } from '../../native-fixture.ts'
+import { createBookmarks } from '../../../src/modules/navigation/index.ts'
 
 const address = (sessionId: string) => `dsh-resource://file/session/${sessionId}//fixtures/bookmarked.pdf`
 const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -72,4 +73,24 @@ test('plugin bookmarks survive a new session and restart; changed or missing tar
     await bookmarks.dispose()
     await workspaces.dispose()
   }
+})
+
+test('bookmark add rechecks the PDF revision immediately before storing', async () => {
+  let reads = 0, writes = 0
+  const workspaces = { readSnapshot() {
+    return { path: '/book.pdf', revision: ++reads === 3 ? 2 : 1,
+      document: { pageCount: 1 }, bytes: new Uint8Array([1]) }
+  }, bytesHash: () => `sha256:${'0'.repeat(64)}` }
+  const table = { key: (path: string) => path, samePath: (left: string, right: string) => left === right,
+    get: () => undefined, async put() { writes++ }, async delete() { writes++ } }
+  const bookmarks = createBookmarks(workspaces as never, table as never)
+  try {
+    await assert.rejects(bookmarks.dispatch('session', { action: 'add', sessionId: 'session', id: 'doc',
+      expectedRevision: 1, title: 'Race', position: { page: 1, x: 0, y: 0, scale: 1,
+        fit: 'width', viewportAnchor: { x: 0, y: 0 } },
+    }, { session: { id: 'session' } } as never, new AbortController().signal),
+    { code: 'pdf/stale-revision' })
+    assert.equal(reads, 3)
+    assert.equal(writes, 0)
+  } finally { await bookmarks.dispose() }
 })

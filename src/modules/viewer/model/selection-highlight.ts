@@ -25,20 +25,6 @@ function extend(cluster: PdfRect, box: PdfRect): void {
   cluster[3] = Math.max(cluster[3], box[3])
 }
 
-/** Stacked lines of one paragraph read as one region, not as one stripe per line. */
-function joinClusters(clusters: PdfRect[]): PdfRect[] {
-  const joined: PdfRect[] = []
-  for (const cluster of clusters.sort((a, b) => a[1] - b[1] || a[0] - b[0])) {
-    const previous = joined.at(-1)
-    if (!previous) { joined.push(cluster); continue }
-    const overlap = Math.min(previous[2], cluster[2]) - Math.max(previous[0], cluster[0])
-    const shorter = Math.min(previous[2] - previous[0], cluster[2] - cluster[0])
-    if (overlap >= shorter * 0.5 && cluster[1] - previous[3] <= (previous[3] - previous[1]) * 0.45) extend(previous, cluster)
-    else joined.push(cluster)
-  }
-  return joined
-}
-
 /**
  * How wide a gap between two glyph boxes may be before it stops being a rendering
  * seam. A renderer returns one box per glyph, and its rounding can leave a
@@ -53,8 +39,7 @@ function selectionBoxTolerance(boxes: readonly PdfRect[]): number {
 }
 
 /**
- * Merge adjacent glyph selection boxes without joining separate lines, columns or
- * text sizes.
+ * Merge adjacent glyph selection boxes within each visual line, not across lines.
  *
  * Closing every gap narrower than the tolerance removes the seams that make one
  * word look like a row of separate character boxes, while a column gutter, a word
@@ -69,7 +54,10 @@ export function mergeSelectionRects(rects: readonly PdfRect[]): PdfRect[] {
     if (current && box[0] - current[2] <= tolerance && sameLine(box, current)) extend(current, box)
     else clusters.push([...box])
   }
-  return joinClusters(clusters)
+  // PDF text-markup QuadPoints describe individual lines. Joining stacked lines
+  // produces a page-tall quad; an underline then uses that height as its stroke
+  // width and can cover the page's text.
+  return clusters.sort((a, b) => a[1] - b[1] || a[0] - b[0])
 }
 
 /** Read only text selected on this page; a parent range box may cover other columns. */

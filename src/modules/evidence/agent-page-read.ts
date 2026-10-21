@@ -78,6 +78,7 @@ const excerptSubtypes = new Set(['Highlight', 'Underline', 'StrikeOut'])
 
 export type PageAnnotation = {
   id: string; idTruncated?: true; subtype: string; truncatedFields?: string[]
+  replyToId?: string
   color?: number[]; opacity?: number; contents?: string; author?: string; createdAt?: string; modifiedAt?: string
   draft?: true; readOnly?: true; excerpt?: string
 }
@@ -156,15 +157,18 @@ export async function listPageAnnotations(workspaces: WorkingCopyReadPort, pages
       ? annotationExcerpt(annotation, content) : undefined
     const id = boundedField(annotation.id, 512)
     const subtype = boundedField(annotation.subtype, 80)
+    const replyToId = annotation.replyToId === undefined ? undefined : boundedField(annotation.replyToId, 512)
     const contents = annotation.contents === undefined ? undefined : boundedField(annotation.contents, 1000)
     const author = annotation.author === undefined ? undefined : boundedField(annotation.author, 160)
     const createdAt = annotation.createdAt === undefined ? undefined : boundedField(annotation.createdAt, 80)
     const modifiedAt = annotation.modifiedAt === undefined ? undefined : boundedField(annotation.modifiedAt, 80)
     const truncatedFields = [id.truncated && 'id', subtype.truncated && 'subtype',
+      replyToId?.truncated && 'replyToId',
       contents?.truncated && 'contents', author?.truncated && 'author',
       createdAt?.truncated && 'createdAt', modifiedAt?.truncated && 'modifiedAt']
       .filter((field): field is string => typeof field === 'string')
     const item: PageAnnotation = { id: id.text, subtype: subtype.text,
+      ...(replyToId ? { replyToId: replyToId.text } : {}),
       ...(id.truncated ? { idTruncated: true as const } : {}),
       ...(truncatedFields.length ? { truncatedFields } : {}),
       ...(annotation.color ? { color: annotation.color.map(channel => Math.round(channel * 255)) } : {}),
@@ -174,7 +178,7 @@ export async function listPageAnnotations(workspaces: WorkingCopyReadPort, pages
       ...(createdAt ? { createdAt: createdAt.text } : {}),
       ...(modifiedAt ? { modifiedAt: modifiedAt.text } : {}),
       ...(draftOf(annotation, baseline) ? { draft: true as const } : {}),
-      ...(annotation.editable ? {} : { readOnly: true as const }),
+      ...(annotation.editable && annotation.supported ? {} : { readOnly: true as const }),
       ...(excerpt ? { excerpt } : {}) }
     const offset = cursor + index + 1
     const proposed = { ...base, annotations: [...annotations, item], nextCursor: nextCursor(offset) }

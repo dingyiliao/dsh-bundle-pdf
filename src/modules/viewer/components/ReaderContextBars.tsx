@@ -73,7 +73,7 @@ export interface ReaderAnnotationBarProps {
   getAnchor(): DOMRect | null
   selected?: PdfAnnotation
   commentActionAvailable: boolean
-  commentColor: string
+  annotationColor: string
   readOnly: boolean
   editable: boolean
   updateColor(value: string): void
@@ -85,23 +85,27 @@ export interface ReaderAnnotationBarProps {
 
 /** Actions on an existing PDF annotation; text marks and notes keep distinct identities. */
 export function ReaderAnnotationBar(props: ReaderAnnotationBarProps) {
-  const { viewport, getAnchor, selected, commentActionAvailable, commentColor, readOnly, editable,
+  const { viewport, getAnchor, selected, commentActionAvailable, annotationColor, readOnly, editable,
     updateColor, openCommentEditor, deleteAnnotation, clearAnnotation, t } = props
-  if (!selected) return null
+  // A standalone Text annotation is represented by its marker/card pair. It
+  // has no separate selection toolbar; the open card owns its actions.
+  if (!selected || selected.subtype === 'Text') return null
   const markIcon = textMarkIcons[selected.subtype]
   return <FloatingToolbar viewport={viewport} getAnchor={getAnchor} label={t('reader.selectedAnnotation')}
     className="dsh-pdf-annotation-toolbar">
     <span className="dsh-pdf-annotation-kind" title={t('reader.selectedAnnotation')}>
       {markIcon ? <ToolbarIcon name={markIcon} />
-        : <span className="dsh-pdf-annotation-kind-color" style={{ backgroundColor: commentColor }} aria-hidden="true" />}
+        : <span className="dsh-pdf-annotation-kind-color" style={{ backgroundColor: annotationColor }} aria-hidden="true" />}
       {selected.supported ? t(`reader.type.${selected.subtype}`) : selected.subtype}
     </span>
-    <span className="dsh-pdf-annotation-actions-divider" aria-hidden="true" />
-    <AnnotationColorBar value={commentColor} disabled={readOnly || !selected.editable}
-      label={t('reader.annotationColor')} t={t} onQuickColor={updateColor} onPaletteColor={updateColor} />
-    <span className="dsh-pdf-annotation-actions-divider" aria-hidden="true" />
-    <button className="dsh-pdf-annotation-action" title={t('reader.commentText')} aria-label={t('reader.commentText')}
-      disabled={!commentActionAvailable} onClick={openCommentEditor}><ToolbarIcon name="comment" /></button>
+    <>
+      <span className="dsh-pdf-annotation-actions-divider" aria-hidden="true" />
+      {markIcon && <AnnotationColorBar value={annotationColor} disabled={readOnly || !selected.editable}
+        label={t('reader.annotationColor')} t={t} onQuickColor={updateColor} onPaletteColor={updateColor} />}
+      {markIcon && <span className="dsh-pdf-annotation-actions-divider" aria-hidden="true" />}
+      {markIcon && <button className="dsh-pdf-annotation-action" title={t('reader.commentText')} aria-label={t('reader.commentText')}
+        disabled={!commentActionAvailable} onClick={openCommentEditor}><ToolbarIcon name="comment" /></button>}
+    </>
     <button className="dsh-pdf-annotation-action dsh-pdf-annotation-action-danger" title={t('reader.delete')}
       aria-label={t('reader.delete')} disabled={!editable || !selected.editable} onClick={deleteAnnotation}>
       <ToolbarIcon name="discard" />

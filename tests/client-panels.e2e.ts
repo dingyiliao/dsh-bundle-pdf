@@ -77,6 +77,9 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     const page = await newEnglishPage(opened)
     const tripwire = watchConsole(page)
     const reader = await openReader(page, scaffold.authenticatedUrl, title)
+    // The default right-hand tab is already at the responsive 45% width cap;
+    // give this resize exercise enough room to expand without changing the cap.
+    await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
     const sidebar = reader.locator('.dsh-pdf-sidebar')
     const pagesTab = reader.getByRole('tab', { name: 'Pages', exact: true })
     await pagesTab.focus()
@@ -88,6 +91,11 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     await expect.poll(() => reader.getByRole('tab', { name: 'Bookmarks', exact: true }).getAttribute('aria-selected')).toBe('true')
 
     const divider = sidebar.locator('.dsh-pdf-sidebar-divider')
+    await expect.poll(async () => Number(await divider.getAttribute('aria-valuemax'))).toBeGreaterThan(330)
+    await expect.poll(() => divider.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      return element === document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + 40)
+    })).toBe(true)
     const beforeWidth = (await sidebar.boundingBox())!.width
     const dividerBox = (await divider.boundingBox())!
     await page.mouse.move(dividerBox.x + dividerBox.width / 2, dividerBox.y + 40)
@@ -264,6 +272,12 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
       configurable: true, value: { writeText: async () => { throw new Error('clipboard denied') } },
     }))
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-result-header').evaluate(root => {
+      const language = root.querySelector<HTMLElement>('.dsh-pdf-translation-language-trigger')!
+      const button = root.querySelector<HTMLElement>(':scope > button')!
+      return language.getBoundingClientRect().right <= button.getBoundingClientRect().left
+        || language.getBoundingClientRect().bottom <= button.getBoundingClientRect().top
+    })).toBe(true)
     await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
     await panel.locator('.dsh-pdf-translation-copy-error').waitFor({ state: 'visible' })
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} }))

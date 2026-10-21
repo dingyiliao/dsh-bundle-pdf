@@ -123,7 +123,7 @@ test('huge region screenshot respects both canvas dimension and total pixel limi
   })
 })
 
-test('region screenshot repairs removed native markup and composes adjacent marks and notes', async () => {
+test('region screenshot repairs native markup and replaces native note icons with reader markers', async () => {
   const draws: unknown[][] = []
   const operations: string[] = []
   const context = new Proxy({} as CanvasRenderingContext2D, {
@@ -153,10 +153,11 @@ test('region screenshot repairs removed native markup and composes adjacent mark
     const result = await capturePdfRegion(fakeDocument(page), 1, [0, 0, 50, 50], { annotations, sourceAnnotations })
     assert.equal(result.blob, png)
     assert.deepEqual(calls.map(call => call.annotations), [true, false])
-    assert.equal(draws.length, 1)
+    assert.equal(draws.length, 2, 'the old markup and original note icon are cleaned separately')
     assert.ok(operations.includes('fill'))
     assert.ok(operations.includes('stroke'))
-    assert.ok(operations.includes('fillText'))
+    assert.equal(operations.filter(operation => operation === 'fillText').length, 2,
+      'both the existing and newly added notes use the same reader marker')
     assert.equal(cancelCount, 1)
     assert.deepEqual(canvases.map(canvas => [canvas.width, canvas.height]), [[0, 0], [0, 0]])
   }, context)

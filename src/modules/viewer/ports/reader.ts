@@ -15,6 +15,15 @@ export type PdfReadingContextUpdate =
   | { action: 'clear'; sessionId: string; tabId: string; leaseId: string }
 
 export type ReaderContextReporter = (update: PdfReadingContextUpdate) => Promise<void>
+export interface PdfAgentNavigationApi {
+  wait(context: { sessionId: string; tabId: string; leaseId: string; documentId: string;
+    contentVersion: string }, signal: AbortSignal): Promise<{
+    requestId: string; page: number; documentId: string; contentVersion: string
+  } | null>
+  complete(context: { sessionId: string; tabId: string; leaseId: string; documentId: string;
+    contentVersion: string; requestId: string; status: 'opened' | 'stale' | 'unavailable' },
+  signal: AbortSignal): Promise<void>
+}
 export type ReaderPromptExplanation = (content: string | readonly PromptContentPart[], signal: AbortSignal) => Promise<void>
 
 /** A PDF region rendered and authenticated by Host, not pixels captured from the Client canvas. */

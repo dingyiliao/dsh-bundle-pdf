@@ -11,6 +11,7 @@ import { ReaderAlerts, type ReaderAlertsProps } from './ReaderAlerts.js'
 import { ReaderAnnotationBar, ReaderSelectionBar,
   type ReaderAnnotationBarProps, type ReaderSelectionBarProps } from './ReaderContextBars.js'
 import { ReaderCommentEditor, type ReaderCommentEditorProps } from './ReaderCommentEditor.js'
+import { ReaderNoteEditor, type ReaderNoteEditorProps } from './ReaderNoteEditor.js'
 import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } from './ReaderToolbar.js'
 
 export interface ReaderViewProps {
@@ -37,8 +38,18 @@ export interface ReaderViewProps {
     key: string
     viewport: HTMLElement | null
     getAnchor(): DOMRect | null
+    getPosition?(): DOMRect | null
+    onMove?(delta: { x: number; y: number }, position: { left: number; top: number }): boolean | Promise<boolean>
     onVisible(): void
     editor: ReaderCommentEditorProps
+  }
+  note?: {
+    key: string
+    viewport: HTMLElement | null
+    getAnchor(): DOMRect | null
+    onVisible(): void
+    onMove(delta: { x: number; y: number }): boolean | Promise<boolean>
+    editor: ReaderNoteEditorProps
   }
   pages: {
     scrollRef(node: HTMLDivElement | null): void
@@ -63,7 +74,7 @@ export function ReaderView(props: ReaderViewProps) {
   const { t, readerElement, readerBody, scrollRoot, menuRef, editable, selected,
     onDismissContext, onCloseTranslation, onCancelScreenshot, onSave, onUndoRedo,
     onDeleteAnnotation, toolbar, selectionBar, annotationBar, alerts, floating,
-    question, comment, pages, sidebar, screenshot } = props
+    question, comment, note, pages, sidebar, screenshot } = props
   return <div className="dsh-pdf-reader" ref={readerElement} aria-label={t('reader.title')} onPointerDown={event => {
     if (event.button !== 0 || !(event.target instanceof Element) || scrollRoot?.contains(event.target)) return
     if (!event.target.closest('button,a,input,textarea,select,summary,.dsh-pdf-context-toolbar,.dsh-pdf-sidebar-divider,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) onDismissContext()
@@ -100,8 +111,12 @@ export function ReaderView(props: ReaderViewProps) {
         </div>
         {question && <ExplanationQuestionEditor key={question.key} {...question.props} />}
         {comment && <AnnotationCommentCard key={comment.key} viewport={comment.viewport} getAnchor={comment.getAnchor}
-          label={t('reader.commentText')} onVisible={comment.onVisible}>
+          getPosition={comment.getPosition} onMove={comment.onMove} label={t('reader.commentText')} onVisible={comment.onVisible}>
           <ReaderCommentEditor {...comment.editor} />
+        </AnnotationCommentCard>}
+        {note && <AnnotationCommentCard key={note.key} viewport={note.viewport} getAnchor={note.getAnchor}
+          label={t('reader.note')} onVisible={note.onVisible} onMove={note.onMove} connector={false} cardKind="note">
+          <ReaderNoteEditor {...note.editor} />
         </AnnotationCommentCard>}
         <div className="dsh-pdf-scroll" ref={pages.scrollRef} tabIndex={0} onScroll={pages.onScroll}
           onPointerDown={event => {

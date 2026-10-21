@@ -17,12 +17,14 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     clientExtensions: { slots: string[] }
   }
   const current = JSON.parse(execFileSync(process.execPath, [script], { encoding: 'utf8' })) as typeof expected
-  // V2 adds bounded evidence reads and separately approved model writes;
+  // V2 adds bounded evidence reads, direct draft edits and approved saves;
   // the ten tools already available to existing agent sessions stay stable.
-  const addedTools = ['pdf_annotate', 'pdf_context', 'pdf_image_context', 'pdf_locate', 'pdf_save', 'pdf_status']
+  const addedTools = ['pdf_annotate', 'pdf_annotation_update', 'pdf_annotation_delete',
+    'pdf_bookmark_add', 'pdf_bookmark_rename', 'pdf_bookmark_remove',
+    'pdf_context', 'pdf_find_related', 'pdf_image_context', 'pdf_locate', 'pdf_navigate', 'pdf_save', 'pdf_status']
   assert.deepEqual(current, { ...expected,
     toolNames: [...expected.toolNames, ...addedTools].sort(),
-    rpcMethods: [...expected.rpcMethods, 'pdf.evidence', 'pdf.region', 'pdf.selection'].sort(),
+    rpcMethods: [...expected.rpcMethods, 'pdf.evidence', 'pdf.navigation', 'pdf.region', 'pdf.selection', 'pdf.watch'].sort(),
     providedServices: [...expected.providedServices, 'pdfImageEvidence'].sort(),
     package: { ...expected.package, dsh: { ...expected.package.dsh,
       client: { ...expected.package.dsh.client,

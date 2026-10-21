@@ -1,6 +1,8 @@
-import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
+import { defaultExplanationPromptTemplate, explanationTemplateIssue,
+  MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.js'
 
 // `mode` was removed from DSH's snapshot. Keep only the stable public fields so
 // the editor works with both older and newer Host connections.
@@ -19,12 +21,14 @@ export interface SettingsProps {
 export const settingsLocales = {
   zh: {
     'settings.title': 'PDF',
-    'settings.description': '配置选中文字翻译和阅读跳转。修改后手动保存。',
+    'settings.description': '配置选中文字翻译、解释模式和阅读跳转。修改后手动保存。',
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
     'settings.readOnly': '当前设置为只读。',
     'settings.ocr': 'OCR',
     'settings.ocrUnavailable': '阅读器会向 Host 查询当前会话模型和 OCR 后端的能力，并据此启用识别入口。',
+    'settings.translation': '翻译',
+    'settings.navigation': '阅读与跳转',
     'settings.unknownEngine': '当前引擎未加载',
     'settings.translationEngine': '翻译引擎',
     'settings.translationDshModel': 'DSH 模型 · 文字翻译',
@@ -33,6 +37,22 @@ export const settingsLocales = {
     'settings.translationTimeoutHelp': '单次翻译请求的最长等待时间，1000–600000 毫秒。',
     'settings.historyCapacity': '跳转历史容量',
     'settings.historyHelp': '每个 PDF 标签最多保留多少个可返回的位置。',
+    'settings.explanationPrompts': '解释模式提示词',
+    'settings.explanationPromptsHelp': '只填写想调整的部分；留空使用内置提示。选段、问题、图片与来源信息由插件自动组织，无需写占位符。',
+    'settings.explanationGeneralInstruction': '总体要求',
+    'settings.explanationGeneralHelp': '说明希望模型如何解释这一组材料；留空使用内置的解释要求。',
+    'settings.explanationGeneralDefault': '默认：解释概念、上下文与选段关系，逐一回答问题；缺少信息时先查证。',
+    'settings.explanationTextInstruction': '文字选段',
+    'settings.explanationTextHelp': '对每段选中文字额外提出要求；留空时直接根据选段与问题作答。',
+    'settings.explanationTextDefault': '可选：例如解释公式推导，并指出前提条件。',
+    'settings.explanationImageInstruction': '图片区域',
+    'settings.explanationImageHelp': '对每块框选图像额外提出要求；留空时直接根据区域与问题作答。',
+    'settings.explanationImageDefault': '可选：例如先描述图表元素，再解释它们之间的关系。',
+    'settings.explanationPromptTemplate': '旧版完整模板',
+    'settings.legacyPromptNotice': '旧版完整模板仍在生效。可以保留它；切换后将使用下方分项提示词，空白项采用默认行为。',
+    'settings.useSplitPrompts': '改用分项提示词',
+    'settings.invalidTemplate': '模板无效：请保留且仅使用一次 {{items}}，只使用列出的占位符，内容不超过 8192 字符。',
+    'settings.invalidInstruction': '每个提示词最多 2000 个字符。',
     'settings.unsaved': '有未保存的修改',
     'settings.current': '设置已同步',
     'settings.save': '保存设置',
@@ -55,12 +75,14 @@ export const settingsLocales = {
   },
   en: {
     'settings.title': 'PDF',
-    'settings.description': 'Configure selected-text translation and reading navigation. Save changes manually.',
+    'settings.description': 'Configure selected-text translation, explanation mode and reading navigation. Save changes manually.',
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
     'settings.readOnly': 'These settings are read-only.',
     'settings.ocr': 'OCR',
     'settings.ocrUnavailable': 'The reader asks the Host whether this session’s model and OCR backend can recognize text, then enables the action accordingly.',
+    'settings.translation': 'Translation',
+    'settings.navigation': 'Reading and navigation',
     'settings.unknownEngine': 'Current engine is not loaded',
     'settings.translationEngine': 'Translation engine',
     'settings.translationDshModel': 'DSH model · Text translation',
@@ -69,6 +91,22 @@ export const settingsLocales = {
     'settings.translationTimeoutHelp': 'Maximum waiting time for one translation request, from 1000 to 600000 milliseconds.',
     'settings.historyCapacity': 'Navigation history capacity',
     'settings.historyHelp': 'Maximum number of return locations retained for each PDF tab.',
+    'settings.explanationPrompts': 'Explanation prompts',
+    'settings.explanationPromptsHelp': 'Edit only what you need; blank fields use the built-in behavior. The plugin assembles excerpts, questions, images and sources automatically—no placeholders needed.',
+    'settings.explanationGeneralInstruction': 'Overall guidance',
+    'settings.explanationGeneralHelp': 'How the model should explain this set of material. Leave blank for the built-in guidance.',
+    'settings.explanationGeneralDefault': 'Default: explain concepts, context and relationships; answer each question and verify missing context.',
+    'settings.explanationTextInstruction': 'Text passages',
+    'settings.explanationTextHelp': 'Optional guidance for each selected passage. Blank uses its passage and question directly.',
+    'settings.explanationTextDefault': 'Optional: for example, walk through a derivation and name its assumptions.',
+    'settings.explanationImageInstruction': 'Image regions',
+    'settings.explanationImageHelp': 'Optional guidance for each selected image region. Blank uses its region and question directly.',
+    'settings.explanationImageDefault': 'Optional: for example, describe the chart elements before interpreting them.',
+    'settings.explanationPromptTemplate': 'Legacy full template',
+    'settings.legacyPromptNotice': 'A legacy full template is still active. Keep it, or switch to the fields below; blank fields use built-in behavior.',
+    'settings.useSplitPrompts': 'Use separate prompts',
+    'settings.invalidTemplate': 'Invalid template: use {{items}} exactly once, only the listed placeholders, and at most 8192 characters.',
+    'settings.invalidInstruction': 'Each prompt can contain at most 2000 characters.',
     'settings.unsaved': 'Unsaved changes',
     'settings.current': 'Settings are up to date',
     'settings.save': 'Save settings',
@@ -91,18 +129,12 @@ export const settingsLocales = {
   },
 } as const
 
-const fields = ['translationEngine', 'translationTimeoutMs', 'historyCapacity'] as const
+const promptFields = ['explanationGeneralInstruction', 'explanationTextInstruction', 'explanationImageInstruction'] as const
+const fields = ['translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
+  'explanationPromptTemplate'] as const
 type Field = typeof fields[number]
 type Draft = Record<Field, string>
 interface Editor { source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[] }
-const inputStyle: CSSProperties = {
-  boxSizing: 'border-box', width: '100%', minHeight: 34, padding: '6px 9px', font: 'inherit',
-  border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6,
-  color: 'inherit', background: 'var(--dsw-alias-bg-layer-1)',
-}
-const buttonStyle: CSSProperties = { ...inputStyle, width: 'auto', cursor: 'pointer', padding: '6px 12px' }
-const noticeStyle: CSSProperties = { padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, lineHeight: 1.6 }
-
 function toDraft(settings: PdfSettings): Draft {
   const complete = { ...defaultSettings, ...settings }
   complete.translationEngine = effectiveTranslationEngine(complete.translationEngine)
@@ -174,10 +206,33 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
       }
     }
     if (!availableTranslations.some(engine => engine.id === editor.draft.translationEngine)) validation.translationEngine = tr('settings.invalidTranslationEngine')
+    for (const field of promptFields) {
+      if (editor.draft[field].length > MAX_EXPLANATION_INSTRUCTION_LENGTH) {
+        validation[field] = tr('settings.invalidInstruction')
+      }
+    }
+    if (explanationTemplateIssue(editor.draft.explanationPromptTemplate)) {
+      validation.explanationPromptTemplate = tr('settings.invalidTemplate')
+    }
   }
 
+  const legacyPromptActive = !!editor && editor.draft.explanationPromptTemplate !== defaultExplanationPromptTemplate
+    && promptFields.every(field => !editor.draft[field].trim())
+
   function edit(field: Field, value: string) {
-    setEditor(current => current && ({ ...current, draft: { ...current.draft, [field]: value }, unsets: current.unsets.filter(key => key !== field) }))
+    const splitPromptEdited = promptFields.some(prompt => prompt === field)
+    setEditor(current => current && ({ ...current,
+      draft: { ...current.draft, [field]: value,
+        ...(splitPromptEdited && current.source.explanationPromptTemplate !== defaultExplanationPromptTemplate
+          ? { explanationPromptTemplate: defaultExplanationPromptTemplate } : {}) },
+      unsets: current.unsets.filter(key => key !== field
+        && (!splitPromptEdited || key !== 'explanationPromptTemplate')) }))
+    setNotice(''); setError('')
+  }
+  function useSplitPrompts() {
+    setEditor(current => current && ({ ...current,
+      draft: { ...current.draft, explanationPromptTemplate: defaultExplanationPromptTemplate },
+      unsets: current.unsets.filter(key => key !== 'explanationPromptTemplate') }))
     setNotice(''); setError('')
   }
   function loadLatest() {
@@ -234,49 +289,75 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
     }
   }
 
-  const fieldRow = (field: Field, hint: keyof typeof settingsLocales.zh, control: React.ReactNode) => <div style={{ display: 'grid', gap: 6 }}>
-    <label htmlFor={`${id}-${field}`} style={{ fontWeight: 500 }}>{tr(`settings.${field}`)}</label>
+  const fieldRow = (field: Field, hint: keyof typeof settingsLocales.zh, control: React.ReactNode) => <div key={field} className="dsh-pdf-settings-field">
+    <label htmlFor={`${id}-${field}`} className="dsh-pdf-settings-label">{tr(`settings.${field}`)}</label>
     {control}
-    <small id={`${id}-${field}-hint`} style={{ opacity: 0.7, lineHeight: 1.5 }}>{tr(hint)}</small>
-    {submitted && validation[field] && <small id={`${id}-${field}-error`} role="alert">{validation[field]}</small>}
+    <small id={`${id}-${field}-hint`} className="dsh-pdf-settings-hint">{tr(hint)}</small>
+    {submitted && validation[field] && <small id={`${id}-${field}-error`} className="dsh-pdf-settings-error" role="alert">{validation[field]}</small>}
   </div>
   const attributes = (field: Field) => ({
     id: `${id}-${field}`, disabled,
     'aria-invalid': submitted && Boolean(validation[field]),
     'aria-describedby': `${id}-${field}-hint${submitted && validation[field] ? ` ${id}-${field}-error` : ''}`,
-    style: inputStyle,
+    className: 'dsh-pdf-settings-control',
   })
 
-  return <section aria-labelledby={`${id}-title`} style={{ display: 'grid', gap: 18, padding: 20, color: 'inherit', fontSize: 14 }}>
-    <div><h2 id={`${id}-title`} style={{ margin: '0 0 8px', fontSize: 18 }}>{tr('settings.title')}</h2><p style={{ margin: 0, opacity: 0.7, lineHeight: 1.6 }}>{tr('settings.description')}</p></div>
-    {snapshot.status === 'loading' && <p role="status">{tr('settings.loading')}</p>}
-    {snapshot.status === 'unavailable' && <p role="status" style={noticeStyle}>{tr('settings.unavailable')}</p>}
-    {snapshot.status === 'ready' && !snapshot.writable && <p role="status">{tr('settings.readOnly')}</p>}
-    {editor && <form onSubmit={event => { event.preventDefault(); void save() }} style={{ display: 'grid', gap: 20 }}>
-      {editor.conflict && <div role="alert" style={noticeStyle}>
-        <p style={{ margin: '0 0 8px' }}>{tr('settings.conflict')}</p>
-        {snapshot.value && <details><summary>{tr('settings.remoteChanges')}</summary><ul style={{ paddingLeft: 20 }}>
+  return <section aria-labelledby={`${id}-title`} className="dsh-pdf-settings">
+    <header className="dsh-pdf-settings-header">
+      <h2 id={`${id}-title`}>{tr('settings.title')}</h2>
+      <p>{tr('settings.description')}</p>
+    </header>
+    {snapshot.status === 'loading' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.loading')}</p>}
+    {snapshot.status === 'unavailable' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.unavailable')}</p>}
+    {snapshot.status === 'ready' && !snapshot.writable && <p role="status" className="dsh-pdf-settings-status">{tr('settings.readOnly')}</p>}
+    {editor && <form onSubmit={event => { event.preventDefault(); void save() }} className="dsh-pdf-settings-form">
+      {editor.conflict && <div role="alert" className="dsh-pdf-settings-notice">
+        <p>{tr('settings.conflict')}</p>
+        {snapshot.value && <details><summary>{tr('settings.remoteChanges')}</summary><ul>
           {fields.filter(field => String(snapshot.value![field]) !== editor.source[field]).map(field => <li key={field}>{tr(`settings.${field}`)}: {editor.source[field]} → {String(snapshot.value![field])}</li>)}
         </ul></details>}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><button type="button" disabled={disabled} style={buttonStyle} onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} style={buttonStyle} onClick={keepChanges}>{tr('settings.keep')}</button></div>
-        <small style={{ display: 'block', marginTop: 8, opacity: 0.75 }}>{tr('settings.keepHint')}</small>
+        <div className="dsh-pdf-settings-notice-actions"><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={keepChanges}>{tr('settings.keep')}</button></div>
+        <small className="dsh-pdf-settings-hint">{tr('settings.keepHint')}</small>
       </div>}
-      <div style={{ display: 'grid', gap: 6 }}>
-        <span style={{ fontWeight: 500 }}>{tr('settings.ocr')}</span>
-        <small style={{ opacity: 0.7, lineHeight: 1.5 }}>{tr('settings.ocrUnavailable')}</small>
-      </div>
-      {fieldRow('translationEngine', 'settings.translationHelp', <select {...attributes('translationEngine')} value={editor.draft.translationEngine} onChange={event => edit('translationEngine', event.target.value)}>
-        {!availableTranslations.some(engine => engine.id === editor.draft.translationEngine) && <option value={editor.draft.translationEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.translationEngine}</option>}
-        {availableTranslations.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
-      </select>)}
-      {fieldRow('translationTimeoutMs', 'settings.translationTimeoutHelp', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
-      {fieldRow('historyCapacity', 'settings.historyHelp', <input {...attributes('historyCapacity')} type="number" min={1} step={1} value={editor.draft.historyCapacity} onChange={event => edit('historyCapacity', event.target.value)} />)}
-      {error && <p role="alert" style={{ ...noticeStyle, margin: 0 }}>{error}</p>}
-      <div aria-live="polite" style={{ opacity: 0.8 }}>{notice || tr(dirty ? 'settings.unsaved' : 'settings.current')}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        <button type="submit" disabled={disabled || !dirty || editor.conflict} style={{ ...buttonStyle, fontWeight: 600 }}>{tr(saving ? 'settings.saving' : 'settings.save')}</button>
-        <button type="button" disabled={disabled} style={buttonStyle} onClick={restoreDefaults}>{tr('settings.reset')}</button>
-        <button type="button" disabled={disabled || !dirty} style={buttonStyle} onClick={loadLatest}>{tr('settings.discard')}</button>
+      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-ocr-title`}>
+        <h3 id={`${id}-ocr-title`}>{tr('settings.ocr')}</h3>
+        <p className="dsh-pdf-settings-hint">{tr('settings.ocrUnavailable')}</p>
+      </section>
+      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-translation-title`}>
+        <h3 id={`${id}-translation-title`}>{tr('settings.translation')}</h3>
+        {fieldRow('translationEngine', 'settings.translationHelp', <select {...attributes('translationEngine')} value={editor.draft.translationEngine} onChange={event => edit('translationEngine', event.target.value)}>
+          {!availableTranslations.some(engine => engine.id === editor.draft.translationEngine) && <option value={editor.draft.translationEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.translationEngine}</option>}
+          {availableTranslations.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
+        </select>)}
+        {fieldRow('translationTimeoutMs', 'settings.translationTimeoutHelp', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
+      </section>
+      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-navigation-title`}>
+        <h3 id={`${id}-navigation-title`}>{tr('settings.navigation')}</h3>
+        {fieldRow('historyCapacity', 'settings.historyHelp', <input {...attributes('historyCapacity')} type="number" min={1} step={1} value={editor.draft.historyCapacity} onChange={event => edit('historyCapacity', event.target.value)} />)}
+      </section>
+      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-prompts-title`}>
+        <h3 id={`${id}-prompts-title`}>{tr('settings.explanationPrompts')}</h3>
+        <p className="dsh-pdf-settings-hint">{tr('settings.explanationPromptsHelp')}</p>
+        {legacyPromptActive && <div className="dsh-pdf-settings-notice" role="status">
+          <p>{tr('settings.legacyPromptNotice')}</p>
+          <button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={useSplitPrompts}>{tr('settings.useSplitPrompts')}</button>
+        </div>}
+        {promptFields.map((field, index) => fieldRow(field,
+          (['settings.explanationGeneralHelp', 'settings.explanationTextHelp', 'settings.explanationImageHelp'] as const)[index],
+          <textarea {...attributes(field)} rows={index === 0 ? 4 : 3}
+            maxLength={MAX_EXPLANATION_INSTRUCTION_LENGTH}
+            placeholder={tr((['settings.explanationGeneralDefault', 'settings.explanationTextDefault',
+              'settings.explanationImageDefault'] as const)[index])}
+            value={editor.draft[field]} onChange={event => edit(field, event.target.value)} />))}
+      </section>
+      {error && <p role="alert" className="dsh-pdf-settings-error dsh-pdf-settings-form-error">{error}</p>}
+      <div className="dsh-pdf-settings-footer">
+        <div className="dsh-pdf-settings-footer-actions">
+          <button type="button" disabled={disabled} className="dsh-pdf-settings-quiet" onClick={restoreDefaults}>{tr('settings.reset')}</button>
+          <button type="button" disabled={disabled || !dirty} className="dsh-pdf-settings-quiet" onClick={loadLatest}>{tr('settings.discard')}</button>
+        </div>
+        <span aria-live="polite" className="dsh-pdf-settings-save-status">{notice || tr(dirty ? 'settings.unsaved' : 'settings.current')}</span>
+        <button type="submit" disabled={disabled || !dirty || editor.conflict} className="dsh-pdf-settings-save">{tr(saving ? 'settings.saving' : 'settings.save')}</button>
       </div>
     </form>}
   </section>

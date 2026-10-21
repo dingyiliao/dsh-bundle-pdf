@@ -44,6 +44,7 @@ async function withExplanation(run: (fixture: {
   const options: ReaderExplanationOptions = {
     sessionId: 'session-1', tabSignal: tab.signal, visible: true, snapshot, pdf: null,
     promptExplanation: async value => { prompts.push(value) },
+    promptTemplate: '{{instruction}}\n\n{{document}}\n\n{{items}}',
     imageUnderstanding: { async availability() { return { status: 'available', kind: 'direct-image', backendId: 'test' } },
       async prepare() { throw new Error('legacy client-side image preparation should not be used') },
       async prepareReference() { throw new Error('no image reference in a text-only explanation') } },

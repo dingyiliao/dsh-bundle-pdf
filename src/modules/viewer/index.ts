@@ -6,9 +6,11 @@ export type { ReaderDocument, ReaderPage as ReaderPagePort, ReaderRenderTask, Re
 export type { HostOcrApi, HostOcrAvailability, HostOcrRecognition } from './ports/ocr.js'
 export type { ImageUnderstandingApi, ImageUnderstandingAvailability, ImageEvidenceIdentity,
   PreparedImageUnderstanding, PreparedImageReference } from './ports/image-understanding.js'
-export type { ReaderContentLease, PdfReadingContextUpdate, ReaderContextReporter,
+export type { ReaderContentLease, PdfReadingContextUpdate, ReaderContextReporter, PdfAgentNavigationApi,
   ReaderPromptExplanation, PdfRegionEvidence, PdfRegionEvidenceApi,
   PdfTextSelectionEvidence, PdfTextSelectionEvidenceApi } from './ports/reader.js'
+export { clampPdfRectToBounds, pdfRectToViewport, translatePdfRectInViewport, viewportRectToPdf } from './model/reader-selection.js'
+export { movePdfNoteRectByMarker, noteMarkerViewportPosition } from './model/reader-selection.js'
 export type { PageView, PageViewport, ReaderSelection } from './model/reader-selection.js'
 export { useReaderSearch, type ReaderSearchOptions } from './controllers/use-reader-search.js'
 export { usePdfWheelZoom, type PdfWheelZoomOptions } from './controllers/use-pdf-wheel-zoom.js'
@@ -23,6 +25,7 @@ export { useReaderOcr, type ReaderOcrOptions } from './controllers/use-reader-oc
 export { ReaderToolbar, type ReaderToolbarState, type ReaderToolbarActions } from './components/ReaderToolbar.js'
 export { ReaderView, type ReaderViewProps } from './components/ReaderView.js'
 export { ReaderCommentEditor, type ReaderCommentEditorProps } from './components/ReaderCommentEditor.js'
+export { ReaderNoteEditor, type ReaderNoteEditorProps } from './components/ReaderNoteEditor.js'
 export { ReaderSelectionBar, ReaderAnnotationBar,
   type ReaderSelectionBarProps, type ReaderAnnotationBarProps } from './components/ReaderContextBars.js'
 export { readerSidebarPanels, type ReaderSidebarPanelsOptions } from './components/ReaderSidebarPanels.js'

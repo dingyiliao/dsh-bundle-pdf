@@ -41,13 +41,11 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
     && ocrTranscript.result.documentId === snapshot.id
     && ocrTranscript.result.contentVersion === snapshot.contentVersion ? ocrTranscript : null
   return {
-    annotations: <ScrollablePanel className="dsh-pdf-comments" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
-      <AnnotationList key={`${snapshot?.id ?? 'none'}:${snapshot?.reader.bytesHash ?? 'none'}`}
+    annotations: <AnnotationList key={`${snapshot?.id ?? 'none'}:${snapshot?.reader.bytesHash ?? 'none'}`}
         annotations={annotations} selectedId={selectedAnnotation} pdf={pdf} t={t}
         onDeselect={clearAnnotation}
         onSelect={annotation => { selectAnnotation(annotation.id)
-          jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }} />
-    </ScrollablePanel>,
+          jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }} />,
     ocr: <ScrollablePanel className="dsh-pdf-ocr-scroll" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
       <OcrTranscriptPanel result={activeTranscript?.result ?? null} region={!!activeTranscript?.region} t={t} />
     </ScrollablePanel>,

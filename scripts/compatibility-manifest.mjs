@@ -121,11 +121,13 @@ function patchEntries(text) {
 export async function collectCompatibilityManifest() {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const patch = patchEntries(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
-  const [reader, native, ocr, image, client, transport, infoRoute, tools, modelWriteTools, ocrTool, drafts, navigation] = await Promise.all([
+  const [reader, native, ocr, image, client, transport, infoRoute, tools, modelWriteTools,
+    modelBookmarkTools, ocrTool, drafts, navigation] = await Promise.all([
     source('src/entrypoints/reader-host.ts'), source('src/entrypoints/native-host.ts'), source('src/entrypoints/ocr-host.ts'),
     source('src/entrypoints/image-understanding-host.ts'), source('src/entrypoints/reader-client.tsx'),
     source('src/contracts/rpc/envelope.ts'), source('src/adapters/host/dsh/info-route.ts'),
     source('src/adapters/host/dsh/agent-tools.ts'), source('src/adapters/host/dsh/model-write-tools.ts'),
+    source('src/adapters/host/dsh/model-bookmark-tools.ts'),
     source('src/adapters/host/dsh/ocr-tool.ts'),
     source('src/adapters/host/storage/v1-drafts.ts'), source('src/adapters/host/storage/v1-navigation.ts'),
   ])
@@ -148,7 +150,7 @@ export async function collectCompatibilityManifest() {
   if (infoPaths.length !== 1) throw new Error(`Cannot determine PDF info route in ${infoRoute.fileName}`)
   endpoints.push(infoPaths[0].slice('/api/'.length))
   const toolNames = []
-  for (const file of [tools, modelWriteTools, ocrTool]) {
+  for (const file of [tools, modelWriteTools, modelBookmarkTools, ocrTool]) {
     for (const call of calls(file, 'defineTool')) {
       const name = literal(property(call.arguments[0], 'name'))
       if (!name) throw new Error(`Cannot determine tool name in ${file.fileName}`)

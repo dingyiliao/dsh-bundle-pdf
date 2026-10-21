@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/index.ts'
 import { questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
+import { registerPdfModelBookmarkTools } from '../../../../src/adapters/host/dsh/model-bookmark-tools.ts'
 import { createV1NavigationStore } from '../../../../src/adapters/host/storage/v1-navigation.ts'
 import { summarizeOutline, createBookmarks, type BookmarkRecord } from '../../../../src/modules/navigation/index.ts'
 import { evidenceSha256, windowPageText, type EvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
@@ -113,7 +114,34 @@ test('image-context replay requires a fresh-source adapter', async () => {
   } finally { await dispose() }
 })
 
-test('model annotation and save tools require an actual reviewed human answer, not caller flags', async () => {
+test('pdf_navigate forwards only a validated same-session target to the visible-Reader handoff', async () => {
+  const { ctx, definitions } = captureTools()
+  const forwarded: Array<{ sessionId: string; documentId: string; page: number; contentVersion: string }> = []
+  const navigation = { async navigate(sessionId: string, input: { documentId: string; page: number;
+    contentVersion: string }) {
+    forwarded.push({ sessionId, ...input })
+    return { status: 'opened' as const, requestId: 'request-1', page: input.page, reason: null, tabIds: [] }
+  } }
+  const dispose = registerPdfAgentTools(ctx, {} as never, {} as never, { current: () => [] }, undefined,
+    undefined, undefined, navigation as never)
+  try {
+    const result = await readTool(definitions, 'pdf_navigate', {
+      documentId: 'doc-1', page: 3, contentVersion: 'version-1',
+    }, 'session-1') as { status: string }
+    assert.equal(result.status, 'opened')
+    assert.deepEqual(forwarded, [{ sessionId: 'session-1', documentId: 'doc-1', page: 3,
+      contentVersion: 'version-1' }])
+    await assert.rejects(readTool(definitions, 'pdf_navigate', {
+      documentId: 'doc-1', page: 0, contentVersion: 'version-1',
+    }, 'session-1'))
+    await assert.rejects(readTool(definitions, 'pdf_navigate', {
+      documentId: 'doc-1', page: 3, contentVersion: 'version-1',
+    }), /session/i)
+    assert.equal(forwarded.length, 1)
+  } finally { await dispose() }
+})
+
+test('model annotation updates the draft immediately; only PDF save requires a reviewed human answer', async () => {
   const state = memoryWorkspace(await nativeFixture())
   const sessionId = 'pdf-model-tool-review'
   const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
@@ -122,47 +150,41 @@ test('model annotation and save tools require an actual reviewed human answer, n
   const decisions: string[] = []
   const services: Record<string, unknown> = {}
   const { ctx, definitions } = captureTools(services)
-  const dispose = registerPdfAgentTools(ctx, state.workspaces, {} as never, { current: () => [] })
+  const quote = 'MMFAR title'
+  const pages = { async readPageText() { return { snapshot: state.workspaces.readSnapshot(sessionId, opened.id), content: {
+    items: [{ str: quote, transform: [12, 0, 0, 12, 60, 90], width: quote.length * 6, height: 12,
+      dir: 'ltr', fontName: 'test', hasEOL: false,
+      glyphs: Array.from(quote, (_, index) => [60 + index * 6, 90, 6] as [number, number, number]) }],
+    styles: { test: { fontFamily: 'sans-serif', ascent: 0.8, descent: -0.2, vertical: false } }, lang: null,
+  } } } }
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, pages as never, { current: () => [] })
   try {
-    const args = { action: 'preview', documentId: opened.id, expectedRevision: opened.revision,
-      subtype: 'Highlight', target: { kind: 'pdf-region', page: 1, rectPdf: [60, 80, 120, 100] },
+    const args = { documentId: opened.id, expectedRevision: opened.revision,
+      subtype: 'Highlight', target: { kind: 'pdf-text', page: 1, quote },
       color: [1, 1, 0], comment: 'Look here' }
     await assert.rejects(readTool(definitions, 'pdf_annotate', { ...args, confirmed: true }, sessionId),
       /unrecognized|confirmed|invalid/i)
-    const preview = await readTool(definitions, 'pdf_annotate', args, sessionId) as {
-      proposalId: string; preview: { path: string; page: number; beforeAnnotations: number; afterAnnotations: number }
+    const updated = await readTool(definitions, 'pdf_annotate', args, sessionId) as {
+      status: string; revision: number; dirty: boolean; canUndo: boolean; annotationId: string
     }
-    assert.equal(preview.preview.path, '/fixtures/native.pdf')
-    assert.equal(preview.preview.page, 1)
-    assert.equal(preview.preview.afterAnnotations, preview.preview.beforeAnnotations + 1)
-    assert.equal(state.writes(), 0)
-    await assert.rejects(readTool(definitions, 'pdf_annotate', { action: 'commit', proposalId: preview.proposalId },
-      sessionId), { code: 'pdf/approval-unavailable' })
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
-    const next = await readTool(definitions, 'pdf_annotate', args, sessionId) as typeof preview
-    services.userQuestions = { async ask(request: { questions: Array<{ id: string; detail: string;
-      options: Array<{ label: string }> }> }) {
-      const question = request.questions[0]!
-      decisions.push(question.detail)
-      return { answers: [{ id: question.id, selected: [question.options[0]!.label] }] }
-    } }
-    const committed = await readTool(definitions, 'pdf_annotate', { action: 'commit', proposalId: next.proposalId },
-      sessionId) as { status: string; revision: number; dirty: boolean }
-    assert.equal(committed.status, 'committed')
-    assert.equal(committed.dirty, true)
-    assert.match(decisions[0]!, /第 1 页/)
-    assert.match(decisions[0]!, /Look here/)
-    assert.match(decisions[0]!, /预演前\/后批注数/)
+    assert.equal(updated.status, 'updated')
+    assert.equal(updated.dirty, true)
+    assert.equal(updated.canUndo, true)
+    assert.ok(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations.some(item => item.id === updated.annotationId))
+    assert.equal(decisions.length, 0, 'draft edits do not ask for approval')
     assert.equal(state.writes(), 0)
     await assert.rejects(readTool(definitions, 'pdf_save', {
-      documentId: opened.id, expectedRevision: committed.revision, confirmed: true,
+      documentId: opened.id, expectedRevision: updated.revision, confirmed: true,
     }, sessionId), /unrecognized|confirmed|invalid/i)
+    await assert.rejects(readTool(definitions, 'pdf_save', {
+      documentId: opened.id, expectedRevision: updated.revision,
+    }, sessionId), { code: 'pdf/approval-unavailable' })
     services.userQuestions = { async ask(request: { questions: Array<{ id: string; options: Array<{ label: string }> }> }) {
       const question = request.questions[0]!
       return { answers: [{ id: question.id, selected: [question.options[0]!.label], custom: 'model spoof' }] }
     } }
     await assert.rejects(readTool(definitions, 'pdf_save', {
-      documentId: opened.id, expectedRevision: committed.revision,
+      documentId: opened.id, expectedRevision: updated.revision,
     }, sessionId), { code: 'pdf/approval-rejected' })
     assert.equal(state.writes(), 0)
     services.userQuestions = { async ask(request: { questions: Array<{ id: string; detail: string;
@@ -172,34 +194,89 @@ test('model annotation and save tools require an actual reviewed human answer, n
       return { answers: [{ id: question.id, selected: [question.options[0]!.label] }] }
     } }
     const saved = await readTool(definitions, 'pdf_save', {
-      documentId: opened.id, expectedRevision: committed.revision,
+      documentId: opened.id, expectedRevision: updated.revision,
     }, sessionId) as { status: string; dirty: boolean }
     assert.equal(saved.status, 'saved')
     assert.equal(saved.dirty, false)
     assert.equal(state.writes(), 1)
-    assert.match(decisions.at(-1)!, /覆盖其原路径文件/)
+    assert.match(decisions.at(-1)!, /覆盖保存到原 PDF 文件/)
     assert.match(decisions.at(-1)!, /将保存的最终批注变化/)
     assert.match(decisions.at(-1)!, /Look here/)
   } finally { await dispose(); await state.workspaces.dispose() }
 })
 
-test('Markdown approval details keep hostile path, comment, and save diff inside inert code fences', () => {
+test('model sees exact comment reply IDs and edits or deletes them before their parent mark', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-model-existing-annotations'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
+    id: opened.id, revision: opened.revision, operations: [
+      { type: 'add', annotation: { id: 'parent-mark', page: 1, subtype: 'Highlight',
+        rect: [60, 80, 120, 100], quadPoints: [60, 100, 120, 100, 60, 80, 120, 80],
+        contents: 'Original comment' } },
+      { type: 'add', annotation: { id: 'reply-comment', page: 1, subtype: 'Text',
+        rect: [60, 80, 90, 100], replyToId: 'parent-mark', contents: 'Original reply' } },
+    ] }, agent(sessionId), signal)
+  assert.ok('bytes' in changed)
+  const pages = { async readPageText() { return { snapshot: state.workspaces.readSnapshot(sessionId, opened.id),
+    content: { items: [], styles: {}, lang: null } } } }
+  const { ctx, definitions } = captureTools()
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, pages as never, { current: () => [] })
+  try {
+    const listed = await readTool(definitions, 'pdf_page_annotations', { documentId: opened.id,
+      page: 1 }, sessionId) as { revision: number; annotations: Array<{ id: string; replyToId?: string }> }
+    assert.equal(listed.annotations.find(item => item.id === 'reply-comment')?.replyToId, 'parent-mark')
+    await assert.rejects(readTool(definitions, 'pdf_annotation_delete', { documentId: opened.id,
+      expectedRevision: listed.revision, annotationId: 'parent-mark' }, sessionId), /repl|parent/i)
+    const reply = await readTool(definitions, 'pdf_annotation_update', { documentId: opened.id,
+      expectedRevision: listed.revision, annotationId: 'reply-comment', comment: 'Revised reply' },
+    sessionId) as { revision: number; savedToFile: boolean }
+    assert.equal(reply.savedToFile, false)
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.annotations
+      .find(item => item.id === 'reply-comment')?.contents, 'Revised reply')
+    const deletedReply = await readTool(definitions, 'pdf_annotation_delete', { documentId: opened.id,
+      expectedRevision: reply.revision, annotationId: 'reply-comment' }, sessionId) as { revision: number }
+    const deletedParent = await readTool(definitions, 'pdf_annotation_delete', { documentId: opened.id,
+      expectedRevision: deletedReply.revision, annotationId: 'parent-mark' }, sessionId) as { status: string }
+    assert.equal(deletedParent.status, 'deleted')
+    assert.equal(state.writes(), 0)
+  } finally { await dispose(); await state.workspaces.dispose() }
+})
+
+test('save approval details present ordinary values compactly without exposing internal IDs', () => {
+  const detail = questionDetail({ kind: 'save', documentId: 'internal-document-id',
+    path: '/fixtures/native.pdf', revision: 1, dirty: true, saveChangeCount: 1,
+    saveDiffText: 'Look here' })
+  assert.match(detail, /` \/fixtures\/native\.pdf `/)
+  assert.match(detail, /Look here/)
+  assert.doesNotMatch(detail, /代码块|internal-document-id/)
+})
+
+test('Markdown approval details keep hostile path and save diff inside inert code fences', () => {
   const attack = '\n````\n![beacon](https://evil.example/track)\n[click](https://evil.example/link)\n'
-  const annotation = questionDetail({ kind: 'annotation', documentId: `doc${attack}`,
-    path: `/tmp/document${attack}.pdf`, page: 1, subtype: 'Highlight', rectPdf: [1, 2, 3, 4],
-    comment: `comment${attack}`, revision: 1, dirty: false, proposalId: 'pdfprop-test' })
   const save = questionDetail({ kind: 'save', documentId: `doc${attack}`,
     path: `/tmp/document${attack}.pdf`, revision: 1, dirty: true,
     saveChangeCount: 1, saveDiffText: `评论：∅ → ${JSON.stringify(attack)}` })
-  for (const detail of [annotation, save]) {
+  for (const detail of [save]) {
     const blocks = [...detail.matchAll(/(`{3,})\n([\s\S]*?)\n\1/g)]
-    assert.ok(blocks.length >= 3, 'each dynamic field is rendered as fenced code')
+    assert.ok(blocks.length >= 2, 'multiline document content is rendered as fenced code')
     assert.ok(blocks.some(block => block[2]!.includes('![beacon]')))
     assert.ok(blocks.some(block => block[1]!.length > 4), 'an embedded fence cannot close its wrapper')
     const outside = detail.replace(/(`{3,})\n[\s\S]*?\n\1/g, '')
     assert.doesNotMatch(outside, /!\[beacon\]|\[click\]\(https:\/\//)
     assert.doesNotMatch(outside, /evil\.example/)
   }
+})
+
+test('one-line document values with backticks remain in an inert code span', () => {
+  const injected = '`![beacon](https://evil.example/track)'
+  const detail = questionDetail({ kind: 'save', documentId: 'internal',
+    path: `/tmp/${injected}.pdf`, revision: 1, dirty: true,
+    saveChangeCount: 1, saveDiffText: 'ordinary diff' })
+  assert.match(detail, /`` \/tmp\/`!\[beacon\]\(https:\/\/evil\.example\/track\)\.pdf ``/)
+  assert.match(detail, /ordinary diff/)
 })
 
 test('pdf_open reuses a caller-owned Host working copy without publishing a reader tab', async () => {
@@ -297,6 +374,117 @@ test('pdf_bookmarks lists personal and native outline items with bounded, sessio
     await bookmarks.dispose()
     await state.workspaces.dispose()
   }
+})
+
+test('model bookmark tools add, rename and approve removal through the Reader bookmark store', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-bookmark-edit'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const originalBytes = state.current().slice()
+  const rows = new Map<string, BookmarkRecord>()
+  const bookmarks = createBookmarks(state.workspaces, createV1NavigationStore({
+    get: key => rows.get(key), async put(key, value) { rows.set(key, value) }, async delete(key) { rows.delete(key) },
+  }))
+  const services: Record<string, unknown> = {}
+  const { ctx, definitions } = captureTools(services)
+  registerPdfAgentTools(ctx, state.workspaces, { async readOutline(callerSession: string, id: string) {
+    return { snapshot: state.workspaces.readSnapshot(callerSession, id), items: [] }
+  } } as never, { current: () => [] }, bookmarks)
+  try {
+    const added = await readTool(definitions, 'pdf_bookmark_add', { documentId: opened.id,
+      expectedRevision: opened.revision, title: 'Read this', target: { kind: 'page', page: 2 } },
+    sessionId) as { bookmarkId: string; updatedAt: string; savedToPdf: boolean }
+    assert.match(added.bookmarkId, /^[\da-f-]{36}$/i)
+    assert.equal(added.savedToPdf, false)
+    assert.equal(state.writes(), 0)
+    assert.deepEqual(state.current(), originalBytes)
+    const listed = await readTool(definitions, 'pdf_bookmarks', { documentId: opened.id,
+      kind: 'personal' }, sessionId) as { entries: Array<{ key: string; updatedAt: string; page: number }> }
+    assert.deepEqual(listed.entries, [{ kind: 'personal', key: added.bookmarkId, title: 'Read this',
+      page: 2, depth: 1, children: 0, stale: 'none', updatedAt: added.updatedAt }])
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, false)
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_add', { documentId: opened.id,
+      expectedRevision: opened.revision, title: 'Wrong page', target: { kind: 'page', page: 99 } }, sessionId),
+    { code: 'pdf/invalid-page' })
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_add', { documentId: opened.id,
+      expectedRevision: opened.revision, title: 'Wrong ID',
+      target: { kind: 'annotation', annotationId: 'unknown' } }, sessionId),
+    { code: 'pdf/unknown-annotation' })
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_rename', { documentId: opened.id,
+      bookmarkId: '0/0', expectedUpdatedAt: added.updatedAt, title: 'No' }, sessionId), /uuid/i)
+    const renamed = await readTool(definitions, 'pdf_bookmark_rename', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: added.updatedAt, title: 'Updated' },
+    sessionId) as { updatedAt: string; title: string }
+    assert.equal(renamed.title, 'Updated')
+    assert.notEqual(renamed.updatedAt, added.updatedAt)
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_rename', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: added.updatedAt, title: 'Stale' }, sessionId),
+    { code: 'pdf/bookmark-stale' })
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_remove', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: renamed.updatedAt }, sessionId),
+    { code: 'pdf/approval-unavailable' })
+    services.userQuestions = { async ask(request: { questions: Array<{ id: string }> }) {
+      return { answers: [{ id: request.questions[0]!.id, selected: ['取消'] }] }
+    } }
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_remove', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: renamed.updatedAt }, sessionId),
+    { code: 'pdf/approval-rejected' })
+    assert.equal((await bookmarks.dispatch(sessionId, { action: 'list', sessionId, id: opened.id },
+      agent(sessionId), signal) as unknown[]).length, 1)
+    services.userQuestions = { async ask(request: { questions: Array<{ id: string; options: Array<{ label: string }> }> }) {
+      return { answers: [{ id: request.questions[0]!.id,
+        selected: [request.questions[0]!.options[0]!.label] }] }
+    } }
+    const removed = await readTool(definitions, 'pdf_bookmark_remove', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: renamed.updatedAt }, sessionId) as { status: string; total: number }
+    assert.deepEqual([removed.status, removed.total], ['removed', 0])
+    assert.equal(rows.size, 0)
+    assert.equal(state.writes(), 0)
+
+    const draft = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: opened.id, revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'bookmark-target-note', page: 3, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'Here',
+      } }] }, agent(sessionId), signal)
+    assert.ok('bytes' in draft)
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_add', { documentId: opened.id,
+      expectedRevision: opened.revision, title: 'Stale target',
+      target: { kind: 'annotation', annotationId: 'bookmark-target-note' } }, sessionId),
+    { code: 'pdf/stale-revision' })
+    const atNote = await readTool(definitions, 'pdf_bookmark_add', { documentId: opened.id,
+      expectedRevision: draft.revision, title: 'At note',
+      target: { kind: 'annotation', annotationId: 'bookmark-target-note' } }, sessionId) as { page: number }
+    assert.equal(atNote.page, 3)
+    const own = await bookmarks.dispatch(sessionId, { action: 'list', sessionId, id: opened.id },
+      agent(sessionId), signal) as Array<{ position: { x: number; y: number } }>
+    assert.deepEqual([own[0]?.position.x, own[0]?.position.y], [60, 100])
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_rename', { documentId: opened.id,
+      bookmarkId: added.bookmarkId, expectedUpdatedAt: renamed.updatedAt, title: 'Other session' },
+    'pdf-bookmark-foreign'), /session|belong|access/i)
+  } finally { await bookmarks.dispose(); await state.workspaces.dispose() }
+})
+
+test('model bookmarks reject reply IDs and annotations without usable PDF coordinates', async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const sessionId = 'pdf-bookmark-invalid-target'
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+  assert.ok('bytes' in opened)
+  const { ctx, definitions } = captureTools()
+  let target = { id: 'reply', page: 1, subtype: 'Text', rect: [10, 20, 20, 30],
+    replyToId: 'parent', replyType: 'Reply' }
+  registerPdfModelBookmarkTools(ctx, { readSnapshot: () => ({ ...opened,
+    document: { ...opened.document, annotations: [target] } }) } as never, { dispatch: async () => [] } as never)
+  try {
+    const input = { documentId: opened.id, expectedRevision: opened.revision, title: 'Target',
+      target: { kind: 'annotation', annotationId: 'reply' } }
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_add', input, sessionId),
+      { code: 'pdf/invalid-bookmark-target' })
+    target = { ...target, replyToId: '', replyType: 'Group', rect: [Number.NaN, 20, 20, 30] }
+    await assert.rejects(readTool(definitions, 'pdf_bookmark_add', input, sessionId),
+      { code: 'pdf/invalid-bookmark-target' })
+  } finally { await state.workspaces.dispose() }
 })
 
 test('pdf_bookmarks refuses an outline or final list from a different PDF revision', async () => {
@@ -912,17 +1100,24 @@ test('evidence tools register through the same session-fenced Host adapter as le
   const { ctx, definitions } = captureTools()
   const dispose = registerPdfAgentTools(ctx, state.workspaces, pdfService as never, { current: () => [] })
   try {
-    for (const name of ['pdf_status', 'pdf_locate', 'pdf_context']) assert.ok(definitions.has(name))
+    for (const name of ['pdf_status', 'pdf_locate', 'pdf_context', 'pdf_find_related']) assert.ok(definitions.has(name))
     const status = await readTool(definitions, 'pdf_status', { documentId: opened.id }, sessionId) as Record<string, unknown>
     assert.equal(status.status, 'ok')
     assert.equal(status.visibleInReader, false)
     assert.equal(status.revision, opened.revision)
-    assert.equal(status.capabilities && (status.capabilities as Record<string, unknown>).writeAnnotations, false)
+    assert.equal(status.capabilities && (status.capabilities as Record<string, unknown>).writeAnnotations, true)
     const located = await readTool(definitions, 'pdf_locate', {
       documentId: opened.id, quote: 'Evidence', page: 1,
     }, sessionId) as { status: string; matches: Array<{ evidence: { refId: string; page: number } }> }
     assert.equal(located.status, 'ok')
     assert.equal(located.matches[0]?.evidence.page, 1)
+    const related = await readTool(definitions, 'pdf_find_related', {
+      documentId: opened.id, query: 'Does this document present evidence?', terms: ['Evidence'], maxPages: 1,
+    }, sessionId) as { candidates: Array<{ page: number; quote: string; evidence: { refId: string } }>; coverage: { nextCursor: string | null } }
+    assert.equal(related.candidates[0]?.page, 1)
+    assert.match(related.candidates[0]?.quote ?? '', /Evidence/)
+    assert.ok(related.candidates[0]?.evidence.refId)
+    assert.ok(related.coverage.nextCursor)
     const locateReplay = definitions.get('pdf_locate')!.output.presentationMeta?.({}, located) as {
       matches: Array<{ snapshot: { text: string } }>
     }
@@ -990,7 +1185,7 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
     const active = await readTool(definitions, 'pdf_current', {}, sessionId) as Record<string, unknown>
     assert.equal(active.status, 'active')
     assert.deepEqual(active.documents, [{
-      documentId: opened.id, path: opened.path, page: 3, pageCount: 4,
+      documentId: opened.id, tabId: 'reader-a', path: opened.path, page: 3, pageCount: 4,
       revision: opened.revision, contentVersion: opened.contentVersion,
     }])
     const otherSession = await readTool(definitions, 'pdf_current', {}, 'pdf-current-other') as Record<string, unknown>

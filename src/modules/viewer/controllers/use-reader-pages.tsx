@@ -40,6 +40,7 @@ export interface ReaderPagesOptions {
   selectExplanationRegion(page: number, region: Region): boolean
   editExplanationQuestion(id: string, marker: HTMLElement): void
   selectAnnotation(id: string, intent?: 'select' | 'comment'): void
+  moveNoteMarker(id: string, page: number, delta: { x: number; y: number }): Promise<boolean>
   dismissContext(): void
   notifyError(error: unknown): void
 }
@@ -71,7 +72,7 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
   const { PageComponent, pdf, snapshot, selection, selectedAnnotation, annotationsByPage,
     renderedAnnotationsByPage, activeExplanation, draftExplanationSelection, draggingPage,
     navigationTarget, ocrPages, zoom, fit, size, scrollRoot, mode, t, pageScale,
-    registerView, editExplanationQuestion, selectAnnotation, dismissContext, notifyError } = options
+    registerView, editExplanationQuestion, selectAnnotation, moveNoteMarker, dismissContext, notifyError } = options
   const callbacks = useRef({ destination: options.destination, jump: options.jump,
     beginNote: options.beginNote, takeScreenshot: options.takeScreenshot,
     selectExplanationRegion: options.selectExplanationRegion, currentPageCount: options.currentPageCount })
@@ -109,11 +110,11 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
           : undefined}
         onExplanationMark={editExplanationQuestion}
         onView={registerView} onDestination={pageDestination} onAction={pageAction}
-        onAnnotation={selectAnnotation} onNote={pageNote} onRegion={pageRegion}
+        onAnnotation={selectAnnotation} onMoveNoteMarker={moveNoteMarker} onNote={pageNote} onRegion={pageRegion}
         onBackground={dismissContext} onError={notifyError} />} />
   }, [PageComponent, pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, mode, t, scrollRoot,
     annotationsByPage, renderedAnnotationsByPage, selectedAnnotation?.id, selectedAnnotation?.page,
     selection, activeExplanation, draftExplanationSelection, draggingPage, navigationTarget,
     ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
-    selectAnnotation, pageNote, pageRegion, editExplanationQuestion, dismissContext, notifyError])
+    selectAnnotation, moveNoteMarker, pageNote, pageRegion, editExplanationQuestion, dismissContext, notifyError])
 }

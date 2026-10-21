@@ -59,16 +59,28 @@ test('a smaller glyph beside larger text does not grow the highlight', () => {
   ]), [[0, 100, 40, 130], [40, 108, 46, 118]])
 })
 
-test('consecutive selected lines become one paragraph region', () => {
+test('consecutive selected lines remain separate annotation quadrilaterals', () => {
   assert.deepEqual(mergeSelectionRects([
     [10, 100, 60, 114], [10, 116, 60, 130],
-  ]), [[10, 100, 60, 130]])
+  ]), [[10, 100, 60, 114], [10, 116, 60, 130]])
 })
 
-test('a paragraph followed by a distant line stays two regions', () => {
+test('a paragraph followed by a distant line keeps every text line separate', () => {
   assert.deepEqual(mergeSelectionRects([
     [10, 100, 60, 114], [10, 116, 60, 130], [10, 160, 60, 174],
-  ]), [[10, 100, 60, 130], [10, 160, 60, 174]])
+  ]), [[10, 100, 60, 114], [10, 116, 60, 130], [10, 160, 60, 174]])
+})
+
+test('a long selection cannot turn into the page-spanning quad of a saved underline', () => {
+  const lines = Array.from({ length: 30 }, (_, index) => {
+    const top = 100 + index * 16
+    return [[100, top, 150, top + 14], [150, top, 500, top + 14]] as [number, number, number, number][]
+  }).flat()
+  const regions = mergeSelectionRects(lines)
+  assert.equal(regions.length, 30)
+  assert.ok(regions.every(rect => rect[3] - rect[1] === 14))
+  assert.deepEqual(regions[0], [100, 100, 500, 114])
+  assert.deepEqual(regions.at(-1), [100, 564, 500, 578])
 })
 
 test('per-glyph boxes become one quad per line for the saved annotation', () => {

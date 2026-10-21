@@ -24,7 +24,7 @@ test('pending markup stays on the annotation layer only while a page is near', (
 
 test('context layers keep note, comment, explanation and region targets distinct', () => {
   const note: PdfAnnotation = { id: 'note-1', page: 1, subtype: 'Text', rect: [10, 20, 30, 40],
-    flags: 0, supported: true, editable: true }
+    flags: 0, supported: true, editable: true, contents: 'A standalone note' }
   const comment: PdfAnnotation = { id: 'comment-1', page: 1, subtype: 'Highlight', rect: [40, 50, 80, 70],
     flags: 0, supported: true, editable: true, contents: 'Please explain this.' }
   const html = renderToStaticMarkup(React.createElement(PageContextOverlays, {
@@ -37,9 +37,24 @@ test('context layers keep note, comment, explanation and region targets distinct
     followLink() {}, onAnnotation() {}, t: key => key,
   }))
   assert.match(html, /dsh-pdf-note-marker/)
+  assert.match(html, /data-pdf-note-id="note-1"/)
+  assert.doesNotMatch(html, /data-pdf-comment-id="note-1"/)
   assert.match(html, /data-pdf-comment-id="comment-1"/)
   assert.match(html, /data-pdf-explanation-id="question-1"/)
   assert.match(html, /dsh-pdf-region/)
+})
+
+test('opening a standalone note replaces its page marker without showing a selection outline', () => {
+  const note: PdfAnnotation = { id: 'note-open', page: 1, subtype: 'Text', rect: [10, 20, 30, 40],
+    flags: 0, supported: true, editable: true, contents: 'A standalone note' }
+  const html = renderToStaticMarkup(React.createElement(PageContextOverlays, {
+    near: true, textActive: false, viewport, width: 300, height: 400, pageNumber: 1, mode: 'text',
+    annotations: [note], selectedAnnotation: note.id, selection: null, ocrWords: [],
+    ocrHost: React.createRef<HTMLDivElement>(), keyboardLinks: [], drag: null,
+    followLink() {}, onAnnotation() {}, t: key => key,
+  }))
+  assert.doesNotMatch(html, /data-pdf-note-id="note-open"/)
+  assert.doesNotMatch(html, /dsh-pdf-annotation-outline/)
 })
 
 test('external replies create one page comment marker on their parent markup', () => {

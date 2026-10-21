@@ -1,7 +1,7 @@
 import type { DocumentPreviewProps } from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
 import type { PdfClientApi, PdfSettings } from '../shared/contracts.ts'
 import type { TranslationRegistry } from '../translation/index.js'
-import type { HostOcrApi, ImageUnderstandingApi, PdfReadingContextUpdate,
+import type { HostOcrApi, ImageUnderstandingApi, PdfReadingContextUpdate, PdfAgentNavigationApi,
   PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi } from '../modules/viewer/index.js'
 import type { PromptContentPart } from '../modules/explanation/index.js'
 import type { PdfEvidenceNavigation } from './toolview/pdf-evidence-navigation.js'
@@ -31,6 +31,7 @@ export type ReaderProps = Pick<DocumentPreviewProps, 'resourceAddress' | 'scroll
   /** Only the Session which owns the resource may publish its active reader. */
   allowReadingContext?: boolean
   reportReadingContext?: (update: PdfReadingContextUpdate) => Promise<void>
+  agentNavigation?: PdfAgentNavigationApi
   /** Append one user turn to this PDF's owning current conversation. */
   promptExplanation?: (content: string | readonly PromptContentPart[], signal: AbortSignal) => Promise<void>
   /** Client-local lease for validated navigation from persisted PDF tool cards. */

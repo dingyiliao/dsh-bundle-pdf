@@ -13,22 +13,42 @@
   box-shadow: var(--pdf-glass-shadow);
   color: var(--pdf-text); pointer-events: auto;
 }
+.dsh-pdf-page-comment-card[data-card-kind="note"] {
+  --pdf-text: var(--pdf-note-ink);
+  --pdf-muted: var(--pdf-note-muted);
+  --pdf-border: color-mix(in srgb, var(--pdf-note-border) 36%, transparent);
+  border-color: var(--pdf-note-border);
+  background: var(--pdf-note-paper);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.dsh-pdf-page-comment-card[data-card-kind="note"] .dsh-pdf-comment-editor-title svg { color: var(--pdf-note-ink); }
+.dsh-pdf-page-comment-card[data-card-kind="note"] textarea::placeholder { color: var(--pdf-note-muted); }
+.dsh-pdf-reader .dsh-pdf-page-comment-card[data-card-kind="note"] button:not(.dsh-pdf-comment-editor-apply):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pdf-note-ink) 10%, transparent);
+}
 .dsh-pdf-page-comment-card[data-visible="false"] { visibility: hidden; }
 .dsh-pdf-page-comment-card[data-dragging="true"] { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.dsh-pdf-page-comment-card[data-moving="true"] { cursor: progress; pointer-events: none; }
 .dsh-pdf-page-comment-card:focus-within { border-color: color-mix(in srgb, var(--pdf-accent) 38%, var(--pdf-glass-edge)); }
+.dsh-pdf-page-comment-card[data-card-kind="note"]:focus-within { border-color: var(--pdf-note-border); }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor {
   display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; border: 0;
 }
+.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-note-editor {
+  display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; border: 0;
+}
+.dsh-pdf-note-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--pdf-leading-body); }
+.dsh-pdf-note-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 8px; color: var(--pdf-muted); font-size: var(--pdf-type-caption); }
 .dsh-pdf-comment-thread { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; }
 .dsh-pdf-comment-message { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 0; border-top: 1px solid var(--pdf-border); }
 .dsh-pdf-comment-message:first-child { border-top: 0; }
-.dsh-pdf-comment-message-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 3px 8px; color: var(--pdf-muted); font-size: 11px; }
-.dsh-pdf-comment-message-heading strong { color: var(--pdf-text); font-weight: 650; }
-.dsh-pdf-comment-message-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
-.dsh-pdf-comment-format-warning { margin: 0; color: var(--pdf-muted); font-size: 11px; line-height: 1.4; }
+.dsh-pdf-comment-message-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 3px 8px; color: var(--pdf-muted); font-size: var(--pdf-type-caption); }
+.dsh-pdf-comment-message-heading strong { color: var(--pdf-text); font-weight: var(--pdf-weight-semibold); }
+.dsh-pdf-comment-message-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--pdf-leading-body); }
+.dsh-pdf-comment-format-warning { margin: 0; color: var(--pdf-muted); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-ui); }
 .dsh-pdf-comment-message-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-message-actions button {
-  min-height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--pdf-muted); font-size: 11px;
+  min-height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--pdf-muted); font-size: var(--pdf-type-caption);
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-message-actions button:hover { color: var(--pdf-text); }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-add,
@@ -42,7 +62,7 @@
   display: flex; align-items: center; gap: 8px; min-width: 0;
 }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header { justify-content: space-between; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; font-size: 12px; font-weight: 650; cursor: grab; user-select: none; -webkit-user-select: none; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); cursor: grab; user-select: none; -webkit-user-select: none; }
 .dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-title,
 .dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-move { cursor: grabbing; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title svg { display: block; width: 15px; height: 15px; color: var(--pdf-muted); }
@@ -63,9 +83,9 @@
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-close svg { display: block; width: 15px; height: 15px; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-details {
   display: flex; flex-direction: row; flex-wrap: wrap; gap: 2px 7px;
-  color: var(--pdf-muted); font-size: 11px; line-height: 1.35;
+  color: var(--pdf-muted); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-caption);
 }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-details strong { color: var(--pdf-muted); font-weight: 600; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-details strong { color: var(--pdf-muted); font-weight: var(--pdf-weight-semibold); }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-field { display: flex; flex-direction: column; align-items: stretch; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-field > span {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -73,30 +93,13 @@
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card textarea {
   width: 100%; min-height: 64px; max-height: 138px; padding: 4px 0; overflow-y: auto;
-  border: 0; border-radius: 0; background: transparent; line-height: 1.5; resize: none;
+  border: 0; border-radius: 0; background: transparent; line-height: var(--pdf-leading-body); resize: none;
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card textarea:focus-visible { outline: none; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions {
   justify-content: flex-end; gap: 5px; padding-top: 8px; border-top: 1px solid var(--pdf-border);
 }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions:has(.dsh-pdf-comment-editor-add) { justify-content: flex-start; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions .dsh-pdf-comment-editor-color {
-  display: grid; place-items: center; flex: none; width: 30px; height: 30px; margin-right: auto;
-  border-radius: 8px; cursor: pointer;
-}
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color:focus-within { outline: 2px solid var(--pdf-accent); outline-offset: 1px; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color > span {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
-}
-.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color input[type="color"] {
-  width: 20px; height: 20px; padding: 0; border: 1px solid var(--pdf-control-border); border-radius: 6px;
-  background: transparent;
-}
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 5px; }
-.dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-color input[type="color"]:focus-visible { outline: none; }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-delete {
   display: grid; place-items: center; flex: none; width: 30px; height: 30px; padding: 0;
   border: 0; border-radius: 8px; background: transparent; color: var(--pdf-muted);
@@ -108,7 +111,7 @@
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-apply {
   min-height: 30px; padding: 4px 12px; border-color: transparent; border-radius: 10px;
-  background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); font-weight: 600;
+  background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); font-weight: var(--pdf-weight-semibold);
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-apply:hover:not(:disabled) {
   background: var(--dsw-alias-button-primary-hover);
@@ -118,6 +121,7 @@
     background: var(--pdf-panel); border-color: var(--pdf-border);
     -webkit-backdrop-filter: none; backdrop-filter: none;
   }
+  .dsh-pdf-page-comment-card[data-card-kind="note"] { background: var(--pdf-note-paper); border-color: var(--pdf-note-border); }
 }
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .dsh-pdf-page-comment-card { background: var(--pdf-panel); }

@@ -1,7 +1,7 @@
 import type { PdfAnnotation, PdfRect } from '../../../core/pdf-types.js'
 import type { ReaderDocument, ReaderRenderTask } from '../ports/reader-document.js'
 import { pdfRectToViewport } from '../model/reader-selection.js'
-import { annotationPatchBoxes, markupOverlappingPatches, paintMarkupAnnotations, paintNoteMarkers, pendingMarkupAnnotations, staleNativeAnnotations } from '../model/reader-annotations.js'
+import { markupOverlappingPatches, nativeAppearancePatchBoxes, paintMarkupAnnotations, paintNoteMarkers, pendingMarkupAnnotations } from '../model/reader-annotations.js'
 
 export interface CapturePdfRegionOptions {
   signal?: AbortSignal
@@ -144,9 +144,8 @@ export async function capturePdfRegion(
     signal?.throwIfAborted()
     if (options.annotations && options.sourceAnnotations) {
       const context = canvas.getContext('2d')!
-      const stale = staleNativeAnnotations(options.annotations, options.sourceAnnotations)
-      const patchBoxes = stale.flatMap(annotation => annotationPatchBoxes(annotation, viewport))
-      if (stale.length) {
+      const patchBoxes = nativeAppearancePatchBoxes(options.annotations, options.sourceAnnotations, viewport)
+      if (patchBoxes.length) {
         const clean = document.createElement('canvas')
         clean.width = width
         clean.height = height
@@ -182,23 +181,7 @@ export async function capturePdfRegion(
         context.restore()
       }
       paintMarkupAnnotations(context, pending, viewport, left, top)
-      const sourceIds = new Set(options.sourceAnnotations.map(annotation => annotation.id))
-      const repairedIds = new Set(stale.map(annotation => annotation.id))
-      const newNotes = options.annotations.filter(annotation => annotation.subtype === 'Text'
-        && (!sourceIds.has(annotation.id) || repairedIds.has(annotation.id)))
-      const overlappingNotes = options.annotations.filter(annotation => annotation.subtype === 'Text'
-        && sourceIds.has(annotation.id) && !repairedIds.has(annotation.id)
-        && annotationPatchBoxes(annotation, viewport).some(box => patchBoxes.some(patch =>
-          box[0] < patch[2] && box[2] > patch[0] && box[1] < patch[3] && box[3] > patch[1])))
-      if (overlappingNotes.length) {
-        context.save()
-        context.beginPath()
-        for (const box of patchBoxes) context.rect(box[0] - left, box[1] - top, box[2] - box[0], box[3] - box[1])
-        context.clip()
-        paintNoteMarkers(context, overlappingNotes, viewport, left, top)
-        context.restore()
-      }
-      paintNoteMarkers(context, newNotes, viewport, left, top)
+      paintNoteMarkers(context, options.annotations, viewport, left, top)
     }
     const blob = await abortable(new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((result) => {

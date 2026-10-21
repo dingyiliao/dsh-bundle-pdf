@@ -23,6 +23,8 @@ export interface PdfAnnotation {
   sourceObjectId?: string
   /** Host projection identity of an associated popup annotation, when present. */
   popupObjectId?: string
+  /** DSH's persisted top-left placement for the comment card, in PDF user space. */
+  commentPosition?: [number, number]
   page: number
   subtype: string
   /** Named navigation actions retained by Host inspection for the native reader. */
@@ -72,7 +74,7 @@ export interface NewPdfAnnotation {
 
 export type PdfAnnotationOperation =
   | { type: 'add'; annotation: NewPdfAnnotation }
-  | { type: 'update'; id: string; patch: { contents?: string; color?: PdfColor } }
+  | { type: 'update'; id: string; patch: { contents?: string; color?: PdfColor; rect?: PdfRect; commentPosition?: [number, number] } }
   | { type: 'delete'; id: string }
 
 export type PdfDocumentErrorCode =

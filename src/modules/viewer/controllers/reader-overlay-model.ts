@@ -13,22 +13,28 @@ export interface ReaderOverlayModelOptions {
   readOnly: boolean
   getExplanationAnchor(): DOMRect | null
   getCommentAnchor(): DOMRect | null
+  getCommentPosition(): DOMRect | null
+  getNoteAnchor(): DOMRect | null
+  moveNote(delta: { x: number; y: number }): boolean | Promise<boolean>
+  moveCommentCard(delta: { x: number; y: number }, position: { left: number; top: number }): boolean | Promise<boolean>
   applyComment(): void
   closeComment(): void
+  applyNote(): void
   t(key: string): string
 }
 
-type OverlayModel = Pick<ReaderViewProps, 'question' | 'comment'> & {
+type OverlayModel = Pick<ReaderViewProps, 'question' | 'comment' | 'note'> & {
   explanationStatus: ReaderViewProps['floating']['explanation']
 }
 
 /** Convert feature-owned draft/editor state into anchored overlay bindings. */
 export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayModel {
   const { explanation, annotations, viewport, mode, regionPurpose, editable, readOnly,
-    getExplanationAnchor, getCommentAnchor, applyComment, closeComment, t } = options
+    getExplanationAnchor, getCommentAnchor, getCommentPosition, getNoteAnchor, moveNote, moveCommentCard,
+    applyComment, closeComment, applyNote, t } = options
   const { active, editor, sending, saving, imageAvailability } = explanation
-  const { selected, pendingNote, commentCardOpen, commentMode, editingCommentId,
-    thread, comment, commentColor, commentTextarea } = annotations
+  const { selected, selectedNote, pendingNote, commentCardOpen, noteCardOpen, noteMode, noteText,
+    noteTextarea, commentMode, editingCommentId, thread, comment, commentTextarea } = annotations
   const explanationStatus = active ? {
     count: active.excerpts.length, max: MAX_EXPLANATION_EXCERPTS,
     sending: sending || saving, disabled: !!editor,
@@ -53,20 +59,36 @@ export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayM
       onDelete: editor.kind === 'edit' ? explanation.deleteQuestion : undefined,
     },
   } : undefined
-  const commentBinding = commentCardOpen && (selected || pendingNote) ? {
-    key: selected?.id ?? pendingNote!.id,
-    viewport, getAnchor: getCommentAnchor, onVisible: annotations.onCommentCardVisible,
+  const commentBinding = commentCardOpen && selected && selected.subtype !== 'Text' ? {
+    key: selected.id,
+    viewport, getAnchor: getCommentAnchor, getPosition: getCommentPosition,
+    onMove: annotations.canPersistCommentPosition ? (delta: { x: number; y: number }, position: { left: number; top: number }) =>
+      moveCommentCard(delta, position) : undefined,
+    onVisible: annotations.onCommentCardVisible,
     editor: {
       comments: thread?.comments ?? [], mode: commentMode, editingCommentId,
-      blockedDeleteIds: annotations.blockedCommentDeleteIds, pendingNote: !!pendingNote,
-      readOnly, editable: editable && (!!pendingNote || !!selected?.editable),
-      comment, color: commentColor, textarea: commentTextarea,
+      blockedDeleteIds: annotations.blockedCommentDeleteIds,
+      readOnly, editable: editable && !!selected.editable,
+      comment, textarea: commentTextarea,
       onComment: annotations.setComment,
-      onColor: annotations.setCommentColor,
       onAdd: annotations.openCommentEditor, onEdit: annotations.editComment,
       onDeleteComment: (id: string) => { void annotations.deleteComment(id) }, onApply: applyComment,
       onClose: closeComment, onDismiss: annotations.dismissCommentCard, t,
     },
   } : undefined
-  return { explanationStatus, question, comment: commentBinding }
+  const noteBinding = noteCardOpen && (selectedNote || pendingNote) ? {
+    key: selectedNote?.id ?? pendingNote!.id,
+    viewport, getAnchor: getNoteAnchor, onVisible: annotations.onNoteCardVisible,
+    onMove: moveNote,
+    editor: {
+      note: selectedNote, mode: noteMode, readOnly,
+      editable: editable && (!!pendingNote || !!selectedNote?.editable),
+      value: noteText, textarea: noteTextarea,
+      onChange: annotations.setNoteText, onEdit: annotations.editNote,
+      onSave: applyNote, onCancel: annotations.cancelNoteEdit,
+      onDismiss: annotations.dismissNoteCard,
+      onDelete: () => { void annotations.deleteNote() }, t,
+    },
+  } : undefined
+  return { explanationStatus, question, comment: commentBinding, note: noteBinding }
 }

@@ -8,14 +8,11 @@ export interface ReaderCommentEditorProps {
   mode: 'read' | 'new' | 'edit'
   editingCommentId?: string
   blockedDeleteIds?: ReadonlySet<string>
-  pendingNote: boolean
   readOnly: boolean
   editable: boolean
   comment: string
-  color: string
   textarea: RefObject<HTMLTextAreaElement>
   onComment(value: string): void
-  onColor(value: string): void
   onAdd(): void
   onEdit(id: string): void
   onDeleteComment(id: string): void
@@ -27,8 +24,8 @@ export interface ReaderCommentEditorProps {
 
 /** A mark owns one thread; each PDF /IRT reply remains an independent message. */
 export function ReaderCommentEditor(props: ReaderCommentEditorProps) {
-  const { comments, mode, editingCommentId, blockedDeleteIds, pendingNote, readOnly, editable,
-    comment, color, textarea, onComment, onColor, onAdd, onEdit, onDeleteComment,
+  const { comments, mode, editingCommentId, blockedDeleteIds, readOnly, editable,
+    comment, textarea, onComment, onAdd, onEdit, onDeleteComment,
     onApply, onDismiss, onClose, t } = props
   const canWrite = editable && !readOnly
   return <section className="dsh-pdf-comment-editor" onKeyDown={event => {
@@ -82,10 +79,6 @@ export function ReaderCommentEditor(props: ReaderCommentEditorProps) {
     {mode === 'read' ? canWrite && <footer className="dsh-pdf-comment-editor-actions">
       <button type="button" className="dsh-pdf-comment-editor-add" onClick={onAdd}>{t('reader.addComment')}</button>
     </footer> : <footer className="dsh-pdf-comment-editor-actions">
-      {pendingNote && <label className="dsh-pdf-comment-editor-color" title={t('reader.color')}>
-        <span>{t('reader.color')}</span><input type="color" value={color} disabled={!canWrite}
-          onChange={event => onColor(event.target.value)} />
-      </label>}
       <button type="button" className="dsh-pdf-comment-editor-cancel" onClick={onClose}>{t('reader.cancel')}</button>
       <button type="button" className="dsh-pdf-comment-editor-apply" disabled={!canWrite || !comment.trim()}
         onClick={onApply}>{t('reader.saveComment')}</button>

@@ -15,17 +15,22 @@ function fixture() {
     setEditor() {},
   } as unknown as ReaderOverlayModelOptions['explanation']
   const annotations = {
-    selected: undefined, pendingNote: null, commentCardOpen: false, commentMode: 'read',
+    selected: undefined, selectedNote: undefined, pendingNote: null, commentCardOpen: false,
+    noteCardOpen: false, noteMode: 'read', noteText: '', noteTextarea: { current: null }, commentMode: 'read',
     thread: undefined, editingCommentId: undefined, comment: '',
-    commentColor: '#ffff00', commentTextarea: { current: null },
-    onCommentCardVisible() {}, setComment() {}, updateColor() {}, setCommentColor() {},
+    commentTextarea: { current: null },
+    onCommentCardVisible() {}, onNoteCardVisible() {}, setComment() {}, setNoteText() {}, updateColor() {},
     deleteAnnotation() {}, openCommentEditor() {}, editComment() {}, deleteComment() {}, dismissCommentCard() {},
+    editNote() {}, cancelNoteEdit() {}, dismissNoteCard() {}, deleteNote() {},
   } as unknown as ReaderOverlayModelOptions['annotations']
   const options: ReaderOverlayModelOptions = {
     explanation, annotations, viewport: null, mode: 'text', regionPurpose: null,
     editable: true, readOnly: false, getExplanationAnchor: () => null,
-    getCommentAnchor: () => null, applyComment: () => calls.push('apply-comment'),
-    closeComment: () => calls.push('close-comment'), t: key => key,
+    getCommentAnchor: () => null, getCommentPosition: () => null, getNoteAnchor: () => null,
+    moveCommentCard: (_delta, position) => { calls.push(`move-comment:${position.left},${position.top}`); return true },
+    applyComment: () => calls.push('apply-comment'),
+    moveNote: delta => { calls.push(`move-note:${delta.x},${delta.y}`); return true },
+    closeComment: () => calls.push('close-comment'), applyNote: () => calls.push('apply-note'), t: key => key,
   }
   return { options, calls }
 }
@@ -41,6 +46,7 @@ test('explanation overlay exposes live count, image affordance and submit action
   assert.deepEqual(calls, ['submit'])
   assert.equal(model.question, undefined)
   assert.equal(model.comment, undefined)
+  assert.equal(model.note, undefined)
 })
 
 test('question overlay keeps draft identity and edit index tied to the active excerpt', () => {
@@ -55,28 +61,46 @@ test('question overlay keeps draft identity and edit index tied to the active ex
   assert.ok(model.question?.props.onDelete)
 })
 
-test('comment overlay gives new note color to its draft, not annotation color', () => {
+test('comment overlay does not expose annotation color as a note-composition requirement', () => {
   const { options, calls } = fixture()
   const annotations = { ...options.annotations, commentCardOpen: true,
     selected: { id: 'annotation-1', subtype: 'Highlight', page: 1 }, commentMode: 'new',
-    pendingNote: { id: 'note-1', subtype: 'Text', page: 1 },
     updateColor: (color: string) => calls.push(`update:${color}`),
-    setCommentColor: (color: string) => calls.push(`draft:${color}`),
   } as unknown as ReaderOverlayModelOptions['annotations']
   const model = readerOverlayModel({ ...options, annotations })
   assert.ok(model.comment)
-  model.comment?.editor.onColor('#123456')
+  assert.equal('onColor' in model.comment!.editor, false)
+  assert.equal('color' in model.comment!.editor, false)
   model.comment?.editor.onApply()
-  assert.deepEqual(calls, ['draft:#123456', 'apply-comment'])
+  assert.deepEqual(calls, ['apply-comment'])
 })
 
-test('a locked or Group root can be read but cannot offer Add comment', () => {
-  const { options } = fixture()
+test('a saved markup comment card exposes its persisted move callback', async () => {
+  const { options, calls } = fixture()
   const annotations = { ...options.annotations, commentCardOpen: true,
-    selected: { id: 'group', subtype: 'Text', page: 1, editable: false },
-    thread: { comments: [{ id: 'group', contents: 'Imported comment' }] },
+    selected: { id: 'annotation-1', subtype: 'Highlight', page: 1 },
+    canPersistCommentPosition: true,
+  } as unknown as ReaderOverlayModelOptions['annotations']
+  const model = readerOverlayModel({ ...options, annotations,
+    getCommentPosition: () => ({ left: 120, top: 240 } as DOMRect),
+  })
+  assert.deepEqual([model.comment?.getPosition?.()?.left, model.comment?.getPosition?.()?.top], [120, 240])
+  assert.equal(await model.comment?.onMove?.({ x: 8, y: 9 }, { left: 128, top: 249 }), true)
+  assert.deepEqual(calls, ['move-comment:128,249'])
+})
+
+test('a standalone note gets a distinct card with no comment-thread editor', () => {
+  const { options } = fixture()
+  const note = { id: 'note', subtype: 'Text', page: 1, contents: 'A sticky note', editable: false }
+  const annotations = { ...options.annotations, selected: note, selectedNote: note,
+    noteCardOpen: true, noteMode: 'read', noteText: 'A sticky note',
   } as unknown as ReaderOverlayModelOptions['annotations']
   const model = readerOverlayModel({ ...options, annotations })
-  assert.equal(model.comment?.editor.editable, false)
-  assert.equal(model.comment?.editor.comments.length, 1)
+  assert.equal(model.comment, undefined)
+  assert.equal(model.note?.editor.note?.id, 'note')
+  assert.equal(model.note?.editor.editable, false)
+  assert.equal(model.note?.editor.mode, 'read')
+  assert.ok(model.note?.onMove)
+  model.note?.onMove({ x: 12, y: -4 })
+  assert.deepEqual(options.annotations.deleteNote instanceof Function, true)
 })

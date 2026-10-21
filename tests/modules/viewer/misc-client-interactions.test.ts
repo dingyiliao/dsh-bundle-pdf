@@ -205,6 +205,12 @@ test('page comment card stays attached above its mark and tolerates transient mi
       left, top, right: left + width, bottom: top + height, width, height,
       x: left, y: top, toJSON() {},
     }) as DOMRect
+    function pointer(type: string, x: number, y: number) {
+      const event = new dom.Event(type, { bubbles: true, cancelable: true })
+      for (const [key, value] of Object.entries({ pointerId: 7, isPrimary: true, button: 0, clientX: x, clientY: y }))
+        Object.defineProperty(event, key, { configurable: true, value })
+      return event
+    }
     const reader = dom.document.createElement('div')
     reader.className = 'dsh-pdf-reader'
     const viewport = dom.document.createElement('div')
@@ -230,6 +236,51 @@ test('page comment card stays attached above its mark and tolerates transient mi
       assert.ok(Number.parseFloat(card.style.top) < 450, 'a narrow viewport places the card above the selected mark')
       assert.match(reader.querySelector('svg path[marker-end]')?.getAttribute('d') ?? '', /^M /)
       assert.equal(visible, 1)
+      let committedMove: { x: number; y: number } | undefined
+      const noteProps = { ...props, connector: false, cardKind: 'note' as const,
+        onMove: (delta: { x: number; y: number }) => { committedMove = delta; return true } }
+      await render(React.createElement(AnnotationCommentCard, noteProps))
+      assert.equal(card.dataset.cardKind, 'note')
+      assert.equal(reader.querySelector('svg.dsh-pdf-comment-connector'), null,
+        'a standalone note card is placed beside its marker without a comment arrow')
+      assert.equal(card.dataset.visible, 'true')
+      for (const [x, y] of [[4, 4], [476, 4], [4, 476], [476, 476]]) {
+        anchor = rect(x, y, 20, 20)
+        await render(React.createElement(AnnotationCommentCard, noteProps))
+        const left = Number.parseFloat(card.style.left), top = Number.parseFloat(card.style.top)
+        assert.equal(card.dataset.visible, 'true', `a note opens at the ${x},${y} corner`)
+        assert.ok(left >= 12 && left + Number.parseFloat(card.style.width) <= 488,
+          'the opened note stays inside the horizontal reader edges')
+        assert.ok(top >= 12 && top + 100 <= 488, 'the opened note stays inside the vertical reader edges')
+      }
+      anchor = rect(200, 450, 100, 20)
+      const noteMoveHandle = card.querySelector<HTMLButtonElement>('[data-comment-card-drag-handle]')!
+      await act(async () => {
+        noteMoveHandle.dispatchEvent(pointer('pointerdown', 420, 200))
+        noteMoveHandle.dispatchEvent(pointer('pointermove', 438, 217))
+        noteMoveHandle.dispatchEvent(pointer('pointerup', 438, 217))
+        await Promise.resolve()
+      })
+      assert.deepEqual(committedMove, { x: 18, y: 17 }, 'moving an open note commits its displacement to the owner')
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+      await act(async () => {
+        noteMoveHandle.dispatchEvent(new dom.KeyboardEvent('keydown', {
+          bubbles: true, cancelable: true, key: 'ArrowRight', shiftKey: true,
+        }))
+        await new Promise(resolve => setTimeout(resolve, 5))
+      })
+      assert.deepEqual(committedMove, { x: 10, y: 0 }, 'keyboard movement persists the note position')
+      await render(React.createElement(AnnotationCommentCard, { ...noteProps,
+        onMove: async () => { throw new Error('storage unavailable') },
+      }))
+      await act(async () => {
+        noteMoveHandle.dispatchEvent(new dom.KeyboardEvent('keydown', {
+          bubbles: true, cancelable: true, key: 'ArrowDown',
+        }))
+        await new Promise(resolve => setTimeout(resolve, 5))
+      })
+      assert.equal(card.dataset.moving, undefined, 'failed keyboard persistence releases its moving state')
+      await render(React.createElement(AnnotationCommentCard, props))
       const toolbar = dom.document.createElement('div')
       toolbar.className = 'dsh-pdf-annotation-toolbar'
       toolbar.dataset.visible = 'true'
@@ -254,12 +305,6 @@ test('page comment card stays attached above its mark and tolerates transient mi
       const connector = reader.querySelector('svg path[marker-end]')!
       const initialPath = connector.getAttribute('d')
       const move = card.querySelector<HTMLButtonElement>('[data-comment-card-drag-handle]')!
-      const pointer = (type: string, x: number, y: number) => {
-        const event = new dom.Event(type, { bubbles: true, cancelable: true })
-        for (const [key, value] of Object.entries({ pointerId: 7, isPrimary: true, button: 0, clientX: x, clientY: y }))
-          Object.defineProperty(event, key, { configurable: true, value })
-        return event
-      }
       await act(async () => {
         move.dispatchEvent(pointer('pointerdown', 420, 200))
         move.dispatchEvent(pointer('pointermove', 360, 230))
@@ -429,14 +474,22 @@ test('annotation previews cancel their shared page text request after the final 
 test('outline leaves invalid named destinations disabled while retaining external links', async () => {
   await withDom(async (_dom, container, render) => {
     const outline: ReaderOutlineItem[] = [
+      { title: 'First chapter', dest: [0, { name: 'Fit' }], items: [] },
       { title: 'Missing chapter', dest: 'missing', items: [] },
       { title: 'Reference website', url: 'https://example.com/', items: [] },
     ]
+    const destinations: unknown[] = []
     const pdf = { numPages: 1, async getOutline() { return outline },
       async getDestination() { throw new Error('destination removed') }, async getPageIndex() { return 0 },
     } as unknown as ReaderDocument
     await render(React.createElement(BookmarkPanel, { pdf, active: true, currentPage: 1,
-      onNavigateDestination() {}, t }))
+      onNavigateDestination: destination => { destinations.push(destination) }, t }))
+    const valid = [...container.querySelectorAll<HTMLElement>('.dsh-pdf-bookmark-row')]
+      .find(row => row.textContent?.includes('First chapter'))!
+    await act(async () => { valid.click() })
+    assert.deepEqual(destinations, [outline[0]!.dest], 'the entire valid row navigates')
+    await act(async () => { valid.querySelector<HTMLButtonElement>('.dsh-pdf-bookmark-link')!.click() })
+    assert.deepEqual(destinations, [outline[0]!.dest, outline[0]!.dest], 'button click does not navigate twice')
     assert.ok(container.querySelector('[title="destination removed"]'))
     const link = container.querySelector<HTMLAnchorElement>('a[href="https://example.com/"]')
     assert.equal(link?.textContent, 'Reference website')

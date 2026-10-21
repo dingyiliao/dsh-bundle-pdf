@@ -1,9 +1,10 @@
 import { z } from 'zod'
 
 const rect = z.tuple([z.number(), z.number(), z.number(), z.number()])
+const point = z.tuple([z.number().finite(), z.number().finite()])
 const color = z.tuple([z.number(), z.number(), z.number()])
 export const wireAnnotationSchema = z.object({
-  sourceObjectId: z.string().optional(), popupObjectId: z.string().optional(),
+  sourceObjectId: z.string().optional(), popupObjectId: z.string().optional(), commentPosition: point.optional(),
   replyToId: z.string().optional(), replyType: z.enum(['R', 'Group']).optional(),
   hasRichText: z.literal(true).optional(),
   linkAction: z.string().optional(),

@@ -68,6 +68,7 @@ export function createAnnotationThreadIndex(annotations: readonly PdfAnnotation[
     return root
   }
   const thread = (root: PdfAnnotation): AnnotationThread => {
+    if (isStandaloneNote(root)) return { root, comments: [] }
     const comments: PdfAnnotation[] = []
     const visited = new Set<string>([root.id])
     // Explicit stack avoids overflowing JS call frames on hostile long chains.
@@ -95,4 +96,9 @@ export function annotationThread(root: PdfAnnotation, annotations: readonly PdfA
 
 export function isReply(annotation: PdfAnnotation): boolean {
   return !!annotation.replyToId && annotation.replyType !== 'Group'
+}
+
+/** A standalone PDF Text annotation is a sticky note, not a comment thread. */
+export function isStandaloneNote(annotation: PdfAnnotation): boolean {
+  return annotation.subtype === 'Text' && !annotation.replyToId
 }

@@ -133,7 +133,12 @@ export function PersonalBookmarks({ access, document, active, t }: {
     {!!items?.length && <div ref={root} className="dsh-pdf-personal-bookmark-list" tabIndex={0} aria-label={t('reader.sidebar.myBookmarks')}>
       <div className="dsh-pdf-personal-bookmark-virtual" style={{ height: totalHeight }}>
       {items.slice(start, end).map((item, offset) => <div key={item.id} className="dsh-pdf-personal-bookmark-row"
-        style={{ position: 'absolute', top: (start + offset) * rowHeight, left: 6, right: 6, height: rowHeight }}>
+        style={{ position: 'absolute', top: (start + offset) * rowHeight, left: 6, right: 6, height: rowHeight }}
+        onClick={event => {
+          if (busy || item.stale === 'page-missing' || editingId === item.id || deletingId === item.id
+            || (event.target as HTMLElement).closest('button, a, input, select, textarea, summary, [role="menuitem"]')) return
+          access?.onNavigatePosition({ ...item.position, documentVersion: access.capturePosition().documentVersion })
+        }}>
         {editingId === item.id ? <form className="dsh-pdf-bookmark-form" onSubmit={event => { event.preventDefault(); rename(item.id) }}>
           <input autoFocus aria-label={t('reader.sidebar.bookmarkName')} value={editTitle} onChange={event => setEditTitle(event.target.value)} maxLength={200} />
           <button disabled={busy || !editTitle.trim()}>{t('reader.sidebar.saveBookmark')}</button>

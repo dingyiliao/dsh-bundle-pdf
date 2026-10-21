@@ -130,6 +130,30 @@ test('recoloring regenerates the appearance and retains original quadrilaterals'
   assert.notEqual(output.context.lookup(highlight, PDFDict).lookup(PDFName.of('AP'), PDFDict).get(PDFName.of('N'))!.toString(), originalAppearance.toString())
 })
 
+test('moving a standalone note updates its PDF Rect and survives reload', async () => {
+  const { bytes } = await fixture()
+  const added = await applyPdfOperations(bytes, [{ type: 'add', annotation: newMarkup('movable-note', 'Text') }])
+  const before = added.document.annotations.find(annotation => annotation.id === 'movable-note')!
+  const movedRect = [180, 220, 200, 240] as const
+  const changed = await applyPdfOperations(added.bytes, [{ type: 'update', id: before.id, patch: { rect: [...movedRect] } }])
+  assert.deepEqual(changed.document.annotations.find(annotation => annotation.id === before.id)?.rect, movedRect)
+  assert.deepEqual((await loadPdfDocument(changed.bytes)).annotations.find(annotation => annotation.id === before.id)?.rect, movedRect)
+  await assert.rejects(applyPdfOperations(bytes, [{ type: 'update', id: 'nonexistent', patch: { rect: [...movedRect] } }]),
+    (error: unknown) => error instanceof PdfDocumentError && error.code === 'unknown-annotation')
+})
+
+test('comment-card placement survives saving and reloading the PDF', async () => {
+  const { bytes } = await fixture()
+  const before = await loadPdfDocument(bytes)
+  const mark = before.annotations.find(annotation => annotation.subtype === 'Highlight')!
+  const position: [number, number] = [240, 310]
+  const changed = await applyPdfOperations(bytes, [
+    { type: 'update', id: mark.id, patch: { commentPosition: position } },
+  ])
+  assert.deepEqual(changed.document.annotations.find(annotation => annotation.id === mark.id)?.commentPosition, position)
+  assert.deepEqual((await loadPdfDocument(changed.bytes)).annotations.find(annotation => annotation.id === mark.id)?.commentPosition, position)
+})
+
 test('deleting an annotation detaches its own popup and retains unrelated links and stamps', async () => {
   const { bytes } = await fixture()
   const id = (await loadPdfDocument(bytes)).annotations.find((annotation) => annotation.subtype === 'Highlight')!.id
@@ -363,6 +387,11 @@ test('an invalid batch is atomic and preserves the caller bytes', async () => {
     { type: 'add', annotation: newMarkup() },
     { type: 'add', annotation: newMarkup() },
   ]), (error: unknown) => error instanceof PdfDocumentError && error.code === 'invalid-operation')
+  const existing = (await loadPdfDocument(bytes)).annotations[0]!
+  await assert.rejects(applyPdfOperations(bytes, [{ type: 'update', id: existing.id,
+    patch: { forbidden: true } } as never]),
+  (error: unknown) => error instanceof PdfDocumentError && error.code === 'invalid-operation')
+  assert.deepEqual(bytes, original)
 })
 
 test('geometry validation refuses invalid page, color and nonfinite or degenerate quads', async () => {

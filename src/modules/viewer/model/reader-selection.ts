@@ -40,6 +40,48 @@ export function pdfRectToViewport(viewport: PageViewport, rect: readonly number[
   return [Math.min(first[0], second[0]), Math.min(first[1], second[1]), Math.max(first[0], second[0]), Math.max(first[1], second[1])]
 }
 
+/** Translate a PDF-space rectangle by a CSS-pixel delta in the current viewport. */
+export function translatePdfRectInViewport(viewport: PageViewport, rect: PdfRect, deltaX: number, deltaY: number): PdfRect {
+  const [left, top, right, bottom] = pdfRectToViewport(viewport, rect)
+  return viewportRectToPdf(viewport, [left + deltaX, top + deltaY, right + deltaX, bottom + deltaY]).rect
+}
+
+/** Map a PDF note's bounded rectangle onto the fixed-size marker's travel area. */
+export function noteMarkerViewportPosition(viewport: PageViewport, rect: PdfRect, markerSize = 22) {
+  const [left, top, right, bottom] = pdfRectToViewport(viewport, rect)
+  const rangeX = Math.max(0, viewport.width - (right - left))
+  const rangeY = Math.max(0, viewport.height - (bottom - top))
+  const markerRangeX = Math.max(0, viewport.width - markerSize)
+  const markerRangeY = Math.max(0, viewport.height - markerSize)
+  return {
+    left: rangeX ? Math.max(0, Math.min(left, rangeX)) * markerRangeX / rangeX : 0,
+    top: rangeY ? Math.max(0, Math.min(top, rangeY)) * markerRangeY / rangeY : 0,
+  }
+}
+
+/** Invert the marker mapping so a dragged marker stays under the pointer even at page edges. */
+export function movePdfNoteRectByMarker(viewport: PageViewport, rect: PdfRect, deltaX: number, deltaY: number,
+  markerSize = 22): PdfRect {
+  const [left, top, right, bottom] = pdfRectToViewport(viewport, rect)
+  const position = noteMarkerViewportPosition(viewport, rect, markerSize)
+  const rangeX = Math.max(0, viewport.width - (right - left))
+  const rangeY = Math.max(0, viewport.height - (bottom - top))
+  const markerRangeX = Math.max(0, viewport.width - markerSize)
+  const markerRangeY = Math.max(0, viewport.height - markerSize)
+  const nextLeft = markerRangeX ? Math.max(0, Math.min(position.left + deltaX, markerRangeX)) * rangeX / markerRangeX : left
+  const nextTop = markerRangeY ? Math.max(0, Math.min(position.top + deltaY, markerRangeY)) * rangeY / markerRangeY : top
+  return translatePdfRectInViewport(viewport, rect, nextLeft - left, nextTop - top)
+}
+
+/** Keep a moved note wholly inside the page while preserving its dimensions. */
+export function clampPdfRectToBounds(rect: PdfRect, bounds: PdfRect): PdfRect {
+  const width = Math.min(rect[2] - rect[0], bounds[2] - bounds[0])
+  const height = Math.min(rect[3] - rect[1], bounds[3] - bounds[1])
+  const left = Math.max(bounds[0], Math.min(rect[0], bounds[2] - width))
+  const bottom = Math.max(bounds[1], Math.min(rect[1], bounds[3] - height))
+  return [left, bottom, left + width, bottom + height]
+}
+
 export function overlapFraction(rect: PdfRect, other: PdfRect): number {
   const area = Math.max(0, Math.min(rect[2], other[2]) - Math.max(rect[0], other[0])) * Math.max(0, Math.min(rect[3], other[3]) - Math.max(rect[1], other[1]))
   return area / Math.max(0.00001, (rect[2] - rect[0]) * (rect[3] - rect[1]))

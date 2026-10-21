@@ -5,6 +5,7 @@ import { joinPageText } from '../../shared/page-text.js'
 import { approximateTextRects } from './geometry.js'
 import { evidenceSha256 } from './provenance.js'
 import { textWindow } from './text-window.js'
+import { rankRelatedText } from './related-text.js'
 import { createMemoryEvidenceReferenceStore,
   isSavedTextReference, type EvidenceReferenceStore, type PdfTextEvidence } from './reference-store.js'
 import type { NativeTextContent } from '../../shared/native.js'
@@ -24,6 +25,7 @@ export type { ImageEvidenceCapture, ImageAttachmentVerifier } from './image-refe
 export { captureRenderedPageEvidence, captureOcrPageEvidence } from './image-capture.js'
 export type { OcrPageEvidenceValue } from './image-capture.js'
 export { windowPageText } from './text-window.js'
+export { rankRelatedText } from './related-text.js'
 export { evidenceNavigationRequestSchema, revalidateEvidenceNavigation } from './navigation-check.js'
 export type { EvidenceNavigationRequest } from './navigation-check.js'
 export { readPageWindow, searchPageWindows, listPageAnnotations } from './agent-page-read.js'
@@ -46,7 +48,7 @@ function fail(code: string, message: string): never { throw Object.assign(new Er
 interface Version { documentId: string; contentVersion: string; revision: number; sourceDigest: string }
 
 interface Cursor {
-  kind: 'locate' | 'context'; sessionId: string; documentId: string; contentVersion: string; revision: number
+  kind: 'locate' | 'context' | 'related'; sessionId: string; documentId: string; contentVersion: string; revision: number
   sourceDigest: string
   queryHash: string; page: number; offset: number; scopePage?: number
 }
@@ -57,7 +59,7 @@ function decodeCursor(value: string): Cursor {
     const decoded = Buffer.from(value, 'base64url')
     if (decoded.toString('base64url') !== value) throw new Error('Non-canonical cursor')
     const item = JSON.parse(decoded.toString('utf8')) as Cursor
-    if (!item || !['locate', 'context'].includes(item.kind) || typeof item.sessionId !== 'string'
+    if (!item || !['locate', 'context', 'related'].includes(item.kind) || typeof item.sessionId !== 'string'
       || typeof item.documentId !== 'string' || typeof item.contentVersion !== 'string'
       || typeof item.sourceDigest !== 'string'
       || !Number.isSafeInteger(item.revision) || item.revision < 0
@@ -232,6 +234,58 @@ export function createEvidenceReader(workspaces: WorkingCopyReadPort, pages: Pag
       matches, coverage: { pagesScanned, noTextPages, truncated: nextCursor !== null, nextCursor } }
   }
 
+  async function related(sessionId: string, input: {
+    documentId: string; query: string; terms?: string[]; fromPage?: number; maxPages?: number; cursor?: string
+  }, signal: AbortSignal) {
+    const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    const pageCount = snapshot.document.pageCount
+    const fromPage = input.fromPage ?? 1
+    const maxPages = input.maxPages ?? 30
+    if (fromPage > pageCount || maxPages < 1 || maxPages > 50) fail('pdf/invalid-window', 'Invalid related-search page window')
+    const identity = { kind: 'related' as const, sessionId, documentId: snapshot.id,
+      contentVersion: snapshot.contentVersion, revision: snapshot.revision, sourceDigest: digestOf(snapshot.bytes),
+      queryHash: hash(JSON.stringify([input.query, input.terms ?? [], fromPage, maxPages])) }
+    const cursor = checkedCursor(input.cursor, identity)
+    const startPage = cursor?.page ?? fromPage
+    const throughPage = Math.min(pageCount, startPage + maxPages - 1)
+    const version = { documentId: snapshot.id, contentVersion: snapshot.contentVersion,
+      revision: snapshot.revision, sourceDigest: digestOf(snapshot.bytes) }
+    const pagesScanned: number[] = [], noTextPages: number[] = []
+    const ranked: Array<{ page: number; startUtf16: number; endUtf16: number; quote: string;
+      matchedTerms: string[]; score: number; text: string; content: NativeTextContent }> = []
+    for (let page = startPage; page <= throughPage; page++) {
+      const result = await read(sessionId, input.documentId, page, signal, version)
+      pagesScanned.push(page)
+      if (!result.text.trim()) noTextPages.push(page)
+      for (const candidate of rankRelatedText(result.text, input.query, input.terms, 2)) {
+        ranked.push({ page, ...candidate, text: result.text, content: result.content })
+      }
+    }
+    signal.throwIfAborted()
+    if (!sameVersion(version, workspaces.readSnapshot(sessionId, input.documentId))) {
+      fail('pdf/stale-reader', 'PDF changed during related-text search; retry')
+    }
+    const candidates = []
+    for (const candidate of ranked.sort((a, b) => b.score - a.score || a.page - b.page).slice(0, 6)) {
+      candidates.push({ page: candidate.page, quote: candidate.quote, score: candidate.score,
+        matchedTerms: candidate.matchedTerms,
+        annotationReady: candidate.text.indexOf(candidate.quote) === candidate.text.lastIndexOf(candidate.quote),
+        evidence: await remember(sessionId, snapshot, candidate.page, candidate.text,
+          candidate.startUtf16, candidate.endUtf16, candidate.content) })
+    }
+    const nextCursor = throughPage < pageCount
+      ? encodeCursor({ ...identity, page: throughPage + 1, offset: 0 }) : null
+    return { status: nextCursor ? 'partial' as const : 'complete' as const,
+      documentId: snapshot.id, path: snapshot.path, sourceDigest: version.sourceDigest,
+      sourceVersion: snapshot.sourceVersion, contentVersion: snapshot.contentVersion, revision: snapshot.revision,
+      candidates, coverage: { pagesScanned, noTextPages, truncated: nextCursor !== null, nextCursor },
+      limitations: [
+        'Candidates are lexical leads, not semantic relevance judgments. Read surrounding context before answering or marking.',
+        'Only extracted text was searched; scanned/image-only pages need OCR or visual inspection.',
+        'Ranking is only within the reported page window. Continue nextCursor to inspect the rest of the PDF.',
+      ] }
+  }
+
   async function context(sessionId: string, input: {
     documentId: string
     focus: { kind: 'page-window'; page: number; offsetUtf16?: number }
@@ -343,7 +397,7 @@ export function createEvidenceReader(workspaces: WorkingCopyReadPort, pages: Pag
         truncated: nextCursor !== null, nextCursor } }
   }
 
-  return { status, locate, context, reference,
+  return { status, locate, related, context, reference,
     forgetSession(sessionId: string) { return references.deleteSession(sessionId) },
     dispose() { references.clear?.() } }
 }

@@ -1,23 +1,152 @@
-import React, { memo, useMemo, type RefObject } from 'react'
+import React, { memo, useEffect, useMemo, useRef, type RefObject } from 'react'
 import type { PdfAnnotation, PdfRect } from '../../../core/pdf-types.js'
 import { DEFAULT_HIGHLIGHT_OPACITY } from '../../../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../../../ocr/mapping.js'
 import type { ExplanationExcerpt } from '../../explanation/index.js'
 import { annotationPolygons, markupOverlappingPatches, pendingMarkupAnnotations, visibleAnnotation,
   type AnnotationPoint } from '../model/reader-annotations.js'
-import { pdfRectToViewport, type PageViewport, type ReaderSelection } from '../model/reader-selection.js'
+import { noteMarkerViewportPosition, pdfRectToViewport, type PageViewport, type ReaderSelection } from '../model/reader-selection.js'
 import { namedLinkAction, safeLinkUrl, type PdfLink } from '../model/reader-links.js'
 import { mergeSelectionRects } from '../model/selection-highlight.js'
-import { createAnnotationThreadIndex, isReply } from '../model/annotation-thread.js'
+import { createAnnotationThreadIndex, isStandaloneNote } from '../model/annotation-thread.js'
 import { ToolbarIcon } from '../components/ToolbarIcon.js'
 
 const noAnnotations: PdfAnnotation[] = []
-const nonCommentAnnotations = new Set(['Popup', 'Link', 'Widget'])
+const commentableMarks = new Set(['Highlight', 'Underline', 'StrikeOut'])
+const NOTE_MARKER_SIZE = 22
+const NOTE_DRAG_THRESHOLD = 5
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(value, maximum))
+}
+
+function noteMarkerTravel(button: HTMLButtonElement, width: number, height: number) {
+  const page = button.parentElement?.getBoundingClientRect()
+  if (!page?.width || !page.height) return null
+  const scaleX = page.width / width, scaleY = page.height / height
+  const sidebar = button.closest('.dsh-pdf-reader')?.querySelector<HTMLElement>('.dsh-pdf-sidebar')?.getBoundingClientRect()
+  // The floating sidebar covers the PDF's right edge. Stop before its frame
+  // rather than persisting a note marker that can no longer be clicked.
+  const sidebarOverlaps = sidebar && sidebar.left < page.right && sidebar.right > page.left
+    && sidebar.top < page.bottom && sidebar.bottom > page.top
+  const visibleRight = sidebarOverlaps ? sidebar.left - 8 : page.right
+  return { scaleX, scaleY,
+    maxX: Math.max(0, Math.min(width - NOTE_MARKER_SIZE,
+      (visibleRight - page.left) / scaleX - NOTE_MARKER_SIZE)),
+    maxY: Math.max(0, height - NOTE_MARKER_SIZE) }
+}
 
 function screenRect(viewport: PageViewport, rect: readonly number[]) {
   const value = pdfRectToViewport(viewport, rect)
   return { left: Math.min(value[0], value[2]), top: Math.min(value[1], value[3]),
     width: Math.abs(value[2] - value[0]), height: Math.abs(value[3] - value[1]) }
+}
+
+function NoteMarker({ annotation, viewport, width, height, pageNumber, onOpen, onMove, label }: {
+  annotation: PdfAnnotation
+  viewport: PageViewport
+  width: number
+  height: number
+  pageNumber: number
+  onOpen(id: string): void
+  onMove?(id: string, page: number, delta: { x: number; y: number }): Promise<boolean>
+  label: string
+}) {
+  const marker = useRef<HTMLButtonElement>(null)
+  const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number;
+    scaleX: number; scaleY: number; maxX: number; maxY: number; moved: boolean; deltaX: number; deltaY: number } | null>(null)
+  const suppressClick = useRef(false)
+  const moving = useRef(false)
+  const { left, top } = noteMarkerViewportPosition(viewport, annotation.rect!, NOTE_MARKER_SIZE)
+  const rectKey = annotation.rect?.join(',')
+
+  useEffect(() => {
+    if (!moving.current || !marker.current) return
+    marker.current.style.transform = ''
+    delete marker.current.dataset.moving
+    moving.current = false
+  }, [rectKey])
+
+  const preview = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const current = drag.current
+    if (!current || current.pointerId !== event.pointerId) return
+    if (!current.moved && Math.hypot(event.clientX - current.x, event.clientY - current.y) < NOTE_DRAG_THRESHOLD) return
+    current.moved = true
+    const dx = clamp((event.clientX - current.x) / current.scaleX, -current.left,
+      current.maxX - current.left)
+    const dy = clamp((event.clientY - current.y) / current.scaleY, -current.top,
+      current.maxY - current.top)
+    current.deltaX = dx * current.scaleX
+    current.deltaY = dy * current.scaleY
+    event.currentTarget.style.transform = `translate(${dx}px, ${dy}px)`
+    event.currentTarget.dataset.dragging = 'true'
+  }
+  const cancel = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (drag.current?.pointerId !== event.pointerId) return
+    drag.current = null
+    event.currentTarget.style.transform = ''
+    delete event.currentTarget.dataset.dragging
+  }
+  const commit = async (button: HTMLButtonElement, delta: { x: number; y: number }) => {
+    moving.current = true
+    button.dataset.moving = 'true'
+    let saved = false
+    try { saved = !!await onMove?.(annotation.id, pageNumber, delta) }
+    catch { /* The Reader reports persistence errors. */ }
+    if (saved) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    if (!button.isConnected) return
+    button.style.transform = ''
+    delete button.dataset.moving
+    moving.current = false
+  }
+
+  return <button ref={marker} type="button" className="dsh-pdf-note-marker" data-pdf-note-id={annotation.id}
+    style={{ left, top, width: NOTE_MARKER_SIZE, height: NOTE_MARKER_SIZE }}
+    title={annotation.contents || label} aria-label={annotation.contents || label}
+    data-editable={annotation.editable && !!onMove ? 'true' : 'false'}
+    onPointerDown={event => {
+      event.stopPropagation()
+      if (!annotation.editable || !onMove || moving.current || event.button !== 0 || event.isPrimary === false) return
+      const travel = noteMarkerTravel(event.currentTarget, width, height)
+      if (!travel) return
+      suppressClick.current = false
+      drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left, top,
+        ...travel, moved: false, deltaX: 0, deltaY: 0 }
+      try { event.currentTarget.setPointerCapture(event.pointerId) }
+      catch { /* Embedded test hosts may not implement pointer capture. */ }
+    }}
+    onPointerMove={event => { if (drag.current) { event.stopPropagation(); preview(event) } }}
+    onPointerUp={event => {
+      event.stopPropagation()
+      const current = drag.current
+      if (!current || current.pointerId !== event.pointerId) return
+      drag.current = null
+      delete event.currentTarget.dataset.dragging
+      if (!current.moved) return
+      suppressClick.current = true
+      void commit(event.currentTarget, { x: current.deltaX, y: current.deltaY })
+    }}
+    onPointerCancel={event => { event.stopPropagation(); cancel(event) }}
+    onLostPointerCapture={cancel}
+    onClick={event => {
+      event.stopPropagation()
+      if (suppressClick.current) { suppressClick.current = false; return }
+      onOpen(annotation.id)
+    }}
+    onKeyDown={event => {
+      if (!annotation.editable || !onMove || moving.current) return
+      const distance = event.shiftKey ? 10 : 2
+      const dx = event.key === 'ArrowLeft' ? -distance : event.key === 'ArrowRight' ? distance : 0
+      const dy = event.key === 'ArrowUp' ? -distance : event.key === 'ArrowDown' ? distance : 0
+      if (!dx && !dy) return
+      event.preventDefault()
+      event.stopPropagation()
+      const travel = noteMarkerTravel(event.currentTarget, width, height)
+      if (!travel) return
+      const delta = { x: (clamp(left + dx, 0, travel.maxX) - left) * travel.scaleX,
+        y: (clamp(top + dy, 0, travel.maxY) - top) * travel.scaleY }
+      if (delta.x || delta.y) void commit(event.currentTarget, delta)
+    }}><ToolbarIcon name="note" /></button>
 }
 
 function explanationFragmentRects(fragment: ReaderSelection['fragments'][number], viewport: PageViewport): PdfRect[] {
@@ -110,7 +239,8 @@ export interface PageContextOverlaysProps {
   keyboardLinks: readonly PdfLink[]
   drag: { x: number; y: number; endX: number; endY: number } | null
   followLink(link: PdfLink): void
-  onAnnotation(id: string, intent?: 'select' | 'comment'): void
+  onAnnotation(id: string, intent?: 'select' | 'comment' | 'note'): void
+  onMoveNoteMarker?(id: string, page: number, delta: { x: number; y: number }): Promise<boolean>
   onExplanationMark?(id: string, marker: HTMLElement): void
   t(key: string): string
 }
@@ -119,20 +249,21 @@ export interface PageContextOverlaysProps {
 export function PageContextOverlays(props: PageContextOverlaysProps) {
   const { near, textActive, viewport, width, height, pageNumber, mode, annotations, selectedAnnotation,
     selection, explanationExcerpts, explanationDraft, ocrWords, ocrHost, keyboardLinks, drag,
-    followLink, onAnnotation, onExplanationMark, t } = props
+    followLink, onAnnotation, onMoveNoteMarker, onExplanationMark, t } = props
   const region = selection?.kind === 'region' ? selection.fragments.find(fragment => fragment.page === pageNumber) : undefined
   const selected = useMemo(() => annotations.find(annotation => annotation.id === selectedAnnotation),
     [annotations, selectedAnnotation])
-  const noteMarkers = useMemo(() => near ? annotations.filter(annotation => annotation.subtype === 'Text' && !isReply(annotation)
-    && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, annotations])
+  const noteMarkers = useMemo(() => near ? annotations.filter(annotation => isStandaloneNote(annotation)
+    && annotation.id !== selectedAnnotation
+    && annotation.rect && visibleAnnotation(annotation)) : noAnnotations, [near, annotations, selectedAnnotation])
   const commentMarkers = useMemo(() => {
     if (!near || !viewport) return []
     const threadIndex = createAnnotationThreadIndex(annotations)
     const roots = new Map<string, PdfAnnotation>()
     for (const annotation of annotations) {
-      if (!annotation.contents?.trim() || nonCommentAnnotations.has(annotation.subtype)) continue
+      if (!annotation.contents?.trim()) continue
       const root = threadIndex.rootOf(annotation)
-      if (root.rect && visibleAnnotation(root) && !nonCommentAnnotations.has(root.subtype)) roots.set(root.id, root)
+      if (root.rect && visibleAnnotation(root) && commentableMarks.has(root.subtype)) roots.set(root.id, root)
     }
     return [...roots.values()].flatMap(annotation => {
       const first = annotationPolygons(annotation, viewport)[0]
@@ -173,11 +304,9 @@ export function PageContextOverlays(props: PageContextOverlaysProps) {
       })}
     </div>}
     {near && viewport && mode === 'text' && <div className="dsh-pdf-links">
-      {noteMarkers.filter(annotation => !annotation.contents?.trim()).map(annotation => <button
-        key={annotation.id} className="dsh-pdf-note-marker" style={screenRect(viewport, annotation.rect!)}
-        title={annotation.contents || t('reader.note')} aria-label={annotation.contents || t('reader.note')}
-        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
-        onClick={event => { event.stopPropagation(); onAnnotation(annotation.id, 'comment') }}>▤</button>)}
+      {noteMarkers.map(annotation => <NoteMarker key={annotation.id} annotation={annotation} viewport={viewport}
+        width={width} height={height} pageNumber={pageNumber} label={t('reader.note')}
+        onOpen={id => onAnnotation(id, 'note')} onMove={onMoveNoteMarker} />)}
       {commentMarkers.map(({ annotation, left, top }) => <button key={annotation.id} type="button"
         className={`dsh-pdf-comment-marker${selectedAnnotation === annotation.id ? ' is-selected' : ''}`}
         data-pdf-comment-id={annotation.id}
@@ -188,7 +317,7 @@ export function PageContextOverlays(props: PageContextOverlaysProps) {
         <ToolbarIcon name="commentedMark" />
       </button>)}
     </div>}
-    {viewport && selected && <svg className="dsh-pdf-annotation-outline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+    {viewport && selected && !isStandaloneNote(selected) && <svg className="dsh-pdf-annotation-outline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
       {annotationPolygons(selected, viewport).map((points, index) => <polygon key={index} points={points.map(point => point.join(',')).join(' ')} fill="none" stroke="var(--pdf-accent)" strokeWidth="1.5" />)}
     </svg>}
     {(!!explanationMarks.length || !!draftExplanationMark) && <div className="dsh-pdf-explanation-overlay">

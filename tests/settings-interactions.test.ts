@@ -64,6 +64,17 @@ test('PDF settings handles remote revisions, validation and failed saves without
       control.dispatchEvent(new dom.Event('change', { bubbles: true }))
     })
   }
+  const fillPrompt = async (suffix: string, value: string) => {
+    const control = container.querySelector<HTMLTextAreaElement>(`textarea[id$="-${suffix}"]`)
+    assert.ok(control)
+    const setter = Object.getOwnPropertyDescriptor(dom.HTMLTextAreaElement.prototype, 'value')?.set
+    assert.ok(setter)
+    await act(async () => {
+      setter.call(control, value)
+      control.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      control.dispatchEvent(new dom.Event('change', { bubbles: true }))
+    })
+  }
   const click = async (label: string) => {
     await act(async () => { button(label).click(); await Promise.resolve() })
   }
@@ -73,6 +84,10 @@ test('PDF settings handles remote revisions, validation and failed saves without
   try {
     await act(async () => { rootView.render(React.createElement(Settings, props)) })
     await fill('historyCapacity', '77')
+    assert.equal(container.querySelector('textarea[id$="-explanationPromptTemplate"]'), null,
+      'the old placeholder template is not shown as an editable field')
+    await fillPrompt('explanationGeneralInstruction', '请逐段解释并在最后总结。')
+    await fillPrompt('explanationImageInstruction', '请先读图例。')
     assert.match(container.textContent ?? '', /有未保存的修改/)
     const unload = new dom.Event('beforeunload', { cancelable: true })
     dom.dispatchEvent(unload)
@@ -83,6 +98,7 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.equal(button('保存设置').disabled, true)
     await click('保留我的修改')
     assert.equal(input('historyCapacity').value, '77')
+    assert.match(container.querySelector('textarea')!.value, /最后总结/)
     assert.equal(input('translationTimeoutMs').value, '18000')
     assert.equal(button('保存设置').disabled, false)
 
@@ -96,6 +112,12 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.match(container.textContent ?? '', /请先修正标出的设置/)
     assert.match(container.textContent ?? '', /请输入 1000 到 600000 之间的整数/)
     await fill('translationTimeoutMs', '19000')
+    await fillPrompt('explanationGeneralInstruction', 'x'.repeat(2001))
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
+    })
+    assert.match(container.textContent ?? '', /每个提示词最多 2000 个字符/)
+    await fillPrompt('explanationGeneralInstruction', '请逐段解释并在最后总结。')
     const calls: { operations: unknown; revision: unknown }[] = []
     mutation = async (operations, revision) => {
       calls.push({ operations, revision })
@@ -105,6 +127,8 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.match(container.textContent ?? '', /保存失败：offline/)
     assert.equal(calls[0]?.revision, 2)
     assert.match(JSON.stringify(calls[0]?.operations), /historyCapacity/)
+    assert.match(JSON.stringify(calls[0]?.operations), /explanationGeneralInstruction/)
+    assert.match(JSON.stringify(calls[0]?.operations), /explanationImageInstruction/)
     assert.equal(input('historyCapacity').value, '77', 'a failed save retains the draft')
 
     mutation = async () => false
@@ -115,11 +139,31 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.equal(input('historyCapacity').value, String(defaultSettings.historyCapacity))
     assert.equal(input('translationTimeoutMs').value, '18000')
 
+    await publish({ ...ready(4), value: { ...defaultSettings, explanationPromptTemplate: 'Missing items' } })
+    await fill('historyCapacity', '52')
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
+    })
+    assert.match(container.textContent ?? '', /请先修正标出的设置/)
+
+    await publish({ ...ready(5), base: { explanationPromptTemplate: 'Legacy instruction. {{items}}' },
+      value: { ...defaultSettings,
+      explanationPromptTemplate: 'Legacy instruction. {{items}}' } })
+    await click('载入最新设置')
+    assert.match(container.textContent ?? '', /旧版完整模板仍在生效/)
+    await click('改用分项提示词')
+    mutation = async (operations, revision) => { calls.push({ operations, revision }); return false }
+    await click('保存设置')
+    assert.deepEqual((calls.at(-1)?.operations as Array<{ op: string; path: string[]; value?: string }>).find(
+      item => item.path[0] === 'explanationPromptTemplate'), {
+      op: 'set', path: ['explanationPromptTemplate'], value: defaultSettings.explanationPromptTemplate,
+    }, 'switching must override even a legacy template supplied by the profile base')
+
     await click('恢复默认')
     assert.match(container.textContent ?? '', /默认值已填入/)
     mutation = async (operations, revision) => {
       calls.push({ operations, revision })
-      snapshot = ready(4)
+      snapshot = ready(5)
       for (const listener of listeners) listener()
       return true
     }
@@ -130,7 +174,7 @@ test('PDF settings handles remote revisions, validation and failed saves without
     await fill('historyCapacity', '51')
     // The form can change between the last render and submit. The revision
     // fence catches this even if no notification arrived from the store.
-    snapshot = ready(5)
+    snapshot = ready(6)
     await click('保存设置')
     assert.match(container.textContent ?? '', /设置已在其他地方更新/)
 

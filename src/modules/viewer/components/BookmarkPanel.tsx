@@ -44,6 +44,11 @@ function OutlineEntry({ pdf, row, index, expanded, current, toggle, onNavigateDe
   return <div className={`dsh-pdf-bookmark-row${current ? ' is-current' : ''}`} role="treeitem" aria-level={row.depth}
     aria-current={current ? 'location' : undefined}
     aria-expanded={row.children ? expanded : undefined}
+    onClick={event => {
+      if (!target?.valid || row.item.dest === undefined || row.item.dest === null
+        || (event.target as HTMLElement).closest('button, a')) return
+      onNavigateDestination(row.item.dest)
+    }}
     style={{ top: index * rowHeight, height: rowHeight, paddingLeft: Math.min(18 + (row.depth - 1) * 14, 116) }}>
     {row.children ? <button type="button" className="dsh-pdf-bookmark-toggle"
       aria-label={t(expanded ? 'reader.sidebar.collapseBookmark' : 'reader.sidebar.expandBookmark')}

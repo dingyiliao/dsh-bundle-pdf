@@ -14,6 +14,7 @@ export * from '../../../core/pdf-types.js'
 
 const editableTypes = new Set<string>(['Highlight', 'Underline', 'StrikeOut', 'Text'])
 const privateId = PDFName.of('DSHPDFId')
+const privateCommentPosition = PDFName.of('DSHCommentPosition')
 const defaultColor: PdfColor = [1, 0.85, 0]
 const lockedFlags = 64 | 128 | 512 // ReadOnly (0x40), Locked, LockedContents; NoView (0x20) only controls visibility.
 
@@ -150,6 +151,10 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
         createdAt: readString(get(doc, dictionary, 'CreationDate')),
         modifiedAt: readString(get(doc, dictionary, 'M')),
         flags, supported, editable: !readOnlyReason, readOnlyReason,
+      }
+      const rawCommentPosition = numbers(get(doc, dictionary, 'DSHCommentPosition'))
+      if (rawCommentPosition?.length === 2 && rawCommentPosition.every(Number.isFinite)) {
+        model.commentPosition = [rawCommentPosition[0]!, rawCommentPosition[1]!]
       }
       if (subtype === 'Link') {
         const action = get(doc, dictionary, 'A')
@@ -504,7 +509,9 @@ async function applyPdfOperationsImpl(
       continue
     }
     const patch = operation.patch
-    if (!patch || Object.keys(patch).some((key) => key !== 'contents' && key !== 'color')) fail('Only annotation color and contents can be changed.')
+    if (!patch || Object.keys(patch).some((key) => key !== 'contents' && key !== 'color' && key !== 'rect' && key !== 'commentPosition')) {
+      fail('Only annotation contents, color, note position, and comment-card position can be changed.')
+    }
     if (patch.contents !== undefined) {
       if (typeof patch.contents !== 'string') fail('Annotation contents must be text.')
       setContents(entry.dictionary, patch.contents)
@@ -522,6 +529,26 @@ async function applyPdfOperationsImpl(
         const color: PdfColor = [patch.color[0], patch.color[1], patch.color[2]]
         for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.color = color
         appearances.set(entry.dictionary, entry)
+      }
+    }
+    if (patch.rect !== undefined) {
+      if (entry.model.subtype !== 'Text' || entry.model.replyToId) fail('Only standalone notes can be repositioned.')
+      if (!validRect(patch.rect)) fail('A note rectangle must have a positive width and height.')
+      entry.dictionary.set(PDFName.of('Rect'), doc.context.obj(patch.rect))
+      for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) alias.model.rect = [...patch.rect] as PdfRect
+      appearances.set(entry.dictionary, entry)
+    }
+    if (patch.commentPosition !== undefined) {
+      if (entry.model.subtype === 'Text' || entry.model.subtype === 'Popup' || entry.model.replyToId) {
+        fail('Only a root markup annotation can store a comment-card position.')
+      }
+      if (!Array.isArray(patch.commentPosition) || patch.commentPosition.length !== 2
+        || !patch.commentPosition.every((value: number) => Number.isFinite(value))) {
+        fail('A comment-card position must contain two finite coordinates.')
+      }
+      entry.dictionary.set(privateCommentPosition, doc.context.obj(patch.commentPosition))
+      for (const alias of byDictionary.get(entry.dictionary) ?? [entry]) {
+        alias.model.commentPosition = [...patch.commentPosition] as [number, number]
       }
     }
     // A modified direct dictionary gets a persistent ID before array positions can change.

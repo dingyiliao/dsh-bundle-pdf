@@ -71,7 +71,7 @@ src/
     navigation/                   # 页码、书签、阅读位置、回退栈
     search/                       # 共用文本内核；UI/工具各自的查询策略
     evidence/                     # 快照、定位、来源、上下文打包与引用校验
-    model-write/                  # 模型批注预演、限时提案、审批后写入/保存
+    model-write/                  # 模型直接编辑可撤销草稿；原文件保存需审批
     explanation/                  # 多段/区域问题与会话提交
     ocr/                          # 图像→文字的通用服务，不知道 PDF 是什么
     image-understanding/          # 图像→描述或原生视觉的策略/能力端口
@@ -108,7 +108,7 @@ tests/                            # 按模块和边界组织测试
 | `navigation` | 物理页跳转、书签、阅读位置与回退记录；Host 持久书签，Client 管当前视图 | 把 Host 后台打开伪装为侧栏打开 |
 | `search` | 共用文本拼接/位置内核；保留 UI 全书、忽略大小写、已缓存 OCR 页级结果与模型工具精确有界搜索两套策略 | 虚构结构树或无依据的语义命中 |
 | `evidence` | 从 `working-copy` 的只读快照截取原文/图片、验证锚点、提供来源与精度、打包有界上下文 | 回答用户问题、自动写标注 |
-| `model-write` | 对显式 PDF 区域生成无副作用批注提案；经 DSH 用户交互服务的明确批准后通过 `working-copy` 的同一事务写草稿或保存原文件 | 自己另建写入路径、以模型自报的确认字段代替批准 |
+| `model-write` | 对显式 PDF 区域直接通过 `working-copy` 写入可撤销草稿；仅覆盖保存原文件时经 DSH 用户交互服务明确批准 | 自己另建写入路径、以模型自报的确认字段代替保存批准 |
 | `explanation` | 将多个选段或图像区域、各自问题和证据快照组成一轮提词 | 复制整个 PDF 到会话、维护另一份工作副本 |
 | `ocr`、`image-understanding`、`translation` | 与 PDF 解耦的识别、视觉策略和翻译服务，可被其他插件通过端口/公开导出复用 | 文件访问、PDF 页码、侧栏状态 |
 | `viewer` | 页面窗口化绘制、交互模式、选区、各功能面板与状态反馈；调用 Client Port | 草稿最终持久化、文件授权、业务版本裁决 |
@@ -147,7 +147,7 @@ tests/                            # 按模块和边界组织测试
 | `renderedHash` | 物化后待发布 PDF 的字节摘要，保存前写进草稿；只用于崩溃恢复 | 重启时比对磁盘字节，判定保存是否实际发布；不是通用源版本 |
 | `reader.bytesHash` | 原生阅读器当前基线字节的身份 | 与 `reader.generation`、页/缩放/区域等参数一起校验 PDFium 句柄、位图与 tile；不等于未保存标注投影 |
 
-`working-copy` 是唯一写入仲裁者：UI 与模型使用同一个会话副本、每会话串行队列、批注投影和文件适配器。预演不修改草稿；现有 `pdf.dispatch.v2` 修改/保存请求仍传 `id + revision`，Host 内部核对该句柄当前的 `contentVersion` 与预演/长任务所见版本，**不在旧 RPC 中强加新必填字段**；未来新写入工具的版本化契约可显式传预期 `contentVersion`。提交进入可撤销操作组；保存再核对沙箱权限、源/目标的已观察字节摘要及覆盖意图，由文件适配器按规范路径串行执行。页文字和不含外观的逻辑锚点缓存可按 `contentVersion` 失效；PDFium bitmap/tile 至少还要按 `reader.bytesHash + reader.generation` 及页/缩放/区域等渲染参数区分，由截图产生的 OCR 也须绑定实际图像输入与引擎配置。带批注的快照、引用和游标还须核对 `revision`；`sourceDigest` 变化后，旧引用即使原文看似相同也必须重新验证，不能按旧坐标盲跳。普通文件系统不能保证与无关外部写入者之间的真正跨进程事务；保留现有最终摘要复核与“不确定”错误语义。
+`working-copy` 是唯一写入仲裁者：UI 与模型使用同一个会话副本、每会话串行队列、批注投影和文件适配器。`pdf_annotate` 直接以预期修订与源摘要进入一个可撤销操作组；`pdf.watch` 只传轻量修订通知，Reader 随后从已鉴权的工作副本刷新。现有 `pdf.dispatch.v2` 修改/保存请求仍传 `id + revision`，**不在旧 RPC 中强加新必填字段**；未来新写入工具的版本化契约可显式传预期 `contentVersion`。覆盖保存仍须用户批准，再核对沙箱权限、源/目标的已观察字节摘要及覆盖意图，由文件适配器按规范路径串行执行。页文字和不含外观的逻辑锚点缓存可按 `contentVersion` 失效；PDFium bitmap/tile 至少还要按 `reader.bytesHash + reader.generation` 及页/缩放/区域等渲染参数区分，由截图产生的 OCR 也须绑定实际图像输入与引擎配置。带批注的快照、引用和游标还须核对 `revision`；`sourceDigest` 变化后，旧引用即使原文看似相同也必须重新验证，不能按旧坐标盲跳。普通文件系统不能保证与无关外部写入者之间的真正跨进程事务；保留现有最终摘要复核与“不确定”错误语义。
 
 现有个人书签与续读位置持久化的是源字节哈希，而仅保存批注会改变源字节却保持 `contentVersion`；因此它们可能被误判为内容过期。第一轮源码重构须保留 V1 记录和既有判定并建立回归测试，不能暗中把记录里的哈希替换为当前进程内的 `contentVersion`（它跨重开不稳定）。要改善该行为，应另行设计稳定的页面内容指纹及 V1 记录迁移，并独立验收“仅保存批注”和“真正改写页面内容”两类文件。
 
@@ -160,7 +160,7 @@ tests/                            # 按模块和边界组织测试
 | Client 修改/撤销/保存 | 同一 `resourceSessionId` | 上述条件加预期 `revision`；保存/覆盖另需已观察的目标摘要和用户覆盖选择 | 仅凭当前可见标签或路径写文件 |
 | 解释提词、发布当前阅读状态 | UI 的 `containerSessionId` 与资源地址中的 `resourceSessionId` | 两者相等；解释还须使用所属聊天的正式发送接口 | 跨会话把 PDF 内容发入另一个聊天；将带 TTL 的阅读状态当授权 |
 | 模型后台打开/读工具 | `exec.agent.session.id` | 显式地址/文档句柄属于执行会话，并通过文件访问检查 | 根据 UI 当前页猜出可读文件或跨会话复用句柄 |
-| 引用重放、未来 `pdf_reveal` | 引用记录的会话 + 当前获授权的会话/附件与可见标签 | 重验来源版本和目标；导航须有匹配的活标签及显式意图，失败要回报 | 用历史 `refId` 或阅读状态直接取得新权限或宣称已经跳转 |
+| 引用重放、首版 `pdf_navigate` | 引用记录的会话 + 当前获授权的会话/附件与可见标签 | 重验来源版本和目标；导航须有匹配的活标签及显式意图，失败要回报 | 用历史 `refId` 或阅读状态直接取得新权限或宣称已经跳转 |
 
 这些规则由 Host 授权适配器及相应 Client 会话入口共同执行；失败返回稳定错误/状态，不静默降级到另一会话。`readerContexts` 仅是有过期时间的“当前看到什么”提示。读工具不自动导航，Host 后台 `pdf_open` 不自动创建侧栏标签。
 
@@ -174,7 +174,7 @@ tests/                            # 按模块和边界组织测试
 
 证据的 `refId` 是会话范围内的快照句柄，不等于永久 PDF 元素 ID。已实现的**文字与图像来源**记录存于独立 `pdf_evidence_${suffix}` Storage Domain；每次写入淘汰超过 30 天或总数 256 条以外的记录，查询同时检查所属会话。图像证据只在此域保存受保护的附件句柄、来源/版本、页或 PDF 区域及摘要，或保存有界 OCR/辅助视觉派生文字，**不复制 PNG 字节**。`session/disposed` 只是运行时 detach/HMR/退出信号：它关闭临时后台工作副本，**不代表会话日志删除，也不删除持久引用**。Host 重启或同一路径 PDF 重开后，使用文字引用还须先在原会话重新获得文件访问，并核对源路径、整页文字摘要与引文；图像引用另重验源字节、页、附件或派生文字，附件不存在时失败。同字节但临时工作副本/修订变化时可重签发新 `refId`；引用本身不授予文件或附件访问权。解释模式的区域图像经 `pdf.region`、文字选段经 `pdf.selection` 生成会话限定引用；发送区域图像时再经 `pdf.image` `prepare-reference` 核对会话、文档、源文件、附件与摘要，直接图片使用 Host 返回的字节。
 
-`tool/result.meta` 已为 `pdf_read_page`、`pdf_locate`、`pdf_context` 写入有界文字快照；页图、OCR 与 `pdf_image_context` 写入来源信息，图片只记受保护的附件标识而不内联 PNG 字节。`pdf_render_page`、`pdf_ocr_page` 返回来源 `refId`，`pdf_image_context` 在同一 Agent 会话内重验后将受保护附件交给视觉模型，或只返回 OCR/辅助视觉派生文字。Client 的 `tool.call.toolview` 已为三个文字工具注册卡片；卡片可回放当时的摘录。点击导航先通过已鉴权的 `pdf.evidence` RPC 在 Host 重验会话、路径和整页文字，再由 Client 核对仍可见的 Reader 与摘录；仅保存批注导致源字节变化但页文字不变时仍可跳，其他失效情况不能盲跳。`pdf.region` 是解释模式的已鉴权 Client↔Host 区域绘制入口：Host 绘制、存放并按确切 PNG 字节验证附件，再签发 `pdf-region` 引用；`pdf.selection` 按字形位置重提取文字并签发引用。Client 仅在来源仍匹配时把它们纳入待发送提词；区域发送时经 `pdf.image` `prepare-reference` 再验证会话、源文件、附件和哈希，直送图片只用 Host 字节。`pdfImageEvidence` 由 reader-host 注册，image-understanding-host 每次请求动态查找该服务，因此两个插件加载顺序不影响功能。模型写入工具已通过有界批注提案、DSH 用户提问批准和同一工作副本事务接入；`pdf_save` 另行批准且只覆盖原路径。图像工具卡、答案正文内联引用及模型主动导航仍未实现。模型工具适配器处理 schema、会话权限、限额和 metadata，读写用例分别实现；旧九个工具名保留，新增工具的边界见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
+`tool/result.meta` 已为 `pdf_read_page`、`pdf_locate`、`pdf_context` 写入有界文字快照；页图、OCR 与 `pdf_image_context` 写入来源信息，图片只记受保护的附件标识而不内联 PNG 字节。`pdf_render_page`、`pdf_ocr_page` 返回来源 `refId`，`pdf_image_context` 在同一 Agent 会话内重验后将受保护附件交给视觉模型，或只返回 OCR/辅助视觉派生文字。Client 的 `tool.call.toolview` 已为三个文字工具注册卡片；卡片可回放当时的摘录。点击导航先通过已鉴权的 `pdf.evidence` RPC 在 Host 重验会话、路径和整页文字，再由 Client 核对仍可见的 Reader 与摘录；仅保存批注导致源字节变化但页文字不变时仍可跳，其他失效情况不能盲跳。`pdf.region` 是解释模式的已鉴权 Client↔Host 区域绘制入口：Host 绘制、存放并按确切 PNG 字节验证附件，再签发 `pdf-region` 引用；`pdf.selection` 按字形位置重提取文字并签发引用。Client 仅在来源仍匹配时把它们纳入待发送提词；区域发送时经 `pdf.image` `prepare-reference` 再验证会话、源文件、附件和哈希，直送图片只用 Host 字节。`pdfImageEvidence` 由 reader-host 注册，image-understanding-host 每次请求动态查找该服务，因此两个插件加载顺序不影响功能。模型写入工具已通过精确引文几何校验和同一工作副本事务接入；批注直接写入可撤销草稿，`pdf_save` 才请求用户批准且只覆盖原路径。图像工具卡与答案正文内联引用仍未实现；模型页级导航经 `pdf.navigation` 接入可见 Reader，待 Desktop 验收。模型工具适配器处理 schema、会话权限、限额和 metadata，读写用例分别实现；旧九个工具名保留，新增工具的边界见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
 
 ## Client 拆分方式
 

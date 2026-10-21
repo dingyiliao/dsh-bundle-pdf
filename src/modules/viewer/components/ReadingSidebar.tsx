@@ -52,11 +52,6 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
   const skipBlur = useRef(false)
   const submittedPage = useRef<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  // The 44px rail leaves about 33px inside the capsule; reserve enough space
-  // for every digit of the document's page count without changing size on turns.
-  const countDigits = String(count ?? 1).length
-  const compactFontSize = Math.max(9, Math.min(15, 56 / countDigits))
-  const compactTotalFontSize = Math.max(8, Math.min(11, 50 / countDigits))
   const submit = () => {
     const raw = (inputRef.current?.value ?? pageInput).trim()
     const page = Number(raw)
@@ -83,7 +78,6 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
     <form className="dsh-pdf-page-form" onSubmit={event => { event.preventDefault(); submit() }}>
       <input ref={inputRef} className="dsh-pdf-page-input" aria-label={t('reader.page')} inputMode="numeric" autoComplete="off"
         title={`${currentPage} / ${count ?? '—'}`} value={pageInput} disabled={!pdf || navigating}
-        style={compact ? { fontSize: compactFontSize } : undefined}
         onChange={event => {
           if (!/^\d*$/.test(event.target.value)) return
           onPageInputChange(event.target.value)
@@ -115,8 +109,7 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
           }
         }} />
       <span className="dsh-pdf-page-total" title={`${currentPage} / ${count ?? '—'}`}
-        aria-label={`${t('reader.totalPages')} ${count ?? '—'}`}
-        style={compact ? { fontSize: compactTotalFontSize } : undefined}>
+        aria-label={`${t('reader.totalPages')} ${count ?? '—'}`}>
         {compact ? count ?? '—' : `/ ${count ?? '—'}`}
       </span>
     </form>
@@ -144,7 +137,8 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   const [maximumWidth, setMaximumWidth] = useState(420)
   const panelId = useId()
   const minimumWidth = Math.min(220, maximumWidth)
-  const currentWidth = expanded ? Math.max(minimumWidth, Math.min(width, maximumWidth)) : railWidth
+  const expandedWidth = Math.max(minimumWidth, Math.min(width, maximumWidth))
+  const currentWidth = expanded ? expandedWidth : railWidth
 
   useLayoutEffect(() => {
     const sidebar = root.current
@@ -210,8 +204,9 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   }
 
   return <aside ref={root} className={`dsh-pdf-sidebar${expanded ? '' : ' is-collapsed'}`}
-    style={{ '--pdf-sidebar-width': `${currentWidth}px` } as React.CSSProperties}
+    style={{ '--pdf-sidebar-width': `${currentWidth}px`, '--pdf-sidebar-expanded-width': `${expandedWidth}px` } as React.CSSProperties}
     aria-label={t('reader.sidebar.title')}>
+    <div className="dsh-pdf-sidebar-shell">
     <div ref={divider} className="dsh-pdf-sidebar-divider" role="separator" aria-orientation="vertical"
       aria-label={t('reader.sidebar.resize')} aria-valuemin={minimumWidth} aria-valuemax={maximumWidth}
       aria-valuenow={currentWidth} tabIndex={expanded ? 0 : -1} hidden={!expanded}
@@ -292,9 +287,13 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           <span className="dsh-pdf-visually-hidden">{t(`reader.sidebar.${section}`)}</span>
         </button>)}
       </div>
-      {!expanded && <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
-        compact onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
-        onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />}
+      <div className="dsh-pdf-sidebar-compact-nav" aria-hidden={expanded}
+        ref={element => { if (element) element.inert = expanded }}>
+        <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
+          compact onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
+          onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />
+      </div>
+    </div>
     </div>
   </aside>
 }

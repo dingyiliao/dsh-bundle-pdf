@@ -7,15 +7,16 @@ const MAX_REVIEW_CHARS = 6000
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
 type ReviewFields = Pick<PdfAnnotation, 'page' | 'subtype' | 'rect' | 'quadPoints' | 'color'
+  | 'commentPosition'
   | 'opacity' | 'contents' | 'author' | 'createdAt' | 'modifiedAt' | 'flags'
   | 'supported' | 'editable' | 'readOnlyReason' | 'sourceObjectId' | 'popupObjectId' | 'linkAction'
   | 'replyToId' | 'replyType' | 'hasRichText'>
 
 function fields(annotation: PdfAnnotation): ReviewFields {
-  const { page, subtype, rect, quadPoints, color, opacity, contents, author, createdAt, modifiedAt,
+  const { page, subtype, rect, quadPoints, color, commentPosition, opacity, contents, author, createdAt, modifiedAt,
     flags, supported, editable, readOnlyReason, sourceObjectId, popupObjectId, linkAction, replyToId, replyType,
     hasRichText } = annotation
-  return { page, subtype, rect, quadPoints, color, opacity, contents, author, createdAt, modifiedAt,
+  return { page, subtype, rect, quadPoints, color, commentPosition, opacity, contents, author, createdAt, modifiedAt,
     flags, supported, editable, readOnlyReason, sourceObjectId, popupObjectId, linkAction, replyToId, replyType,
     hasRichText }
 }
@@ -42,6 +43,8 @@ function describe(index: number, id: string, before?: PdfAnnotation, after?: Pdf
     pair('类型', previous?.subtype, next?.subtype),
     pair('区域', previous && { rect: previous.rect, quadPoints: previous.quadPoints },
       next && { rect: next.rect, quadPoints: next.quadPoints }),
+    ...(JSON.stringify(previous?.commentPosition) !== JSON.stringify(next?.commentPosition)
+      ? [pair('评论框位置', previous?.commentPosition, next?.commentPosition)] : []),
     pair('颜色', previous?.color, next?.color),
     pair('评论', previous?.contents, next?.contents),
     pair('作者', previous?.author, next?.author),

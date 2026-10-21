@@ -4,7 +4,7 @@ import type { PdfBookmarkPosition, PdfClientApi, PdfStoredReadingPosition, PdfUs
 import { sessionFile } from '../../../shared/address.ts'
 import { measurePdfAsync } from '../../../shared/performance.ts'
 import type { NativeOutlineItem, NativeReaderApi, NativeTextContent } from '../../../shared/native.ts'
-import type { PdfReadingContextUpdate } from '../../../modules/viewer/index.js'
+import type { PdfReadingContextUpdate, PdfAgentNavigationApi } from '../../../modules/viewer/index.js'
 
 export type { PdfReadingContextUpdate } from '../../../modules/viewer/index.js'
 
@@ -29,6 +29,26 @@ export function createReadingContextReporter(connection: PdfConnection, lifetime
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
   }
 }
+
+/** Poll only while a visible Reader holds its short-lived reading-context lease. */
+export function createPdfAgentNavigationApi(connection: PdfConnection, lifetime: AbortSignal): PdfAgentNavigationApi {
+  const call = async (payload: object, signal: AbortSignal) => {
+    const reply = responseSchema.parse(await connection.rpc.call('/api', 'pdf.navigation', payload,
+      AbortSignal.any([signal, lifetime])))
+    if (!reply.ok) throw Object.assign(new Error(reply.error.message), { code: reply.error.code })
+    return reply.value
+  }
+  return {
+    async wait(context, signal) {
+      return z.object({ requestId: z.string().uuid(), page: z.number().int().positive(),
+        documentId: z.string(), contentVersion: z.string() }).nullable()
+        .parse(await call({ action: 'wait', ...context }, signal))
+    },
+    async complete(context, signal) {
+      z.object({ accepted: z.boolean() }).parse(await call({ action: 'complete', ...context }, signal))
+    },
+  }
+}
 const bookmarkPosition = z.object({ page: z.number().int().positive(), x: z.number().finite(), y: z.number().finite(),
   scale: z.number().finite().positive(), fit: z.enum(['custom', 'width', 'page']),
   viewportAnchor: z.object({ x: z.number().finite().min(0).max(1), y: z.number().finite().min(0).max(1) }).optional(),
@@ -40,7 +60,12 @@ const readingPositionStale = z.enum(['none', 'content-changed', 'page-missing'])
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
   const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
   const latest = new Map<string, WorkspaceSnapshot>()
-  lifetime.addEventListener('abort', () => { listeners.clear(); latest.clear() }, { once: true })
+  const sourceAddresses = new Map<string, { sessionId: string; address: string }>()
+  const watches = new Map<string, AbortController>()
+  lifetime.addEventListener('abort', () => {
+    for (const watch of watches.values()) watch.abort()
+    watches.clear(); sourceAddresses.clear(); listeners.clear(); latest.clear()
+  }, { once: true })
   const call = async (payload: object, signal?: AbortSignal, endpoint = PDF_ENDPOINT) => {
     const result = responseSchema.parse(await measurePdfAsync('client.rpc', {}, () => connection.rpc.call('/api', endpoint, payload,
       signal ? AbortSignal.any([signal, lifetime]) : lifetime)))
@@ -80,6 +105,37 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     latest.set(value.id, value)
     for (const listener of listeners.get(value.id) ?? []) listener(value)
     return value
+  }
+  const watch = (id: string) => {
+    if (watches.has(id) || !sourceAddresses.has(id) || lifetime.aborted) return
+    const controller = new AbortController()
+    watches.set(id, controller)
+    void (async () => {
+      while (!controller.signal.aborted && !lifetime.aborted && listeners.has(id)) {
+        const address = sourceAddresses.get(id)
+        const knownRevision = latest.get(id)?.revision
+        if (!address || knownRevision === undefined) break
+        try {
+          const started = Date.now()
+          const update = z.object({ revision: z.number().int().nonnegative() }).parse(await call({
+            sessionId: address.sessionId, id, knownRevision,
+          }, controller.signal, 'pdf.watch'))
+          if (controller.signal.aborted || lifetime.aborted) break
+          if (update.revision !== latest.get(id)?.revision) {
+            await snapshot({ action: 'open', sessionId: address.sessionId, address: address.address }, controller.signal)
+          } else if (Date.now() - started < 250) {
+            // Protect against a misconfigured endpoint returning immediately.
+            await new Promise<void>(resolve => setTimeout(resolve, 250))
+          }
+        } catch (error) {
+          if (controller.signal.aborted || lifetime.aborted) break
+          // Connection can restart independently of a mounted Reader. Retry
+          // quietly; the next successful watch compares with the Host revision.
+          await new Promise<void>(resolve => setTimeout(resolve, 1000))
+        }
+      }
+      if (watches.get(id) === controller) watches.delete(id)
+    })()
   }
   const native: NativeReaderApi = {
     async tile(sessionId, id, reader, tile, signal) {
@@ -126,10 +182,12 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
   }
   return {
     native, bookmarks, positions,
-    open(sessionId, address, signal) {
+    async open(sessionId, address, signal) {
       const addressed = sessionFile(address)
-      if (addressed.sessionId !== sessionId) return Promise.reject(new Error('The PDF address belongs to another session'))
-      return snapshot({ action: 'open', sessionId, address }, signal)
+      if (addressed.sessionId !== sessionId) throw new Error('The PDF address belongs to another session')
+      const value = await snapshot({ action: 'open', sessionId, address }, signal)
+      sourceAddresses.set(value.id, { sessionId, address })
+      return value
     },
     change: (sessionId, id, revision, operations, signal) => snapshot({ action: 'change', sessionId, id, revision, operations }, signal),
     undo: (sessionId, id, revision, signal) => snapshot({ action: 'undo', sessionId, id, revision }, signal),
@@ -138,11 +196,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     discard: (sessionId, id, revision, signal) => snapshot({ action: 'discard', sessionId, id, revision }, signal),
     async discardMany(sessionId, ids, signal) {
       const value = z.object({ discarded: z.array(z.string()) }).parse(await call({ action: 'discardMany', sessionId, ids }, signal))
-      for (const id of value.discarded) { latest.delete(id); listeners.delete(id) }
+      for (const id of value.discarded) { watches.get(id)?.abort(); sourceAddresses.delete(id); latest.delete(id); listeners.delete(id) }
     },
     async discardAddresses(sessionId, addresses, signal) {
       const value = z.object({ discarded: z.array(z.string()) }).parse(await call({ action: 'discardAddresses', sessionId, addresses }, signal))
-      for (const id of value.discarded) { latest.delete(id); listeners.delete(id) }
+      for (const id of value.discarded) { watches.get(id)?.abort(); sourceAddresses.delete(id); latest.delete(id); listeners.delete(id) }
     },
     save: (sessionId, id, revision, options, signal) => snapshot({ action: 'save', sessionId, id, revision, options }, signal),
     inspectTarget: async (sessionId, path, signal) => z.object({ version: z.string().nullable() }).parse(await call({ action: 'inspectTarget', sessionId, path }, signal)),
@@ -150,7 +208,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       let set = listeners.get(id)
       if (!set) { set = new Set(); listeners.set(id, set) }
       set.add(callback)
-      return () => { set.delete(callback); if (!set.size) { listeners.delete(id); latest.delete(id) } }
+      watch(id)
+      return () => {
+        set.delete(callback)
+        if (!set.size) { watches.get(id)?.abort(); listeners.delete(id); latest.delete(id); sourceAddresses.delete(id) }
+      }
     },
   }
 }
