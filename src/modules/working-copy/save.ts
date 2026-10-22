@@ -53,7 +53,8 @@ export async function saveWorkingCopy(deps: SaveDependencies, copy: WorkingCopyS
     const snapshot: HostWorkspaceSnapshot = {
       id: copy.id, path: next.path, sourceVersion: next.sourceVersion, contentVersion: next.contentVersion,
       revision: next.revision, dirty: false, canUndo: false, canRedo: false, conflict: false,
-      document, baselineAnnotations: document.annotations, bytes: committedBytes,
+      document, baselineAnnotations: document.annotations, baselineOutline: document.outline,
+      baselineFormFields: document.formFields, bytes: committedBytes,
     }
     // The PDF has committed. Keep the in-memory revision aligned even if draft cleanup fails.
     copy.record = next

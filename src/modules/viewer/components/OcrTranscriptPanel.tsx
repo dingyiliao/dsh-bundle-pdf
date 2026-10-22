@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import type { HostOcrRecognition } from '../ports/ocr.js'
 
 export interface OcrTranscriptPanelProps {

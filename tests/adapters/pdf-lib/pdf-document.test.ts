@@ -377,6 +377,32 @@ test('signed documents are detected even with direct signature dictionaries and 
   await assert.rejects(applyPdfOperations(signed, [{ type: 'add', annotation: newMarkup() }]), (error: unknown) => error instanceof PdfDocumentError && error.code === 'read-only')
 })
 
+test('AcroForm metadata exposes editable fields while leaving widget annotations independently read-only', async () => {
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([300, 400])
+  doc.getForm().createTextField('applicant').addToPage(page, { x: 30, y: 80, width: 180, height: 28 })
+  const bytes = await doc.save()
+  const info = await loadPdfDocument(bytes)
+  assert.equal(info.formKind, 'acroform')
+  assert.equal(info.readOnly, false)
+  assert.equal(info.formFields?.[0]?.name, 'applicant')
+  assert.equal(info.formFields?.[0]?.readOnly, false)
+  assert.equal(info.annotations.find(item => item.subtype === 'Widget')?.readOnlyReason, 'unsupported-annotation-type')
+  assert.deepEqual((await applyPdfOperations(bytes, [])).bytes, bytes)
+  const changed = await applyPdfOperations(bytes, [{ type: 'set-field', name: 'applicant', value: '申请人' }])
+  assert.equal(changed.document.formFields?.[0]?.value, '申请人')
+  assert.equal((await loadPdfDocument(changed.bytes)).formFields?.[0]?.value, '申请人')
+})
+
+test('XFA form metadata cannot enter the annotation writer', async () => {
+  const doc = await PDFDocument.create()
+  doc.addPage([300, 400])
+  doc.catalog.set(PDFName.of('AcroForm'), doc.context.obj({ Fields: [], XFA: PDFString.of('<xfa/>') }))
+  const bytes = await doc.save()
+  assert.equal((await loadPdfDocument(bytes)).formKind, 'xfa')
+  await assert.rejects(applyPdfOperations(bytes, []), { code: 'read-only' })
+})
+
 test('encrypted input is rejected without bypassing encryption', async () => {
   const doc = await PDFDocument.create()
   doc.addPage()

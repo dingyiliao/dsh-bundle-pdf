@@ -1,4 +1,4 @@
-import React, { memo, useCallback } from 'react'
+import { memo, useCallback } from 'react'
 import { Page, type PageProps } from './Page.js'
 
 /** Bind a page number without recreating all page handlers on every Reader render. */

@@ -8,6 +8,7 @@ import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
 import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
+import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
@@ -58,6 +59,45 @@ test('native reads, tile cache, and explicit release share the same live PDF han
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 
+test('native open rejects parser disagreements before presenting an incomplete document', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  try {
+    for (const [name, change] of [
+      ['page-count', { pageCount: 99 }],
+      ['form-kind', { formKind: 'acroform' as const }],
+    ] as const) {
+      const workspaces = { ...state.workspaces,
+        async execute(...args: Parameters<typeof state.workspaces.execute>) {
+          const result = await state.workspaces.execute(...args)
+          return 'bytes' in result ? { ...result, document: { ...result.document, ...change } } : result
+        },
+      }
+      const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
+      try {
+        await assert.rejects(open(service, `pdf-service-mismatch-${name}`), { code: 'pdf/native-unsupported' })
+        assert.equal(service.diagnostics().documents, 0)
+      } finally { await service.dispose() }
+    }
+  } finally { await state.workspaces.dispose() }
+})
+
+test('signed PDFs can be previewed through PDFium without enabling edits', { skip }, async () => {
+  const pdf = await PDFDocument.create()
+  pdf.addPage([300, 400])
+  pdf.catalog.set(PDFName.of('Perms'), pdf.context.obj({
+    DocMDP: { Type: 'Sig', ByteRange: [0, 10, 20, 30], Contents: PDFHexString.of('abc123') },
+  }))
+  const state = memoryWorkspace(await pdf.save({ useObjectStreams: false }))
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-signed-preview'
+  try {
+    const opened = await open(service, sessionId)
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.readOnlyReason, 'signed-document')
+    const page = await service.renderPage(sessionId, opened.id, 1, 560, signal)
+    assert.deepEqual([...page.png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
 test('readOutline preserves a real nested Unicode bookmark tree', { skip }, async () => {
   const pdf = await PDFDocument.create()
   const first = pdf.addPage([300, 400])
@@ -78,11 +118,75 @@ test('readOutline preserves a real nested Unicode bookmark tree', { skip }, asyn
   const sessionId = 'pdf-service-outline'
   try {
     const opened = await open(service, sessionId)
+    const outline = state.workspaces.readSnapshot(sessionId, opened.id).document.outline!
     assert.deepEqual((await service.readOutline(sessionId, opened.id, signal)).items, [{
-      title: 'Chapter 1', dest: [0, { name: 'Fit' }], items: [
-        { title: '第二节', dest: [1, { name: 'Fit' }], items: [] },
+      id: outline[0].id, title: 'Chapter 1', dest: [0, { name: 'Fit' }], url: undefined, items: [
+        { id: outline[0].children[0].id, title: '第二节', dest: [1, { name: 'Fit' }], url: undefined, items: [] },
       ],
     }])
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('outline drafts refresh full wire metadata and native destinations across undo, redo and save', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-outline-draft'
+  try {
+    const opened = await open(service, sessionId)
+    const changed = await service.dispatch(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, knownRevision: opened.revision, knownBytesHash: opened.reader.bytesHash,
+      operations: [{ type: 'outline-add', id: 'draft-chapter', title: '草稿目录', page: 2 }] }, agent(sessionId), signal) as {
+      revision: number; document?: { outline: { title: string }[] }; annotationDelta?: unknown
+    }
+    assert.equal(changed.document?.outline[0].title, '草稿目录')
+    assert.equal(changed.annotationDelta, undefined, 'outline edits must not be hidden in annotation-only deltas')
+    const common = { sessionId, id: opened.id, bytesHash: opened.reader.bytesHash, action: 'outline' }
+    assert.deepEqual(await service.native(sessionId, common, agent(sessionId), signal), [{
+      id: 'draft-chapter', title: '草稿目录', dest: [1, { name: 'Fit' }], items: [],
+    }])
+    const undone = await service.dispatch(sessionId, { action: 'undo', sessionId, id: opened.id,
+      revision: changed.revision }, agent(sessionId), signal) as { revision: number }
+    assert.equal((await service.readOutline(sessionId, opened.id, signal)).items, null)
+    const redone = await service.dispatch(sessionId, { action: 'redo', sessionId, id: opened.id,
+      revision: undone.revision }, agent(sessionId), signal) as { revision: number }
+    await service.dispatch(sessionId, { action: 'save', sessionId, id: opened.id,
+      revision: redone.revision, options: {} }, agent(sessionId), signal)
+    assert.equal((await service.readOutline(sessionId, opened.id, signal)).items?.[0].title, '草稿目录')
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, false)
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('recoverable imported links expose editable IDs and preserve native views through edit, undo and save', { skip }, async () => {
+  const source = await recoverableOutlineFixture()
+  const state = memoryWorkspace(source)
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-outline-recovery'
+  try {
+    const opened = await open(service, sessionId)
+    const snapshot = state.workspaces.readSnapshot(sessionId, opened.id)
+    assert.equal(snapshot.document.outlineReadOnlyReason, undefined)
+    assert.equal(snapshot.dirty, false)
+    const chapter = snapshot.document.outline![0]
+    const read = () => service.readOutline(sessionId, opened.id, signal)
+    const original = (await read()).items!
+    assert.equal(original[0].id, chapter.id)
+    assert.deepEqual(original[0].dest, [0, { name: 'XYZ' }, 40, 520, 1.25])
+    assert.equal(original[0].items[0].id, chapter.children[0].id)
+    assert.equal(original[1].url, 'https://example.com/reference')
+    const changed = await service.dispatch(sessionId, { action: 'change', sessionId, id: opened.id, revision: opened.revision,
+      operations: [{ type: 'outline-add', id: 'new-child', title: 'New child', page: 2, parentId: chapter.id }] }, agent(sessionId), signal) as { revision: number }
+    const items = (await read()).items!
+    assert.deepEqual(items[0].dest, original[0].dest)
+    assert.deepEqual(items[0].items.map(item => item.id), [chapter.children[0].id, 'new-child'])
+    assert.equal(state.writes(), 0)
+    assert.deepEqual(state.current(), source)
+    const undone = await service.dispatch(sessionId, { action: 'undo', sessionId, id: opened.id, revision: changed.revision }, agent(sessionId), signal) as { revision: number }
+    assert.deepEqual((await read()).items, original)
+    const redone = await service.dispatch(sessionId, { action: 'redo', sessionId, id: opened.id, revision: undone.revision }, agent(sessionId), signal) as { revision: number }
+    await service.dispatch(sessionId, { action: 'save', sessionId, id: opened.id, revision: redone.revision, options: {} }, agent(sessionId), signal)
+    assert.equal(JSON.stringify((await read()).items), JSON.stringify(items))
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, false)
+    assert.equal(state.writes(), 1)
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { pdfEvidenceCardModel } from './pdf-evidence-model.js'
 import type { PdfEvidenceNavigation } from './pdf-evidence-navigation.js'
 

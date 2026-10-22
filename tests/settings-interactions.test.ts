@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)))
 // Resolve the pinned test DOM from this package so native CI jobs are self-contained.
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {

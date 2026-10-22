@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { hashSchema, idSchema, operationSchema, pathSchema } from '../../contracts/rpc/requests.js'
+import { hashSchema, idSchema, workingCopyOperationSchema, pathSchema } from '../../contracts/rpc/requests.js'
 
 /** V1 persisted draft schema; the storage wire format stays unchanged. */
 
@@ -12,7 +12,7 @@ export const draftSchema = z.object({
   revision: z.number().int().min(0),
   /** Hash of materialized bytes persisted before a save for crash recovery. */
   renderedHash: hashSchema.optional(),
-  groups: z.array(z.array(operationSchema).max(1000)).max(500),
+  groups: z.array(z.array(workingCopyOperationSchema).max(1000)).max(500),
   groupDates: z.array(z.string().datetime()).max(500).optional(),
   cursor: z.number().int().min(0).max(500),
 }).strict().refine(value => value.cursor <= value.groups.length

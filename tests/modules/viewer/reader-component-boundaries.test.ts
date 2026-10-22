@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire, registerHooks } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderProps } from '../../../src/client/contracts.ts'
@@ -16,7 +14,6 @@ registerHooks({ load(url, context, next) {
   return next(url, context)
 } })
 
-const project = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }

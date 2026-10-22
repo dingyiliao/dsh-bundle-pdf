@@ -2,12 +2,11 @@
   --pdf-sidebar-inset: 12px;
   --pdf-sidebar-control-radius: 6px;
   --pdf-sidebar-selected-bg: color-mix(in srgb, var(--pdf-accent) 12%, transparent);
-  /* Paper is white beneath this frame; match the toolbar's tint over the preview well. */
-  --pdf-sidebar-glass-tint: color-mix(in srgb, var(--dsw-alias-bg-document-preview) 68%, var(--pdf-border) 32%);
-  --pdf-glass-shell-top: color-mix(in srgb, var(--pdf-sidebar-glass-tint) 92%, transparent);
-  --pdf-glass-shell-fill: color-mix(in srgb, var(--pdf-sidebar-glass-tint) 82%, transparent);
+  /* Same material as the toolbar; only the structural surface's elevation differs. */
+  --pdf-glass-elevation: -8px 10px 24px rgb(18 24 34 / 10%);
   --pdf-sidebar-ease-out: cubic-bezier(.23, 1, .32, 1);
   position: absolute;
+  isolation: isolate;
   z-index: 20;
   inset: 64px 12px 64px auto;
   margin: 0;
@@ -17,17 +16,21 @@
   overflow: visible;
 }
 .dsh-pdf-sidebar::after {
-  /* Frame the visible width, not the full shell: a clipped shell border leaves
-     a short horizontal edge across the top of the collapsed rail. */
+  /* Material and border share one rounded contour. Painting glass on the
+     expanded shell and a separate frame doubles antialiased edges on the rail. */
   content: '';
   position: absolute;
-  z-index: 2;
+  z-index: 0;
   inset: 0 0 0 auto;
   box-sizing: border-box;
   width: var(--pdf-sidebar-width, 320px);
-  border: 1px solid color-mix(in srgb, var(--pdf-border) 84%, var(--pdf-muted) 16%);
+  border: 1px solid var(--pdf-glass-edge);
   border-radius: inherit;
-  box-shadow: -8px 10px 24px rgb(18 24 34 / 10%);
+  background: var(--pdf-glass-material);
+  background-clip: padding-box;
+  -webkit-backdrop-filter: var(--pdf-glass-shell-filter);
+  backdrop-filter: var(--pdf-glass-shell-filter);
+  box-shadow: var(--pdf-glass-rim-shadow), var(--pdf-glass-elevation);
   pointer-events: none;
   transition: width 270ms var(--pdf-sidebar-ease-drawer);
 }
@@ -35,6 +38,7 @@
   /* Keep panel layout stable while revealing it; the 44px outer rail remains
      the sidebar's measured width when collapsed. */
   position: absolute;
+  z-index: 1;
   inset: 0 0 0 auto;
   display: flex;
   width: var(--pdf-sidebar-expanded-width, 320px);
@@ -42,9 +46,7 @@
   border: 0;
   border-radius: 16px;
   overflow: hidden;
-  background: linear-gradient(155deg, var(--pdf-glass-shell-top), var(--pdf-glass-shell-fill));
-  -webkit-backdrop-filter: var(--pdf-glass-shell-filter);
-  backdrop-filter: var(--pdf-glass-shell-filter);
+  background: transparent;
   clip-path: inset(0 0 0 0 round 16px);
   transition: clip-path 270ms var(--pdf-sidebar-ease-drawer);
 }
@@ -208,55 +210,62 @@
 .dsh-pdf-bookmark-toggle svg { display: block; }
 .dsh-pdf-bookmark-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
 .dsh-pdf-bookmark-spacer { flex: none; width: 24px; }
-.dsh-pdf-reader .dsh-pdf-bookmark-link, .dsh-pdf-bookmark-label { display: flex; flex: 1; align-items: center; min-width: 0; height: 30px; padding: 2px 4px; border: 0; background: transparent; color: var(--pdf-text); text-align: left; text-decoration: none; }
+.dsh-pdf-reader .dsh-pdf-bookmark-link, .dsh-pdf-bookmark-label { display: flex; flex: 1; align-items: center; min-width: 0; height: 30px; padding: 2px; border: 0; background: transparent; color: var(--pdf-text); text-align: left; text-decoration: none; }
 .dsh-pdf-reader .dsh-pdf-bookmark-link:hover:not(:disabled),
-.dsh-pdf-reader .dsh-pdf-bookmark-link:active:not(:disabled),
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump:hover:not(:disabled),
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump:active:not(:disabled) { background: transparent; }
-.dsh-pdf-reader .dsh-pdf-bookmark-link::after,
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump::after { content: ''; position: absolute; inset: 0; border-radius: 6px; }
-.dsh-pdf-reader .dsh-pdf-bookmark-link:focus-visible,
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump:focus-visible { outline: none; }
-.dsh-pdf-reader .dsh-pdf-bookmark-link:focus-visible::after,
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump:focus-visible::after { outline: 2px solid var(--pdf-accent); outline-offset: -2px; }
+.dsh-pdf-reader .dsh-pdf-bookmark-link:active:not(:disabled) { background: transparent; }
+.dsh-pdf-reader .dsh-pdf-bookmark-link::after { content: ''; position: absolute; inset: 0; border-radius: 6px; }
+.dsh-pdf-reader .dsh-pdf-bookmark-link:focus-visible { outline: none; }
+.dsh-pdf-reader .dsh-pdf-bookmark-link:focus-visible::after::after { outline: 2px solid var(--pdf-accent); outline-offset: -2px; }
 .dsh-pdf-bookmark-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dsh-pdf-bookmark-unavailable { flex: none; max-width: 92px; overflow: hidden; padding-inline: 4px; color: var(--pdf-muted); font-size: var(--pdf-type-caption); text-overflow: ellipsis; white-space: nowrap; cursor: help; }
-.dsh-pdf-personal-bookmarks { display: flex; flex-direction: column; flex: none; max-height: 48%; min-height: 0; border-bottom: 1px solid var(--pdf-border); }
-.dsh-pdf-bookmark-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding: 7px var(--pdf-sidebar-inset) 3px; }
-.dsh-pdf-bookmark-section-heading h4 { margin: 0; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
-.dsh-pdf-bookmark-heading-title { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.dsh-pdf-bookmark-info { position: relative; flex: none; }
-.dsh-pdf-bookmark-info summary { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--pdf-muted); cursor: pointer; list-style: none; }
-.dsh-pdf-bookmark-info summary::-webkit-details-marker { display: none; }
-.dsh-pdf-bookmark-info summary:hover, .dsh-pdf-bookmark-info[open] summary { background: var(--dsw-alias-interactive-bg-hover); }
-.dsh-pdf-bookmark-info summary:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 2px; }
-.dsh-pdf-bookmark-info p { position: absolute; z-index: 4; top: 27px; left: -4px; width: 216px; max-width: calc(100vw - 40px); margin: 0; padding: 9px 11px; border: 1px solid var(--pdf-border); border-radius: 6px; background: var(--pdf-panel); box-shadow: 0 6px 18px color-mix(in srgb, var(--pdf-text) 12%, transparent); color: var(--pdf-muted); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-body); }
-.dsh-pdf-reader .dsh-pdf-bookmark-section-heading button { flex: none; width: 28px; height: 28px; padding: 0; border-color: var(--pdf-control-border); border-radius: 6px; font-size: 16px; }
-.dsh-pdf-bookmark-native-heading { padding-block: 10px 7px; }
-.dsh-pdf-personal-bookmark-list { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
-.dsh-pdf-personal-bookmark-virtual { position: relative; width: 100%; }
-.dsh-pdf-personal-bookmark-row { display: flex; align-items: center; gap: 3px; padding: 5px 10px; border-radius: 6px; }
-.dsh-pdf-personal-bookmark-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.dsh-pdf-personal-bookmark-details { display: flex; flex: 1; flex-direction: column; align-items: flex-start; min-width: 0; }
-.dsh-pdf-reader .dsh-pdf-personal-bookmark-jump { display: block; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; }
-.dsh-pdf-personal-bookmark-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-pdf-personal-bookmark-page { max-width: 100%; overflow: hidden; color: var(--pdf-muted); font-size: var(--pdf-type-caption); text-overflow: ellipsis; white-space: nowrap; }
-.dsh-pdf-bookmark-actions { position: relative; z-index: 1; display: flex; flex: none; flex-direction: row-reverse; align-items: center; gap: 2px; }
+.dsh-pdf-bookmark-heading { justify-content: space-between; }
+.dsh-pdf-reader .dsh-pdf-bookmark-heading > button { flex: none; width: 28px; height: 28px; padding: 0; border-color: var(--pdf-control-border); border-radius: 6px; font-size: 16px; }
 .dsh-pdf-reader .dsh-pdf-bookmark-action { position: relative; z-index: 1; display: grid; place-items: center; flex: none; min-width: 24px; height: 24px; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; font-size: var(--pdf-type-caption); }
-.dsh-pdf-reader .dsh-pdf-bookmark-more { width: 28px; color: var(--pdf-muted); }
-.dsh-pdf-bookmark-more svg { display: block; }
-.dsh-pdf-bookmark-form { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px 9px; }
-.dsh-pdf-bookmark-form input { flex: 1; min-width: 0; }
-.dsh-pdf-reader .dsh-pdf-bookmark-form :is(button, input) { border-radius: 6px; }
-.dsh-pdf-reader .dsh-pdf-bookmark-form button { flex: none; padding-inline: 5px; }
-
-@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  .dsh-pdf-sidebar::after { border-color: var(--pdf-border); box-shadow: none; }
-  .dsh-pdf-sidebar-shell {
-    background: var(--pdf-panel);
-    -webkit-backdrop-filter: none; backdrop-filter: none;
-  }
+.dsh-pdf-reader .dsh-pdf-reader .dsh-pdf-bookmark-row:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: -2px; }
+.dsh-pdf-reader .dsh-pdf-outline-grip {
+  position: relative; z-index: 1;
+  display: grid; place-items: center; flex: none; width: 16px; height: 26px;
+  padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pdf-muted); cursor: grab;
 }
-@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .dsh-pdf-sidebar-shell { background: var(--pdf-panel); }
+.dsh-pdf-outline-grip svg { display: block; width: 14px; height: 14px; }
+.dsh-pdf-reader .dsh-pdf-outline-grip:active { cursor: grabbing; }
+.dsh-pdf-outline-grip, .dsh-pdf-outline-more { opacity: 0; }
+.dsh-pdf-bookmark-row:is(:hover, :focus-within) :is(.dsh-pdf-outline-grip, .dsh-pdf-outline-more),
+.dsh-pdf-outline-more[aria-expanded="true"] { opacity: 1; }
+.dsh-pdf-bookmark-row.is-dragging { opacity: .45; }
+.dsh-pdf-bookmark-row[data-drop-placement="inside"] { box-shadow: inset 0 0 0 2px var(--pdf-accent); background: var(--pdf-sidebar-selected-bg); }
+.dsh-pdf-bookmark-row:is([data-drop-placement="before"], [data-drop-placement="after"])::after {
+  content: ''; position: absolute; z-index: 3; left: 24px; right: 0; height: 2px;
+  background: var(--pdf-accent); border-radius: 1px; pointer-events: none;
 }
+.dsh-pdf-bookmark-row[data-drop-placement="before"]::after { top: 0; }
+.dsh-pdf-bookmark-row[data-drop-placement="after"]::after { bottom: 0; }
+.dsh-pdf-bookmark-row.is-editing { padding-left: 8px !important; }
+.dsh-pdf-bookmark-row.is-editing :is(.dsh-pdf-outline-grip, .dsh-pdf-bookmark-spacer) { display: none; }
+.dsh-pdf-outline-name-editor { display: flex; flex: 1; align-items: center; gap: 2px; min-width: 0; }
+.dsh-pdf-reader .dsh-pdf-outline-name-editor input { flex: 1; min-width: 0; width: 0; height: 28px; border-radius: 6px; }
+.dsh-pdf-reader .dsh-pdf-outline-name-editor button {
+  flex: none; width: 22px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+}
+.dsh-pdf-outline-error { display: flex; flex: none; align-items: start; gap: 5px; padding: 6px 12px; color: var(--pdf-muted); font-size: var(--pdf-type-caption); }
+.dsh-pdf-outline-error span { flex: 1; overflow-wrap: anywhere; }
+.dsh-pdf-reader .dsh-pdf-outline-error button { border: 0; padding: 0 4px; background: transparent; }
+.dsh-pdf-outline-popover {
+  position: absolute; z-index: 40; display: flex; flex-direction: column; overflow: auto;
+  padding: 5px; border: 1px solid var(--pdf-border); border-radius: 10px;
+  font-size: var(--pdf-type-label); line-height: var(--pdf-leading-ui); overscroll-behavior: contain;
+}
+.dsh-pdf-outline-popover-title { overflow: hidden; padding: 6px 7px; color: var(--pdf-muted); font-size: var(--pdf-type-caption); white-space: nowrap; text-overflow: ellipsis; }
+.dsh-pdf-reader .dsh-pdf-outline-popover > button {
+  display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 30px; width: 100%; padding: 5px 7px; border: 0; border-radius: 6px; background: transparent; text-align: left;
+}
+.dsh-pdf-outline-popover button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dsh-pdf-outline-popover kbd { flex: none; color: var(--pdf-muted); font: inherit; font-size: 11px; }
+.dsh-pdf-outline-menu-separator { flex: none; height: 1px; margin: 4px 5px; background: var(--pdf-border); }
+.dsh-pdf-outline-popover form { display: flex; flex-direction: column; gap: 10px; padding: 5px; }
+.dsh-pdf-outline-popover label { display: flex; flex-direction: column; gap: 5px; }
+.dsh-pdf-outline-popover :is(input, button) { border-radius: 6px; }
+.dsh-pdf-outline-popover p { margin: 4px 6px 8px; overflow-wrap: anywhere; color: var(--pdf-muted); font-size: var(--pdf-type-caption); }
+.dsh-pdf-outline-popover-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 3px; }
+@media (hover: none) { .dsh-pdf-outline-grip, .dsh-pdf-outline-more { opacity: 1; } }

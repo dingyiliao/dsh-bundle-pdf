@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { encodePdfBaseline } from '../../../modules/document/index.js'
-import type { DraftRecord, WorkspaceRecord, V1DraftPort, WorkingCopyDraftPort } from '../../../modules/working-copy/index.js'
+import type { DraftRecord, V1DraftPort, WorkingCopyDraftPort } from '../../../modules/working-copy/index.js'
 
 function normalizedPath(path: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path

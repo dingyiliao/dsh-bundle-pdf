@@ -24,6 +24,7 @@ export function workspaceSnapshot(id: string, record: WorkspaceRecord, baseline:
     id, path: record.path, sourceVersion: record.sourceVersion, contentVersion: record.contentVersion,
     revision: record.revision, dirty: record.cursor > 0,
     canUndo: record.cursor > 0, canRedo: record.cursor < record.groups.length,
-    conflict, document, baselineAnnotations: baseline.annotations, bytes,
+    conflict, document, baselineAnnotations: baseline.annotations, baselineOutline: baseline.outline,
+    baselineFormFields: baseline.formFields, bytes,
   }
 }

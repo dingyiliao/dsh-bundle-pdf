@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { translationTargetLanguages } from '../../../shared/contracts.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 
@@ -52,7 +52,7 @@ export function TranslationLanguageMenu({ value, label, languageName, onChange }
     <summary ref={trigger} className="dsh-pdf-translation-language-trigger" aria-label={`${label}: ${languageName(value)}`}>
       <span>{languageName(value)}</span><ToolbarIcon name="chevronDown" />
     </summary>
-    <div className="dsh-pdf-tools-menu dsh-pdf-translation-language-menu" role="group" aria-label={label}>
+    <div className="dsh-pdf-tools-menu dsh-pdf-translation-language-menu dsh-pdf-glass" role="group" aria-label={label}>
       {translationTargetLanguages.map(language => <button key={language} type="button" aria-label={languageName(language)} aria-pressed={language === value}
         onClick={() => {
           if (details.current) details.current.open = false

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { TranslationError, type TranslationErrorCode, type TranslationRequest, type TranslationResult } from '../../../translation/index.js'
 import { translationSourceLanguage, translationTargetLanguages } from '../../../shared/contracts.js'
 import { ScrollablePanel } from './ScrollablePanel.js'

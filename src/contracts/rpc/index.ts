@@ -2,3 +2,4 @@ export { PDF_ENDPOINT, requestEnvelopeSchema, responseSchema } from './envelope.
 export { wireSnapshotSchema, wireAnnotationSchema } from './workspace.js'
 export type { WireSnapshot } from './workspace.js'
 export { operationSchema, requestSchema } from './requests.js'
+export { readingPositionSchema } from './reading-position.js'

@@ -1,7 +1,4 @@
-export { bookmarkPositionSchema } from './position-schema.js'
 export type { NavigationAgent, NavigationDispatch, NavigationStore, NavigationTable, NavigationWorkspaces } from './ports.js'
-export { createBookmarks, bookmarkRecordSchema } from './bookmarks.js'
-export type { BookmarkRecord } from './bookmarks.js'
 export { createReadingPositions, readingPositionRecordSchema } from './reading-positions.js'
 export type { ReadingPositionRecord, ReadingPositionStale, StoredReadingPosition } from './reading-positions.js'
 export { listAgentBookmarks, summarizeOutline } from './agent-bookmarks.js'

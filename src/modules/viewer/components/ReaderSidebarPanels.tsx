@@ -1,4 +1,3 @@
-import React from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { TranslationRegistry } from '../../../translation/index.js'

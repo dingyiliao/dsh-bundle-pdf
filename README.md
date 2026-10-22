@@ -11,7 +11,8 @@ I built this plugin because I often read papers and books in PDF form. The reade
 - **Go from a question to the source.** The agent can search unread pages, inspect nearby text, and mark a matching passage. It can move your visible reader when you ask it to; reading tools alone do not interrupt you.
 - **Edit one shared draft.** Your highlights, comments, and page notes appear in the same undoable PDF draft as edits made by the agent. An agent-requested overwrite of the original PDF requires your approval.
 - **Ask in context.** Select several text passages or a single-page image region, attach a question to each, and send them together to the current conversation.
-- **Navigate without losing your place.** Use the PDF outline, personal bookmarks, search results, annotations, and a multi-step back history. Ordinary scrolling does not add history entries.
+- **Navigate without losing your place.** Use the PDF outline, search results, annotations, and a multi-step back history. Ordinary scrolling does not add history entries.
+- **Edit the PDF's bookmarks.** Add, rename, remove a subtree, change target pages, reorder, or reparent entries in the same undoable draft. Saving writes those changes into the PDF.
 
 ## Preview
 
@@ -57,13 +58,17 @@ flowchart LR
 
 The Client and agent tools use the same Host-side working copy. Reading does not open a new sidebar tab; agent edits update the Reader's unsaved draft, while an agent-requested overwrite is a separate approved action. The native worker handles rendering and text extraction behind the Host boundary.
 
+Bookmark edits use the shared outline domain and the existing pdf-lib save transaction. The agent can obtain exact `outlineId` values with `pdf_bookmarks`, then submit an atomic draft edit through `pdf_outline_edit`. New outline-edit interactions still need real Desktop and external-reader acceptance testing.
+
 See the [architecture](docs/ARCHITECTURE_V2.md), [AI reader tools](docs/AI_READER_TOOLS.md), and [specification](SPEC.md) for contracts and implementation status. Some advanced tool interactions still need real Desktop and model-based acceptance testing.
 
 ## Development
 
 For a source checkout, run `npm ci`, `npm run native:build`, and `npm run build`, then install the directory with `dsh plugin --profile web add .`. A Git URL installation does not include a prebuilt native worker. Run `npm run check` for type and Node tests, `npm run test:web` for browser interactions, and `npm run test:coverage:project` for project coverage.
 
-Encrypted PDFs are not supported. Text search does not automatically index scanned pages, and a background `pdf_open` tool call does not open a Reader tab. See [SPEC.md](SPEC.md) for the remaining limits.
+Ordinary AcroForm fields can be filled in the Reader or by the model: `pdf_form_inspect_page` returns numbered controls and exact field IDs; `pdf_fill_form` updates the same undoable draft. Inspection needs a vision-capable model; overwriting the PDF still requires approval. PDF scripts and actions are not executed; signed PDFs remain read-only and signatures are not verified. XFA and encrypted PDFs are not supported. Text search does not automatically index scanned pages, and a background `pdf_open` tool call does not open a Reader tab. See [SPEC.md](SPEC.md) for the remaining limits.
+
+Draft storage still uses `format: 1`, but older binaries do not understand the new outline operations or ID-targeted form edits. Before downgrading, save or discard form/outline drafts and back up both the PDF and plugin storage. This is not a claim of compatibility with old binaries for new operation types.
 
 ## License
 

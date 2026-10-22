@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createBackgroundDocuments } from '../src/modules/working-copy/index.ts'
-import { createBookmarkService, type BookmarkRecord } from '../src/host/bookmarks.ts'
 import { createImageUnderstandingDispatch } from '../src/adapters/host/dsh/image-transport.ts'
 import { HostOcrService, type HostOcrRequest } from '../src/modules/ocr/index.js'
 import { createPdfOcrDispatch } from '../src/adapters/host/dsh/pdf-ocr-transport.ts'
@@ -37,30 +36,6 @@ test('reader presence rejects stale document versions and out-of-range pages bef
   assert.deepEqual(readers.update('session', { ...base, sequence: 3 }), { ok: true })
   assert.equal(readers.current('session')[0]?.page, 1)
   readers.dispose()
-})
-
-test('bookmark service removes its final bookmark record and reports a missing target', async () => {
-  const saved = new Map<string, BookmarkRecord>()
-  let deleted = 0
-  const table = { get: (key: string) => saved.get(key),
-    async put(key: string, value: BookmarkRecord) { saved.set(key, value) },
-    async delete(key: string) { saved.delete(key); deleted++ },
-  }
-  const service = createBookmarkService({ readSnapshot() {
-    return { path: '/tmp/doc.pdf', bytes: new Uint8Array([1]), document: { pageCount: 2 } }
-  }, bytesHash() { return `sha256:${'0'.repeat(64)}` } } as never, table)
-  const position = { page: 1, x: 0, y: 0, scale: 1, fit: 'page' }
-  try {
-    const added = await service.dispatch('session', { action: 'add', sessionId: 'session', id: 'doc',
-      title: 'First', position }, agent, signal()) as { id: string }[]
-    assert.equal(added.length, 1)
-    const removed = await service.dispatch('session', { action: 'remove', sessionId: 'session', id: 'doc',
-      bookmarkId: added[0]!.id }, agent, signal())
-    assert.deepEqual(removed, [])
-    assert.equal(deleted, 1)
-    await assert.rejects(service.dispatch('session', { action: 'remove', sessionId: 'session', id: 'doc',
-      bookmarkId: added[0]!.id }, agent, signal()), { code: 'pdf/bookmark-missing' })
-  } finally { await service.dispose() }
 })
 
 test('Host OCR dispatch reports missing plugin and rejects session spoofing before rendering', async () => {

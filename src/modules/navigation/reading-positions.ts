@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { bookmarkPositionSchema } from './position-schema.js'
+import { readingPositionSchema } from '../../contracts/rpc/index.js'
 import type { NavigationDispatch, NavigationStore, NavigationWorkspaces } from './ports.js'
 
 const id = z.string().min(1).max(512)
@@ -8,7 +8,7 @@ const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 /** One latest position per file path, keyed by the source bytes it was read from. */
 export const readingPositionRecordSchema = z.object({
   format: z.literal(1), path: z.string().min(1).max(32768), sourceHash: hash,
-  position: bookmarkPositionSchema, updatedAt: z.string().datetime(),
+  position: readingPositionSchema, updatedAt: z.string().datetime(),
 }).strict()
 export type ReadingPositionRecord = z.infer<typeof readingPositionRecordSchema>
 
@@ -17,14 +17,14 @@ export type ReadingPositionStale = 'none' | 'content-changed' | 'page-missing'
 
 /** A stored position plus why it may not apply to the current source bytes. */
 export interface StoredReadingPosition {
-  position: z.infer<typeof bookmarkPositionSchema>
+  position: z.infer<typeof readingPositionSchema>
   stale: ReadingPositionStale
   updatedAt: string
 }
 
 const requests = z.discriminatedUnion('action', [
   z.object({ action: z.literal('get'), sessionId: id, id }).strict(),
-  z.object({ action: z.literal('set'), sessionId: id, id, position: bookmarkPositionSchema }).strict(),
+  z.object({ action: z.literal('set'), sessionId: id, id, position: readingPositionSchema }).strict(),
 ])
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }

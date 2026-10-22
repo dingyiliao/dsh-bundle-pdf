@@ -63,13 +63,45 @@ struct Bitmap {
   Bitmap& operator=(const Bitmap&) = delete;
   ~Bitmap() { if (handle) FPDFBitmap_Destroy(handle); }
 };
+struct Document;
+struct FormHost {
+  FPDF_FORMFILLINFO callbacks{};
+  Document* document = nullptr;
+};
 struct Document {
   std::vector<unsigned char> bytes;
   FPDF_DOCUMENT handle = nullptr;
+  FPDF_FORMHANDLE form = nullptr;
+  FormHost formHost{};
+  int formType = FORMTYPE_NONE;
   int count = 0;
   uint64_t clock = 0;
   std::unordered_map<int, std::unique_ptr<Page>> pages;
-  ~Document() { pages.clear(); if (handle) FPDF_CloseDocument(handle); }
+  ~Document() {
+    for (const auto& [index, page] : pages) {
+      (void)index;
+      if (form) FORM_OnBeforeClosePage(page->handle, form);
+    }
+    pages.clear();
+    if (form) FPDFDOC_ExitFormFillEnvironment(form);
+    if (handle) FPDF_CloseDocument(handle);
+  }
+  void initializeForm() {
+    if (formType != FORMTYPE_ACRO_FORM) return;
+    formHost.document = this;
+    formHost.callbacks.version = 1;
+    // The reader only renders form appearances. No document JavaScript,
+    // network, named action or PDFium form input event is executed.
+    formHost.callbacks.FFI_Invalidate = [](FPDF_FORMFILLINFO*, FPDF_PAGE, double, double, double, double) {};
+    formHost.callbacks.FFI_GetPage = [](FPDF_FORMFILLINFO* callbacks, FPDF_DOCUMENT handle, int index) -> FPDF_PAGE {
+      auto* host = reinterpret_cast<FormHost*>(callbacks);
+      if (!host->document || host->document->handle != handle) return nullptr;
+      try { return host->document->page(index); } catch (...) { return nullptr; }
+    };
+    formHost.callbacks.FFI_GetRotation = [](FPDF_FORMFILLINFO*, FPDF_PAGE) { return 0; };
+    form = FPDFDOC_InitFormFillEnvironment(handle, &formHost.callbacks);
+    if (!form) throw Failure("pdf/native-form", "PDFium could not initialize AcroForm rendering");
+  }
   FPDF_PAGE page(int index) {
     require(index >= 0 && index < count, "Page index is outside the document");
     auto found = pages.find(index);
@@ -78,6 +110,7 @@ struct Document {
       auto oldest = std::min_element(pages.begin(), pages.end(), [](const auto& a, const auto& b) {
         return a.second->used < b.second->used;
       });
+      if (form) FORM_OnBeforeClosePage(oldest->second->handle, form);
       pages.erase(oldest);
     }
     auto handle = FPDF_LoadPage(this->handle, index);
@@ -85,6 +118,7 @@ struct Document {
     auto owned = std::make_unique<Page>(handle);
     owned->used = ++clock;
     pages.emplace(index, std::move(owned));
+    if (form) FORM_OnAfterLoadPage(handle, form);
     return handle;
   }
 };
@@ -359,6 +393,12 @@ json render_tile(Document& doc, const json& request, std::vector<unsigned char>&
   if (!bitmap.handle) throw Failure("pdf/native-bitmap", "PDFium bitmap allocation failed");
   FS_RECTF clip{0,0,float(w),float(h)};
   FPDF_RenderPageBitmapWithMatrix(bitmap.handle,page,&matrix,&clip,flags);
+  if (doc.form) {
+    // Form fields are document content even when a screenshot excludes markup
+    // annotations. Offset PDFium's form layer by the tile origin so widget
+    // appearances remain aligned across seams.
+    FPDF_FFLDraw(doc.form, bitmap.handle, page, -x, -y, full_w, full_h, rotation / 90, flags);
+  }
   return {{"width",w},{"height",h},{"format","rgba"}};
 }
 
@@ -391,7 +431,9 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
     if (!doc->handle) throw Failure("pdf/native-open", "PDFium could not open the document (error " + std::to_string(FPDF_GetLastError()) + ")");
     doc->count = FPDF_GetPageCount(doc->handle);
     require(doc->count > 0 && doc->count <= 100000, "Unsupported native page count");
-    json result = {{"pageCount", doc->count}, {"formType", FPDF_GetFormType(doc->handle)},
+    doc->formType = FPDF_GetFormType(doc->handle);
+    doc->initializeForm();
+    json result = {{"pageCount", doc->count}, {"formType", doc->formType},
       {"signatureCount", FPDF_GetSignatureCount(doc->handle)}};
     documents[id] = std::move(doc);
     return result;

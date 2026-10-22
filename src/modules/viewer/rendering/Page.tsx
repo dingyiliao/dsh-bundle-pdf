@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { PdfAnnotation, PdfPageInfo, PdfRect } from '../../../core/pdf-types.js'
+import type { PdfAnnotation, PdfFormField, PdfPageInfo, PdfRect } from '../../../core/pdf-types.js'
 import type { PdfOcrTextPart } from '../../../ocr/mapping.js'
 import { viewportRectToPdf, pdfRectToViewport, overlapFraction, type PageView, type ReaderSelection } from '../model/reader-selection.js'
 import { annotationAtPoint, createAnnotationHitTester, createRectHitIndex, nativeAppearancePatchBoxes } from '../model/reader-annotations.js'
@@ -10,6 +10,7 @@ import type { NativeDocument, NativePage } from './document.js'
 import { selectedTextRects } from '../model/selection-highlight.js'
 import type { ExplanationExcerpt } from '../../explanation/index.js'
 import { PageContextOverlays, PageMarkupOverlay } from './PageOverlays.js'
+import { FormWidgets } from './FormWidgets.js'
 
 export interface PageProps {
   pdf: NativeDocument
@@ -18,6 +19,8 @@ export interface PageProps {
   rotation: number
   mode: 'text' | 'region' | 'note'
   annotations: PdfAnnotation[]
+  formFields?: readonly PdfFormField[]
+  onFormChange?(fieldId: string, value: string | boolean | string[]): Promise<void>
   /** Annotation models baked into this immutable native document. */
   renderedAnnotations?: PdfAnnotation[]
   selectedAnnotation?: string
@@ -369,6 +372,8 @@ export function Page(props: PageProps) {
       {!rendered && <div className="dsh-pdf-page-loading" role="status">{t('reader.loadingPage')}</div>}
       <div ref={selectionHost} className="dsh-pdf-selection-overlay" aria-hidden="true" />
       <div ref={textHost} className="textLayer dsh-pdf-text-layer" data-pdf-text="active" />
+      {near && viewport && props.formFields?.length && props.onFormChange
+        ? <FormWidgets page={geometry.page} viewport={viewport} fields={props.formFields} onChange={props.onFormChange} /> : null}
       <PageContextOverlays near={near} textActive={textActive} viewport={viewport} width={width} height={height}
         pageNumber={geometry.page} mode={props.mode} annotations={props.annotations} selectedAnnotation={props.selectedAnnotation}
         selection={props.selection} explanationExcerpts={props.explanationExcerpts} explanationDraft={props.explanationDraft}

@@ -67,6 +67,9 @@ export function memoryWorkspace(initial: Uint8Array) {
       return { path, version, fsVersion: String(fsRevision), size: bytes.length }
     },
   }
-  return { workspaces: createWorkspaces(files, { get: key => records.get(key), async put(key, value) { records.set(key, structuredClone(value)) }, async delete(key) { records.delete(key) } }),
+  const drafts: Parameters<typeof createWorkspaces>[1] = {
+    get: key => records.get(key), async put(key, value) { records.set(key, structuredClone(value)) }, async delete(key) { records.delete(key) },
+  }
+  return { workspaces: createWorkspaces(files, drafts), files, drafts,
     records, current: () => bytes, writes: () => fsRevision - 1 }
 }

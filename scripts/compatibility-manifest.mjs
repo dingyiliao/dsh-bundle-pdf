@@ -77,7 +77,7 @@ function verifyV1KeyAlgorithms(drafts, navigation) {
     throw new Error('V1 draft/baseline key algorithm changed; migrate stored drafts deliberately')
   }
   if (!nav.includes("createHash('sha256').update(normalizedPath(path)).digest('hex')")) {
-    throw new Error('V1 bookmark/reading-position key algorithm changed; migrate stored navigation deliberately')
+    throw new Error('V1 reading-position key algorithm changed; migrate stored navigation deliberately')
   }
   // These signatures describe persistent behavior, not the names of local
   // functions. The V1 fixture tests exercise the same algorithms on records.
@@ -85,7 +85,6 @@ function verifyV1KeyAlgorithms(drafts, navigation) {
     path: "process.platform==='win32'?path.toLowerCase():path",
     draft: "createHash('sha256').update(JSON.stringify([session,pathKey(path)])).digest('hex')",
     baseline: '`base_${recordKey(record.sessionId,record.path)}_${record.sourceHash.slice(7)}`',
-    bookmark: "createHash('sha256').update(pathKey(path)).digest('hex')",
     readingPosition: "createHash('sha256').update(pathKey(path)).digest('hex')",
   }
 }
@@ -122,12 +121,12 @@ export async function collectCompatibilityManifest() {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const patch = patchEntries(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
   const [reader, native, ocr, image, client, transport, infoRoute, tools, modelWriteTools,
-    modelBookmarkTools, ocrTool, drafts, navigation] = await Promise.all([
+    modelFormTools, ocrTool, drafts, navigation] = await Promise.all([
     source('src/entrypoints/reader-host.ts'), source('src/entrypoints/native-host.ts'), source('src/entrypoints/ocr-host.ts'),
     source('src/entrypoints/image-understanding-host.ts'), source('src/entrypoints/reader-client.tsx'),
     source('src/contracts/rpc/envelope.ts'), source('src/adapters/host/dsh/info-route.ts'),
     source('src/adapters/host/dsh/agent-tools.ts'), source('src/adapters/host/dsh/model-write-tools.ts'),
-    source('src/adapters/host/dsh/model-bookmark-tools.ts'),
+    source('src/adapters/host/dsh/model-form-tools.ts'),
     source('src/adapters/host/dsh/ocr-tool.ts'),
     source('src/adapters/host/storage/v1-drafts.ts'), source('src/adapters/host/storage/v1-navigation.ts'),
   ])
@@ -150,7 +149,7 @@ export async function collectCompatibilityManifest() {
   if (infoPaths.length !== 1) throw new Error(`Cannot determine PDF info route in ${infoRoute.fileName}`)
   endpoints.push(infoPaths[0].slice('/api/'.length))
   const toolNames = []
-  for (const file of [tools, modelWriteTools, modelBookmarkTools, ocrTool]) {
+  for (const file of [tools, modelWriteTools, modelFormTools, ocrTool]) {
     for (const call of calls(file, 'defineTool')) {
       const name = literal(property(call.arguments[0], 'name'))
       if (!name) throw new Error(`Cannot determine tool name in ${file.fileName}`)
@@ -177,10 +176,10 @@ export async function collectCompatibilityManifest() {
     toolNames: [...new Set(toolNames)].sort(),
     storage: {
       suffix: 'sha256(namespace).slice(0,16)',
-      // Freeze the three authoritative V1 domains. New, disposable derived
+      // Freeze the remaining authoritative V1 domains. New, disposable derived
       // data domains must not rewrite this published storage contract.
       domains: calls(reader, 'defineDomain').map(call => storageDomain(call, reader))
-        .filter(domain => ['pdf_drafts_${suffix}', 'pdf_bookmarks_${suffix}', 'pdf_positions_${suffix}'].includes(domain.name)),
+        .filter(domain => ['pdf_drafts_${suffix}', 'pdf_positions_${suffix}'].includes(domain.name)),
       keyExpressions: verifyV1KeyAlgorithms(drafts, navigation),
     },
     clientExtensions: {

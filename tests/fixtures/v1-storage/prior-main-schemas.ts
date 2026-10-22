@@ -44,15 +44,6 @@ const position = z.object({
   viewportAnchor: anchor.optional(),
 }).strict()
 
-export const priorMainBookmarkSchema = z.object({
-  format: z.literal(1), path: z.string().min(1).max(32768),
-  entries: z.array(z.object({
-    id: z.string().uuid(), title: z.string().trim().min(1).max(200),
-    position, sourceHash: hash,
-    createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
-  }).strict()).max(1000),
-}).strict()
-
 export const priorMainPositionSchema = z.object({
   format: z.literal(1), path: z.string().min(1).max(32768), sourceHash: hash,
   position, updatedAt: z.string().datetime(),

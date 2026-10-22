@@ -3,9 +3,11 @@ import test from 'node:test'
 import {
   addHighlightQuickColor,
   DEFAULT_HIGHLIGHT_QUICK_COLORS,
+  DEFAULT_NOTE_QUICK_COLORS,
   editHighlightQuickColor,
   MAX_HIGHLIGHT_QUICK_COLORS,
   parseHighlightQuickColors,
+  readNoteQuickColors,
   removeHighlightQuickColor,
 } from '../../../src/modules/viewer/model/highlight-colors.ts'
 
@@ -14,6 +16,15 @@ test('quick highlight colors start with five defaults and an intentionally empti
   assert.deepEqual(defaults, DEFAULT_HIGHLIGHT_QUICK_COLORS)
   assert.equal(defaults.length, MAX_HIGHLIGHT_QUICK_COLORS)
   assert.deepEqual(parseHighlightQuickColors('[]'), [])
+})
+
+test('note quick colors remain available when browser storage cannot be read', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('storage denied') } })
+  try { assert.deepEqual(readNoteQuickColors(), DEFAULT_NOTE_QUICK_COLORS) } finally {
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
 })
 
 test('malformed stored quick colors fall back safely and valid colors normalize', () => {

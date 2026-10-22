@@ -33,6 +33,12 @@ await new Promise((resolveBuild, rejectBuild) => {
   child.once('error', rejectBuild)
   child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Image Host declaration build exited with status ${code}`)))
 })
+await new Promise((resolveBuild, rejectBuild) => {
+  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.capabilities.json'], {
+    cwd: project, stdio: 'inherit', windowsHide: true })
+  child.once('error', rejectBuild)
+  child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Capability declaration build exited with status ${code}`)))
+})
 
 const common = {
   absWorkingDir: project,
@@ -109,16 +115,20 @@ const ocrBuild = await build({
 const translationBuild = await build({
   ...browser, entryPoints: ['src/translation/index.ts'], outfile: 'dist/translation.js', format: 'esm',
 })
+const capabilityBuild = await build({
+  ...common, entryPoints: ['src/modules/capabilities/index.ts'], outfile: 'dist/capabilities.js',
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
+})
 const bridgeBuild = await build({
   ...browser, entryPoints: ['src/ocr/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
 })
 
 const assetFiles = ['ocr/bridge.js']
-async function copyAsset(source, destination) {
+async function copyAsset(source, destination, publish = true) {
   const target = join(dist, 'assets', ...destination.split('/'))
   await mkdir(dirname(target), { recursive: true })
   await copyFile(source, target)
-  assetFiles.push(destination)
+  if (publish) assetFiles.push(destination)
 }
 await copyAsset(join(tesseractRoot, 'dist/worker.min.js'), 'ocr/worker.min.js')
 for (const file of (await readdir(coreRoot, { withFileTypes: true })).filter((entry) => entry.isFile() && /^tesseract-core.*\.(?:js|wasm)$/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -127,17 +137,23 @@ for (const file of (await readdir(coreRoot, { withFileTypes: true })).filter((en
 for (const language of ['eng', 'chi_sim']) {
   await copyAsset(join(packageRoot(`@tesseract.js-data/${language}`), '4.0.0_best_int', `${language}.traineddata.gz`), `ocr/lang/${language}.traineddata.gz`)
 }
+// The form font is read by the Host writer only. Do not expose its 16 MB bytes
+// through the browser asset route or expand that route's MIME allowlist.
+await copyAsset(join(project, 'assets/fonts/NotoSansCJKsc-Regular.otf'), 'forms/NotoSansCJKsc-Regular.otf', false)
+await copyAsset(join(project, 'assets/fonts/OFL.txt'), 'forms/OFL.txt', false)
 const manifestFiles = await Promise.all(assetFiles.sort().map(async (path) => {
   const bytes = await readFile(join(dist, 'assets', ...path.split('/')))
   const contentType = extname(path) === '.js' ? 'text/javascript; charset=utf-8'
-    : extname(path) === '.wasm' ? 'application/wasm' : 'application/octet-stream'
+    : extname(path) === '.wasm' ? 'application/wasm'
+      : extname(path) === '.otf' ? 'font/otf'
+        : extname(path) === '.txt' ? 'text/plain; charset=utf-8' : 'application/octet-stream'
   return { path, bytes: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex'), contentType }
 }))
 await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version: 1, files: manifestFiles }, null, 2)}\n`, 'utf8')
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, bridgeBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, capabilityBuild, bridgeBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -161,4 +177,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/capability SDKs, and ${manifestFiles.length} local OCR resources.`)

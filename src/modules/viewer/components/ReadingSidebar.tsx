@@ -1,6 +1,6 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
 import type { ReaderDocument } from '../ports/reader-document.js'
-import { BookmarkPanel, type BookmarkAccess } from './BookmarkPanel.js'
+import { BookmarkPanel, type OutlineAccess } from './BookmarkPanel.js'
 import { PageThumbnailPanel } from './PageThumbnailPanel.js'
 
 export const readingSidebarSections = ['pages', 'bookmarks', 'annotations', 'search', 'translation', 'ocr'] as const
@@ -22,7 +22,7 @@ export interface ReadingSidebarProps {
   onNavigatePage: (page: number) => void
   onStepPage: (page: number) => void
   onNavigateDestination: (destination: unknown) => void
-  bookmarks?: BookmarkAccess
+  outlineAccess?: OutlineAccess
   t: (key: string) => string
 }
 
@@ -127,13 +127,12 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
 /** A persistent panel keeps in-flight translation and results alive across section changes. */
 export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExpandedChange, panels,
   pdf, currentPage, pageInput, navigating, onPageInputChange, onPageInputSubmit, onPageInputReset,
-  onNavigatePage, onStepPage, onNavigateDestination, bookmarks, t }: ReadingSidebarProps) {
+  onNavigatePage, onStepPage, onNavigateDestination, outlineAccess, t }: ReadingSidebarProps) {
   const root = useRef<HTMLElement>(null)
   const divider = useRef<HTMLDivElement>(null)
   const tabs = useRef(new Map<ReadingSidebarSection, HTMLButtonElement>())
   const drag = useRef<{ pointerId: number; x: number; width: number }>()
   const frame = useRef(0)
-  const toggleMotionTimer = useRef<ReturnType<typeof setTimeout>>()
   const requestedWidth = useRef(320)
   const [width, setWidth] = useState(320)
   const [maximumWidth, setMaximumWidth] = useState(420)
@@ -141,34 +140,6 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   const minimumWidth = Math.min(220, maximumWidth)
   const expandedWidth = Math.max(minimumWidth, Math.min(width, maximumWidth))
   const currentWidth = expanded ? expandedWidth : railWidth
-
-  useLayoutEffect(() => {
-    const sidebar = root.current
-    const reader = sidebar?.closest<HTMLElement>('.dsh-pdf-reader')
-    if (!sidebar || !reader) return
-    const content = reader.querySelector<HTMLElement>('.dsh-pdf-content')
-    // The CSS max-width clamp can make the rendered sidebar narrower than its
-    // requested width. Track its laid-out width so the floating toolbar reserves
-    // exactly the space the panel occupies.
-    const updateWidth = () => {
-      // During the drawer transition, the target width is already published.
-      // Feeding each intermediate frame back into another right transition
-      // makes the floating controls lag behind and overlap the drawer.
-      if (sidebar.hasAttribute('data-toggle-motion')) return
-      reader.style.setProperty('--pdf-sidebar-open-width', `${sidebar.getBoundingClientRect().width}px`)
-      if (content) reader.style.setProperty('--pdf-sidebar-overlap',
-        `${Math.max(0, content.getBoundingClientRect().right - sidebar.getBoundingClientRect().left)}px`)
-    }
-    const observer = new ResizeObserver(updateWidth)
-    observer.observe(sidebar)
-    if (content) observer.observe(content)
-    updateWidth()
-    return () => {
-      observer.disconnect()
-      reader.style.removeProperty('--pdf-sidebar-open-width')
-      reader.style.removeProperty('--pdf-sidebar-overlap')
-    }
-  }, [])
 
   useEffect(() => {
     const parent = root.current?.parentElement
@@ -197,35 +168,12 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     const element = divider.current
     return () => {
       cancelAnimationFrame(frame.current)
-      clearTimeout(toggleMotionTimer.current)
       if (drag.current && element?.hasPointerCapture(drag.current.pointerId)) {
         element.releasePointerCapture(drag.current.pointerId)
       }
       root.current?.removeAttribute('data-resizing')
     }
   }, [])
-
-  const animateToggle = () => {
-    const sidebar = root.current
-    if (!sidebar) return
-    const reader = sidebar.closest<HTMLElement>('.dsh-pdf-reader')
-    const targetWidth = expanded ? railWidth : expandedWidth
-    sidebar.setAttribute('data-toggle-motion', '')
-    // Install the transition before changing its target. When both updates
-    // land in one style recalculation Chromium jumps directly to the end.
-    reader?.querySelector<HTMLElement>('.dsh-pdf-floating-controls')?.getBoundingClientRect()
-    reader?.style.setProperty('--pdf-sidebar-open-width', `${targetWidth}px`)
-    const content = reader?.querySelector<HTMLElement>('.dsh-pdf-content')
-    if (reader && content) reader.style.setProperty('--pdf-sidebar-overlap',
-      `${Math.max(0, content.getBoundingClientRect().right - reader.getBoundingClientRect().right + 12 + targetWidth)}px`)
-    clearTimeout(toggleMotionTimer.current)
-    toggleMotionTimer.current = setTimeout(() => {
-      sidebar.removeAttribute('data-toggle-motion')
-      reader?.style.setProperty('--pdf-sidebar-open-width', `${sidebar.getBoundingClientRect().width}px`)
-      if (reader && content) reader.style.setProperty('--pdf-sidebar-overlap',
-        `${Math.max(0, content.getBoundingClientRect().right - sidebar.getBoundingClientRect().left)}px`)
-    }, 320)
-  }
 
   const resize = (nextWidth: number) => {
     requestedWidth.current = Math.max(minimumWidth, Math.min(maximumWidth, nextWidth))
@@ -237,11 +185,10 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
 
   const select = (section: ReadingSidebarSection) => {
     onSectionChange(section)
-    if (!expanded) animateToggle()
     onExpandedChange(true)
   }
 
-  return <aside ref={root} className={`dsh-pdf-sidebar${expanded ? '' : ' is-collapsed'}`}
+  return <aside ref={root} className={`dsh-pdf-sidebar dsh-pdf-glass${expanded ? '' : ' is-collapsed'}`}
     style={{ '--pdf-sidebar-width': `${currentWidth}px`, '--pdf-sidebar-expanded-width': `${expandedWidth}px` } as React.CSSProperties}
     aria-label={t('reader.sidebar.title')}>
     <div className="dsh-pdf-sidebar-shell">
@@ -251,8 +198,6 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
       onPointerDown={event => {
         if (event.button !== 0) return
         event.preventDefault()
-        clearTimeout(toggleMotionTimer.current)
-        root.current?.removeAttribute('data-toggle-motion')
         drag.current = { pointerId: event.pointerId, x: event.clientX, width: currentWidth }
         root.current?.setAttribute('data-resizing', '')
         event.currentTarget.setPointerCapture(event.pointerId)
@@ -287,7 +232,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           {section === 'pages' ? <PageThumbnailPanel pdf={pdf} active={expanded && activeSection === section}
             currentPage={currentPage} onNavigatePage={onNavigatePage} t={t} />
             : section === 'bookmarks' ? <BookmarkPanel pdf={pdf} active={expanded && activeSection === section}
-              currentPage={currentPage} bookmarks={bookmarks} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
+              currentPage={currentPage} outlineAccess={outlineAccess} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
         </div>)}
       </div>
       <div className="dsh-pdf-sidebar-footer">
@@ -300,7 +245,6 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
       <button type="button" className="dsh-pdf-sidebar-toggle" aria-controls={panelId} aria-expanded={expanded}
         aria-label={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')}
         title={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => {
-          animateToggle()
           onExpandedChange(!expanded)
         }}>
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"

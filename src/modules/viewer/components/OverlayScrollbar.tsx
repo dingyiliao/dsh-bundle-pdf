@@ -1,4 +1,4 @@
-import React, { useId, useLayoutEffect, useRef } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 
 type Axis = 'vertical' | 'horizontal'
 interface AxisGeometry {

@@ -13,6 +13,31 @@ export interface PdfPageInfo {
   userUnit: number
 }
 
+export interface PdfFormWidget {
+  page: number
+  rect: PdfRect
+  /** One selectable value for a radio widget, absent for other field types. */
+  option?: string
+}
+
+/** A canonical AcroForm field; widgets locate its visible controls on pages. */
+export interface PdfFormField {
+  /** Stable canonical PDF field object identity; absent only in older metadata. */
+  id?: string
+  /** Display name; imported PDFs can contain distinct fields with the same name. */
+  name: string
+  type: 'text' | 'checkbox' | 'radio' | 'dropdown' | 'option-list' | 'unsupported'
+  value: string | boolean | string[]
+  widgets: PdfFormWidget[]
+  options?: string[]
+  maxLength?: number
+  multiline?: boolean
+  /** Whether an option-list accepts more than one selected value. */
+  multiple?: boolean
+  readOnly: boolean
+  required: boolean
+}
+
 export interface PdfAnnotation {
   id: string
   /** ID of the annotation referenced by PDF /IRT, when it is on the same page. */
@@ -47,6 +72,17 @@ export interface PdfAnnotation {
   readOnlyReason?: string
 }
 
+/** Editable PDF outline metadata. Original destinations and styles remain owned by the PDF adapter. */
+export interface PdfOutlineItem {
+  id: string
+  title: string
+  /** Resolved one-based page, absent for external, unsupported or unavailable destinations. */
+  page?: number
+  /** Unsaved projection explicitly replaces the original destination, even on the same page. */
+  targetChanged?: true
+  children: PdfOutlineItem[]
+}
+
 export interface PdfDocumentInfo {
   pageCount: number
   pages: PdfPageInfo[]
@@ -54,6 +90,11 @@ export interface PdfDocumentInfo {
   title?: string
   signed: boolean
   encrypted: boolean
+  formKind?: 'acroform' | 'xfa'
+  formFields?: PdfFormField[]
+  /** An empty array is an editable empty outline; absence means inspection is unavailable. */
+  outline?: PdfOutlineItem[]
+  outlineReadOnlyReason?: string
   readOnly: boolean
   readOnlyReason?: string
 }
@@ -77,6 +118,18 @@ export type PdfAnnotationOperation =
   | { type: 'update'; id: string; patch: { contents?: string; color?: PdfColor; rect?: PdfRect; commentPosition?: [number, number] } }
   | { type: 'delete'; id: string }
 
+export type PdfFormOperation = { type: 'set-field'; value: string | boolean | string[] } & (
+  { fieldId: string; name?: never } | { name: string; fieldId?: never })
+
+export type PdfOutlineOperation =
+  | { type: 'outline-add'; id: string; title: string; page: number; parentId?: string; index?: number }
+  | { type: 'outline-update'; id: string; patch: { title?: string; page?: number } }
+  | { type: 'outline-delete'; id: string }
+  /** Index is measured in the destination's children after removing the moving subtree. */
+  | { type: 'outline-move'; id: string; parentId?: string; index: number }
+
+export type PdfWorkingCopyOperation = PdfAnnotationOperation | PdfFormOperation | PdfOutlineOperation
+
 export type PdfDocumentErrorCode =
   | 'encrypted'
   | 'password-required'
@@ -85,6 +138,8 @@ export type PdfDocumentErrorCode =
   | 'invalid-operation'
   | 'unknown-annotation'
   | 'annotation-read-only'
+  | 'unknown-outline'
+  | 'outline-read-only'
 
 export class PdfDocumentError extends Error {
   constructor(public readonly code: PdfDocumentErrorCode, message: string) {

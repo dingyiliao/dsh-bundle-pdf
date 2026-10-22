@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ToolbarDisclosure } from './ToolbarDisclosure.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 
 type Fit = 'custom' | 'width' | 'page'
@@ -30,13 +31,6 @@ export function ZoomMenu({ fit, zoom, disabled = false, t, onSelect }: ZoomMenuP
   useEffect(() => {
     if (disabled && details.current) details.current.open = false
   }, [disabled])
-  useEffect(() => {
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && details.current && !details.current.contains(event.target)) details.current.open = false
-    }
-    document.addEventListener('pointerdown', close)
-    return () => document.removeEventListener('pointerdown', close)
-  }, [])
   useLayoutEffect(() => {
     if (!open) return
     const menu = details.current?.querySelector<HTMLElement>('.dsh-pdf-zoom-menu')
@@ -56,23 +50,15 @@ export function ZoomMenu({ fit, zoom, disabled = false, t, onSelect }: ZoomMenuP
     }
   }, [open])
 
-  return <details ref={details} className="dsh-pdf-toolbar-zoom" aria-label={`${t('reader.zoom')}: ${current}`}
-    onToggle={event => setOpen(event.currentTarget.open)} onBlur={event => {
-      if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
-    }}>
-    <summary ref={trigger} aria-disabled={disabled} tabIndex={disabled ? -1 : 0}
-      aria-label={`${t('reader.zoom')}: ${current}`} data-tooltip={`${t('reader.zoom')}: ${current}`}
-      onClick={event => { if (disabled) event.preventDefault() }}>
-      <ToolbarIcon name="zoom" />
-      <span className="dsh-pdf-zoom-chevron" aria-hidden="true">▾</span>
-    </summary>
-    <div className="dsh-pdf-tools-menu dsh-pdf-zoom-menu" role="group" aria-label={t('reader.zoom')}>
+  return <ToolbarDisclosure detailsRef={details} triggerRef={trigger} className="dsh-pdf-toolbar-zoom"
+    menuClassName="dsh-pdf-zoom-menu" label={`${t('reader.zoom')}: ${current}`}
+    menuLabel={t('reader.zoom')} disabled={disabled} onOpenChange={setOpen}
+    trigger={<ToolbarIcon name="zoom" />}>
       {choices.map(choice => <button key={choice.id} type="button" aria-pressed={choice.id === selectedId}
         onClick={() => {
           onSelect(choice.id === 'width' || choice.id === 'page' ? choice.id : Number(choice.id))
           if (details.current) details.current.open = false
           trigger.current?.focus()
         }}><span>{choice.label}</span></button>)}
-    </div>
-  </details>
+  </ToolbarDisclosure>
 }

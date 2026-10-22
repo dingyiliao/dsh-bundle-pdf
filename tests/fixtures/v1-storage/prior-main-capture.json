@@ -102,35 +102,6 @@
         }
       }
     ],
-    "bookmarks": [
-      {
-        "key": "01ca5485d16859104d65f955e6de6cebcbf1da7d0d458b5b2d97d52c6ce1d3db",
-        "record": {
-          "format": 1,
-          "path": "/fixtures/prior-main.pdf",
-          "entries": [
-            {
-              "id": "ed2c9c49-834c-4169-9cff-a8f457db2feb",
-              "title": "Previous main bookmark",
-              "position": {
-                "page": 1,
-                "x": 40,
-                "y": 300,
-                "scale": 1.2,
-                "fit": "custom",
-                "viewportAnchor": {
-                  "x": 0.25,
-                  "y": 0.5
-                }
-              },
-              "sourceHash": "sha256:a02f90f16aa6ea850e5de4c84b7dd0bf078fa61e5f5eb38afa00bfecffe73c48",
-              "createdAt": "2026-10-18T16:48:39.538Z",
-              "updatedAt": "2026-10-18T16:48:39.538Z"
-            }
-          ]
-        }
-      }
-    ],
     "positions": [
       {
         "key": "01ca5485d16859104d65f955e6de6cebcbf1da7d0d458b5b2d97d52c6ce1d3db",

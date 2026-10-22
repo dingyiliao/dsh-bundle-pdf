@@ -135,7 +135,7 @@ test('a partially completed multi-page range adds only missing pages as one draf
 test('an unpositioned middle page rejects the entire cross-page range without a partial draft', async () => {
   const { state, opened, pages, target } = await rangeFixture()
   const writes = createModelWriteService(state.workspaces, {
-    async readPageText(owner, id, page, abort) {
+    async readPageText(owner, id, page) {
       const read = await pages.readPageText(owner, id, page)
       return page === 2 ? { ...read, content: { ...read.content, items: [] } } : read
     },
@@ -145,6 +145,47 @@ test('an unpositioned middle page rejects the entire cross-page range without a 
       expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal),
     { code: 'pdf/invalid-text-range' })
     assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('text ranges reject reversed spans and a page that changes during lookup', async () => {
+  const { state, opened, pages, target } = await rangeFixture()
+  const writes = createModelWriteService(state.workspaces, {
+    async readPageText(owner, id, page) {
+      const read = await pages.readPageText(owner, id, page)
+      return page === 2 ? { ...read, snapshot: { ...read.snapshot, revision: read.snapshot.revision + 1 } } : read
+    },
+  })
+  try {
+    await assert.rejects(writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target: {
+        kind: 'pdf-text-range', start: { page: 3, quote: 'Final part' }, end: { page: 1, quote: 'Start here' },
+      } }, agent, signal), { code: 'pdf/invalid-text-range' })
+    await assert.rejects(writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal),
+    { code: 'pdf/stale-revision' })
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).revision, opened.revision)
+  } finally { writes.dispose(); await state.workspaces.dispose() }
+})
+
+test('an already-covered range is rechecked for concurrent edits before reporting success', async () => {
+  const { state, opened, writes, pages, target } = await rangeFixture()
+  try {
+    const first = await writes.annotate(sessionId, { documentId: opened.id,
+      expectedRevision: opened.revision, subtype: 'Highlight', target }, agent, signal)
+    let reads = 0
+    const racing = { ...state.workspaces,
+      readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+        const snapshot = state.workspaces.readSnapshot(...args)
+        return ++reads === 2 ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot
+      },
+    }
+    const check = createModelWriteService(racing, pages)
+    try {
+      await assert.rejects(check.annotate(sessionId, { documentId: opened.id,
+        expectedRevision: first.revision, subtype: 'Highlight', target }, agent, signal),
+      { code: 'pdf/stale-revision' })
+    } finally { check.dispose() }
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 

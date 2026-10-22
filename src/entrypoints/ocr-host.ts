@@ -4,6 +4,7 @@ import { OcrError } from '../ocr/types.js'
 import { createSessionLlmOcrBackend, registerOcrAgentTool, resolveOcrSessionModel,
   type OcrModelRouteContext, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
 import { HostOcrService } from '../modules/ocr/index.js'
+import { pdfCapabilities } from '../modules/capabilities/index.js'
 
 export type { HostOcrBackend, HostOcrRequest, HostOcrResult, HostOcrService } from '../modules/ocr/index.js'
 
@@ -38,5 +39,20 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
   ctx.effect(() => unregister, 'ocr: current-session model backend')
+  ctx.effect(() => {
+    const fiber = ctx.inject(['pdfCapabilities'], scope => {
+      scope.effect(() => scope.pdfCapabilities.register({ id: 'ocr.selected',
+        capabilities: [pdfCapabilities.recognizeImage], implementation: service,
+        async supports({ sessionId, signal }) {
+          if (!sessionId) return { available: false, reason: 'OCR requires a session' }
+          const result = await service.availability(sessionId, signal)
+          return result.status === 'available' ? { available: true } : {
+            available: false, reason: result.reason ?? `OCR is ${result.status}`,
+          }
+        },
+      }), 'ocr: capability catalog')
+    })
+    return () => fiber.dispose()
+  }, 'ocr: optional capability catalog')
   registerOcrAgentTool(ctx, service)
 }

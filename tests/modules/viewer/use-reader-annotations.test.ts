@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation, PdfAnnotationOperation } from '../../../src/core/pdf-types.ts'
@@ -10,7 +8,6 @@ import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-s
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderAnnotations, type ReaderAnnotationsOptions } from '../../../src/modules/viewer/index.ts'
 
-const project = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -214,7 +211,7 @@ test('beginNote clamps a standalone note and opens its independent editor', asyn
 })
 
 test('moving an open draft note changes its anchor rectangle before it is saved', async () => {
-  await withAnnotations(async ({ state, options, render, operations }) => {
+  await withAnnotations(async ({ state, options, operations }) => {
     await act(async () => state().beginNote(1, [10, 20]))
     const id = state().pendingNote!.id
     await act(async () => { assert.equal(await state().moveNote([22, 33, 42, 53]), true) })
@@ -426,11 +423,14 @@ test('failed note recoloring restores its saved color', async () => {
   const note: PdfAnnotation = { ...existing, id: 'failed-note-color', subtype: 'Text',
     color: [1, 0.85, 0], contents: 'A note' }
   await withAnnotations(async ({ state, options, render, operations }) => {
+    let finishWrite!: () => void
+    const writeFinished = new Promise<void>(resolve => { finishWrite = resolve })
     await render({ ...options, snapshot: snapshot([note]), pdfAnnotations: [note],
-      change: async next => { operations.push(next); return undefined } })
+      change: async next => { operations.push(next); await writeFinished; return undefined } })
     await act(async () => state().selectAnnotation(note.id))
     await act(async () => state().updateNoteColor('#3366cc'))
     assert.equal(state().noteColor, '#3366cc')
+    finishWrite()
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
     assert.equal(state().noteColor, '#ffd900')
     assert.equal(state().colorPending, false)

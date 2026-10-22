@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { Page, type PageProps } from '../../../src/modules/viewer/rendering/Page.tsx'
 import { NativeViewport } from '../../../src/modules/viewer/rendering/viewport.ts'
@@ -10,7 +8,6 @@ import type { NativeDocument, NativePage } from '../../../src/modules/viewer/ren
 import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { PdfOcrTextPart } from '../../../src/ocr/mapping.ts'
 
-const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -292,5 +289,27 @@ test('page ignores tiles cancelled by an old document but reports live tile fail
     const liveLifetime = new AbortController()
     await render({ pdf: document(page(liveLifetime, async () => { throw new Error('Live tile unavailable') })) })
     assert.deepEqual(calls.errors, ['Error: Live tile unavailable'])
+  })
+})
+
+test('editable AcroForm widgets overlay their page positions and commit text on blur', async () => {
+  await withPage(async ({ render, mount }) => {
+    const changes: Array<[string, string | boolean | string[]]> = []
+    await render({ formFields: [
+      { id: 'pdf-field:6:0', name: 'applicant', type: 'text', value: '', widgets: [{ page: 1, rect: [30, 100, 180, 130] }],
+        readOnly: false, required: false },
+      { name: 'locked', type: 'text', value: 'visible in PDF', widgets: [{ page: 1, rect: [30, 70, 180, 90] }],
+        readOnly: true, required: false },
+      { name: 'single-list', type: 'option-list', value: ['one'], options: ['one', 'two'], multiple: false,
+        widgets: [{ page: 1, rect: [30, 150, 180, 190] }], readOnly: false, required: false },
+    ], onFormChange: async (name, value) => { changes.push([name, value]) } })
+    const input = mount.querySelector<HTMLInputElement>('.dsh-pdf-form-widgets input[aria-label="applicant"]')
+    assert.ok(input)
+    assert.equal(input.style.left, '30px')
+    assert.equal(input.style.top, '270px')
+    assert.equal(mount.querySelector('[aria-label="locked"]'), null)
+    assert.equal(mount.querySelector<HTMLSelectElement>('[aria-label="single-list"]')!.multiple, false)
+    await act(async () => { input.focus(); input.value = 'Edited'; input.blur() })
+    assert.deepEqual(changes, [['pdf-field:6:0', 'Edited']])
   })
 })

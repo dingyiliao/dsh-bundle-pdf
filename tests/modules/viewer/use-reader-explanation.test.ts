@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
@@ -10,7 +8,6 @@ import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-s
 import type { NativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
 import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/modules/viewer/index.ts'
 
-const project = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }

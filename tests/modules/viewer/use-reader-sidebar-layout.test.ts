@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useReaderSidebarLayout } from '../../../src/modules/viewer/controllers/use-reader-sidebar-layout.ts'
 
-const project = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -89,6 +86,12 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: secondFile })))
     assert.equal(state?.section, 'search')
     assert.equal(state?.expanded, false)
+
+    const malformedFile = 'dsh-resource://file/session/shared-session/malformed.pdf'
+    dom.sessionStorage.setItem(`dsh-pdf:sidebar-layout:v2:${malformedFile}`, '{')
+    await act(async () => root.render(React.createElement(Harness, { resourceAddress: malformedFile })))
+    assert.equal(state?.section, 'annotations', 'invalid saved layout falls back to the default section')
+    assert.equal(state?.expanded, true)
   } finally {
     await act(async () => root.unmount())
     dom.close()

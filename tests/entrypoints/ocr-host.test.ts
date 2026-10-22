@@ -3,6 +3,7 @@ import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, Config, inject, name, provide } from '../../src/entrypoints/ocr-host.ts'
 import type { HostOcrService } from '../../src/modules/ocr/index.js'
+import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilities/index.js'
 
 test('OCR plugin wires its session-model backend, agent tool and Fiber disposal', async () => {
   const services = new Map<string, unknown>()
@@ -19,6 +20,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
     },
     tools: { register(definition: { name: string }) { toolNames.push(definition.name) } },
     get(key: string) { return services.get(key) },
+    inject() { return { dispose() {} } },
   } as unknown as Context
   services.set('llm', {
     async resolveModelInfo(provider: string, model: string) {
@@ -49,6 +51,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
     assert.deepEqual(toolNames, ['ocr_recognize'])
     assert.deepEqual(effects.map(effect => effect.label), [
       'ocr: dispose in-flight recognition', 'ocr: current-session model backend',
+      'ocr: optional capability catalog',
     ])
     const missingController = await service.availability('session-ocr-plugin')
     assert.equal(missingController.status, 'unavailable')
@@ -77,17 +80,41 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
 
 test('OCR service is visible only while its real Cordis Fiber is active', async () => {
   const root = new Context()
+  const capabilities = new CapabilityRegistry()
   root.reflect.provide('tools', { register() { return () => undefined } })
+  root.reflect.provide('pdfCapabilities', capabilities)
   try {
     const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({}))
     await fiber
     const service = root.get('ocr')
     assert.ok(service)
     assert.deepEqual(service.list().map(backend => backend.id), ['session-llm'])
+    assert.deepEqual(capabilities.list().filter(item => item.capabilities.includes(pdfCapabilities.recognizeImage))
+      .map(item => item.id), ['ocr.selected'])
+    assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage)).reason ?? '', /requires a session/)
+    assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage, { sessionId: 'session-1' })).reason ?? '',
+      /Model or image attachment service is unavailable/)
 
     await fiber.dispose()
     assert.equal(root.get('ocr'), undefined)
+    assert.deepEqual(capabilities.list(), [])
     assert.deepEqual(service.list(), [])
     assert.equal((await service.availability('session-1')).status, 'unavailable')
+  } finally { await root.fiber.dispose() }
+})
+
+test('OCR capability appears when the Reader catalog loads after OCR', async () => {
+  const root = new Context()
+  root.reflect.provide('tools', { register() { return () => undefined } })
+  const capabilities = new CapabilityRegistry()
+  try {
+    const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({}))
+    await fiber
+    assert.deepEqual(capabilities.list(), [])
+    root.reflect.provide('pdfCapabilities', capabilities)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(capabilities.list().map(item => item.id), ['ocr.selected'])
+    await fiber.dispose()
+    assert.deepEqual(capabilities.list(), [])
   } finally { await root.fiber.dispose() }
 })

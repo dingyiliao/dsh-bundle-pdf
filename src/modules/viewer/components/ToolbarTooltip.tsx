@@ -11,6 +11,7 @@ export function ToolbarTooltip({ children }: { children: React.ReactElement<Reac
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const bubble = useRef<HTMLSpanElement>(null)
   const active = useRef<HTMLElement | null>(null)
+  const activePosition = useRef<{ x: number; y: number } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const visible = useRef(false)
   const lastVisible = useRef(0)
@@ -24,6 +25,7 @@ export function ToolbarTooltip({ children }: { children: React.ReactElement<Reac
     if (active.current === null && timer.current === null && !visible.current) return
     cancelTimer()
     active.current = null
+    activePosition.current = null
     if (visible.current) lastVisible.current = performance.now()
     visible.current = false
     setTooltip(null)
@@ -36,6 +38,8 @@ export function ToolbarTooltip({ children }: { children: React.ReactElement<Reac
     visible.current = false
     setTooltip(null)
     active.current = anchor
+    const position = anchor.getBoundingClientRect()
+    activePosition.current = { x: position.x, y: position.y }
     if (!label) return
     const reveal = () => {
       timer.current = null
@@ -83,12 +87,22 @@ export function ToolbarTooltip({ children }: { children: React.ReactElement<Reac
     window.addEventListener('resize', hide)
     const onScroll = () => {
       const anchor = active.current
+      if (!anchor) return
       // Focusing a toolbar control can itself scroll a container. Keep a
       // keyboard tooltip anchored instead of immediately dismissing it.
-      if (anchor && document.activeElement === anchor && anchor.isConnected
+      if (document.activeElement === anchor && anchor.isConnected
         && (keyboardMode.current || anchor.matches(':focus-visible'))) {
         setTooltip({ anchor, label: anchor.dataset.tooltip ?? '' })
-      } else hide()
+        return
+      }
+      // The page and status popover scroll independently of the fixed toolbar.
+      // Keep a pointer tooltip unless its actual anchor has moved on screen.
+      if (anchor.isConnected && activePosition.current) {
+        const position = anchor.getBoundingClientRect()
+        if (Math.abs(position.x - activePosition.current.x) < 1
+          && Math.abs(position.y - activePosition.current.y) < 1) return
+      }
+      hide()
     }
     window.addEventListener('scroll', onScroll, true)
     return () => {

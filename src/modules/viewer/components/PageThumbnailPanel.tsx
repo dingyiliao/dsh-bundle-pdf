@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReaderDocument } from '../ports/reader-document.js'
 import { useVirtualRows } from '../controllers/use-virtual-rows.js'
 

@@ -78,7 +78,7 @@ export function SplitActionControl({ className = '', menuClassName = '', menuTes
       aria-controls={open ? menuId : undefined} onClick={() => setOpen(current => !current)}>
       <ToolbarIcon name="chevronDown" />
     </button>
-    {open && <div ref={menu} id={menuId} className={`dsh-pdf-split-action-menu ${menuClassName}`.trim()}
+    {open && <div ref={menu} id={menuId} className={`dsh-pdf-split-action-menu dsh-pdf-glass ${menuClassName}`.trim()}
       data-testid={menuTestId} role="dialog" aria-label={menuLabel}>
       {children(close)}
     </div>}

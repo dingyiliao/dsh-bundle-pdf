@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
 import { createRequire, registerHooks } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
 import { AnnotationList } from '../../../src/modules/viewer/components/AnnotationList.tsx'
 import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.tsx'
 import { ExplanationQuestionEditor } from '../../../src/modules/viewer/components/ExplanationQuestionEditor.tsx'
 import { FloatingToolbar } from '../../../src/modules/viewer/components/FloatingToolbar.tsx'
+import { FloatingStatusRail } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
 import { OcrTranscriptPanel } from '../../../src/modules/viewer/components/OcrTranscriptPanel.tsx'
 import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
+import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderNoteEditor.tsx'
 import { ScreenshotPreview } from '../../../src/modules/viewer/components/ScreenshotPreview.tsx'
 import { SplitActionControl } from '../../../src/modules/viewer/components/SplitActionControl.tsx'
 import { TranslationPanel } from '../../../src/modules/viewer/components/TranslationPanel.tsx'
@@ -20,7 +20,6 @@ import type { HostOcrRecognition } from '../../../src/adapters/client/remote/hos
 import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
 import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
 
-const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -472,8 +471,41 @@ test('unmounting the sidebar releases an in-progress resize pointer capture', as
     Object.defineProperty(start, 'pointerId', { value: 7 })
     await act(async () => { divider.dispatchEvent(start) })
     assert.equal(captured, true)
+    await render(React.createElement(ReadingSidebar, { ...props, expanded: false }))
+    assert.equal(releases, 1, 'collapsing the sidebar ends its active resize')
+    await render(React.createElement(ReadingSidebar, props))
+    await act(async () => { divider.dispatchEvent(start) })
+    assert.equal(captured, true)
     await render(React.createElement('div'))
-    assert.equal(releases, 1)
+    assert.equal(releases, 2)
+  })
+})
+
+test('activity popup returns focus on Escape and note color menu dismisses on Escape or outside pointer', async () => {
+  await withDom(async (dom, container, render) => {
+    await render(React.createElement(FloatingStatusRail, { statuses: [{ id: 'save', content: 'Saved' }], t }))
+    const activity = container.querySelector<HTMLButtonElement>('.dsh-pdf-activity-trigger')!
+    await act(async () => { activity.click() })
+    assert.equal(activity.getAttribute('aria-expanded'), 'true')
+    await act(async () => { activity.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    assert.equal(activity.getAttribute('aria-expanded'), 'false')
+    assert.equal(dom.document.activeElement, activity)
+
+    await render(React.createElement(ReaderNoteEditor, {
+      mode: 'read', readOnly: false, editable: true, value: 'A note', color: '#ffd900',
+      note: { id: 'note-1', page: 1, subtype: 'Text', contents: 'A note', flags: 4, supported: true, editable: true },
+      textarea: React.createRef<HTMLTextAreaElement>(), t,
+      onChange() {}, onColorChange() {}, onEdit() {}, onSave() {}, onCancel() {}, onDismiss() {}, onDelete() {},
+    }))
+    const color = container.querySelector<HTMLButtonElement>('.dsh-pdf-note-color')!
+    await act(async () => { color.click() })
+    assert.equal(color.getAttribute('aria-expanded'), 'true')
+    const menu = container.querySelector<HTMLElement>('.dsh-pdf-note-color-popover')!
+    await act(async () => { menu.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    assert.equal(color.getAttribute('aria-expanded'), 'false')
+    await act(async () => { color.click() })
+    await act(async () => { dom.document.body.dispatchEvent(new dom.Event('pointerdown', { bubbles: true })) })
+    assert.equal(color.getAttribute('aria-expanded'), 'false')
   })
 })
 
@@ -545,5 +577,12 @@ test('quick-color storage reset and focused tooltip survive indirect browser eve
     assert.match(dom.document.body.querySelector('[role="tooltip"]')?.textContent ?? '', /Zoom in/)
     await act(async () => { dom.dispatchEvent(new dom.Event('scroll', { bubbles: true })) })
     assert.match(dom.document.body.querySelector('[role="tooltip"]')?.textContent ?? '', /Zoom in/)
+    await act(async () => { button.blur(); await Promise.resolve() })
+    await act(async () => { button.dispatchEvent(new dom.MouseEvent('pointerover', { bubbles: true })) })
+    assert.match(dom.document.body.querySelector('[role="tooltip"]')?.textContent ?? '', /Zoom in/)
+    button.getBoundingClientRect = () => ({ x: 20, y: 0, left: 20, top: 0, right: 40, bottom: 20,
+      width: 20, height: 20, toJSON() {} }) as DOMRect
+    await act(async () => { dom.dispatchEvent(new dom.Event('scroll', { bubbles: true })) })
+    assert.equal(dom.document.body.querySelector('[role="tooltip"]'), null, 'a moving anchor hides its stale tooltip')
   })
 })

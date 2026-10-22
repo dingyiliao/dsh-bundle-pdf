@@ -51,6 +51,23 @@ test('undo and redo use matching, centered arrowheads', () => {
     ['m15 4 5 5-5 5', 'M20 9h-9a7 7 0 0 0-7 7v3'])
 })
 
+test('Tools uses a toolbox silhouette rather than an ambiguous overflow mark', () => {
+  const markup = render({ name: 'tools' })
+  assert.match(markup, /data-icon="tools"/)
+  assert.match(markup, /<rect x="3" y="8" width="18" height="12" rx="2"/)
+  assert.match(markup, /d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h7m4 0h7"/)
+  assert.doesNotMatch(markup, /<circle/)
+})
+
+test('the rename pencil uses the shared SVG canvas and stroke instead of a font glyph', () => {
+  const markup = render({ name: 'edit' })
+  assert.match(markup, /viewBox="0 0 24 24" width="18" height="18"/)
+  assert.match(markup, /stroke-width="1.7"/)
+  assert.match(markup, /data-icon="edit"/)
+  assert.deepEqual(paths(markup).map(path => path.d), ['m15 4 5 5L9 20H4v-5L15 4ZM12.5 6.5l5 5'])
+  assert.doesNotMatch(markup, /<text|✎/)
+})
+
 test('commented mark keeps the page top and folded corner visible above its comment bubble', () => {
   const drawn = paths(render({ name: 'commentedMark', accent: '#4b72e8' }))
   assert.ok(drawn.some(path => path.d === 'M5 3.5h8l4 4V12M5 3.5v17h8'), 'the document silhouette has an explicit top edge')

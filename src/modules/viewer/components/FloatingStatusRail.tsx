@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { ToolbarIcon } from './ToolbarIcon.js'
 
 export interface FloatingStatusAction {
@@ -45,7 +45,7 @@ function FloatingStatusCard({ status }: { status: FloatingStatus }) {
     return () => clearTimeout(timer)
   }, [status.id, status.durationMs, status.occurrence])
 
-  return <div className={`dsh-pdf-floating-status${status.className ? ` ${status.className}` : ''}`}
+  return <div className={`dsh-pdf-floating-status dsh-pdf-glass${status.className ? ` ${status.className}` : ''}`}
     data-status-id={status.id} data-kind={status.kind} title={status.title}>
     {status.activity === 'progress' && <span className="dsh-pdf-floating-status-spinner" aria-hidden="true" />}
     {status.activity === 'dot' && <span className="dsh-pdf-floating-status-dot" aria-hidden="true" />}
@@ -96,7 +96,7 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
       </span>
       {visible.length > 1 && <span className="dsh-pdf-activity-count" aria-hidden="true">{visible.length}</span>}
     </button>
-    <div id={popoverId} className="dsh-pdf-activity-popover" role="group" aria-label={t('reader.activity')}
+    <div id={popoverId} className="dsh-pdf-activity-popover dsh-pdf-glass" role="group" aria-label={t('reader.activity')}
       hidden={!open}>
       {visible.length ? visible.map(status => <FloatingStatusCard key={status.id} status={status} />)
         : <p className="dsh-pdf-activity-empty">{t('reader.activityEmpty')}</p>}

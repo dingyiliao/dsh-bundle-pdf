@@ -25,7 +25,6 @@ const checkout = resolve(checkoutArgument)
 const pdf = resolve(pdfArgument)
 const expectedSources = {
   'src/host/workspaces.ts': 'f2bf303b0a2552f67024747f581952c8e826147f01e1cca2c768fccb22961f38',
-  'src/host/bookmarks.ts': '1a3f768c41e9341c951ffe58905bdbb73395f044f21c6e32ad1bdb7e56cf50db',
   'src/host/reading-positions.ts': '64296b4e965585c4dbe12597255a566f27e029f2df6b976e27db9d04bc1ce2ab',
   'src/host/validation.ts': 'c0a5d3bbfed759232ec58bb667b46051d6fca3f04eb0e3d7a04fca7ac13fa533',
 }
@@ -35,7 +34,6 @@ for (const [file, expected] of Object.entries(expectedSources)) {
 }
 const readOld = async file => import(pathToFileURL(join(checkout, file)).href)
 const { createWorkspaces } = await readOld('src/host/workspaces.ts')
-const { createBookmarkService } = await readOld('src/host/bookmarks.ts')
 const { createReadingPositionService } = await readOld('src/host/reading-positions.ts')
 const source = new Uint8Array(await readFile(pdf))
 const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -44,7 +42,7 @@ const path = '/fixtures/prior-main.pdf'
 const address = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(path)}`
 const agent = { session: { id: sessionId, header: { cwd: '/fixtures' } } }
 const signal = new AbortController().signal
-const draftRecords = new Map(), bookmarkRecords = new Map(), positionRecords = new Map()
+const draftRecords = new Map(), positionRecords = new Map()
 const table = records => ({
   get: key => records.get(key),
   async put(key, record) { records.set(key, structuredClone(record)) },
@@ -62,10 +60,8 @@ const files = {
   async save() { throw new Error('Capturing pre-save V1 records must not write the source PDF') },
 }
 const workspaces = createWorkspaces(files, table(draftRecords))
-const bookmarks = createBookmarkService(workspaces, table(bookmarkRecords))
 const positions = createReadingPositionService(workspaces, table(positionRecords))
 const run = input => workspaces.execute(sessionId, { sessionId, ...input }, agent, signal)
-const bookmark = input => bookmarks.dispatch(sessionId, { sessionId, ...input }, agent, signal)
 const position = input => positions.dispatch(sessionId, { sessionId, ...input }, agent, signal)
 const note = (id, x) => ({ type: 'add', annotation: { id, page: 1,
   subtype: 'Text', rect: [x, 40, x + 20, 60], contents: id } })
@@ -79,7 +75,6 @@ try {
   const undone = await run({ action: 'undo', id: second.id, revision: second.revision })
   const place = { page: 1, x: 40, y: 300, scale: 1.2,
     fit: 'custom', viewportAnchor: { x: 0.25, y: 0.5 } }
-  await bookmark({ action: 'add', id: undone.id, title: 'Previous main bookmark', position: place })
   await position({ action: 'set', id: undone.id, position: place })
   const records = entries => [...entries].sort(([left], [right]) => left.localeCompare(right))
     .map(([key, record]) => ({ key, record }))
@@ -92,7 +87,6 @@ try {
       revision: undone.revision, sourceHash: digest(source), position: place },
     domains: {
       drafts: records(draftRecords),
-      bookmarks: records(bookmarkRecords),
       positions: records(positionRecords),
     },
   }
@@ -101,6 +95,5 @@ try {
   else process.stdout.write(serialized)
 } finally {
   await positions.dispose()
-  await bookmarks.dispose()
   await workspaces.dispose()
 }

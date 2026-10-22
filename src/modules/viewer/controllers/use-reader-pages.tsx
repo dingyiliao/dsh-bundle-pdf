@@ -29,6 +29,7 @@ export interface ReaderPagesOptions {
   size: { width: number; height: number }
   scrollRoot: HTMLDivElement | null
   mode: 'text' | 'region' | 'note'
+  onFormChange(fieldId: string, value: string | boolean | string[]): Promise<void>
   t(key: string): string
   pageScale(page: PdfPageInfo): number
   registerView(page: number, view: PageView | null): void
@@ -71,7 +72,7 @@ const noAnnotations: PdfAnnotation[] = []
 export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
   const { PageComponent, pdf, snapshot, selection, selectedAnnotation, annotationsByPage,
     renderedAnnotationsByPage, activeExplanation, draftExplanationSelection, draggingPage,
-    navigationTarget, ocrPages, zoom, fit, size, scrollRoot, mode, t, pageScale,
+    navigationTarget, ocrPages, zoom, fit, size, scrollRoot, mode, t, pageScale, onFormChange,
     registerView, editExplanationQuestion, selectAnnotation, moveNoteMarker, dismissContext, notifyError } = options
   const callbacks = useRef({ destination: options.destination, jump: options.jump,
     beginNote: options.beginNote, takeScreenshot: options.takeScreenshot,
@@ -101,6 +102,7 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
         scale={pageScale(geometry)} rotation={0} mode={mode} t={t} scrollRoot={scrollRoot}
         retainTextLayer={retainTextLayer}
         annotations={annotationsByPage.get(geometry.page) ?? noAnnotations}
+        formFields={snapshot.document.formFields} onFormChange={onFormChange}
         renderedAnnotations={renderedAnnotationsByPage.get(geometry.page) ?? noAnnotations}
         selectedAnnotation={selectedAnnotation?.page === geometry.page ? selectedAnnotation.id : undefined}
         selection={selectedPages.has(geometry.page) ? selection : null} ocrWords={ocrPages.get(geometry.page)?.words}
@@ -115,6 +117,6 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
   }, [PageComponent, pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, mode, t, scrollRoot,
     annotationsByPage, renderedAnnotationsByPage, selectedAnnotation?.id, selectedAnnotation?.page,
     selection, activeExplanation, draftExplanationSelection, draggingPage, navigationTarget,
-    ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction,
+    ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction, onFormChange,
     selectAnnotation, moveNoteMarker, pageNote, pageRegion, editExplanationQuestion, dismissContext, notifyError])
 }

@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { usePdfViewportSize } from '../../../src/modules/viewer/controllers/use-pdf-viewport-size.ts'
 import { usePdfWheelZoom } from '../../../src/modules/viewer/controllers/use-pdf-wheel-zoom.ts'
 
-const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }

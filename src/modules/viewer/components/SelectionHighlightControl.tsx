@@ -1,4 +1,3 @@
-import React from 'react'
 import { AnnotationColorBar } from './AnnotationColorBar.js'
 import { SplitActionControl } from './SplitActionControl.js'
 import { ToolbarIcon } from './ToolbarIcon.js'

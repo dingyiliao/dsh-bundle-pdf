@@ -1,8 +1,7 @@
 import { z } from 'zod'
-import { responseSchema } from '../../../contracts/rpc/index.js'
 import { MAX_EXPLANATION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
 import { inspectPng } from '../../../shared/png.js'
-import type { ImageUnderstandingApi, ImageUnderstandingAvailability, PreparedImageUnderstanding,
+import type { ImageUnderstandingApi,
   PreparedImageReference } from '../../../modules/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 

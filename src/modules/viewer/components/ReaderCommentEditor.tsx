@@ -1,4 +1,4 @@
-import React, { type RefObject } from 'react'
+import { type RefObject } from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import { formatAnnotationDate } from '../model/reader-dates.js'
 import { ToolbarIcon } from './ToolbarIcon.js'

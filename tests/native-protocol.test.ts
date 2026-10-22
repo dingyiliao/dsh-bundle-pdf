@@ -4,11 +4,11 @@ import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/engine/framing.ts'
-import { NativeWorker } from '../src/engine/native-worker.ts'
+import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
 import { NativeTestSubprocess, nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { ByteCache } from '../src/shared/cache/index.ts'
-import { encodePng } from '../src/engine/png.ts'
+import { encodePng } from '../src/adapters/host/pdfium/png.ts'
 import { inflateSync } from 'node:zlib'
 
 test('native frames survive every split boundary and one-byte stdout chunks', () => {

@@ -12,6 +12,7 @@ export interface ReaderDocument {
 
 /** Document bookmarks, including their nested children and optional navigation target. */
 export interface ReaderOutlineItem {
+  id?: string
   title: string
   dest?: unknown
   url?: string | null

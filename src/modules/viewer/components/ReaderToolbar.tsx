@@ -2,6 +2,7 @@ import React from 'react'
 import type { HostOcrAvailability } from '../ports/ocr.js'
 import { BackHistoryControl } from './BackHistoryControl.js'
 import { ZoomMenu } from './ZoomMenu.js'
+import { ToolbarDisclosure } from './ToolbarDisclosure.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 import { ToolbarTooltip } from './ToolbarTooltip.js'
 import { ReaderModeControl, type ReaderModeStatus } from './ReaderModeControl.js'
@@ -65,15 +66,11 @@ export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, s
 }) {
   const disabledDiscard = !state.hasDocument || state.busy || state.saveAsPicking || state.colorPending
     || (!state.dirty && !state.conflict && !state.canRedo && !state.hasUnappliedAnnotation)
-  return <ToolbarTooltip><div className="dsh-pdf-toolbar dsh-pdf-main-toolbar" role="toolbar" aria-label={t('reader.sidebar.toolbar')}>
+  return <ToolbarTooltip><div className="dsh-pdf-toolbar dsh-pdf-main-toolbar dsh-pdf-glass" role="toolbar"
+    aria-label={t('reader.sidebar.toolbar')} aria-busy={state.busy || undefined}>
     <ReaderModeControl mode={mode} explanation={explanation} t={t} />
-    <details className="dsh-pdf-tools" ref={menuRef} onToggle={event => {
-      if (event.currentTarget.open) actions.onOpenMenu()
-    }} onBlur={event => {
-      if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
-    }}>
-      <summary title={t('reader.tools')}><ToolbarIcon name="tools" /><span className="dsh-pdf-toolbar-label">{t('reader.tools')}</span> <span className="dsh-pdf-tools-chevron" aria-hidden="true">▾</span></summary>
-      <div className="dsh-pdf-tools-menu" role="group" aria-label={t('reader.tools')}>
+    <ToolbarDisclosure detailsRef={menuRef} className="dsh-pdf-tools" label={t('reader.tools')}
+      menuLabel={t('reader.tools')} onOpen={actions.onOpenMenu} trigger={<ToolbarIcon name="tools" />}>
         <button disabled={!state.hasDocument || !state.canPromptExplanation || state.explanationSending || state.screenshotPreparing || state.screenshotActive}
           onClick={actions.onToggleExplanation}>{t(state.explanationActive ? 'reader.explain.exit' : 'reader.explain.start')}</button>
         {explanation && <button className="dsh-pdf-ultra-menu-action"
@@ -100,8 +97,7 @@ export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, s
         <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom('width'); if (menuRef.current) menuRef.current.open = false }}>{t('reader.fitWidth')}</button>
         <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom('page'); if (menuRef.current) menuRef.current.open = false }}>{t('reader.fitPage')}</button>
         <button className="dsh-pdf-ultra-menu-action" onClick={() => { actions.onZoom(1); if (menuRef.current) menuRef.current.open = false }}>100%</button>
-      </div>
-    </details>
+    </ToolbarDisclosure>
     <div className="dsh-pdf-toolbar-controls">
       <BackHistoryControl history={state.history} disabled={state.busy || state.navigating} t={t}
         onBack={actions.onBack} onBackTo={actions.onBackTo} />

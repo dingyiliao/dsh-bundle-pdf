@@ -1,4 +1,19 @@
 import { z } from 'zod'
+import type { PdfOutlineItem } from '../../core/pdf-types.js'
+
+const wireOutlineItemSchema: z.ZodType<PdfOutlineItem> = z.lazy(() => z.object({
+  id: z.string(), title: z.string(), page: z.number().int().positive().optional(),
+  targetChanged: z.literal(true).optional(), children: z.array(wireOutlineItemSchema),
+}))
+const wireFormFieldSchema = z.object({
+  id: z.string().optional(),
+  name: z.string(), type: z.enum(['text', 'checkbox', 'radio', 'dropdown', 'option-list', 'unsupported']),
+  value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  widgets: z.array(z.object({ page: z.number().int().positive(),
+    rect: z.tuple([z.number(), z.number(), z.number(), z.number()]), option: z.string().optional() })),
+  options: z.array(z.string()).optional(), maxLength: z.number().int().optional(),
+  multiline: z.boolean().optional(), multiple: z.boolean().optional(), readOnly: z.boolean(), required: z.boolean(),
+})
 
 const rect = z.tuple([z.number(), z.number(), z.number(), z.number()])
 const point = z.tuple([z.number().finite(), z.number().finite()])
@@ -23,8 +38,13 @@ export const wireSnapshotSchema = z.object({
     generation: z.number().int(), protocolVersion: z.literal(1) }),
   annotationDelta: z.object({ fromRevision: z.number().int(), remove: z.array(z.string()), upsert: z.array(wireAnnotationSchema) }).optional(),
   baselineAnnotations: z.array(wireAnnotationSchema).optional(),
+  baselineOutline: z.array(wireOutlineItemSchema).optional(),
+  baselineFormFields: z.array(wireFormFieldSchema).optional(),
   document: z.object({
     pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
+    formKind: z.enum(['acroform', 'xfa']).optional(),
+    outline: z.array(wireOutlineItemSchema).optional(), outlineReadOnlyReason: z.string().optional(),
+    formFields: z.array(wireFormFieldSchema).optional(),
     readOnly: z.boolean(), readOnlyReason: z.string().optional(),
     pages: z.array(z.object({ page: z.number().int(), mediaBox: rect.optional(), cropBox: rect, rotation: z.number(), userUnit: z.number() })),
     annotations: z.array(wireAnnotationSchema),

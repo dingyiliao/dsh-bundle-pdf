@@ -1,5 +1,4 @@
 /** Isolated test adapter. This entry is never included in the shipped plugin. */
-import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { Reader } from '../src/client/Reader.tsx'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'

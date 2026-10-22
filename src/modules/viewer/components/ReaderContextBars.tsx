@@ -1,4 +1,3 @@
-import React from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import type { ReaderSelection } from '../model/reader-selection.js'
 import { FloatingToolbar } from './FloatingToolbar.js'

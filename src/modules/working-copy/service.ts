@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
-import { projectPdfOperations } from '../annotations/index.js'
 import { decodePdfBaseline, digestPdfBytes, encodePdfBaseline } from '../document/index.js'
-import { appendGroup, moveCursor, projectedDocument } from './history.js'
+import { appendGroup, moveCursor, projectedDocument, projectWorkingCopyOperations } from './history.js'
 import { saveWorkingCopy } from './save.js'
 import { freshRecord, workspaceSnapshot, type WorkingCopyState } from './state.js'
 import type { PdfDocumentInfo } from '../../core/pdf-types.js'
@@ -272,7 +271,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     }
     if (input.action === 'redo') {
       if (record.cursor === record.groups.length) return copy.snapshot
-      const document = projectPdfOperations(copy.snapshot.document, record.groups[record.cursor], record.groupDates[record.cursor])
+      const document = projectWorkingCopyOperations(copy.snapshot.document, record.groups[record.cursor], record.groupDates[record.cursor])
       return publish(copy, moveCursor(record, 'redo'), undefined, signal, document)
     }
     if (input.action !== 'change') fail('pdf/invalid-action', 'Unknown PDF operation')
@@ -289,7 +288,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       }
     }
     const groupDate = new Date().toISOString()
-    const document = projectPdfOperations(copy.snapshot.document, input.operations, groupDate)
+    const document = projectWorkingCopyOperations(copy.snapshot.document, input.operations, groupDate)
     return publish(copy, appendGroup(record, input.operations, groupDate), undefined, signal, document)
   }
 

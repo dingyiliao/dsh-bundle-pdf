@@ -1,19 +1,14 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act, createRef } from 'react'
 import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
 import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderNoteEditor.tsx'
 import { HIGHLIGHT_QUICK_COLORS_KEY, NOTE_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
 import { TranslationLanguageMenu } from '../../../src/modules/viewer/components/TranslationLanguageMenu.tsx'
-import { PersonalBookmarks, type BookmarkAccess } from '../../../src/modules/viewer/components/PersonalBookmarks.tsx'
 import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.tsx'
 import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
-import type { PdfUserBookmark } from '../../../src/shared/contracts.ts'
 
-const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -138,55 +133,6 @@ test('translation language menu positions above a clipped panel and supports Esc
     assert.deepEqual(selected, [], 'reselecting current language does not issue an update')
     await act(async () => { details.open = true; details.querySelector<HTMLButtonElement>('button[aria-label="ZH"]')!.click() })
     assert.deepEqual(selected, ['zh'], 'choosing another language issues one update')
-  })
-})
-
-test('personal bookmarks expose retry, failed rename and keyboard-safe actions', async () => {
-  await withDom(async (dom, container, render) => {
-    const bookmark: PdfUserBookmark = { id: 'bookmark-a', title: 'Original', stale: 'none',
-      position: { page: 2, x: 0, y: 0, scale: 1, fit: 'page' }, createdAt: 'now', updatedAt: 'now' }
-    let listFails = true
-    let renameFails = true
-    const access = {
-      sessionId: 'session', documentId: 'document',
-      capturePosition: () => ({ ...bookmark.position, documentVersion: 'v1' }),
-      onNavigatePosition() {},
-      api: { bookmarks: {
-        async list() { if (listFails) throw new Error('listing unavailable'); return [bookmark] },
-        async add() { return [bookmark] },
-        async rename() { if (renameFails) throw new Error('rename unavailable'); return [{ ...bookmark, title: 'Updated' }] },
-        async remove() { return [] },
-      } },
-    } as unknown as BookmarkAccess
-    const view = React.createElement(PersonalBookmarks, { access, document: null, active: true, t: key => key })
-    await render(view)
-    await act(async () => { await Promise.resolve() })
-    assert.match(container.textContent ?? '', /listing unavailable/)
-    listFails = false
-    await act(async () => {
-      const retry = [...container.querySelectorAll('button')].find(button => button.textContent === 'reader.sidebar.retryBookmarks')!
-      retry.click()
-      await Promise.resolve()
-    })
-    const more = container.querySelector<HTMLButtonElement>('.dsh-pdf-bookmark-more')!
-    assert.ok(more)
-    await act(async () => { more.click() })
-    assert.equal(more.getAttribute('aria-expanded'), 'true')
-    await act(async () => { more.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
-    assert.equal(more.getAttribute('aria-expanded'), 'false')
-    assert.equal(dom.document.activeElement, more)
-
-    await act(async () => { more.click() })
-    const rename = container.querySelector<HTMLButtonElement>('[aria-label="reader.sidebar.renameBookmark: Original"]')!
-    await act(async () => { rename.click() })
-    const title = container.querySelector<HTMLInputElement>('input[aria-label="reader.sidebar.bookmarkName"]')!
-    const setter = Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')?.set!
-    await act(async () => { setter.call(title, 'Updated'); title.dispatchEvent(new dom.Event('input', { bubbles: true })) })
-    await act(async () => { title.closest('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })); await Promise.resolve() })
-    assert.match(container.textContent ?? '', /rename unavailable/)
-    renameFails = false
-    await act(async () => { title.closest('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })); await Promise.resolve() })
-    assert.match(container.textContent ?? '', /Updated/)
   })
 })
 

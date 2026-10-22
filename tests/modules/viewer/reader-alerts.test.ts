@@ -26,6 +26,12 @@ test('reader alerts expose a single read-only notice, warning, and conflict acti
   assert.match(html, /disabled=""/)
 })
 
+test('reader alerts do not label an editable AcroForm as read-only', () => {
+  const snapshot = { document: { readOnly: false, formKind: 'acroform' } } as WorkspaceSnapshot
+  const html = renderToStaticMarkup(React.createElement(ReaderAlerts, props({ snapshot, editable: true })))
+  assert.doesNotMatch(html, /reader\.signedReadOnly|reader\.encryptedReadOnly/)
+})
+
 test('reader alerts keep Save As submit disabled until the selected target is checked and confirmed', () => {
   const base = props({ saveAsOpen: true, target: { path: '/book.pdf', version: 'v1' } })
   const unchecked = renderToStaticMarkup(React.createElement(ReaderAlerts, base))

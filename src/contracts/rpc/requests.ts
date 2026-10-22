@@ -24,6 +24,27 @@ export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('delete'), id: idSchema }).strict(),
 ])
 
+const outlineId = idSchema.refine(value => Boolean(value.trim()) && !value.includes('\0'), 'Invalid bookmark identity')
+export const outlineOperationSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('outline-add'), id: outlineId, title: z.string().trim().min(1).max(1024),
+    page: z.number().int().positive(), parentId: outlineId.optional(), index: z.number().int().nonnegative().optional(),
+  }).strict(),
+  z.object({ type: z.literal('outline-update'), id: outlineId, patch: z.object({
+    title: z.string().trim().min(1).max(1024).optional(), page: z.number().int().positive().optional(),
+  }).strict().refine(value => value.title !== undefined || value.page !== undefined, 'A bookmark update needs a title or page'),
+  }).strict(),
+  z.object({ type: z.literal('outline-delete'), id: outlineId }).strict(),
+  z.object({ type: z.literal('outline-move'), id: outlineId, parentId: outlineId.optional(), index: z.number().int().nonnegative(),
+  }).strict(),
+])
+
+const formValueSchema = z.union([z.string().max(100000), z.boolean(), z.array(z.string().max(2048)).max(1000)])
+export const workingCopyOperationSchema = z.union([operationSchema,
+  z.object({ type: z.literal('set-field'), fieldId: z.string().min(1).max(2048), value: formValueSchema }).strict(),
+  // Read old drafts by name only when the canonical parser finds exactly one match.
+  z.object({ type: z.literal('set-field'), name: z.string().min(1).max(2048), value: formValueSchema }).strict(),
+  outlineOperationSchema])
+
 export const requestSchema = z.discriminatedUnion('action', [
   z.object({ ...wireHints, action: z.literal('open'), sessionId: idSchema, address: z.string().min(1).max(32768),
     owner: z.enum(['ui', 'agent']).optional() }).strict(),
@@ -36,7 +57,7 @@ export const requestSchema = z.discriminatedUnion('action', [
   z.object({ ...wireHints, action: z.literal('change'), sessionId: idSchema, id: idSchema, revision: z.number().int().min(0),
     /** Optional fresh source CAS for model-authored changes; older Client calls remain unchanged. */
     expectedSourceHash: hashSchema.optional(),
-    operations: z.array(operationSchema).min(1).max(1000),
+    operations: z.array(workingCopyOperationSchema).min(1).max(1000),
   }).strict(),
   z.object({ ...wireHints, action: z.literal('save'), sessionId: idSchema, id: idSchema, revision: z.number().int().min(0),
     options: z.object({ path: pathSchema.optional(), overwrite: z.boolean().optional(),

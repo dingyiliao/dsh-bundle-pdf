@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, open, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PDFDocument } from 'pdf-lib'
 
 // Measure our C++ worker, not the prebuilt third-party PDFium library. Build
 // outside dist/native so a coverage run never replaces the packaged helper.
@@ -47,13 +48,15 @@ if (requestedOutput && !isAbsolute(requestedOutput)) {
 const output = requestedOutput ? resolve(requestedOutput) : await mkdtemp(join(outputRoot, 'native-coverage-'))
 await mkdir(output, { recursive: true })
 const binary = join(output, 'dsh-pdf-native')
+const callbackBinary = join(output, 'form-callback-test')
 // A fresh profile directory prevents stale process profiles from a previous
 // run from inflating coverage when callers request a stable output location.
 const rawDir = await mkdtemp(join(output, 'raw-'))
 
 async function run(command, args, options = {}) {
   await new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: options.stdio ?? 'inherit', env: options.env ?? process.env, windowsHide: true })
+    const child = spawn(command, args, { cwd: options.cwd ?? root, stdio: options.stdio ?? 'inherit',
+      env: options.env ?? process.env, windowsHide: true })
     child.once('error', reject)
     child.once('close', code => code === 0 ? resolveRun() : reject(new Error(`${command} exited ${code}`)))
   })
@@ -71,15 +74,35 @@ await run(compiler, ['-std=c++17', '-O0', '-g', '-fprofile-instr-generate', '-fc
   `-Wl,-rpath,${process.platform === 'darwin' ? '@loader_path' : '$ORIGIN'}`, '-o', binary])
 await copyFile(sdkLibrary, join(output, sdkLibrary.split('/').at(-1)))
 
+// Form callbacks are required by PDFium but a read-only render does not call
+// them. Cover their valid and fail-closed paths in a separate executable so
+// production never exposes a test-only native command or executes PDF actions.
+const callbackFixture = await PDFDocument.create()
+const callbackPage = callbackFixture.addPage([300, 400])
+const callbackField = callbackFixture.getForm().createTextField('coverage-field')
+callbackField.addToPage(callbackPage, { x: 30, y: 100, width: 150, height: 30 })
+callbackField.setText('Visible value')
+const callbackFixturePath = join(output, 'form-callback.pdf')
+await writeFile(callbackFixturePath, await callbackFixture.save())
+await run(compiler, ['-std=c++17', '-O0', '-g', '-fprofile-instr-generate', '-fcoverage-mapping',
+  ...(macSdk ? ['-isysroot', macSdk.stdout.trim()] : []),
+  '-Wall', '-Wextra', '-Wpedantic', `-I${join(sdk, 'include')}`, `-I${jsonDir}`,
+  join(root, 'native/form-callback-test.cpp'), `-L${join(sdk, 'lib')}`, '-lpdfium',
+  `-Wl,-rpath,${process.platform === 'darwin' ? '@loader_path' : '$ORIGIN'}`, '-o', callbackBinary])
+
 await run(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', 'tests/native-integration.test.ts'], {
   env: { ...process.env, DSH_PDF_REQUIRE_NATIVE_TESTS: '1', DSH_PDF_NATIVE_HELPER: binary,
     DSH_PDF_NATIVE_COVERAGE: '1', LLVM_PROFILE_FILE: join(rawDir, '%p.profraw') },
+})
+await run(callbackBinary, [callbackFixturePath], {
+  cwd: output,
+  env: { ...process.env, LLVM_PROFILE_FILE: join(rawDir, '%p.profraw') },
 })
 const profiles = (await readdir(rawDir)).filter(name => name.endsWith('.profraw')).map(name => join(rawDir, name))
 if (!profiles.length) throw new Error('Native tests passed but emitted no profile; the helper may not have exited cleanly')
 const merged = join(output, 'native.profdata')
 await run(profdata, ['merge', '-sparse', ...profiles, '-o', merged])
-const common = ['--instr-profile', merged, binary, '--sources', source]
+const common = ['--instr-profile', merged, binary, '--object', callbackBinary, '--sources', source]
 await outputToFile(join(output, 'summary.json'), cov, ['export', '--summary-only', ...common])
 await outputToFile(join(output, 'coverage.lcov'), cov, ['export', '--format=lcov', ...common])
 await run(cov, ['report', '--show-branch-summary', ...common])

@@ -1,5 +1,5 @@
 import type { WorkspaceSnapshot } from '../../shared/contracts.js'
-import type { PdfAnnotationOperation, PdfDocumentInfo } from '../../core/pdf-types.js'
+import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../core/pdf-types.js'
 import type { DraftRecord, WorkspaceRecord } from './schema.js'
 
 /** Host-only snapshot; PDF bytes never cross the Client RPC boundary. */
@@ -53,6 +53,6 @@ export interface WorkingCopyDraftPort extends V1DraftPort {
 
 export interface PdfDocumentPort {
   inspect(bytes: Uint8Array): Promise<PdfDocumentInfo>
-  materialize(bytes: Uint8Array, operations: readonly PdfAnnotationOperation[],
+  materialize(bytes: Uint8Array, operations: readonly PdfWorkingCopyOperation[],
     operationDates: readonly string[]): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }>
 }

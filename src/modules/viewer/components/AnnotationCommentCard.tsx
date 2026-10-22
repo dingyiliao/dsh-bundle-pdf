@@ -377,7 +377,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
         orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 1 L 6 3.5 L 0 6 Z" fill="currentColor" /></marker></defs>
       <path ref={pathRef} markerEnd={`url(#${markerId})`} />
     </svg>}
-    <div ref={cardRef} className="dsh-pdf-page-comment-card" data-visible="false" aria-hidden="true"
+    <div ref={cardRef} className={`dsh-pdf-page-comment-card${cardKind === 'note' ? '' : ' dsh-pdf-glass'}`} data-visible="false" aria-hidden="true"
       data-card-kind={cardKind}
       style={cardKind === 'note' && noteColor ? { '--pdf-note-tint': noteColor } as CSSProperties : undefined}
       role="dialog" aria-label={label} aria-modal="false"

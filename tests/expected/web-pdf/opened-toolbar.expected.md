@@ -2,8 +2,8 @@
   - button "Back" [disabled]
   - button "Return to an earlier position" [disabled]
 - 'group "Zoom: Fit width"'
-- button "Undo annotation edit" [disabled]
-- button "Redo annotation edit" [disabled]
+- button "Undo PDF edit" [disabled]
+- button "Redo PDF edit" [disabled]
 - button "Save" [disabled]
 - button "Save as"
 - button "Discard all changes" [disabled]

@@ -1,4 +1,4 @@
-import React, { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -28,6 +28,7 @@ import settingsStyles from '../client/settings.css'
 import readingSidebarStyles from '../client/reading-sidebar.css'
 import windowedPagesStyles from '../client/windowed-pages.css'
 import annotationCommentCardStyles from '../client/annotation-comment-card.css'
+import glassStyles from '../client/glass.css'
 
 export const name = 'pdf-reader-client'
 export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms', 'uiSession', 'sidebarRight']
@@ -117,7 +118,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.dshPlugin = ID
-    style.textContent = `${styles}\n${settingsStyles}\n${readingSidebarStyles}\n${windowedPagesStyles}\n${annotationCommentCardStyles}`
+    style.textContent = `${styles}\n${settingsStyles}\n${readingSidebarStyles}\n${windowedPagesStyles}\n${annotationCommentCardStyles}\n${glassStyles}`
     document.head.append(style)
     return () => style.remove()
   }, 'pdf: reader stylesheet')

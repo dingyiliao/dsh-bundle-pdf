@@ -4,8 +4,11 @@ import type { AgentPageReadPort } from '../evidence/index.js'
 import { annotationOverlaps } from './annotation-overlap.js'
 import { buildAnnotationPlans } from './annotation-plan.js'
 import { buildSaveReview } from './save-review.js'
-import type { PdfAnnotation, PdfAnnotationOperation, PdfColor } from '../../core/pdf-types.js'
-import type { HostWorkspaceSnapshot, WorkingCopyAgent } from '../working-copy/index.js'
+import { outlineOperationSchema } from '../../contracts/rpc/requests.js'
+import { projectOutlineOperations } from '../outlines/index.js'
+import { formFieldId } from '../forms/index.js'
+import type { PdfAnnotation, PdfColor, PdfOutlineOperation, PdfWorkingCopyOperation } from '../../core/pdf-types.js'
+import { projectFormOperations, type HostWorkspaceSnapshot, type WorkingCopyAgent } from '../working-copy/index.js'
 
 const coordinate = z.number().finite()
 const rect = z.tuple([coordinate, coordinate, coordinate, coordinate])
@@ -38,6 +41,16 @@ export type ModelAnnotationUpdateInput = z.infer<typeof modelAnnotationUpdateSch
 export const modelAnnotationDeleteSchema = z.object({ documentId, expectedRevision: revision, annotationId }).strict()
 export type ModelAnnotationDeleteInput = z.infer<typeof modelAnnotationDeleteSchema>
 export const modelSaveSchema = z.object({ documentId, expectedRevision: revision }).strict()
+export const modelOutlineEditSchema = z.object({ documentId, expectedRevision: revision,
+  operations: z.array(outlineOperationSchema).min(1).max(100),
+}).strict()
+export type ModelOutlineEditInput = z.infer<typeof modelOutlineEditSchema>
+export const modelFillFormSchema = z.object({ documentId, expectedRevision: revision,
+  fields: z.array(z.object({ fieldId: z.string().min(1).max(2048),
+    value: z.union([z.string().max(8000), z.boolean(), z.array(z.string().max(2048)).max(1000)]),
+  }).strict()).min(1).max(100),
+}).strict().refine(input => JSON.stringify(input).length <= 64_000, 'Form batch exceeds the tool budget')
+export type ModelFillFormInput = z.infer<typeof modelFillFormSchema>
 
 export interface ModelWritePort {
   readSnapshot(sessionId: string, documentId: string): HostWorkspaceSnapshot
@@ -89,7 +102,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
   }
 
   async function applyDraft(sessionId: string, snapshot: HostWorkspaceSnapshot, expectedRevision: number,
-    operations: PdfAnnotationOperation[], agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
+    operations: PdfWorkingCopyOperation[], agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
     const sourceDigest = await currentSource(sessionId, snapshot, agent, signal)
     assertOpen()
     // The working-copy queue rechecks revision and source hash against UI edits.
@@ -192,6 +205,41 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
+  async function editOutline(sessionId: string, raw: ModelOutlineEditInput,
+    agent: WorkingCopyAgent, signal: AbortSignal) {
+    assertOpen()
+    const input = modelOutlineEditSchema.parse(raw)
+    const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    checkRevision(snapshot, input.expectedRevision)
+    // Validate the entire batch before starting the shared, revision-checked write.
+    // The transaction repeats these pure checks against its authoritative snapshot.
+    projectOutlineOperations(snapshot.document, input.operations)
+    const value = await applyDraft(sessionId, snapshot, input.expectedRevision, input.operations, agent, signal)
+    return { status: 'updated' as const, documentId: value.id, revision: value.revision,
+      outlineIds: [...new Set(input.operations.map((operation: PdfOutlineOperation) => operation.id))],
+      operationCount: input.operations.length, dirty: value.dirty, canUndo: value.canUndo,
+      savedToFile: false as const }
+  }
+
+  async function fillForm(sessionId: string, raw: ModelFillFormInput, agent: WorkingCopyAgent, signal: AbortSignal) {
+    assertOpen()
+    const input = modelFillFormSchema.parse(raw)
+    const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    checkRevision(snapshot, input.expectedRevision)
+    const operations = input.fields.map(({ fieldId, value }) => ({ type: 'set-field' as const, fieldId, value }))
+    // The same pure validation and transaction are used by Reader widgets.
+    // A bad field rejects the whole batch, with no partial edits or file writes.
+    projectFormOperations(snapshot.document, operations)
+    const fields = new Map(snapshot.document.formFields!.map(field => [formFieldId(field), field]))
+    if (input.fields.some(field => !fields.get(field.fieldId)!.widgets.length)) {
+      fail('pdf/form-field-not-visible', 'A requested field has no visible controls; inspect its page before filling')
+    }
+    const value = await applyDraft(sessionId, snapshot, input.expectedRevision, operations, agent, signal)
+    return { status: 'updated' as const, documentId: value.id, revision: value.revision,
+      fieldIds: input.fields.map(field => field.fieldId), dirty: value.dirty, canUndo: value.canUndo,
+      savedToFile: false as const }
+  }
+
   async function save(sessionId: string, raw: { documentId: string; expectedRevision: number },
     agent: WorkingCopyAgent, signal: AbortSignal,
     review: (details: ModelWriteReview) => Promise<boolean>) {
@@ -217,7 +265,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       || latest.sourceVersion !== initial.sourceVersion || evidenceSha256(latest.bytes) !== sourceDigest
       || !latest.dirty) fail('pdf/stale-revision', 'The PDF changed while waiting for save approval')
     if (buildSaveReview(latest).text !== saveDiff.text) {
-      fail('pdf/stale-revision', 'The PDF annotation changes differ from the approved review')
+      fail('pdf/stale-revision', 'The PDF changes differ from the approved review')
     }
     await currentSource(sessionId, latest, agent, signal)
     assertOpen()
@@ -230,7 +278,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       ...(value.warning ? { warning: value.warning } : {}) }
   }
 
-  return { annotate, updateAnnotation, deleteAnnotation, save, dispose() { disposed = true } }
+  return { annotate, updateAnnotation, deleteAnnotation, editOutline, fillForm, save, dispose() { disposed = true } }
 }
 
 function isSnapshot(value: unknown): value is HostWorkspaceSnapshot {

@@ -1,6 +1,6 @@
 # 面向 AI 阅读的 PDF 工具设计
 
-> 状态：第一阶段只读工具 `pdf_status`、`pdf_locate`、`pdf_context`、会话范围的文字/图像来源引用、有界结果元数据与三个文字工具卡已接入；`pdf_image_context` 可重验页图、OCR 或辅助视觉引用。第二阶段的标注新增/修改/删除直接写入可撤销草稿，个人书签支持新增/重命名/删除，`pdf_save` 经交互批准后才覆盖原 PDF。解释模式的区域图像与文字选区均由 Host 重验并签发引用，区域发送前再经 `pdf.image` `prepare-reference` 重验。新增 `pdf_find_related` 以有界词项扩展提供候选，`pdf_navigate` 可请求当前可见 Reader 的历史感知跳页；两者仍待真实 Desktop 交互验收，也不等于完整语义索引或答案内联引用。本文既记录已落地契约，也保留尚未实现的目标；示例中的目标结构不等于当前 TypeScript API。
+> 状态：第一阶段只读工具 `pdf_status`、`pdf_locate`、`pdf_context`、会话范围的文字/图像来源引用、有界结果元数据与三个文字工具卡已接入；`pdf_image_context` 可重验页图、OCR 或辅助视觉引用。第二阶段的标注新增/修改/删除和 `pdf_outline_edit` 内置书签编辑直接写入可撤销草稿；`pdf_save` 经交互批准后才覆盖原 PDF。解释模式的区域图像与文字选区均由 Host 重验并签发引用，区域发送前再经 `pdf.image` `prepare-reference` 重验。新增 `pdf_find_related` 以有界词项扩展提供候选，`pdf_navigate` 可请求当前可见 Reader 的历史感知跳页；两者及新增目录编辑仍待真实 Desktop 交互验收，也不等于完整语义索引或答案内联引用。本文既记录已落地契约，也保留尚未实现的目标；示例中的目标结构不等于当前 TypeScript API。
 
 ## 产品判断
 
@@ -25,22 +25,33 @@ flowchart LR
 
 ## 与现有实现的关系
 
-Host 的基础读取工具包括 `pdf_open`、`pdf_close`、`pdf_current`、`pdf_read_page`、`pdf_search`、`pdf_page_annotations`、`pdf_bookmarks`、`pdf_render_page`、`pdf_ocr_page`；下表列出其余已接入工具。这些是 DSH 的模型工具，不是已经对外发布的 MCP server。独立 OCR 插件另有 `ocr_recognize`。本文**保留名称及已有语义**，通过新增可选字段/结果与少量新工具演进，不把 `pdf_bookmarks` 换名为另一个 `pdf_outline`。
+Host 的基础读取工具包括 `pdf_open`、`pdf_close`、`pdf_current`、`pdf_read_page`、`pdf_search`、`pdf_page_annotations`、`pdf_bookmarks`、`pdf_render_page`、`pdf_ocr_page`；下表列出其余已接入工具。这些是 DSH 的模型工具，不是已经对外发布的 MCP server。独立 OCR 插件另有 `ocr_recognize`。本文保留仍在使用的读取工具名称。`pdf_bookmarks` 只返回 PDF 内置目录，不再提供个人书签来源选项；编辑统一使用 `pdf_outline_edit`。
 
 | 阶段 | 接口 | 作用与边界 |
 | --- | --- | --- |
 | 现有 | `pdf_current`、`pdf_open`、`pdf_close` | 前者只列**本会话 UI 正在显示**的 PDF；后两者管理 Host 后台工作副本，不打开/关闭侧栏标签。模型必须使用明确的 `documentId`。 |
-| 现有 | `pdf_read_page`、`pdf_search`、`pdf_bookmarks`、`pdf_page_annotations` | 精确读页和检索、列目录/个人书签、列包含草稿的页标注。当前搜索只查大小写敏感的原生文字，不搜 OCR；标注覆盖文字是几何推断，不能当精确原文。 |
+| 现有 | `pdf_read_page`、`pdf_search`、`pdf_bookmarks`、`pdf_page_annotations` | 精确读页和检索、列 PDF 内置目录、列包含草稿的页标注。当前搜索只查大小写敏感的原生文字，不搜 OCR；标注覆盖文字是几何推断，不能当精确原文。 |
 | 现有 | `pdf_render_page`、`pdf_ocr_page` | 有界整页图像或文字；图片能否直达当前模型由视觉能力决定。OCR 和辅助视觉结果是派生文字，不能宣称当前模型看过原图。现有页图不合成未保存的草稿覆盖层。 |
+| 已接入 | `pdf_form_inspect_page`、`pdf_fill_form` | 编号页图与精确字段映射一次返回；按类型校验整批字段值后，写入用户与模型共用的可撤销草稿。保存仍单独批准。仅填写已有 AcroForm，不把印刷空白猜成可编辑控件。 |
 | 第一阶段已实现 | `pdf_status`、`pdf_locate`、`pdf_context` | 查询**已打开**工作副本状态、在有界页窗内定位引文、打包有界文字上下文；版本化游标和会话限定的持久文字引用。`pdf_status` 只是观察时快照，非实时文件重验。 |
 | 首版已接入，待真实模型验收 | `pdf_find_related` | 模型可提供同义词/译名等扩展词，逐次扫描最多 50 个物理页，在已提取文字中排序并返回精确摘录、来源引用和已扫描范围。分数只供当前页窗排序，不是语义相关概率；必须续扫、补读、由模型判断相关性。无文字层的扫描页需另走 OCR/视觉工具。 |
 | 第一阶段已接入 | `pdf_image_context`、读工具来源元数据与工具卡 | `pdf_render_page`、`pdf_ocr_page` 返回 `refId`；新工具在同一 Agent 会话和已授权工作副本中重验源字节、版本及附件，直送图像仍要求当前模型支持图像。`pdf_read_page`、`pdf_render_page`、`pdf_ocr_page` 写入有界 `tool/result.meta`；Client 为 `pdf_read_page`、`pdf_locate`、`pdf_context` 注册可回放卡。尚无图像工具卡或答案正文引用。 |
 | 第一阶段已接入，待真实 Desktop 验收 | `pdf.region`、`pdf.selection`、`pdf.image` `prepare-reference`（Client↔Host RPC） | 解释模式的单页框选区域由 Host 根据已授权工作副本绘制 PNG、核对附件字节并生成 `pdf-region` 引用；文字选段由 Host 按 PDFium 字形位置重新提取、核对整页文字并签发引用。发送区域图像时，Client 用 `prepare-reference` 让 Host 再核对会话、文档、源文件、附件和摘要，直送图片只使用 Host 返回的字节，不使用 Client 暂存 Blob。它们都不是模型导航工具。 |
 | 第二阶段已实现 | `pdf_annotate`、`pdf_annotation_update`、`pdf_annotation_delete`、`pdf_save` | 新增、修改颜色/评论、删除可编辑标注均直接进入 Reader 共用的可撤销草稿；修改/删除须使用 `pdf_page_annotations` 的精确 ID 与当前修订。只有覆盖保存原 PDF 时才要求交互批准。 |
-| 第二阶段已实现 | `pdf_bookmark_add`、`pdf_bookmark_rename`、`pdf_bookmark_remove` | 操作 Reader 独立保存的个人书签，不改动 PDF 字节；可按页或现有标注定位。嵌入式 PDF 目录只读；删除个人书签不可由草稿撤销，因此需要交互确认。 |
+| 已接入，待真实 Desktop 与外部阅读器验收 | `pdf_outline_edit` | 使用 `pdf_bookmarks` 返回的精确 `outlineId`，经与 UI 相同的目录领域新增、改名、删除子树、修改目标页、排序或调整父子层级。修改进入同一份可撤销草稿，保存后由 pdf-lib 写回内置目录。 |
 | 首版已接入，待真实 Desktop 验收 | `pdf_navigate`、`pdf.navigation` | 仅在用户要求“带我看”时，请求本会话已可见的 Reader 跳到已确认的物理页。Host 通过活动阅读 lease 向 Client 递送请求；Client 使用已有的 `jump()` 记录回退历史并回报成功/失败。不打开侧栏标签；同一 PDF 多个 Reader 须指定 `tabId`。首版只跳页，不精确滚动到字形或批注。 |
 
-先不暴露 `pdf_read_section`、`pdf_structure`、`pdf_tables`、`pdf_fill_form`、`pdf_sign`、`pdf_redact` 等名字。当前没有可靠的结构/表格元素模型；原生层甚至拒绝表单、签名和加密 PDF。为这些名字返回排版猜测或伪造 `element_id`，会破坏阅读器最有价值的可信度。未来确有可靠提取器与评测数据时再引入，不把创建、脱敏、签名、格式转换视为 AI 阅读器上线门槛。
+先不暴露 `pdf_read_section`、`pdf_structure`、`pdf_tables`、`pdf_sign`、`pdf_redact` 等模型工具名字。当前没有可靠的结构/表格元素模型；XFA 与加密 PDF 仍不支持，签名文件保持只读。为这些名字返回排版猜测或伪造 `element_id`，会破坏阅读器最有价值的可信度。未来确有可靠提取器与评测数据时再引入，不把创建、脱敏、签名、格式转换视为 AI 阅读器上线门槛。
+
+### 表单：先看编号，再按精确字段 ID 填写
+
+`pdf_form_inspect_page(documentId, page, maxEdge?, includeValues?)` 只对当前 Agent 会话可访问的 PDF 工作副本执行。当前模型必须支持图片；它复用 PDFium 有界整页绘制，并在独立 RGBA 图上标记蓝色边框及 `F01`、`F02` 等编号，不修改原 PDF，也不打开侧栏。一次返回图片附件、修订、字段类型/必填/长度/选项约束，以及编号对应的精确 `fieldId`；单选组的不同控件附有各自的 `option`。编号仅在本页有效，不能传给填写工具作为字段 ID。只读、不支持、隐藏或页外控件不编号。最多 100 个可见控件、64,000 字符元数据；超限明确拒绝，不静默漏字段。
+
+图像来自原文件，可能显示已保存的个人信息；它**不绘制未保存表单值**，返回 `imageState: numbered-source-page` 并明确报告 `hasUnsavedFormChanges`。默认元数据不重复返回字段值；显式传 `includeValues: true` 才返回本页可填写字段的当前草稿值。源文件、工作副本修订在渲染和附件交付前重验；附件尺寸变化会拒绝，避免编号坐标失效。图片与 PDF 标签均是非可信文档内容，不能作为指令执行。
+
+字段 `fieldId` 由规范 AcroForm 字段的 PDF 对象引用生成（`pdf-field:对象号:代号`），与可重复的显示 `name` 分开；同一字段出现在多页仍是一个 ID，同名的独立字段则是不同 ID。ID 只在指定文档与版本内定位字段，不是跨文档访问凭据。Reader、模型、草稿、保存和审查共用这套身份；旧的名称定位只在恰好匹配一个字段时允许，不因其他同名字段而封锁整份表单，也不猜测歧义目标。
+
+`pdf_fill_form(documentId, expectedRevision, fields)` 接受 1–100 项 `{fieldId, value}`。文本用字符串（空串清除），复选框用布尔值，单选组和下拉用精确选项字符串，列表用精确选项数组（单选列表不能选多个）。单个文本最多 8,000 字符，整批最多 64,000 字符。复用 Reader 的字段校验和工作副本事务；未知/同一 ID 重复/只读字段、类型或选项错误、超长、旧修订或源文件变化均拒绝整批，不留下部分填写。成功只返回字段 ID、修订和草稿状态，不重复回显个人数据。字段含义从编号图的印刷标签推断，信息缺失或有歧义时询问用户，不能编造个人信息。填写支持一次撤销；真正覆盖仍用 `pdf_save` 的独立批准流程。
 
 ## 共同契约：证据与能力边界
 
@@ -133,11 +144,20 @@ DSH 的 `presentationMeta(args, value)` 已用于有界 `tool/result.meta`；PDF
 
 `pdf_annotation_update` / `pdf_annotation_delete` 使用 `pdf_page_annotations` 返回的完整 `id`；标为 `idTruncated` 的条目不能作为精确目标。工具拒绝不可编辑批注、跨会话文档及过期修订。更新仅允许根高亮/下划线/删除线的 RGB 颜色，以及标注、便签或回复的评论文本；根标注可以清空评论，独立便签和回复不能置空。删除带回复的父标注前须先删除回复。两者和新增标注一样写入未保存、可撤销的工作副本，不会直接改写源文件。`pdf_page_annotations` 同时返回回复的 `replyToId`，方便模型区分父标注和评论回复。
 
-`pdf_bookmark_add` 接受一页或现有标注 ID 作为定位目标，按已打开工作副本的当前修订校验后写入 Reader 的个人书签存储。`pdf_bookmarks` 返回个人书签的 UUID `key` 和 `updatedAt`；重命名、删除须带上二者，若书签已被别人修改则拒绝旧版本请求。原生 PDF 目录条目不属于个人书签，不能修改。书签写入与 PDF 草稿分离，不增加 `dirty`，也不会被 `pdf_save` 写入文件；删除不可撤销，所以先通过受信交互服务征得用户同意。
+PDF 内置目录使用单独的 `pdf_outline_edit`，与 UI 共用同一目录领域与工作副本事务。先通过 `pdf_bookmarks` 获取嵌入条目的 `outlineId` 和当前修订；`key` 仍保留原来的树路径语义，排序后会变化，不能拿它代替编辑 ID。`outlineId` 在同一工作副本的重命名、排序和层级调整中保持稳定；保存重开或源文件改变后应重新列举，不把它当永久引用。工具接受 `documentId`、`expectedRevision` 和一组 1–100 个操作：
+
+- `outline-add`：调用方生成唯一 `id`，指定 `title`、从 1 开始的物理 `page`，可带 `parentId` 和从 0 开始的 `index`；省略父项表示根级，省略位置表示追加。
+- `outline-update`：指定已有 `id` 和非空 `patch`（`title` 和／或 `page`）。改名保留原目标；显式设置页码会替换成该页的适合页面目标，即使页码未变也不会恢复旧的页内视图。
+- `outline-delete`：指定已有 `id`，删除该项及其整棵子树；删除可由草稿撤销。
+- `outline-move`：指定已有 `id`、可选 `parentId` 和必填 `index`；索引以移除被移动子树后的目标同级列表计算。不能移动到自身或后代。
+
+标题须非空且不超过 1,024 个字符。Host 以相同 schema 和领域规则校验整组操作、源文件摘要、会话及修订，失败时不部分写入。改名和移动保留既有命名目标、精确目的地、外链与样式，保存由 pdf-lib 操作原 PDF 对象图，不能用简化读取结果重建并丢弃属性。工具返回新的修订、`dirty`、`canUndo` 与 `savedToFile: false`；覆盖原 PDF 仍须另行调用经批准的 `pdf_save`。签名／只读 PDF、损坏或不支持安全编辑的目录不能修改。
+
+目录操作草稿仍使用 `format: 1`，但旧二进制不支持；降级前先保存或丢弃，并备份 PDF 和插件存储。
 
 DSH 的 `userQuestions` 是可由插件注册回答者的交互服务，接口本身不能以密码学方式证明回答者一定是屏幕前的用户。`pdf_save` 依赖 profile 中受信的交互提供者；审批详情中的文档路径与批注差异仍是不可信输入，必须作为纯文本显示，不能让 PDF 内容变成审批界面的指令或外链媒体。
 
-`pdf_save` 与标注分离：仅保存明确指定的工作副本及预期修订，重新核对源文件版本、冲突与写权限；有未保存改动时，按原生批注基线与当前草稿计算最终增/删/改差异（包括用户手工改动），通过 DSH 提问界面展示后请求单独批准原路径覆盖。差异超过 8 项或审批文字超过 6,000 字符时拒绝模型保存，要求用户在 Reader UI 中审阅并手工保存；批准后再次核对差异与修订。成功返回新源版本和 `dirty: false`。无改动时返回 `no_changes`，不触碰文件。不允许模型凭任意路径静默“另存为”或越过 DSH 沙箱；模型未调用保存时，文件保持不变。
+`pdf_save` 与草稿编辑分离：仅保存明确指定的工作副本及预期修订，重新核对源文件版本、冲突与写权限；有未保存改动时，按原基线与当前草稿计算最终批注、表单及内置书签增/删/改差异（包括用户手工改动），通过 DSH 提问界面展示后请求单独批准原路径覆盖。差异超过 8 项或审批文字超过 6,000 字符时拒绝模型保存，要求用户在 Reader UI 中审阅并手工保存；批准后再次核对差异与修订。成功返回新源版本和 `dirty: false`。无改动时返回 `no_changes`，不触碰文件。不允许模型凭任意路径静默“另存为”或越过 DSH 沙箱；模型未调用保存时，文件保持不变。
 
 `pdf_navigate` 不与读工具混用：它接受明确的物理页及最新 `contentVersion`，仅在用户明确发出“带我看/跳到那里”的请求时向本会话的可见 Reader 发送导航意图。Client 重新检查 lease 和文档版本，以已有 `jump()` 执行并回报 `opened` / `stale` / `unavailable`；失败时模型不得谎称已带用户跳转。Host 后台 `pdf_open` 不会让导航自动打开侧栏。按引文、书签或标注精确定位到页内位置，以及答案正文的可点击引用，仍是后续能力。
 

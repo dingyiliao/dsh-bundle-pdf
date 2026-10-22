@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { MAX_EXPLANATION_ITEM_QUESTION_CHARACTERS } from '../../explanation/index.js'
 
@@ -118,7 +118,7 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
 
   if (!portalRoot) return null
   return createPortal(<div ref={editorRef} role="dialog" aria-modal="false" aria-label={t('reader.explain.askQuestion')}
-    className="dsh-pdf-explanation-question-editor" data-side={placement?.side}
+    className="dsh-pdf-explanation-question-editor dsh-pdf-glass" data-side={placement?.side}
     style={placement ? { left: placement.left, top: placement.top, width: placement.width } : { visibility: 'hidden' }}
     onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel() }

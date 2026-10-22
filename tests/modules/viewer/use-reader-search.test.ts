@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
@@ -10,7 +8,6 @@ import type { NativeDocument } from '../../../src/modules/viewer/index.ts'
 import type { OcrPage } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
 import { useReaderSearch, type ReaderSearchOptions } from '../../../src/modules/viewer/index.ts'
 
-const project = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))))
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }

@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import type { NativeProcessRuntime } from '../src/engine/native-worker.ts'
+import type { NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
 
 /** Test-only local adapter; production receives the Host's ctx.subprocess. */
 export class NativeTestSubprocess implements NativeProcessRuntime {

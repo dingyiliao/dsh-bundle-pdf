@@ -23,7 +23,7 @@ export interface ReaderDocumentOptions {
 
 /** Owns one Reader's resource request, native handle and late-result cleanup. */
 export function useReaderDocument(options: ReaderDocumentOptions) {
-  const { api, sessionId, resourceAddress, content, tabSignal, onError } = options
+  const { api, sessionId, resourceAddress, content, tabSignal } = options
   const latest = useRef(options)
   latest.current = options
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null)

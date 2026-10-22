@@ -4,6 +4,7 @@ import { createAuxiliaryVisionBackend, createImageUnderstandingDispatch, createO
   createSessionVisionBackend, MAX_IMAGE_REQUEST_BYTES, registerPdfTransport,
   type PdfImageEvidenceResolver, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
 import { HostImageUnderstandingService, ImageUnderstandingError } from '../modules/image-understanding/index.js'
+import { pdfCapabilities } from '../modules/capabilities/index.js'
 
 export type { ImageUnderstandingBackend, ImageUnderstandingAvailability, ImageUnderstandingPreparation,
   ImageUnderstandingRequest } from '../modules/image-understanding/index.js'
@@ -52,6 +53,19 @@ export function apply(ctx: Context, config: Config): void {
     getAttachments: () => ctx.get('attachments') as SessionOcrAttachmentStore | undefined,
     maxOutputTokens: config.auxiliaryVision?.maxOutputTokens,
   })), 'image-understanding: optional auxiliary vision backend')
+  ctx.effect(() => {
+    const fiber = ctx.inject(['pdfCapabilities'], scope => {
+      scope.effect(() => scope.pdfCapabilities.register({ id: 'image.selected',
+        capabilities: [pdfCapabilities.understandImage], implementation: service,
+        async supports({ sessionId, signal }) {
+          if (!sessionId) return { available: false, reason: 'Image understanding requires a session' }
+          const result = await service.availability(sessionId, signal ?? new AbortController().signal)
+          return result.status === 'available' ? { available: true } : { available: false, reason: result.reason }
+        },
+      }), 'image-understanding: capability catalog')
+    })
+    return () => fiber.dispose()
+  }, 'image-understanding: optional capability catalog')
   ctx.effect(() => registerPdfTransport(ctx as unknown as Parameters<typeof registerPdfTransport>[0],
     createImageUnderstandingDispatch(service, references), { endpoint: 'pdf.image', maxRequestBytes: MAX_IMAGE_REQUEST_BYTES }),
   'image-understanding: authenticated PDF image route')

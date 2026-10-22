@@ -17,11 +17,12 @@ import { pdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter
 import { createV1DraftRepository } from '../adapters/host/storage/v1-drafts.js'
 import { createV1NavigationStore } from '../adapters/host/storage/v1-navigation.js'
 import { createWorkingCopyService, draftSchema } from '../modules/working-copy/index.js'
-import { bookmarkRecordSchema, createAgentNavigation, createBookmarks, createReaderContexts, createReadingPositions,
+import { createAgentNavigation, createReaderContexts, createReadingPositions,
   readingPositionRecordSchema } from '../modules/navigation/index.js'
 import { createPdfService } from '../adapters/host/pdfium/index.js'
 import type { PdfNativeService } from './native-host.js'
 import { ImageUnderstandingError } from '../modules/image-understanding/index.js'
+import { CapabilityRegistry } from '../modules/capabilities/index.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -68,28 +69,25 @@ export async function apply(
   const domain = await ctx.storageDomain.open(defineDomain({
     name: `pdf_drafts_${suffix}`, version: 1, layout: 'per-record', tables: { drafts: domainTable(draftSchema) },
   }))
-  // A separate domain preserves all version-1 annotation drafts unchanged.
-  const bookmarkDomain = await ctx.storageDomain.open(defineDomain({
-    name: `pdf_bookmarks_${suffix}`, version: 1, layout: 'per-record', tables: { bookmarks: domainTable(bookmarkRecordSchema) },
-  })).catch(async error => { await domain.close(); throw error })
-  // Reading positions are their own domain so bookmark storage keeps its shape.
+  // Reading positions have their own durable domain.
   const positionDomain = await ctx.storageDomain.open(defineDomain({
     name: `pdf_positions_${suffix}`, version: 1, layout: 'per-record',
     tables: { positions: domainTable(readingPositionRecordSchema) },
-  })).catch(async error => { await bookmarkDomain.close(); await domain.close(); throw error })
-  // Derived evidence survives Host restarts without changing any V1 draft,
-  // bookmark or reading-position record. Eviction is bounded in the adapter.
+  })).catch(async error => { await domain.close(); throw error })
+  // Derived evidence survives Host restarts without changing V1 drafts or
+  // reading positions. Eviction is bounded in the adapter.
   const evidenceDomain = await ctx.storageDomain.open(defineDomain({
     name: `pdf_evidence_${suffix}`, version: 1, layout: 'per-record',
     invalidRecords: 'backup-and-skip', tables: { references: domainTable(savedReferenceSchema) },
-  })).catch(async error => { await positionDomain.close(); await bookmarkDomain.close(); await domain.close(); throw error })
+  })).catch(async error => { await positionDomain.close(); await domain.close(); throw error })
   const referenceStore = createEvidenceReferenceStore(evidenceDomain.table('references'))
   const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfLibDocumentAdapter)
-  const bookmarks = createBookmarks(workspaces, createV1NavigationStore(bookmarkDomain.table('bookmarks')))
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))
+  const capabilities = new CapabilityRegistry()
   const pdfService = createPdfService(workspaces, {
     executable: ctx.pdfNative.executable,
     subprocess: ctx.subprocess,
+    capabilities,
   })
   const readerContexts = createReaderContexts(workspaces)
   const agentNavigation = createAgentNavigation(workspaces, readerContexts)
@@ -130,10 +128,11 @@ export async function apply(
       // observation failure; otherwise one failed wait would retain both stores.
       // Draining queued position writes comes first: they resolve the working
       // copy they belong to, so releasing workspaces first would drop them.
-      for (const close of [() => positions.dispose(), () => drain, () => bookmarks.dispose(), () => pdfService.dispose(),
-        () => evidenceDomain.close(), () => positionDomain.close(), () => bookmarkDomain.close(), () => domain.close()]) {
+      for (const close of [() => positions.dispose(), () => drain, () => pdfService.dispose(),
+        () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }
       }
+      capabilities.dispose()
       if (failures.length) throw new AggregateError(failures, 'Could not fully dispose PDF routes and resources')
     })()
     return disposed
@@ -150,7 +149,6 @@ export async function apply(
         return { revision: await workspaces.waitForRevision(sessionId, id, knownRevision, signal) }
       }, { endpoint: 'pdf.watch', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
-      disposers.push(registerPdfTransport(ctx, bookmarks.dispatch, { endpoint: 'pdf.bookmarks', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, positions.dispatch, { endpoint: 'pdf.position', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, createPdfOcrDispatch(ctx, workspaces, pdfService,
@@ -167,7 +165,7 @@ export async function apply(
       { endpoint: 'pdf.navigation', maxRequestBytes: 4096 }))
       // A tool-result card may request navigation only after the currently
       // authorized working copy passes a fresh, whole-page evidence check.
-      disposers.push(registerPdfTransport(ctx, async (sessionId, input, agent, signal) => {
+      disposers.push(registerPdfTransport(ctx, async (_sessionId, input, agent, signal) => {
         const request = evidenceNavigationRequestSchema.parse(input)
         // The transport derives sessionId from the same validated input field
         // and resolves its agent before dispatching this request.
@@ -184,10 +182,11 @@ export async function apply(
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
+    ctx.effect(() => ctx.reflect.provide('pdfCapabilities', capabilities), 'pdf: capability providers')
     ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
     ctx.effect(() => ctx.reflect.provide('pdfImageEvidence', imageEvidence), 'pdf: image evidence resolver')
     // ToolRuntime binds registrations to this plugin Fiber and removes them on unload.
-    ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, bookmarks, referenceStore, files,
+    ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, referenceStore, files,
       agentNavigation),
       'pdf: agent tools and background documents')
     // Reader guidance is injected, not declared, so a Host without the

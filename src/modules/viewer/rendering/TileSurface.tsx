@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import type { PdfRect } from '../../../core/pdf-types.ts'
 import type { NativePage } from './document.ts'
 import type { PageViewport } from '../model/reader-selection.js'

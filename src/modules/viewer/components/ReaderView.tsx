@@ -1,4 +1,4 @@
-import React, { type ReactNode, type RefObject } from 'react'
+import { type ReactNode, type RefObject } from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import { AnnotationCommentCard } from './AnnotationCommentCard.js'
 import { ExplanationQuestionEditor, type ExplanationQuestionEditorProps } from './ExplanationQuestionEditor.js'
@@ -103,13 +103,13 @@ export function ReaderView(props: ReaderViewProps) {
     <ReaderAnnotationBar {...annotationBar} />
     <ReaderAlerts {...alerts} />
     <div className="dsh-pdf-body" ref={readerBody}>
-      <div className="dsh-pdf-content" aria-label={t('reader.sidebar.pdfContent')}>
-        <div className="dsh-pdf-floating-controls">
-          <div className="dsh-pdf-floating-controls-layout">
-            <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions}
-              mode={floating.mode} explanation={floating.explanation} statuses={floating.statuses} />
-          </div>
+      <div className="dsh-pdf-floating-controls">
+        <div className="dsh-pdf-floating-controls-layout">
+          <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions}
+            mode={floating.mode} explanation={floating.explanation} statuses={floating.statuses} />
         </div>
+      </div>
+      <div className="dsh-pdf-content" aria-label={t('reader.sidebar.pdfContent')}>
         {question && <ExplanationQuestionEditor key={question.key} {...question.props} />}
         {comment && <AnnotationCommentCard key={comment.key} viewport={comment.viewport} getAnchor={comment.getAnchor}
           getPosition={comment.getPosition} onMove={comment.onMove} label={t('reader.commentText')} onVisible={comment.onVisible}>

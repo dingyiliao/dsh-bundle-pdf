@@ -5,7 +5,7 @@ function normalizedPath(path: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path
 }
 
-/** Shared V1 keying for bookmarks and reading positions; records stay in separate domains. */
+/** Durable V1 path keying for reading positions. */
 export function createV1NavigationStore<T>(table: NavigationTable<T>): NavigationStore<T> {
   return {
     get: key => table.get(key),

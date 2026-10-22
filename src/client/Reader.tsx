@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PdfRect } from '../core/pdf-types.js'
 import type { ReaderProps } from './contracts.js'
 import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReaderExplanation, useReaderNavigation, useReaderOcr,
@@ -72,7 +72,7 @@ export function Reader(props: ReaderProps) {
     contentRevision: props.content.revision, pdf, snapshot, scrollRoot, currentPage,
     historyCapacity: settings.historyCapacity, lifetime, state, views, setCurrentPage,
     setPageInput, setZoom, setFit, setPositionNotice, onError: notifyError, t })
-  const { pageScale, capture, jump, destination, navigateHistory, navigationLock,
+  const { pageScale, jump, destination, navigateHistory, navigationLock,
     navigationTarget, navigating, historySnapshot } = navigation
   useLayoutEffect(() => {
     if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !documentReady()) return
@@ -138,10 +138,13 @@ export function Reader(props: ReaderProps) {
     tabSignal: tab.signal, ownerSequence, currentSnapshot: () => state.current.snapshot,
     acceptSnapshot: next => { state.current.snapshot = next; setSnapshot(next) },
     clearError: () => setError(''), onError: notifyError })
+  const changeFormField = useCallback(async (fieldId: string, value: string | boolean | string[]) => {
+    await change([{ type: 'set-field', fieldId, value }])
+  }, [change])
   const annotations = useReaderAnnotations({ snapshot, pdfAnnotations, selection, setSelection, setMode,
     ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, change, t })
   const { color, setColor, selectedAnnotation, setSelectedAnnotation, selected, selectedNote,
-    pendingNote, thread, comment, setComment, annotationColor, commentTextarea, colorPending,
+    pendingNote, thread, setComment, annotationColor, colorPending,
     annotationItems, annotationsByPage, renderedAnnotationsByPage, hasUnappliedAnnotation,
     mark, beginNote, selectAnnotation, clearAnnotation, deleteAnnotation,
     updateColor: updateAnnotationColor, openCommentEditor, closeCommentEditor, applyComment, applyNote } = annotations
@@ -190,10 +193,9 @@ export function Reader(props: ReaderProps) {
     setMode, setSelection, clearSelection, clearAnnotation,
     closeToolsMenu: () => { if (toolsMenu.current) toolsMenu.current.open = false }, t })
   const { active: activeExplanation, editor: activeExplanationEditor, draftSelection: draftExplanationSelection,
-    error: explanationError, sending: explanationSending, saving: explanationSaving, imageAvailability } = explanation
-  const { start: startExplanation, cancel: cancelExplanation, saveQuestion: saveExplanationQuestion,
-    cancelEditor: cancelExplanationEditor, deleteQuestion: deleteExplanationQuestion,
-    submit: submitExplanation, beginRegion: beginExplanationRegion, selectRegion: selectExplanationRegion } = explanation
+    sending: explanationSending } = explanation
+  const { start: startExplanation, cancel: cancelExplanation,
+    selectRegion: selectExplanationRegion } = explanation
   const dismissContext = useCallback(() => {
     if (hasUnappliedAnnotation) return
     regionPurpose.current = null
@@ -291,7 +293,7 @@ export function Reader(props: ReaderProps) {
     scrollRoot, mode, t, pageScale, registerView, destination, jump,
     currentPageCount: () => state.current.snapshot?.document.pageCount, beginNote,
     takeScreenshot, selectExplanationRegion, editExplanationQuestion: explanation.editQuestion,
-    selectAnnotation, moveNoteMarker, dismissContext, notifyError })
+    selectAnnotation, moveNoteMarker, dismissContext, notifyError, onFormChange: changeFormField })
 
   const wheelScale = useCallback((page: number) => {
     const geometry = state.current.snapshot?.document.pages[page - 1]
@@ -406,8 +408,12 @@ export function Reader(props: ReaderProps) {
       onNavigatePage: page => { void jump(page) },
       onStepPage: page => { void jump(page, {}, false) },
       onNavigateDestination: value => { void destination(value) },
-      bookmarks: pdf && snapshot ? { api, sessionId, documentId: snapshot.id,
-        capturePosition: capture, onNavigatePosition: position => { void jump(position.page, position) } } : undefined,
+      outlineAccess: snapshot ? { documentId: snapshot.id, revision: snapshot.revision, items: snapshot.document.outline,
+        readOnlyReason: snapshot.document.outlineReadOnlyReason, editable, busy,
+        change: async (operations, expectedRevision) => !!await act(current => {
+          if (current.id !== snapshot.id || current.revision !== expectedRevision) throw new Error(t('reader.sidebar.outlineChanged'))
+          return api.change(sessionId, current.id, expectedRevision, operations, tab.signal)
+        }) } : undefined,
       onExpandedChange: changeSidebarExpanded, t, panels: sidebarPanels,
     }}
     screenshot={screenshot ? {

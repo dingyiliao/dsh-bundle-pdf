@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { PDF_ENDPOINT, responseSchema, wireSnapshotSchema } from '../../../contracts/rpc/index.ts'
-import type { PdfBookmarkPosition, PdfClientApi, PdfStoredReadingPosition, PdfUserBookmark, WorkspaceSnapshot } from '../../../shared/contracts.ts'
+import { PDF_ENDPOINT, readingPositionSchema, responseSchema, wireSnapshotSchema } from '../../../contracts/rpc/index.ts'
+import type { PdfReadingPosition, PdfClientApi, PdfStoredReadingPosition, WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import { sessionFile } from '../../../shared/address.ts'
 import { measurePdfAsync } from '../../../shared/performance.ts'
 import type { NativeOutlineItem, NativeReaderApi, NativeTextContent } from '../../../shared/native.ts'
@@ -49,12 +49,7 @@ export function createPdfAgentNavigationApi(connection: PdfConnection, lifetime:
     },
   }
 }
-const bookmarkPosition = z.object({ page: z.number().int().positive(), x: z.number().finite(), y: z.number().finite(),
-  scale: z.number().finite().positive(), fit: z.enum(['custom', 'width', 'page']),
-  viewportAnchor: z.object({ x: z.number().finite().min(0).max(1), y: z.number().finite().min(0).max(1) }).optional(),
-})
-const bookmarksResult = z.array(z.object({ id: z.string().uuid(), title: z.string(), position: bookmarkPosition,
-  stale: z.enum(['none', 'content-changed', 'page-missing']), createdAt: z.string(), updatedAt: z.string() })).max(1000)
+
 const readingPositionStale = z.enum(['none', 'content-changed', 'page-missing'])
 
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
@@ -102,6 +97,8 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     }
     const value: WorkspaceSnapshot = { ...wire, document }
     if (!wire.baselineAnnotations && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineAnnotations = previous.baselineAnnotations
+    if (!wire.baselineOutline && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineOutline = previous.baselineOutline
+    if (!wire.baselineFormFields && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineFormFields = previous.baselineFormFields
     latest.set(value.id, value)
     for (const listener of listeners.get(value.id) ?? []) listener(value)
     return value
@@ -153,35 +150,25 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     },
     async links(sessionId, id, reader, page, signal) { return z.array(z.unknown()).max(10000).parse(await call({ action: 'links', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')) },
     async outline(sessionId, id, reader, signal) {
-      const item: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({ title: z.string().max(8191), dest: z.unknown().optional(),
+      const item: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({ id: z.string().max(512).optional(), title: z.string().max(8191), dest: z.unknown().optional(),
         url: z.string().max(32768).optional(), items: z.array(item).max(5000) }))
       return z.array(item).max(5000).nullable().parse(await call({ action: 'outline', sessionId, id, bytesHash: reader.bytesHash }, signal, 'pdf.native'))
     },
     destination: (sessionId, id, reader, name, signal) => call({ action: 'destination', sessionId, id, bytesHash: reader.bytesHash, name }, signal, 'pdf.native'),
   }
-  const bookmarks = {
-    list: async (sessionId: string, id: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
-      bookmarksResult.parse(await call({ action: 'list', sessionId, id }, signal, 'pdf.bookmarks')),
-    add: async (sessionId: string, id: string, title: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
-      bookmarksResult.parse(await call({ action: 'add', sessionId, id, title, position }, signal, 'pdf.bookmarks')),
-    rename: async (sessionId: string, id: string, bookmarkId: string, title: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
-      bookmarksResult.parse(await call({ action: 'rename', sessionId, id, bookmarkId, title }, signal, 'pdf.bookmarks')),
-    remove: async (sessionId: string, id: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]> =>
-      bookmarksResult.parse(await call({ action: 'remove', sessionId, id, bookmarkId }, signal, 'pdf.bookmarks')),
-  }
   const positions = {
     get: async (sessionId: string, id: string, signal?: AbortSignal): Promise<PdfStoredReadingPosition | null> =>
-      z.object({ position: z.object({ position: bookmarkPosition, stale: readingPositionStale,
+      z.object({ position: z.object({ position: readingPositionSchema, stale: readingPositionStale,
         updatedAt: z.string() }).strict().nullable() }).parse(
         await call({ action: 'get', sessionId, id }, signal, 'pdf.position')).position,
-    async set(sessionId: string, id: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<void> {
+    async set(sessionId: string, id: string, position: PdfReadingPosition, signal?: AbortSignal): Promise<void> {
       // The wire shape rejects `documentVersion`, so a full navigation position
       // cannot be stored by accident.
       z.object({ stored: z.literal(true) }).parse(await call({ action: 'set', sessionId, id, position }, signal, 'pdf.position'))
     },
   }
   return {
-    native, bookmarks, positions,
+    native, positions,
     async open(sessionId, address, signal) {
       const addressed = sessionFile(address)
       if (addressed.sessionId !== sessionId) throw new Error('The PDF address belongs to another session')

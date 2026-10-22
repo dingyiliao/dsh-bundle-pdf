@@ -1,4 +1,3 @@
-import React from 'react'
 import type { ExplanationStatusBarProps } from './ExplanationStatusBar.js'
 import { ExplanationStatusBar } from './ExplanationStatusBar.js'
 import { ToolbarIcon } from './ToolbarIcon.js'

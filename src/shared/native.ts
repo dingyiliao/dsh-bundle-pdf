@@ -16,6 +16,8 @@ export interface NativeTextContent {
   lang: string | null
 }
 export interface NativeOutlineItem {
+  /** Stable outline identity supplied by the Host, independent of tree position. */
+  id?: string
   title: string
   dest?: unknown
   url?: string

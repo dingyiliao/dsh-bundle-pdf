@@ -1,29 +1,14 @@
-import type { PdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../core/pdf-types.js'
+import type { PdfAnnotation, PdfDocumentInfo, PdfFormField, PdfOutlineItem, PdfWorkingCopyOperation } from '../core/pdf-types.js'
 import type { NativeReaderApi, ReaderDescriptor } from './native.js'
 import type { NavigationPosition } from '../navigation/index.js'
 import { defaultExplanationPromptTemplate } from './explanation-template.js'
 
-/** User bookmark locations stay in plugin storage; they are not embedded in the PDF. */
-export type PdfBookmarkPosition = Omit<NavigationPosition, 'documentVersion'>
-export interface PdfUserBookmark {
-  id: string
-  title: string
-  position: PdfBookmarkPosition
-  stale: 'none' | 'content-changed' | 'page-missing'
-  createdAt: string
-  updatedAt: string
-}
-
-export interface PdfBookmarksApi {
-  list(sessionId: string, documentId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
-  add(sessionId: string, documentId: string, title: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<PdfUserBookmark[]>
-  rename(sessionId: string, documentId: string, bookmarkId: string, title: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
-  remove(sessionId: string, documentId: string, bookmarkId: string, signal?: AbortSignal): Promise<PdfUserBookmark[]>
-}
+/** Durable location used to resume reading a PDF. */
+export type PdfReadingPosition = Omit<NavigationPosition, 'documentVersion'>
 
 /** Where reading stopped in one file, with the reason it may no longer apply. */
 export interface PdfStoredReadingPosition {
-  position: PdfBookmarkPosition
+  position: PdfReadingPosition
   stale: 'none' | 'content-changed' | 'page-missing'
   updatedAt: string
 }
@@ -31,7 +16,7 @@ export interface PdfStoredReadingPosition {
 export interface PdfReadingPositionApi {
   /** The remembered position for this file path, or null when none was ever stored. */
   get(sessionId: string, documentId: string, signal?: AbortSignal): Promise<PdfStoredReadingPosition | null>
-  set(sessionId: string, documentId: string, position: PdfBookmarkPosition, signal?: AbortSignal): Promise<void>
+  set(sessionId: string, documentId: string, position: PdfReadingPosition, signal?: AbortSignal): Promise<void>
 }
 
 /** Target languages offered by the per-selection translation panel. */
@@ -81,15 +66,17 @@ export interface WorkspaceSnapshot {
   document: PdfDocumentInfo
   /** Native annotations present in bytes before projecting unsaved operations. */
   baselineAnnotations?: PdfAnnotation[]
+  /** Embedded outline before draft operations. */
+  baselineOutline?: PdfOutlineItem[]
+  baselineFormFields?: PdfFormField[]
   reader: ReaderDescriptor
 }
 
 export interface PdfClientApi {
   native: NativeReaderApi
-  bookmarks: PdfBookmarksApi
   positions: PdfReadingPositionApi
   open(sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
-  change(sessionId: string, id: string, revision: number, operations: PdfAnnotationOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  change(sessionId: string, id: string, revision: number, operations: PdfWorkingCopyOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   redo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   reload(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>

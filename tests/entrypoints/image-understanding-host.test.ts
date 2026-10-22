@@ -5,6 +5,7 @@ import { apply, Config, inject, name, provide } from '../../src/entrypoints/imag
 import type { HostImageUnderstandingService } from '../../src/modules/image-understanding/index.js'
 import { registerPdfTransport } from '../../src/adapters/host/dsh/transport.ts'
 import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
+import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilities/index.ts'
 
 type Route = Parameters<Parameters<typeof registerPdfTransport>[0]['connection']['fetch']['register']>[0]
 
@@ -22,6 +23,7 @@ test('image understanding plugin provides one service, three backends, and an au
       effects.push({ label, dispose: callback() })
     },
     get() { return undefined },
+    inject() { return { dispose() {} } },
     connection: { fetch: { register(route: Route) {
       assert.equal(routes.has(route.path), false)
       routes.set(route.path, route)
@@ -51,6 +53,7 @@ test('image understanding plugin provides one service, three backends, and an au
       'image-understanding: session vision backend',
       'image-understanding: OCR text backend',
       'image-understanding: optional auxiliary vision backend',
+      'image-understanding: optional capability catalog',
       'image-understanding: authenticated PDF image route',
     ])
     const route = routes.get('/api/pdf.image')
@@ -77,7 +80,9 @@ test('image understanding plugin provides one service, three backends, and an au
 
 test('image service and RPC route unload with their real Cordis Fiber', async () => {
   const root = new Context()
+  const capabilities = new CapabilityRegistry()
   const routes = new Map<string, Route>()
+  root.reflect.provide('pdfCapabilities', capabilities)
   root.reflect.provide('connection', { fetch: { register(route: Route) {
     routes.set(route.path, route)
     return async () => { routes.delete(route.path) }
@@ -91,11 +96,17 @@ test('image service and RPC route unload with their real Cordis Fiber', async ()
     const service = root.get('imageUnderstanding')
     assert.ok(service)
     assert.equal(service.list().length, 3)
+    assert.deepEqual(capabilities.list().filter(item => item.capabilities.includes(pdfCapabilities.understandImage))
+      .map(item => item.id), ['image.selected'])
+    assert.match((await capabilities.resolve(pdfCapabilities.understandImage)).reason ?? '', /requires a session/)
+    assert.match((await capabilities.resolve(pdfCapabilities.understandImage, { sessionId: 'session-1' })).reason ?? '',
+      /session model is unavailable/)
     assert.ok(routes.has('/api/pdf.image'))
 
     await fiber.dispose()
     assert.equal(root.get('imageUnderstanding'), undefined)
     assert.deepEqual(service.list(), [])
+    assert.deepEqual(capabilities.list(), [])
     assert.equal(routes.size, 0)
   } finally { await root.fiber.dispose() }
 })

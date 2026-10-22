@@ -1,4 +1,3 @@
-import React from 'react'
 import type { NavigationHistorySnapshot } from '../../../navigation/index.js'
 import { SplitActionControl } from './SplitActionControl.js'
 import { ToolbarIcon } from './ToolbarIcon.js'

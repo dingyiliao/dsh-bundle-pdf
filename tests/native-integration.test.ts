@@ -3,10 +3,11 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { NativeWorker } from '../src/engine/native-worker.ts'
+import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
 import { NativeViewport } from '../src/modules/viewer/index.ts'
 import { applyPdfOperations, loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { createPdfService } from '../src/adapters/host/pdfium/index.ts'
+import { CapabilityRegistry, pdfCapabilities } from '../src/modules/capabilities/index.ts'
 import { registerPdfTransport } from '../src/adapters/host/dsh/index.ts'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 import { PDFDocument, PDFHexString, PDFName, PDFString, rgb } from 'pdf-lib'
@@ -377,12 +378,76 @@ test('opening fails explicitly when the native helper is absent', async () => {
     await assert.rejects(service.dispatch('missing-helper', { action: 'open', sessionId: 'missing-helper', address: 'dsh-resource://file/session/missing-helper//fixtures/native.pdf' }, { session: { id: 'missing-helper', header: {} } }, signal), { code: 'pdf/native-unavailable' })
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
-test('PDF forms fail explicitly rather than showing an incomplete native appearance', { skip }, async () => {
+test('AcroForm opens editable and native rendering includes the form appearance', { skip }, async () => {
   const document = await PDFDocument.create(), page = document.addPage([300, 400])
-  document.getForm().createTextField('field').addToPage(page, { x: 30, y: 100, width: 150, height: 30 })
-  const state = memoryWorkspace(await document.save()), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const field = document.getForm().createTextField('field')
+  field.addToPage(page, { x: 30, y: 100, width: 150, height: 30 })
+  field.setText('A visible value')
+  const bytes = await document.save()
+  const metadata = await loadPdfDocument(bytes)
+  assert.equal(metadata.formKind, 'acroform')
+  assert.equal(metadata.readOnly, false)
+  assert.equal(metadata.formFields?.[0]?.name, 'field')
+  const state = memoryWorkspace(bytes), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   try {
-    await assert.rejects(service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal), { code: 'pdf/native-unsupported' })
-    assert.equal(service.diagnostics().documents, 0)
+    const opened = await service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal) as any
+    assert.equal(opened.document.formKind, 'acroform')
+    assert.equal(opened.document.readOnly, false)
+    assert.equal(service.diagnostics().documents, 1)
+    const worker = new NativeWorker(executable, nativeTestSubprocess)
+    try {
+      const probe = await worker.request({ command: 'open', documentId: 'form-appearance' }, bytes)
+      assert.equal((probe.value as { formType: number }).formType, 1)
+      const render = async (annotations: boolean) => (await worker.request({ command: 'render', documentId: 'form-appearance',
+        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400, annotations })).bytes
+      const plain = await render(false), withForm = await render(true)
+      field.setText('')
+      await worker.request({ command: 'open', documentId: 'empty-form' }, await document.save())
+      const empty = (await worker.request({ command: 'render', documentId: 'empty-form',
+        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400,
+        x: 0, y: 0, width: 300, height: 400, annotations: false })).bytes
+      let changed = 0
+      for (let index = 0; index < plain.length; index += 4) {
+        if (plain[index] !== empty[index] || plain[index + 1] !== empty[index + 1] || plain[index + 2] !== empty[index + 2]) changed++
+      }
+      assert.ok(changed > 100, `form value must remain visible without markup annotations: ${changed}`)
+      let differingBytes = 0, comparedBytes = 0
+      for (const x of [0, 128, 256]) for (const y of [0, 128, 256, 384]) {
+        const width = Math.min(128, 300 - x), height = Math.min(128, 400 - y)
+        const tile = (await worker.request({ command: 'render', documentId: 'form-appearance',
+          pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400,
+          x: x - 1, y: y - 1, width: width + 2, height: height + 2, annotations: true })).bytes
+        for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) for (let channel = 0; channel < 4; channel++) {
+          const actual = tile[((row + 1) * (width + 2) + col + 1) * 4 + channel]!
+          const expected = withForm[((y + row) * 300 + x + col) * 4 + channel]!
+          if (Math.abs(actual - expected) > 2) differingBytes++
+          comparedBytes++
+        }
+      }
+      assert.ok(differingBytes / comparedBytes < 0.005, `form tile differing-byte ratio=${differingBytes / comparedBytes}`)
+    } finally { await worker.dispose() }
+    const withNote = await applyPdfOperations(bytes, [{ type: 'add', annotation: {
+      id: 'note-on-form', page: 1, subtype: 'Text', rect: [20, 20, 40, 40], contents: 'A note',
+    } }])
+    assert.equal(withNote.document.formFields?.[0]?.value, 'A visible value')
+    assert.ok(withNote.document.annotations.some(annotation => annotation.id === 'note-on-form'))
   } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('a separate XFA provider cannot make PDFium silently open unsupported form content', { skip }, async () => {
+  const document = await PDFDocument.create()
+  document.addPage([300, 400])
+  document.catalog.set(PDFName.of('AcroForm'), document.context.obj({ Fields: [], XFA: PDFString.of('<xfa/>') }))
+  const state = memoryWorkspace(await document.save())
+  const capabilities = new CapabilityRegistry()
+  capabilities.register({ id: 'other.xfa', capabilities: [pdfCapabilities.renderXfa], implementation: {} })
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess, capabilities })
+  try {
+    await assert.rejects(service.dispatch('xfa', { action: 'open', sessionId: 'xfa',
+      address: 'dsh-resource://file/session/xfa//fixtures/native.pdf' },
+    { session: { id: 'xfa', header: {} } }, signal),
+    (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'pdf/native-unsupported'
+      && error.message.includes(pdfCapabilities.renderXfa))
+    assert.equal(service.diagnostics().documents, 0)
+  } finally { await service.dispose(); await state.workspaces.dispose(); capabilities.dispose() }
 })

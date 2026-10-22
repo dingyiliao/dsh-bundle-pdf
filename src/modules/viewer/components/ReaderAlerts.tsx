@@ -1,4 +1,3 @@
-import React from 'react'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 
 export interface ReaderAlertsProps {
@@ -31,7 +30,8 @@ export function ReaderAlerts(props: ReaderAlertsProps) {
     targetChecking, overwrite, busy, reloadConfirm, setError, setPositionNotice,
     setSavePath, setOverwrite, setSaveAsOpen, setReloadConfirm, save, beginSaveAs, reload, t } = props
   return <>
-    {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document' ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
+    {snapshot?.document.readOnly && <div className="dsh-pdf-notice">{t(snapshot.document.readOnlyReason === 'encrypted-document'
+      ? 'reader.encryptedReadOnly' : 'reader.signedReadOnly')}</div>}
     {error && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
     {snapshot?.warning && <div className="dsh-pdf-notice" role="status">{snapshot.warning}</div>}
     {positionNotice && <div className="dsh-pdf-notice" role="status">{positionNotice}

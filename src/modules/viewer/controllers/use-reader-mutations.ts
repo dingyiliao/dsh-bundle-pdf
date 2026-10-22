@@ -1,5 +1,5 @@
 import { useRef, useState, type MutableRefObject } from 'react'
-import type { PdfAnnotationOperation } from '../../../core/pdf-types.js'
+import type { PdfWorkingCopyOperation } from '../../../core/pdf-types.js'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../shared/contracts.js'
 
 export interface ReaderMutationsOptions {
@@ -47,7 +47,7 @@ export function useReaderMutations(options: ReaderMutationsOptions) {
       setBusy(false)
     }
   }
-  const change = (operations: PdfAnnotationOperation[]) => act(current =>
+  const change = (operations: PdfWorkingCopyOperation[]) => act(current =>
     api.change(sessionId, current.id, current.revision, operations, tabSignal))
   return { busy, operationLock, act, change }
 }

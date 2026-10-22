@@ -4,6 +4,10 @@ import { NativeWorker, type NativeProcessRuntime } from './native-worker.js'
 import { encodePng } from './png.js'
 import { ByteCache } from '../../../shared/cache/index.js'
 import { ocrRegionRenderPlan, pageRenderPlan } from '../../../modules/document/index.js'
+import { CapabilityRegistry, pdfCapabilities, requiredPdfOpenCapabilities } from '../../../modules/capabilities/index.js'
+import { projectedReaderOutline } from '../../../modules/outlines/index.js'
+import { inspectFormPage } from '../../../modules/forms/index.js'
+import { paintFormLabels } from './form-labels.js'
 import type { NativeOutlineItem, NativeTextContent, ReaderDescriptor } from '../../../shared/native.js'
 import { binaryResult, type PdfDispatch } from '../dsh/index.js'
 import type { createWorkingCopyService, HostWorkspaceSnapshot } from '../../../modules/working-copy/index.js'
@@ -31,8 +35,12 @@ interface Handle { hash: string; generation: number; bytes: number }
 /** Host authority is shared by UI dispatch, native reads and future Agent callers. */
 export function createPdfService(workspaces: ReturnType<typeof createWorkingCopyService>, options: {
   executable: string; subprocess: NativeProcessRuntime; cacheBytes?: number; timeoutMs?: number
+  capabilities?: CapabilityRegistry
 }) {
   const worker = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
+  const capabilities = options.capabilities ?? new CapabilityRegistry()
+  const unregisterNative = capabilities.register({ id: 'pdfium.native',
+    capabilities: [pdfCapabilities.renderPage, pdfCapabilities.renderAcroForm, pdfCapabilities.previewSigned], implementation: worker })
   const handles = new Map<string, Handle>()
   const openings = new Map<string, Promise<void>>()
   const tiles = new ByteCache<Buffer>(options.cacheBytes ?? 32 * 1024 * 1024)
@@ -78,10 +86,23 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       }
       if (snapshot.bytes.byteLength > 128 * 1024 * 1024) fail('pdf/native-size', 'PDF exceeds the native working-set limit')
       const reply = await worker.request({ command: 'open', documentId: snapshot.id }, snapshot.bytes)
-      const value = z.object({ pageCount: integer, formType: integer, signatureCount: integer }).parse(reply.value)
-      if (value.pageCount !== snapshot.document.pageCount || value.formType !== 0 || value.signatureCount > 0) {
-        await worker.request({ command: 'close', documentId: snapshot.id })
-        fail('pdf/native-unsupported', 'PDF forms, signatures or inconsistent page geometry are not supported by the native reader')
+      try {
+        const value = z.object({ pageCount: integer, formType: integer, signatureCount: integer }).parse(reply.value)
+        if (value.pageCount !== snapshot.document.pageCount) {
+          fail('pdf/native-unsupported', 'PDF page counts differ between the parser and native reader')
+        }
+        if (snapshot.document.formKind === 'acroform' && value.formType === 0) {
+          fail('pdf/native-unsupported', 'The native reader did not recognize this AcroForm; its fields may be missing')
+        }
+        const required = requiredPdfOpenCapabilities({ ...value,
+          signatureCount: Math.max(value.signatureCount, snapshot.document.signed ? 1 : 0) }, snapshot.document.formKind)
+        const plan = await capabilities.plan(required, { signal }, 'pdfium.native')
+        if (!plan.supported) {
+          fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
+        }
+      } catch (error) {
+        await worker.request({ command: 'close', documentId: snapshot.id }).catch(() => undefined)
+        throw error
       }
       handles.set(snapshot.id, { hash: bytesHash, generation: worker.generation, bytes: snapshot.bytes.byteLength })
       handlesBytes += snapshot.bytes.byteLength
@@ -95,7 +116,6 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   async function descriptor(snapshot: HostWorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
     if (snapshot.document.encrypted) fail('pdf/native-unsupported', 'Encrypted PDFs are not supported by the native reader')
-    if (snapshot.document.signed) fail('pdf/native-unsupported', 'Signed PDFs are not supported by the native reader')
     await ensure(snapshot, signal)
     return { bytesHash, protocolVersion: 1, generation: worker.generation }
   }
@@ -105,14 +125,18 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const previous = histories.get(snapshot.id)
     const continuous = raw.knownBytesHash === reader.bytesHash && previous !== undefined && previous.revision === raw.knownRevision && previous.contentVersion === snapshot.contentVersion
       && workspaces.bytesHash(previous.bytes) === reader.bytesHash
-    const { bytes: _bytes, document, baselineAnnotations, ...status } = snapshot
+    const { bytes: _bytes, document, baselineAnnotations, baselineOutline, baselineFormFields, ...status } = snapshot
     const value: Record<string, unknown> = { ...status, reader }
-    if (continuous) {
+    // Form fields are part of document metadata, not annotation deltas. Send
+    // the complete document when their projected values change.
+    if (continuous && JSON.stringify(previous.document.formFields) === JSON.stringify(document.formFields)
+      && JSON.stringify(previous.document.outline) === JSON.stringify(document.outline)
+      && previous.document.outlineReadOnlyReason === document.outlineReadOnlyReason) {
       const before = new Map(previous.document.annotations.map(a => [a.id, a]))
       value.annotationDelta = { fromRevision: previous.revision,
         remove: [...before.keys()].filter(key => !document.annotations.some(a => a.id === key)),
         upsert: document.annotations.filter(a => JSON.stringify(a) !== JSON.stringify(before.get(a.id))) }
-    } else { value.document = document; value.baselineAnnotations = baselineAnnotations }
+    } else { value.document = document; value.baselineAnnotations = baselineAnnotations; value.baselineOutline = baselineOutline; value.baselineFormFields = baselineFormFields }
     histories.delete(snapshot.id); histories.set(snapshot.id, snapshot)
     while (histories.size > 32) histories.delete(histories.keys().next().value!)
     return value
@@ -181,7 +205,9 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       : input.action === 'destination' ? { command: 'destination', name: input.name }
       : { command: input.action, pageIndex: input.page - 1, ...(input.action === 'inspect' ? { offset: input.offset, limit: input.limit } : {}) }
     const reply = await worker.request({ ...command, documentId: input.id }, undefined, signal, -5)
-    return reply.value
+    return input.action === 'outline'
+      ? projectedReaderOutline(snapshot.document, snapshot.baselineOutline, reply.value as NativeOutlineItem[] | null)
+      : reply.value
   })
   async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
@@ -213,11 +239,12 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       title: z.string().max(8191), dest: z.unknown().optional(), url: z.string().max(32768).optional(),
       items: z.array(itemSchema),
     }))
-    return { snapshot, items: z.array(itemSchema).nullable().parse(reply.value) }
+    return { snapshot, items: projectedReaderOutline(snapshot.document, snapshot.baselineOutline,
+      z.array(itemSchema).nullable().parse(reply.value)) }
   }) }
   /** Render one bounded full-page PNG from the native source, without any Client/UI dependency. */
-  async function renderPage(sessionId: string, documentId: string, page: number, maxEdge: number,
-    signal: AbortSignal): Promise<{ snapshot: HostWorkspaceSnapshot; png: Buffer; width: number; height: number }> {
+  async function renderPageImage(sessionId: string, documentId: string, page: number, maxEdge: number,
+    signal: AbortSignal, form?: { includeValues: boolean }) {
     return withHandleLease(async () => {
       signal.throwIfAborted()
       const snapshot = workspaces.readSnapshot(sessionId, documentId)
@@ -227,19 +254,31 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       const geometry = snapshot.document.pages[page - 1]
       if (!geometry) fail('pdf/invalid-page', 'Page geometry is unavailable')
       const { width, height, ...render } = pageRenderPlan(geometry, maxEdge)
+      const formInspection = form ? inspectFormPage(snapshot.document, page, width, height, form.includeValues) : undefined
       await descriptor(snapshot, signal)
       const reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
         rotation: 0, ...render, width, height, annotations: true }, undefined, signal, 10)
       const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
       if (value.width !== width || value.height !== height) fail('pdf/native-protocol', 'Native page dimensions do not match')
+      if (formInspection) paintFormLabels(reply.bytes, width, height,
+        formInspection.fields.flatMap(field => field.controls))
       const png = await encodePng(reply.bytes, width, height)
       signal.throwIfAborted()
       const latest = workspaces.readSnapshot(sessionId, documentId)
       if (latest.contentVersion !== snapshot.contentVersion || latest.revision !== snapshot.revision) {
         fail('pdf/stale-reader', 'PDF changed during page render; retry')
       }
-      return { snapshot, png, width, height }
+      return { snapshot, png, width, height, formInspection }
     })
+  }
+  function renderPage(sessionId: string, documentId: string, page: number, maxEdge: number, signal: AbortSignal) {
+    return renderPageImage(sessionId, documentId, page, maxEdge, signal)
+  }
+  async function renderFormPage(sessionId: string, documentId: string, page: number, maxEdge: number,
+    includeValues: boolean, signal: AbortSignal) {
+    const rendered = await renderPageImage(sessionId, documentId, page, maxEdge, signal, { includeValues })
+    if (!rendered.formInspection) fail('pdf/form-inspection-unavailable', 'Form mapping is unavailable')
+    return { ...rendered, formInspection: rendered.formInspection }
   }
   /** Render an unannotated page or PDF-space region for OCR without transporting image bytes from Client. */
   async function renderOcrImage(sessionId: string, documentId: string, page: number,
@@ -283,8 +322,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       }
     })
   }
-  return { dispatch, native, readPageText, readOutline, renderPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
+  return { dispatch, native, readPageText, readOutline, renderPage, renderFormPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
     async dispose() { closed = true; tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0
+      unregisterNative()
+      if (!options.capabilities) capabilities.dispose()
       await worker.dispose() } }
 }

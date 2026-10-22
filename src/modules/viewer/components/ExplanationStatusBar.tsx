@@ -1,4 +1,3 @@
-import React from 'react'
 import { ToolbarIcon } from './ToolbarIcon.js'
 
 export interface ExplanationStatusBarProps {

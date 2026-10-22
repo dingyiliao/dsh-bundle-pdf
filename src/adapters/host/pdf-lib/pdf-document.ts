@@ -2,12 +2,16 @@ import {
   PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber,
   PDFObject, PDFRef, PDFString, ParseSpeeds,
 } from 'pdf-lib'
+import { readFile } from 'node:fs/promises'
 import { setAnnotationAppearance } from './pdf-appearance.js'
+import { applyFormChanges, inspectFormFields } from './form-fields.js'
+import { applyOutlineOperations, inspectOutlines } from './outlines.js'
+import { isOutlineOperation } from '../../../modules/outlines/index.js'
 import { measurePdfAsync } from '../../../shared/performance.js'
 import {
   DEFAULT_HIGHLIGHT_OPACITY, PdfDocumentError,
   type EditableAnnotationType, type NewPdfAnnotation, type PdfAnnotation,
-  type PdfAnnotationOperation, type PdfColor, type PdfDocumentInfo, type PdfRect,
+  type PdfColor, type PdfDocumentInfo, type PdfRect, type PdfWorkingCopyOperation,
 } from '../../../core/pdf-types.js'
 
 export * from '../../../core/pdf-types.js'
@@ -114,7 +118,7 @@ function hasSignature(doc: PDFDocument): boolean {
   return false
 }
 
-function annotationEntries(doc: PDFDocument, documentReadOnly = false): AnnotationEntry[] {
+function annotationEntries(doc: PDFDocument, documentReadOnlyReason?: string): AnnotationEntry[] {
   const entries: AnnotationEntry[] = []
   const usedIds = new Set<string>()
   doc.getPages().forEach((page, pageIndex) => {
@@ -137,7 +141,7 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
       const flags = readNumber(get(doc, dictionary, 'F')) ?? 0
       const supported = editableTypes.has(subtype)
       let readOnlyReason: string | undefined
-      if (documentReadOnly) readOnlyReason = 'signed-document'
+      if (documentReadOnlyReason) readOnlyReason = documentReadOnlyReason
       else if (!supported) readOnlyReason = 'unsupported-annotation-type'
       else if (flags & lockedFlags) readOnlyReason = 'annotation-locked'
       else if (!rect || (subtype !== 'Text' && !quadPoints)) readOnlyReason = 'invalid-annotation-geometry'
@@ -245,8 +249,17 @@ function annotationEntries(doc: PDFDocument, documentReadOnly = false): Annotati
   return entries
 }
 
+function documentFormKind(doc: PDFDocument): PdfDocumentInfo['formKind'] {
+  const form = get(doc, doc.catalog, 'AcroForm')
+  const fields = form instanceof PDFDict ? get(doc, form, 'Fields') : undefined
+  return form instanceof PDFDict && get(doc, form, 'XFA') !== undefined ? 'xfa'
+    : fields instanceof PDFArray && fields.size() > 0 ? 'acroform' : undefined
+}
+
 function documentInfo(doc: PDFDocument, known?: { signed: boolean; annotations: PdfAnnotation[] }): PdfDocumentInfo {
   const signed = known?.signed ?? hasSignature(doc)
+  const formKind = documentFormKind(doc)
+  const readOnlyReason = signed ? 'signed-document' : formKind === 'xfa' ? 'xfa-document' : undefined
   return {
     pageCount: doc.getPageCount(),
     pages: doc.getPages().map((page, index) => {
@@ -258,9 +271,12 @@ function documentInfo(doc: PDFDocument, known?: { signed: boolean; annotations: 
         userUnit: readNumber(get(doc, page.node, 'UserUnit')) ?? 1,
       }
     }),
-    annotations: known?.annotations ?? annotationEntries(doc, signed).map((entry) => entry.model),
-    title: doc.getTitle(), signed, encrypted: false, readOnly: signed,
-    readOnlyReason: signed ? 'signed-document' : undefined,
+    annotations: known?.annotations ?? annotationEntries(doc, readOnlyReason).map((entry) => entry.model),
+    title: doc.getTitle(), signed, encrypted: false, formKind,
+    formFields: formKind === 'acroform' ? inspectFormFields(doc, signed) : undefined,
+    ...inspectOutlines(doc),
+    readOnly: !!readOnlyReason,
+    readOnlyReason,
   }
 }
 
@@ -402,7 +418,7 @@ function removeQueuedAnnotations(doc: PDFDocument, removals: Map<PDFArray, Set<P
  */
 export async function applyPdfOperations(
   bytes: Uint8Array,
-  operations: readonly PdfAnnotationOperation[],
+  operations: readonly PdfWorkingCopyOperation[],
   operationDates?: readonly string[],
 ): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
   return measurePdfAsync('host.materialize', { inputBytes: bytes.byteLength, operationCount: Array.isArray(operations) ? operations.length : 0 },
@@ -411,16 +427,22 @@ export async function applyPdfOperations(
 
 async function applyPdfOperationsImpl(
   bytes: Uint8Array,
-  operations: readonly PdfAnnotationOperation[],
+  operations: readonly PdfWorkingCopyOperation[],
   operationDates?: readonly string[],
 ): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
   if (!Array.isArray(operations)) fail('An annotation operation list is required.')
   if (operationDates && operationDates.length !== operations.length) fail('Operation dates do not match the operation list.')
   const doc = await parse(bytes)
-  if (hasSignature(doc)) throw new PdfDocumentError('read-only', 'Digitally signed PDFs are read only in this version.')
+  const signed = hasSignature(doc)
+  const formKind = documentFormKind(doc)
+  if (signed || formKind === 'xfa') throw new PdfDocumentError('read-only',
+    signed ? 'Digitally signed PDFs are read only in this version.'
+      : 'XFA forms are read only in this version.')
   const initialEntries = annotationEntries(doc)
   const info = documentInfo(doc, { signed: false, annotations: initialEntries.map((entry) => entry.model) })
   if (operations.length === 0) return { bytes: bytes.slice(), document: info }
+  const outlineChanges = operations.filter(isOutlineOperation)
+  const outlineInfo = outlineChanges.length ? applyOutlineOperations(doc, info, outlineChanges) : undefined
   const entries = new Map(initialEntries.map((entry) => [entry.model.id, entry]))
   const byDictionary = new Map<PDFDict, AnnotationEntry[]>()
   const appearances = new Map<PDFDict, AnnotationEntry>()
@@ -449,6 +471,7 @@ async function applyPdfOperationsImpl(
   }
   for (let operationIndex = 0; operationIndex < operations.length; operationIndex++) {
     const operation = operations[operationIndex]
+    if (operation.type === 'set-field' || isOutlineOperation(operation)) continue
     const when = operationDates ? new Date(operationDates[operationIndex]) : new Date()
     if (!Number.isFinite(when.getTime())) fail('An operation has an invalid date.')
     if (!operation || !['add', 'update', 'delete'].includes(operation.type)) fail('Unsupported annotation operation.')
@@ -564,6 +587,17 @@ async function applyPdfOperationsImpl(
     setAnnotationAppearance(doc, entry.dictionary, entry.model.subtype as EditableAnnotationType,
       entry.model.rect!, entry.model.quadPoints, entry.model.color ?? defaultColor)
   }
+  const formChanges = operations.filter((operation): operation is Extract<PdfWorkingCopyOperation, { type: 'set-field' }> =>
+    operation.type === 'set-field')
+  if (formChanges.length) {
+    let font: Uint8Array
+    try { font = new Uint8Array(await readFile(new URL('./assets/forms/NotoSansCJKsc-Regular.otf', import.meta.url))) }
+    catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+      font = new Uint8Array(await readFile(new URL('../../../../assets/fonts/NotoSansCJKsc-Regular.otf', import.meta.url)))
+    }
+    await applyFormChanges(doc, formChanges, font)
+  }
   const saved = await doc.save({
     useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false, objectsPerTick: 500,
   })
@@ -574,5 +608,5 @@ async function applyPdfOperationsImpl(
   const annotations = reindexAnnotations
     ? annotationEntries(doc).map((entry) => entry.model)
     : [...entries.values()].map((entry) => entry.model).sort((left, right) => left.page - right.page)
-  return { bytes: saved, document: { ...info, annotations } }
+  return { bytes: saved, document: formChanges.length ? documentInfo(doc) : { ...info, ...outlineInfo, annotations } }
 }

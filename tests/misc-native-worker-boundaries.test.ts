@@ -3,7 +3,7 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { encodeFrame, FrameDecoder } from '../src/engine/framing.ts'
-import { NativeWorker, type NativeProcessRuntime } from '../src/engine/native-worker.ts'
+import { NativeWorker, type NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
 
 type Reply = { requestId: string; ok: boolean; value?: unknown; error?: { code: string; message: string } }
 

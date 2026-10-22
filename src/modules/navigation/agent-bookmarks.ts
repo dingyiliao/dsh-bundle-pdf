@@ -1,12 +1,13 @@
-import type { PdfUserBookmark } from '../../shared/contracts.js'
 import type { NativeOutlineItem } from '../../shared/native.js'
 import { windowPageText } from '../evidence/index.js'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
 
 export type BookmarkSummary = {
-  kind: 'personal' | 'embedded'; key: string; title: string; page: number | null
-  depth: number; children: number; stale?: PdfUserBookmark['stale']; updatedAt?: string
+  key: string; title: string; page: number | null
+  depth: number; children: number
   externalLink?: boolean; titleTruncated?: boolean
+  /** Stable PDF outline ID for draft editing; key retains its existing tree-path meaning. */
+  outlineId?: string
 }
 
 export interface AgentOutlinePort {
@@ -24,7 +25,8 @@ export function summarizeOutline(items: readonly NativeOutlineItem[], pageCount:
     const pageIndex = Array.isArray(item.dest) ? item.dest[0] : undefined
     const page = Number.isInteger(pageIndex) && pageIndex >= 0 && pageIndex < pageCount ? pageIndex + 1 : null
     const title = windowPageText(item.title, 0, 300)
-    result.push({ kind: 'embedded', key, title: title.text, page,
+    result.push({ key, title: title.text, page,
+      ...(item.id ? { outlineId: item.id } : {}),
       depth, children: item.items.length, ...(item.url ? { externalLink: true } : {}),
       ...(title.truncated ? { titleTruncated: true } : {}) })
     for (let index = item.items.length - 1; index >= 0; index--) {
@@ -34,26 +36,15 @@ export function summarizeOutline(items: readonly NativeOutlineItem[], pageCount:
   return result
 }
 
-/** One session-fenced list; the DSH adapter supplies the authorized personal-bookmark call. */
+/** Read the current embedded outline with session and revision fencing. */
 export async function listAgentBookmarks(workspaces: WorkingCopyReadPort, outlinePort: AgentOutlinePort,
-  listPersonal: (sessionId: string, documentId: string, signal: AbortSignal) => Promise<PdfUserBookmark[]>,
-  sessionId: string, documentId: string, kind: 'all' | 'personal' | 'embedded' | undefined,
-  cursor: number | undefined, limit: number | undefined, signal: AbortSignal) {
+  sessionId: string, documentId: string, cursor: number | undefined, limit: number | undefined, signal: AbortSignal) {
   const snapshot = workspaces.readSnapshot(sessionId, documentId)
-  const entries: BookmarkSummary[] = []
-  if (kind !== 'embedded') {
-    const personal = await listPersonal(sessionId, documentId, signal)
-    entries.push(...personal.map(item => ({ kind: 'personal' as const, key: item.id,
-      title: item.title, page: item.position.page, depth: 1, children: 0, stale: item.stale,
-      updatedAt: item.updatedAt })))
+  const outline = await outlinePort.readOutline(sessionId, documentId, signal)
+  if (outline.snapshot.contentVersion !== snapshot.contentVersion || outline.snapshot.revision !== snapshot.revision) {
+    throw Object.assign(new Error('PDF changed while reading bookmarks; retry'), { code: 'pdf/stale-reader' })
   }
-  if (kind !== 'personal') {
-    const outline = await outlinePort.readOutline(sessionId, documentId, signal)
-    if (outline.snapshot.contentVersion !== snapshot.contentVersion || outline.snapshot.revision !== snapshot.revision) {
-      throw Object.assign(new Error('PDF changed while reading bookmarks; retry'), { code: 'pdf/stale-reader' })
-    }
-    entries.push(...summarizeOutline(outline.items ?? [], snapshot.document.pageCount))
-  }
+  const entries = summarizeOutline(outline.items ?? [], snapshot.document.pageCount)
   const current = workspaces.readSnapshot(sessionId, documentId)
   if (current.contentVersion !== snapshot.contentVersion || current.revision !== snapshot.revision) {
     throw Object.assign(new Error('PDF changed while reading bookmarks; retry'), { code: 'pdf/stale-reader' })

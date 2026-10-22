@@ -35,22 +35,17 @@
   --pdf-glass-top: color-mix(in srgb, var(--pdf-panel) 78%, transparent);
   --pdf-glass-control-fill: color-mix(in srgb, var(--pdf-panel) 56%, transparent);
   --pdf-glass-control-top: color-mix(in srgb, var(--pdf-panel) 67%, transparent);
-  /* Tint structural glass so it remains visible over white PDF paper. */
-  --pdf-glass-shell-tint: color-mix(in srgb, var(--pdf-panel) 55%, var(--pdf-border) 45%);
-  --pdf-glass-shell-top: color-mix(in srgb, var(--pdf-glass-shell-tint) 92%, transparent);
-  --pdf-glass-shell-fill: color-mix(in srgb, var(--pdf-glass-shell-tint) 82%, transparent);
+  /* Mix opaque theme colors first. Border tokens already carry alpha: using
+     them as tint makes dark glass wash out over white PDF paper. Keep the
+     remaining translucency explicit and shared by all reader chrome. */
+  --pdf-glass-shell-tint: color-mix(in srgb, var(--pdf-panel) 96%, var(--pdf-text) 4%);
+  --pdf-glass-shell-top: color-mix(in srgb, var(--pdf-glass-shell-tint) 97%, transparent);
+  --pdf-glass-shell-fill: color-mix(in srgb, var(--pdf-glass-shell-tint) 95%, transparent);
   --pdf-glass-shell-filter: blur(24px) saturate(180%);
   --pdf-glass-control-filter: blur(14px) saturate(180%);
   --pdf-glass-edge: color-mix(in srgb, var(--pdf-panel) 52%, var(--pdf-border));
   --pdf-glass-sheen: rgb(255 255 255 / 72%);
   --pdf-glass-rim-shade: color-mix(in srgb, var(--pdf-text) 16%, transparent);
-  --pdf-glass-shadow:
-    inset 0 1px 0 var(--pdf-glass-sheen),
-    inset 0 8px 10px -10px var(--pdf-glass-rim-shade),
-    inset 0 -8px 10px -10px var(--pdf-glass-rim-shade),
-    0 0 0 .5px var(--pdf-glass-edge),
-    0 3px 10px rgb(18 24 34 / 10%),
-    var(--dsw-elevation-prominent);
   --pdf-radius: 20px;
   --pdf-sidebar-ease-drawer: cubic-bezier(.32, .72, 0, 1);
   position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0;
@@ -74,6 +69,10 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-reader button:hover:not(:disabled), .dsh-pdf-reader button[aria-pressed="true"] { background: var(--dsw-alias-interactive-bg-hover); }
 .dsh-pdf-reader button:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }
 .dsh-pdf-reader button:disabled { cursor: default; opacity: .45; }
+/* Mutations briefly disable toolbar actions to prevent conflicting writes.
+   Keep their appearance stable during that lock; muted ink communicates the
+   disabled state without dimming the whole glass control and reading as flash. */
+.dsh-pdf-reader .dsh-pdf-main-toolbar button:disabled { opacity: 1; color: var(--pdf-muted); }
 /* Step buttons stay enabled while a jump is in flight; only the first and last
    page bounds dim their respective arrows. */
 .dsh-pdf-sidebar-page-nav button:disabled { opacity: .35; }
@@ -89,18 +88,10 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-floating-controls-layout {
   display: flex; justify-content: center; align-items: flex-start; min-width: 0; pointer-events: none;
 }
-.dsh-pdf-reader:has(.dsh-pdf-sidebar) .dsh-pdf-floating-controls {
-  /* The sidebar overlays the page at every width, including its collapsed rail. */
-  right: calc(var(--pdf-sidebar-overlap, 56px) + 12px);
-}
-.dsh-pdf-reader:has(.dsh-pdf-sidebar[data-toggle-motion]) .dsh-pdf-floating-controls {
-  transition: right 270ms var(--pdf-sidebar-ease-drawer);
-}
-.dsh-pdf-reader:has(.dsh-pdf-sidebar[data-resizing]) .dsh-pdf-floating-controls {
-  transition: none;
-}
 .dsh-pdf-main-toolbar {
-  position: relative; flex: 0 1 auto; pointer-events: auto;
+  /* Keep the negative-z glass backplate inside this toolbar's stacking context.
+     Without isolation it can compete with the scrolling PDF canvas layers. */
+  position: relative; isolation: isolate; flex: 0 1 auto; pointer-events: auto;
   flex-wrap: nowrap; width: max-content; max-width: 100%; min-width: 0; min-height: 44px;
   overflow: visible; padding: 5px; border: 1px solid var(--pdf-glass-edge); border-radius: 999px;
   background: transparent;
@@ -153,46 +144,36 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls { flex: 0 1 auto; overflow: visible; }
 .dsh-pdf-toolbar-icon { display: none; flex: none; }
 .dsh-pdf-main-toolbar .dsh-pdf-toolbar-icon { display: block; width: 18px; height: 18px; }
-.dsh-pdf-main-toolbar .dsh-pdf-tools .dsh-pdf-toolbar-icon { display: none; }
 .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls > button {
   display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
 }
 .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls > :is(.dsh-pdf-toolbar-save-as, .dsh-pdf-toolbar-discard) {
   overflow: hidden;
 }
-.dsh-pdf-reader:has(.dsh-pdf-sidebar[data-toggle-motion]) .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls >
-  :is(.dsh-pdf-toolbar-save-as, .dsh-pdf-toolbar-discard) {
-  transition: width 270ms var(--pdf-sidebar-ease-drawer), margin-inline-start 270ms var(--pdf-sidebar-ease-drawer),
-    opacity 160ms ease, visibility 0s;
-}
 .dsh-pdf-toolbar-back-split { height: 34px; border-radius: var(--pdf-radius); }
 .dsh-pdf-reader .dsh-pdf-toolbar-back-split > .dsh-pdf-split-action-main { width: 31px; height: 34px; }
 .dsh-pdf-reader .dsh-pdf-toolbar-back-split > .dsh-pdf-split-action-trigger { width: 18px; height: 34px; }
 .dsh-pdf-toolbar-back-split .dsh-pdf-split-action-trigger .dsh-pdf-toolbar-icon { width: 12px; height: 12px; }
-.dsh-pdf-toolbar-zoom {
+.dsh-pdf-toolbar-disclosure {
   position: relative; flex: none; height: 34px; border-radius: var(--pdf-radius);
 }
-.dsh-pdf-toolbar-zoom > summary {
+.dsh-pdf-toolbar-disclosure > summary {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  height: 34px; padding: 0 12px; border: 0; border-radius: var(--pdf-radius); background: transparent;
+  height: 34px; padding: 0 10px; border: 0; border-radius: var(--pdf-radius); background: transparent;
   cursor: pointer; list-style: none; white-space: nowrap; user-select: none;
 }
-/* Same indicator as the Tools disclosure: one click target, the arrow only marks it. */
-.dsh-pdf-zoom-chevron { font-size: var(--pdf-type-label); line-height: 1; }
-.dsh-pdf-toolbar-zoom > summary::-webkit-details-marker { display: none; }
+/* Both dropdowns keep the arrow inside one click target. */
+.dsh-pdf-toolbar-chevron { font-size: var(--pdf-type-label); line-height: 1; }
+.dsh-pdf-toolbar-disclosure > summary::-webkit-details-marker { display: none; }
 /* The zoom control is only locked briefly during a page jump; dimming it for
    that long fades in and out fast enough to read as a flicker. */
 .dsh-pdf-toolbar-zoom > summary[aria-disabled="true"] { cursor: default; }
-.dsh-pdf-toolbar-zoom > summary:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 2px; }
+.dsh-pdf-toolbar-disclosure > summary:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 2px; }
 .dsh-pdf-compact-menu-action, .dsh-pdf-minimal-menu-action,
 .dsh-pdf-tiny-menu-action, .dsh-pdf-micro-menu-action, .dsh-pdf-ultra-menu-action { display: none; }
 .dsh-pdf-toolbar-controls { display: flex; flex: 1; min-width: 0; flex-wrap: nowrap; align-items: center; gap: 5px; }
 .dsh-pdf-toolbar-controls > * { flex: none; }
 .dsh-pdf-toolbar-divider { flex: none; width: 1px; height: 20px; margin-inline: 3px; background: var(--pdf-border); }
-.dsh-pdf-tools { position: relative; flex: none; }
-.dsh-pdf-tools summary { display: inline-flex; align-items: center; gap: 5px; height: 34px; list-style: none; border: 0.5px solid var(--pdf-control-border); border-radius: var(--pdf-radius); padding: 0 10px; cursor: pointer; user-select: none; white-space: nowrap; }
-.dsh-pdf-tools summary::-webkit-details-marker { display: none; }
-.dsh-pdf-tools summary:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 2px; }
 .dsh-pdf-tools[open] summary { background: var(--dsw-alias-interactive-bg-hover); }
 .dsh-pdf-tools-menu {
   position: absolute; top: calc(100% + 9px); left: 0; z-index: 12;
@@ -247,7 +228,9 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 }
 .dsh-pdf-activity-popover {
   position: absolute; z-index: 12; top: calc(100% + 8px); right: 0; width: max-content;
-  max-width: min(256px, calc(100cqi - 36px)); max-height: min(60vh, 360px);
+  /* The icon-only Tools trigger narrows and recenters the toolbar; reserve room
+     so this right-anchored popover still clears the content edge on small tabs. */
+  max-width: min(256px, calc(100cqi - 52px)); max-height: min(60vh, 360px);
   display: flex; flex-direction: column; gap: 2px; overflow-y: auto; padding: 5px;
   border: 1px solid var(--pdf-glass-edge); border-radius: 12px;
   background: linear-gradient(155deg, var(--pdf-glass-shell-top), var(--pdf-glass-shell-fill));
@@ -294,8 +277,7 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
   .dsh-pdf-main-toolbar { max-width: 100%; }
 }
 @container pdf-controls (max-width: 520px) {
-  .dsh-pdf-mode-control .dsh-pdf-mode-label, .dsh-pdf-tools .dsh-pdf-toolbar-label { display: none; }
-  .dsh-pdf-main-toolbar .dsh-pdf-tools .dsh-pdf-toolbar-icon { display: block; }
+  .dsh-pdf-mode-control .dsh-pdf-mode-label { display: none; }
   .dsh-pdf-mode-inline { padding-left: 4px; }
   .dsh-pdf-mode-explanation .dsh-pdf-explanation-status-actions button { width: 28px; padding-inline: 0; }
   .dsh-pdf-mode-explanation .dsh-pdf-explanation-status-actions button > span { display: none; }
@@ -313,11 +295,6 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 @container pdf-controls (max-width: 440px) {
   .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls > :is(.dsh-pdf-toolbar-save-as, .dsh-pdf-toolbar-discard) {
     width: 0; margin-inline-start: -5px; border-width: 0; opacity: 0; visibility: hidden; pointer-events: none;
-  }
-  .dsh-pdf-reader:has(.dsh-pdf-sidebar[data-toggle-motion]) .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls >
-    :is(.dsh-pdf-toolbar-save-as, .dsh-pdf-toolbar-discard) {
-    transition: width 270ms var(--pdf-sidebar-ease-drawer), margin-inline-start 270ms var(--pdf-sidebar-ease-drawer),
-      opacity 160ms ease, visibility 0s 270ms;
   }
   .dsh-pdf-main-toolbar .dsh-pdf-compact-menu-action { display: block; }
 }
@@ -339,11 +316,6 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
   .dsh-pdf-main-toolbar .dsh-pdf-ultra-menu-action { display: block; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dsh-pdf-reader:has(.dsh-pdf-sidebar[data-toggle-motion]) .dsh-pdf-floating-controls { transition: none; }
-  .dsh-pdf-reader:has(.dsh-pdf-sidebar[data-toggle-motion]) .dsh-pdf-main-toolbar .dsh-pdf-toolbar-controls >
-    :is(.dsh-pdf-toolbar-save-as, .dsh-pdf-toolbar-discard) {
-    transition: none;
-  }
   .dsh-pdf-floating-status { animation: none; }
   .dsh-pdf-floating-status-spinner { animation: none; }
 }
@@ -365,6 +337,14 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-canvas { position: absolute; inset: 0; pointer-events: none; }
 .dsh-pdf-canvas canvas { display: block; }
 .dsh-pdf-page-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dsw-alias-label-document-preview); font-size: var(--pdf-type-caption); pointer-events: none; }
+.dsh-pdf-form-widgets { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.dsh-pdf-reader .dsh-pdf-form-control { position: absolute; box-sizing: border-box; pointer-events: auto; margin: 0;
+  border: 1px solid color-mix(in srgb, var(--pdf-accent) 30%, #aaa); border-radius: 3px;
+  background: rgb(255 255 255 / .94); color: #202124; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .6); }
+.dsh-pdf-reader .dsh-pdf-form-control:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 1px; }
+.dsh-pdf-reader .dsh-pdf-form-text { padding: 1px 4px; line-height: 1.2; resize: none; }
+.dsh-pdf-reader .dsh-pdf-form-check { min-width: 14px; min-height: 14px; accent-color: var(--pdf-accent); cursor: pointer; }
+.dsh-pdf-reader .dsh-pdf-form-select { padding: 1px 2px; cursor: pointer; }
 .dsh-pdf-empty { display: grid; place-items: center; min-height: 220px; color: var(--pdf-muted); padding: 25px; }
 .dsh-pdf-text-layer {
   position: absolute; inset: 0; overflow: clip; text-align: initial; line-height: 1; letter-spacing: normal; word-spacing: normal;

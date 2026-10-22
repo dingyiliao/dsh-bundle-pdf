@@ -3,7 +3,7 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { NativeWorker } from '../src/engine/native-worker.ts'
+import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { NativeTextContent } from '../src/shared/native.ts'
 

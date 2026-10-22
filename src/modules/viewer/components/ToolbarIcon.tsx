@@ -1,6 +1,5 @@
-import React from 'react'
 
-export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'comment' | 'commentedMark' | 'move' | 'close'
+export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'edit' | 'comment' | 'commentedMark' | 'move' | 'close'
   | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send'
 
 /** Compact reader controls use the same stroke weight as the sidebar rail. */
@@ -46,9 +45,9 @@ export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: 
     </> : name === 'send' ? <>
       <path d="m4 19 16-7L4 5l2 7-2 7ZM6 12h8" />
     </> : name === 'tools' ? <>
-      <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
-      <circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <rect x="3" y="8" width="18" height="12" rx="2" />
+      <path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h7m4 0h7" />
+      <rect x="10" y="12" width="4" height="3" rx=".5" fill="var(--pdf-panel)" />
     </> : name === 'zoom' ? <>
       <circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.2 15.2 5 5M8 10.5h5M10.5 8v5" />
     </> : name === 'save' ? <>
@@ -56,6 +55,9 @@ export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: 
     </> : name === 'saveAs' ? <>
       <path d="M4 4h12l3 3v8M8 4v6h8V4M4 20h7M8 20v-7h7" />
       <path d="m14 20 5-5 2 2-5 5-3 1 1-3Z" />
+    </> : name === 'edit' ? <>
+      {/* Match the trash glyph's 4–20 vertical footprint, not just its canvas. */}
+      <path d="m15 4 5 5L9 20H4v-5L15 4ZM12.5 6.5l5 5" />
     </> : name === 'comment' ? <>
       <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3V6a2 2 0 0 1 1-2Z" />
       <path d="M8 9h8M8 13h6" />

@@ -74,6 +74,7 @@ jobs:
           name: dsh-pdf-project-coverage
           path: dsh-bundle-pdf/.test-output/project-coverage-*/
           if-no-files-found: warn
+          include-hidden-files: true
   native:
     strategy:
       fail-fast: false
