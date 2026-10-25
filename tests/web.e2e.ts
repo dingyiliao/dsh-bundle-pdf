@@ -161,7 +161,11 @@ it('recovers an invalid Unicode text layer and allows dragging the formerly miss
     await column.locator('[data-files-reload]').click()
     await column.locator('[data-files-entry="file"]').getByRole('button', { name: 'reader-broken-text-e2e.pdf' }).click()
     const reader = page.locator('.dsh-pdf-reader')
+    await reader.waitFor({ state: 'visible' })
     const words = reader.locator('[data-pdf-page="1"] .dsh-pdf-text-layer span')
+    // Opening the Reader precedes native rendering and local OCR startup.
+    // Wait for the recovered text layer before checking its exact contents.
+    await words.first().waitFor({ state: 'visible' })
     await expect.poll(() => words.allTextContents()).toEqual(['Full ', 'name ', 'in ', 'English'])
     const first = await words.first().boundingBox(), last = await words.last().boundingBox()
     expect(first).not.toBeNull(); expect(last).not.toBeNull()
