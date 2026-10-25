@@ -122,14 +122,14 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
       '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines',
     ])
     assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
-      ['pdf_drafts', 'pdf_positions', 'pdf_evidence'])
-    assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
+      ['pdf_drafts', 'pdf_positions', 'pdf_evidence', 'pdf_retrieval'])
+    assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfEmbedding', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
     assert.ok(runtime.tools.includes('pdf_read_page'))
     assert.ok(runtime.tools.includes('pdf_find_related'))
     assert.ok(runtime.tools.includes('pdf_navigate'))
     assert.deepEqual(runtime.injections, [['ocr'], ['imageUnderstanding'], ['systemPrompt']])
-    assert.equal(runtime.effects.length, 9)
+    assert.equal(runtime.effects.length, 10)
 
     const info = runtime.routes.get('/api/pdf.info')!
     assert.deepEqual(info.methods, ['POST'])
@@ -400,9 +400,9 @@ test('Host image evidence resolver binds each request to a live matching Session
   } finally { await mounted.disposeEffects() }
 })
 
-test('Host bootstrap closes earlier domains when opening navigation or evidence storage fails', async (t) => {
+test('Host bootstrap closes earlier domains when opening navigation, evidence or retrieval storage fails', async (t) => {
   const assets = await assetFixture(t)
-  for (const failOpenAt of [2, 3]) {
+  for (const failOpenAt of [2, 3, 4]) {
     const runtime = host({ failOpenAt })
     await assert.rejects(apply(runtime.ctx, runtime.config, assets), /Domain open failed/)
     assert.equal(runtime.effects.length, 0)
@@ -449,6 +449,6 @@ test('Host teardown closes every domain even when one route disposal rejects', a
   assert.equal(runtime.routes.size, 0)
   assert.deepEqual(runtime.closed, [...runtime.opened].reverse())
   await assert.rejects(async () => { await dispose() }, AggregateError)
-  assert.equal(runtime.closed.length, 3, 'a second teardown must not close domains twice')
+  assert.equal(runtime.closed.length, runtime.opened.length, 'a second teardown must not close domains twice')
   await runtime.disposeEffects().catch(() => undefined)
 })

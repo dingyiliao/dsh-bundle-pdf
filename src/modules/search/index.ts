@@ -1,3 +1,5 @@
+export { createSearchSessions, type SearchSessionOptions } from './search-sessions.js'
+
 /** A result in the plugin's joined, UTF-16-indexed page text. */
 export interface TextMatch { offset: number; endOffset: number; excerpt: string }
 

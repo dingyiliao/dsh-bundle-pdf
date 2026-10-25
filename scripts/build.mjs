@@ -115,6 +115,10 @@ const ocrBuild = await build({
 const translationBuild = await build({
   ...browser, entryPoints: ['src/translation/index.ts'], outfile: 'dist/translation.js', format: 'esm',
 })
+const embeddingBuild = await build({
+  ...common, entryPoints: ['src/embedding/index.ts'], outfile: 'dist/embedding.js',
+  platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
+})
 const capabilityBuild = await build({
   ...common, entryPoints: ['src/modules/capabilities/index.ts'], outfile: 'dist/capabilities.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
@@ -167,7 +171,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, capabilityBuild, bridgeBuild, recoveryBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, bridgeBuild, recoveryBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -191,4 +195,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/capability SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/embedding/capability SDKs, and ${manifestFiles.length} local OCR resources.`)

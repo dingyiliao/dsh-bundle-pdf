@@ -41,6 +41,10 @@
       "types": "./dist/types/modules/engines/index.d.ts",
       "import": "./dist/engines.js"
     },
+    "./embedding": {
+      "types": "./dist/types/embedding/index.d.ts",
+      "import": "./dist/embedding.js"
+    },
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
@@ -56,6 +60,8 @@
     "docs/AI_READER_TOOLS.md",
     "docs/ARCHITECTURE_V2.md",
     "docs/ENGINE_EXTENSIONS.md",
+    "docs/RETRIEVAL_EXPERIMENT.md",
+    "scripts/local-embedding-server.py",
     "PERFORMANCE.md",
     "NATIVE_V1.md",
     "LICENSE"
@@ -63,6 +69,8 @@
   "icon": "./icon.svg",
   "scripts": {
     "bench": "node --import tsx bench/run.ts",
+    "bench:retrieval": "node --import tsx bench/retrieval.ts",
+    "bench:retrieval:integration": "node --import tsx bench/retrieval-integration.ts",
     "bench:corpus": "node --import tsx bench/corpus.ts",
     "bench:browser": "node --import tsx bench/browser.ts",
     "bench:compare": "node --import tsx bench/compare.ts",

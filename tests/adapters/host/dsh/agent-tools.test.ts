@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { PDFDocument } from 'pdf-lib'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/index.ts'
+import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { summarizeOutline } from '../../../../src/modules/navigation/index.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, windowPageText,
@@ -11,6 +13,8 @@ import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { nativeTestSubprocess } from '../../../native-test-subprocess.ts'
 import { createReaderContexts } from '../../../../src/modules/navigation/index.ts'
 import { memoryWorkspace, nativeFixture } from '../../../native-fixture.ts'
+import { EmbeddingRegistry } from '../../../../src/embedding/index.ts'
+import { defaultSettings } from '../../../../src/shared/contracts.ts'
 
 interface CapturedTool {
   execute(args: unknown, exec: unknown): Promise<unknown>
@@ -55,6 +59,54 @@ function readTool(definitions: Map<string, CapturedTool>, name: string, args: un
     signal,
     ...(sessionId === undefined ? {} : { agent: agent(sessionId) }),
   })
+}
+
+async function searchToolFixture(texts: string[], embeddings?: EmbeddingRegistry) {
+  const document = await PDFDocument.create()
+  for (const _text of texts) document.addPage([300, 400])
+  const state = memoryWorkspace(await document.save()), sessionId = 'search-handle-owner'
+  const reads: number[] = [], nativeClosed: string[] = []
+  let beforeRead: ((page: number) => Promise<void>) | undefined
+  const pages = {
+    async readPageText(owner: string, id: string, page: number, readSignal: AbortSignal) {
+      readSignal.throwIfAborted()
+      reads.push(page)
+      await beforeRead?.(page)
+      readSignal.throwIfAborted()
+      return { snapshot: state.workspaces.readSnapshot(owner, id), content: {
+        items: [{ str: texts[page - 1]!, transform: [1, 0, 0, 1, 0, 0], width: 100, height: 10,
+          dir: 'ltr', fontName: 'Helvetica', hasEOL: false }], styles: {}, lang: null,
+      } }
+    },
+    async releaseDocument(id: string) { nativeClosed.push(id) },
+  }
+  const { ctx, definitions } = captureTools()
+  let onDisposed: ((session: { id: string }) => void) | undefined
+  ctx.on = ((_event: string, handler: (session: { id: string }) => void) => {
+    onDisposed = handler
+    return () => {}
+  }) as typeof ctx.on
+  const references = createMemoryEvidenceReferenceStore()
+  const retrieval = createPdfRetrieval(state.workspaces, pages as never, references,
+    { embeddings, settings: () => ({ ...defaultSettings, embeddingEngine: 'fixture' }) })
+  const retrievalInputs: Array<Parameters<typeof retrieval.search>[1]> = []
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, pages as never, { current: () => [] },
+    references, undefined, undefined, { ...retrieval, async search(owner, input, readSignal) {
+      retrievalInputs.push(structuredClone(input))
+      return retrieval.search(owner, input, readSignal)
+    } })
+  const run = (name: string, input: unknown, owner = sessionId) => readTool(definitions, name, input, owner)
+  const opened = await run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
+  let disposed = false
+  return { state, sessionId, opened, reads, nativeClosed, retrievalInputs, run,
+    beforeRead(callback: (page: number) => Promise<void>) { beforeRead = callback },
+    detach() { assert.ok(onDisposed); onDisposed({ id: sessionId }) },
+    async dispose() {
+      if (disposed) return
+      disposed = true
+      await dispose()
+      await state.workspaces.dispose()
+    } }
 }
 
 test('PDF text windows preserve every UTF-16 code unit without splitting a supplementary character', () => {
@@ -1076,11 +1128,17 @@ test('evidence tools register through the same session-fenced Host adapter as le
     assert.equal(located.matches[0]?.evidence.page, 1)
     const related = await readTool(definitions, 'pdf_find_related', {
       documentId: opened.id, query: 'Does this document present evidence?', terms: ['Evidence'], maxPages: 1,
-    }, sessionId) as { candidates: Array<{ page: number; quote: string; evidence: { refId: string } }>; coverage: { nextCursor: string | null } }
+    }, sessionId) as { status: string; searchId: string; hasMore: boolean; scope: { fromPage: number; toPage: number };
+      candidates: Array<{ page: number; quote: string; evidence: { refId: string } }>; coverage: { totalPages: number } }
     assert.equal(related.candidates[0]?.page, 1)
     assert.match(related.candidates[0]?.quote ?? '', /Evidence/)
     assert.ok(related.candidates[0]?.evidence.refId)
-    assert.ok(related.coverage.nextCursor)
+    assert.equal(related.status, 'complete')
+    assert.deepEqual(related.scope, { fromPage: 1, toPage: 1 })
+    assert.equal(related.coverage.totalPages, 1)
+    assert.match(related.searchId, /^rel_[a-f0-9]{12}$/)
+    assert.equal(related.hasMore, false)
+    assert.equal('nextCursor' in related, false)
     const locateReplay = definitions.get('pdf_locate')!.output.presentationMeta?.({}, located) as {
       matches: Array<{ snapshot: { text: string } }>
     }
@@ -1095,7 +1153,7 @@ test('evidence tools register through the same session-fenced Host adapter as le
     assert.match(contextReplay.chunks[0]?.snapshot.text ?? '', /Evidence/)
     await assert.rejects(readTool(definitions, 'pdf_status', { documentId: opened.id }, 'other'), /session|belong|access/i)
     await assert.rejects(readTool(definitions, 'pdf_locate', { documentId: opened.id, quote: 'Evidence' }), /session/i)
-  } finally { dispose(); await state.workspaces.dispose() }
+  } finally { await dispose(); await state.workspaces.dispose() }
 })
 
 test('pdf_read_page rejects a snapshot invalidated during native extraction', async () => {
@@ -1205,7 +1263,7 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
   }
 })
 
-test('pdf_search returns bounded hits and a cursor that resumes without duplicates', async () => {
+test('pdf_search returns bounded hits and resumes a dense page using only its stable searchId', async () => {
   const state = memoryWorkspace(await nativeFixture())
   const sessionId = 'pdf-search-owner'
   const opened = await state.workspaces.execute(sessionId, {
@@ -1228,20 +1286,24 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
   }
   const { ctx, definitions } = captureTools()
   const references = createMemoryEvidenceReferenceStore()
-  registerPdfAgentTools(ctx, state.workspaces, pdfService as never, { current: () => [] }, references)
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, pdfService as never, { current: () => [] }, references)
   try {
     const first = await readTool(definitions, 'pdf_search', {
       documentId: opened.id, query: 'needle',
-    }, sessionId) as { matches: { page: number; offset: number; evidence: { refId: string } }[]; nextCursor: string | null }
+    }, sessionId) as { matches: { page: number; offset: number; evidence: { refId: string } }[];
+      searchId: string; hasMore: boolean }
     assert.equal(first.matches.length, 20)
-    assert.ok(first.nextCursor)
-    assert.equal(typeof first.nextCursor, 'string')
+    assert.match(first.searchId, /^txt_[a-f0-9]{12}$/)
+    assert.equal(first.hasMore, true)
+    assert.equal('nextCursor' in first, false)
 
     const second = await readTool(definitions, 'pdf_search', {
-      documentId: opened.id, query: 'needle', cursor: first.nextCursor,
+      searchId: first.searchId,
     }, sessionId) as typeof first
     assert.equal(second.matches.length, 5)
-    assert.equal(second.nextCursor, null)
+    assert.equal(second.searchId, first.searchId)
+    assert.equal(second.hasMore, false)
+    assert.equal('nextCursor' in second, false)
     const offsets = [...first.matches, ...second.matches].map(match => match.offset)
     assert.deepEqual(offsets, Array.from({ length: 25 }, (_, index) => index * 7))
     const refIds = [...first.matches, ...second.matches].map(match => match.evidence.refId)
@@ -1256,12 +1318,10 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
         assert.equal(saved.evidence.locator.endUtf16, match.offset + 'needle'.length)
       }
     }
-    await assert.rejects(readTool(definitions, 'pdf_search', {
-      documentId: opened.id, query: 'Needle', cursor: first.nextCursor,
-    }, sessionId), { code: 'pdf/stale-reader' })
-    for (const locator of [{ fromPage: 1 }, { offset: 0 }]) {
+    for (const extra of [{ documentId: opened.id }, { query: 'Needle' }, { query: 'needle' },
+      { fromPage: 1 }, { offset: 0 }, { cursor: 'legacy-cursor' }]) {
       await assert.rejects(readTool(definitions, 'pdf_search', {
-        documentId: opened.id, query: 'needle', cursor: first.nextCursor, ...locator,
+        searchId: first.searchId, ...extra,
       }, sessionId))
     }
     await assert.rejects(readTool(definitions, 'pdf_search', {
@@ -1275,8 +1335,171 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
       documentId: opened.id, query: 'needle',
     }, sessionId), { code: 'pdf/stale-reader' })
   } finally {
+    await dispose()
     await state.workspaces.dispose()
   }
+})
+
+test('pdf_search continues beyond ten pages with its original query and initial offset', async () => {
+  const f = await searchToolFixture(Array.from({ length: 24 }, (_, index) => `needle page ${index + 1}`))
+  type Result = { searchId: string; hasMore: boolean; fromPage: number; throughPage: number;
+    matches: Array<{ page: number; offset: number }> }
+  try {
+    let result = await f.run('pdf_search', { documentId: f.opened.documentId, query: 'needle',
+      fromPage: 2, offset: 7 }) as Result
+    assert.equal(result.hasMore, true)
+    assert.equal(result.fromPage, 2)
+    assert.equal(result.throughPage, 11)
+    const searchId = result.searchId, matches = [...result.matches]
+    for (let count = 0; result.hasMore && count < 5; count++) {
+      result = await f.run('pdf_search', { searchId }) as Result
+      assert.equal(result.searchId, searchId)
+      assert.equal('nextCursor' in result, false)
+      matches.push(...result.matches)
+    }
+    assert.equal(result.hasMore, false)
+    assert.equal(result.throughPage, 24)
+    assert.deepEqual(matches.map(match => [match.page, match.offset]),
+      Array.from({ length: 22 }, (_, index) => [index + 3, 0]))
+    assert.deepEqual(f.reads, Array.from({ length: 23 }, (_, index) => index + 2),
+      'each page after the initial position is scanned once without skips or repeated initial offsets')
+  } finally { await f.dispose() }
+})
+
+test('pdf_find_related completes a scoped hybrid index beyond twenty pages using only one searchId', async () => {
+  const embeddings = new EmbeddingRegistry()
+  const embeddingCalls: Array<{ purpose: string; texts: readonly string[] }> = []
+  embeddings.register({
+    descriptor: { id: 'fixture', name: 'Fixture encoder', execution: 'local', version: '1' },
+    describe: () => ({ engineId: 'fixture', engineVersion: '1', model: 'fixture', modelRevision: '1',
+      dimensions: 2, maxBatchSize: 2, maxInputCharacters: 16000, encoding: 'fixture', fingerprint: 'fixture-v1' }),
+    async embed(request) {
+      embeddingCalls.push({ purpose: request.purpose, texts: [...request.texts] })
+      return request.texts.map(text => /atomic|rollback|all.or.nothing/i.test(text) ? [1, 0] : [0, 1])
+    },
+  })
+  const f = await searchToolFixture(Array.from({ length: 27 }, (_, index) => index % 3 === 0
+    ? `Atomicity enables rollback of a transaction on page ${index + 1}.`
+    : `An unrelated database introduction on page ${index + 1}.`), embeddings)
+  type Result = { searchId: string; hasMore: boolean; status: string; requestedMode: string; effectiveMode: string;
+    indexGeneration: string; scope: { fromPage: number; toPage: number };
+    coverage: { indexedPages: number; totalPages: number; embeddedChunks: number; totalChunks: number };
+    candidates: Array<{ page: number; quote: string; evidence: { refId: string } }> }
+  try {
+    const input = { documentId: f.opened.documentId, query: 'all-or-nothing commit', terms: ['atomicity', 'rollback'],
+      mode: 'hybrid', topK: 3, fromPage: 2, maxPages: 24 }
+    let result = await f.run('pdf_find_related', input) as Result
+    assert.match(result.searchId, /^rel_[a-f0-9]{12}$/)
+    assert.equal(result.status, 'building')
+    assert.equal(result.hasMore, true)
+    assert.equal(result.coverage.indexedPages, 20)
+    assert.deepEqual(result.candidates, [], 'partial indexing must not claim a global ranking')
+    const searchId = result.searchId, generation = result.indexGeneration
+    for (let count = 0; count < 10; count++) {
+      assert.equal(result.searchId, searchId)
+      assert.equal(result.indexGeneration, generation)
+      assert.equal(result.requestedMode, 'hybrid')
+      assert.equal(result.effectiveMode, 'hybrid')
+      assert.deepEqual(result.scope, { fromPage: 2, toPage: 25 })
+      assert.equal(result.coverage.totalPages, 24)
+      assert.equal('nextCursor' in result, false)
+      if (!result.hasMore) break
+      assert.deepEqual(result.candidates, [])
+      result = await f.run('pdf_find_related', { searchId }) as Result
+    }
+    assert.equal(result.status, 'complete')
+    assert.equal(result.hasMore, false)
+    assert.equal(result.coverage.indexedPages, 24)
+    assert.equal(result.coverage.embeddedChunks, result.coverage.totalChunks)
+    assert.equal(result.candidates.length, 3, 'topK survives ID-only continuation')
+    assert.ok(result.candidates.every(candidate => candidate.page >= 2 && candidate.page <= 25 && candidate.evidence.refId))
+    assert.deepEqual([...new Set(f.reads)].sort((a, b) => a - b), Array.from({ length: 24 }, (_, index) => index + 2))
+    assert.ok(f.retrievalInputs.length > 1)
+    for (const { cursor: _cursor, ...storedInput } of f.retrievalInputs) assert.deepEqual(storedInput, input)
+    assert.ok(f.retrievalInputs.slice(1).every(call => typeof call.cursor === 'string'),
+      'the version-bound continuation remains internal')
+    assert.deepEqual(embeddingCalls.filter(call => call.purpose === 'query').map(call => call.texts), [[input.query]])
+  } finally { await f.dispose(); embeddings.dispose() }
+})
+
+test('searchIds reject mixed inputs, wrong tools, unknown IDs and foreign or disposed sessions', async () => {
+  const f = await searchToolFixture(Array.from({ length: 25 }, (_, index) => `needle evidence on page ${index + 1}`))
+  try {
+    const text = await f.run('pdf_search', { documentId: f.opened.documentId, query: 'needle' }) as { searchId: string }
+    const related = await f.run('pdf_find_related', { documentId: f.opened.documentId, query: 'needle evidence',
+      mode: 'lexical' }) as { searchId: string }
+    await f.run('pdf_open', { path: '/fixtures/native.pdf' }, 'foreign-session')
+    const readsBeforeRejection = f.reads.length
+    for (const [name, result, other] of [['pdf_search', text, related], ['pdf_find_related', related, text]] as const) {
+      const prefix = name === 'pdf_search' ? 'txt' : 'rel'
+      await assert.rejects(f.run(name, { searchId: `${prefix}_000000000000` }), /search|unknown|expired|unavailable/i)
+      await assert.rejects(f.run(name, { searchId: other.searchId }), /search|tool|invalid/i)
+      await assert.rejects(f.run(name, { searchId: result.searchId }, 'foreign-session'), /search|session|unavailable/i)
+      for (const extra of [{ documentId: f.opened.documentId }, { query: 'needle evidence' },
+        { fromPage: 1 }, { maxPages: 3 }, { terms: ['needle'] }, { mode: 'hybrid' }, { topK: 2 },
+        { offset: 0 }, { cursor: 'legacy-cursor' }]) {
+        await assert.rejects(f.run(name, { searchId: result.searchId, ...extra }))
+      }
+      await assert.rejects(f.run(name, { documentId: f.opened.documentId, query: 'needle evidence',
+        cursor: 'legacy-cursor' }))
+    }
+    assert.equal(f.reads.length, readsBeforeRejection, 'invalid handles and inputs must not reach page extraction')
+    f.detach()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    await f.run('pdf_open', { path: '/fixtures/native.pdf' })
+    await assert.rejects(f.run('pdf_search', { searchId: text.searchId }), /search|session|disposed|expired|unavailable/i)
+    await assert.rejects(f.run('pdf_find_related', { searchId: related.searchId }), /search|session|disposed|expired|unavailable/i)
+    await f.dispose()
+    await assert.rejects(f.run('pdf_search', { searchId: text.searchId }), /unload|unavailable|disposed/i)
+    await assert.rejects(f.run('pdf_find_related', { searchId: related.searchId }), /unload|unavailable|disposed/i)
+  } finally { await f.dispose() }
+})
+
+test('pdf_search searchId continuations retain revision checks after a shared draft changes', async () => {
+  const f = await searchToolFixture(Array.from({ length: 25 }, (_, index) => `needle evidence on page ${index + 1}`))
+  try {
+    const text = await f.run('pdf_search', { documentId: f.opened.documentId, query: 'needle' }) as { searchId: string }
+    const current = f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId)
+    await f.state.workspaces.execute(f.sessionId, { action: 'change', sessionId: f.sessionId,
+      id: f.opened.documentId, revision: current.revision, operations: [{ type: 'add', annotation: {
+        id: 'changed-between-search-steps', page: 1, subtype: 'Text', rect: [20, 20, 30, 30], contents: 'New draft',
+      } }] }, agent(f.sessionId), signal)
+    await assert.rejects(f.run('pdf_search', { searchId: text.searchId }), { code: 'pdf/stale-reader' })
+  } finally { await f.dispose() }
+})
+
+test('an ID-only search continuation pins a resumed background document through concurrent close', async () => {
+  const f = await searchToolFixture(Array.from({ length: 12 }, (_, index) => `needle page ${index + 1}`))
+  let beginRead!: () => void, finishRead!: () => void
+  const started = new Promise<void>(resolve => { beginRead = resolve })
+  const pending = new Promise<void>(resolve => { finishRead = resolve })
+  try {
+    const first = await f.run('pdf_search', { documentId: f.opened.documentId, query: 'needle' }) as {
+      searchId: string; hasMore: boolean
+    }
+    assert.equal(first.hasMore, true)
+    assert.equal((await f.run('pdf_close', { documentId: f.opened.documentId }) as { status: string }).status, 'released')
+    assert.equal(f.state.workspaces.listDocuments().find(item => item.id === f.opened.documentId)!.resident, false)
+    f.beforeRead(async page => { if (page === 11) { beginRead(); await pending } })
+    const continuing = f.run('pdf_search', { searchId: first.searchId })
+    // A missing handle-to-document resolver rejects before extraction, instead
+    // of leaving this test awaiting a gate that can never open.
+    await Promise.race([started, continuing.then(() => { throw new Error('Continuation did not wait at page 11') })])
+    assert.equal(f.state.workspaces.listDocuments().find(item => item.id === f.opened.documentId)!.pins, 1)
+    const closesBefore = f.nativeClosed.length
+    const closed = await f.run('pdf_close', { documentId: f.opened.documentId }) as { status: string }
+    assert.equal(closed.status, 'retained-operation')
+    assert.equal(f.nativeClosed.length, closesBefore)
+    finishRead()
+    const result = await continuing as { searchId: string; hasMore: boolean; matches: Array<{ page: number }> }
+    assert.equal(result.searchId, first.searchId)
+    assert.equal(result.hasMore, false)
+    assert.deepEqual(result.matches.map(match => match.page), [11, 12])
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(f.state.workspaces.listDocuments().find(item => item.id === f.opened.documentId)!.pins, 0)
+    assert.equal(f.state.workspaces.listDocuments().find(item => item.id === f.opened.documentId)!.resident, false)
+    assert.equal(f.nativeClosed.length, closesBefore + 1)
+  } finally { finishRead(); await f.dispose() }
 })
 
 test('pdf_read_page retrieves actual PDFium text through the Host service', {

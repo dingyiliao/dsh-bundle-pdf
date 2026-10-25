@@ -43,6 +43,16 @@ Cordis `Context`、DSH Remote/Slots/Tools、文件沙箱和原生 worker 的具�
 
 读页、搜索、OCR、图像理解不会暗中移动用户视图；导航是单独的 Client 动作。Host 的“后台打开文档”与 Client 的“在侧栏显示文档”仍是两个操作。
 
+### 混合文字检索（实验分支）
+
+`modules/retrieval` 只拥有可重建的索引，不拥有第二份文档或草稿。`adapters/host/dsh/retrieval.ts` 从共享工作副本取得已授权快照，通过 PDFium 原生文字端口按页读取，保留原始 UTF-16 范围及整页摘要；分块、BM25、向量排名与候选合并均在独立模块中。`pdf_find_related` 的默认范围是全文，内部有界分步处理；`building/incomplete` 只报告覆盖和进度，`complete` 才返回范围内统一排名。公开续调仅使用短 `searchId: "rel_…"`；Host 保存初始查询、范围、进度及源／引擎代次约束。旧版逐窗口关键词排序路径已删除。
+
+`pdf_find_related` 与 `pdf_search` 共用初调／续调的对外形态：首调传 `documentId`、`query` 和各自的查询选项，响应包含 `searchId` 与 `hasMore`；`hasMore: true` 时仅以 `{searchId}` 续调同一工具，不再公开或接收搜索游标，也不重复初始参数。Host 按会话和工具隔离句柄，保留授权与源版本重验，重置、TTL 或预算驱逐后失效；未知／过期 ID 要求完整初调重新开始。普通文字搜索的 `txt_…` ID 保存匹配分页位置，相关检索的 `rel_…` ID 保存索引构建进度；两者不互通，也不改变书签、定位和上下文工具的游标契约。
+
+Host 的 `pdfEmbedding` 使用与其他引擎相同的注册／注销和动态设置目录，默认关闭；本地 Qwen 实现通过独立的回环 HTTP 服务运行，不加载聊天模型或修改其数据库。缓存按文字及模型指纹复用向量；配置变化、卸载或源变化使旧请求失效。索引有内存／数量／并发预算，页面、向量的持久派生缓存使用独立的 `pdf_retrieval_<namespace hash>` Storage Domain，不能作为授权或草稿事实；初始化读取同样清理过期与超限数据。
+
+索引构建步骤拥有自己的工作副本租约，查询和插件卸载使用取消与排空边界。返回候选前重新核对原文，再交给现有 evidence 引用存储。标注和精确跳转继续由原生字形定位器校验，不因检索命中就宣称几何可写；写入共享草稿、保存审批和阅读回退均复用既有能力。图片、图表及公式版面没有进入该文字索引，完整覆盖与性能边界见 [RETRIEVAL_EXPERIMENT.md](./RETRIEVAL_EXPERIMENT.md)。
+
 ## 能力探测与提供者
 
 Host 的 `pdfCapabilities` 是进程内能力目录：稳定的操作 ID 描述需求，Cordis 插件按 Fiber 生命周期注册/注销提供者，目录在请求时结合会话和取消信号判断是否可用。其他 Host 插件可从 `@local/dsh-pdf/capabilities` 引入能力 ID 与提供者类型，再注入 `pdfCapabilities` 注册自己的实现。提供者保留自己的有类型实现接口；目录不以一个无类型 `execute()` 替代 PDF、OCR、识图各自的输入输出契约。OCR 与识图可以在 Reader 之前或之后加载，它们的后端选择和可用性仍由各自服务决定。
@@ -159,7 +169,7 @@ tests/                            # 按模块和边界组织测试
 | `src/client/Reader.tsx`、`src/client/native/*`、侧栏/工具栏组件 | `viewer` 的 controller、rendering、组件与 feature 样式 |
 | `src/client/native/viewport.ts`、`src/engine/byte-cache.ts` | 跨端纯 `shared/geometry`、`shared/cache` |
 
-搜索不能被“统一用例”误合并：Reader 按需遍历全书、忽略大小写、最多展示 500 个结果，包含已缓存 OCR 的页级命中；`pdf_search` 区分大小写、单次最多十页/20 个命中，扫描当前提取文字（编码修复文字明确标记，不自动 OCR 普通扫描页）。每个工具命中借 `text-evidence` 保存精确匹配偏移和会话限定引用；不把周围 excerpt 作为命中范围。搜索/书签的 `tool-cursor` 绑定工具、会话、文档、内容版本、修订、源摘要及查询/列表摘要，异步读取后复核，不能把不同版本结果拼起来。两端共享文本/位置内核，保留各自获取、限额、取消与精度契约。
+搜索不能被“统一用例”误合并：Reader 按需遍历全书、忽略大小写、最多展示 500 个结果，包含已缓存 OCR 的页级命中；`pdf_search` 区分大小写、单次最多十页/20 个命中，扫描当前提取文字（编码修复文字明确标记，不自动 OCR 普通扫描页）。每个工具命中借 `text-evidence` 保存精确匹配偏移和会话限定引用；不把周围 excerpt 作为命中范围。搜索返回分页匹配项及 `searchId/hasMore`，`hasMore: false` 表示该搜索完成，不是页面列表或相关度排名。搜索的内部 `tool-cursor` 由 Host 保留，书签仍公开使用自己的游标；这些版本约束绑定工具、会话、文档、内容版本、修订、源摘要及查询／列表摘要，异步读取后复核，不能把不同版本结果拼起来。两端共享文本/位置内核，保留各自获取、限额、取消与精度契约。
 
 ## 前后端接口与数据边界
 

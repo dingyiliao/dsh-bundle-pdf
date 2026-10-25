@@ -7,6 +7,7 @@ import { engineConfigurationsSchema } from '../modules/engines/index.js'
 export const Config = z.object({
   ocrEngine: z.string().pattern(/\S/).default('session-llm').volatile(),
   imageEngine: z.string().pattern(/\S/).default('session-vision').volatile(),
+  embeddingEngine: z.string().pattern(/\S/).default('none').volatile(),
   engineConfigurations: z.dict(z.dict(z.dict(z.union([z.string(), z.number(), z.boolean()])))).default({}).volatile(),
   ocrTimeoutMs: z.natural().min(1000).max(600000).default(defaultSettings.ocrTimeoutMs).volatile(),
   translationEngine: z.string().pattern(/\S/).default(defaultSettings.translationEngine).volatile(),
@@ -31,6 +32,7 @@ export function readConfig(config: HostConfig): PdfSettings {
   return {
     ocrEngine: config.ocrEngine?.get() ?? defaultSettings.ocrEngine,
     imageEngine: config.imageEngine?.get() ?? defaultSettings.imageEngine,
+    embeddingEngine: config.embeddingEngine?.get() ?? defaultSettings.embeddingEngine,
     engineConfigurations: engineConfigurationsSchema.parse(engineConfigurations),
     ocrTimeoutMs: config.ocrTimeoutMs.get(),
     translationEngine: effectiveTranslationEngine(config.translationEngine.get()),

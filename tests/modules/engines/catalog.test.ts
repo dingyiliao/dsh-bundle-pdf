@@ -5,6 +5,7 @@ import { EngineCatalog, EngineDirectory, engineProbe, validateEngineConfiguratio
   engineConfigurationsSchema, engineConfigurationSchema } from '../../../src/modules/engines/index.ts'
 import { HostOcrService, type HostOcrRequest } from '../../../src/modules/ocr/index.ts'
 import { TranslationRegistry } from '../../../src/translation/index.ts'
+import { EmbeddingRegistry } from '../../../src/embedding/index.ts'
 import type { OcrOutput } from '../../../src/ocr/types.ts'
 
 const descriptor = { id: 'fixture.ocr', name: 'Fixture OCR', version: '1', execution: 'local' as const,
@@ -13,6 +14,35 @@ const output: OcrOutput = { text: 'Synthetic text', blocks: [], lines: [], words
   coverage: [], status: 'complete', warnings: [] }
 const request: HostOcrRequest = { sessionId: 'fixture-session', image: new Uint8Array([1]), mediaType: 'image/png',
   width: 1, height: 1, languages: ['auto'] }
+
+test('an embedding contributor uses the same Cordis lifecycle and dynamic settings catalog', async () => {
+  const root = new Context(), registry = new EmbeddingRegistry(), catalog = new EngineCatalog()
+  root.reflect.provide('pdfEmbedding', registry)
+  catalog.attach('embedding', registry)
+  let started!: () => void
+  const entered = new Promise<void>(resolve => { started = resolve })
+  let requestSignal: AbortSignal | undefined
+  const fiber = root.plugin({ inject: ['pdfEmbedding'], apply(ctx: Context) {
+    ctx.effect(() => ctx.pdfEmbedding.register({
+      descriptor: { id: 'fixture.embedding', name: 'Fixture encoder', execution: 'local', version: '1' },
+      describe: () => ({ engineId: 'fixture.embedding', engineVersion: '1', model: 'fixture', modelRevision: '1',
+        dimensions: 2, maxBatchSize: 8, maxInputCharacters: 1000, encoding: 'fixture', fingerprint: 'fixture-v1' }),
+      async embed(request) { requestSignal = request.signal; started(); return new Promise(() => {}) },
+    }))
+  } })
+  try {
+    await fiber
+    assert.equal(catalog.read().engines.embedding?.[0]?.id, 'fixture.embedding')
+    const pending = registry.embed({ texts: ['Synthetic query'], purpose: 'query' }, { engineId: 'fixture.embedding', config: {} })
+    await entered
+    const changed = catalog.wait(catalog.read().revision, new AbortController().signal)
+    const rejected = assert.rejects(pending, { code: 'engine-unavailable' })
+    await fiber.dispose()
+    await rejected
+    assert.equal(requestSignal?.aborted, true)
+    assert.deepEqual((await changed).engines.embedding, [])
+  } finally { await fiber.dispose(); registry.dispose(); catalog.dispose(); await root.fiber.dispose() }
+})
 
 test('catalog observes the authoritative directory, unloads and successor registrations without copying implementations', async () => {
   const directory = new EngineDirectory<{ descriptor: typeof descriptor }>(value => value.descriptor)

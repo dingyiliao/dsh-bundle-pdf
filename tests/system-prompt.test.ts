@@ -172,9 +172,26 @@ test('evidence guidance closes retrieval, exact annotation and navigation withou
   assert.doesNotMatch(PDF_INTENT_PROMPT, /references? (?:cannot|must not) (?:be used|be passed)/i)
 })
 
-test('tool planning treats cursors as opaque and capability presence as different from availability', () => {
-  for (const fragment of ['nextCursor as opaque', 'same query and options', 'cursor is stale',
-    'pdf_search continuation omit fromPage and offset', 'pdf_bookmarks pass back its cursor, not a numeric list offset',
+test('search tools continue with only a session-scoped search ID and preserve retrieval coverage limits', () => {
+  for (const [pattern, purpose] of [
+    [/Start pdf_find_related or pdf_search with documentId, query and any initial query options/, 'Initial calls carry the search request'],
+    [/Both return searchId and hasMore, not nextCursor/, 'Search output exposes a short handle and progress flag'],
+    [/While hasMore is true, call the SAME tool with ONLY \{searchId:"rel_\.\.\."\} for pdf_find_related or \{searchId:"txt_\.\.\."\} for pdf_search/, 'Continuation uses the matching tool and its handle alone'],
+    [/do not repeat documentId, query, page options or other initial arguments/, 'Continuation cannot replay initial fields'],
+    [/Host retains the query, scope and progress/, 'Host owns continuation state'],
+    [/opaque and scoped to this session and tool.*reset, expiry or budget eviction/, 'Search handles have bounded ownership and lifetime'],
+    [/unknown or expired searchId, restart with the initial arguments/, 'Missing handles require a fresh search'],
+    [/pdf_search returns paginated matches; hasMore:false means that search is complete/, 'Exact search completion is distinct from related-index status'],
+    [/Only complete ranks the entire requested scope; building\/incomplete reports progress and coverage/, 'Partial related indexes do not produce global rankings'],
+    [/effectiveMode and coverage.*lexical fallback is not semantic search/, 'Models must inspect the actual search mode'],
+    [/indexed text does not cover diagrams, formulas or image-only pages/, 'Text indexing makes no visual coverage claim'],
+  ] as const) assert.match(PDF_INTENT_PROMPT, pattern, purpose)
+  assert.doesNotMatch(PDF_INTENT_PROMPT, /Candidate ranking is lexical|same arguments and nextCursor|continue its page cursor|pdf_search continuation omit fromPage and offset/)
+})
+
+test('other tools retain opaque cursors and capability presence is different from availability', () => {
+  for (const fragment of ['For pdf_bookmarks, pdf_locate and pdf_context, treat nextCursor as opaque',
+    "that tool's cursor contract", 'cursor is stale', 'pdf_bookmarks pass back its cursor, not a numeric list offset',
     'capability booleans mean observed availability', 'capabilityDetails', 'supported, available and reason',
     'instead of assuming that a registered service is usable', 'operations recheck availability']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)

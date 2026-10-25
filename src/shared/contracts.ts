@@ -26,6 +26,7 @@ export const translationSourceLanguage = 'auto' as const
 export interface PdfSettings {
   ocrEngine?: string
   imageEngine?: string
+  embeddingEngine?: string
   engineConfigurations?: import('../modules/engines/types.js').EngineConfigurations
   ocrTimeoutMs: number
   translationEngine: string
@@ -41,7 +42,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
-  ocrEngine: 'session-llm', imageEngine: 'session-vision', engineConfigurations: {},
+  ocrEngine: 'session-llm', imageEngine: 'session-vision', embeddingEngine: 'none', engineConfigurations: {},
   ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,

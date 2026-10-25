@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const engineKinds = ['ocr', 'image', 'translation'] as const
+export const engineKinds = ['ocr', 'image', 'translation', 'embedding'] as const
 export type EngineKind = typeof engineKinds[number]
 export type EngineJson = null | boolean | number | string | EngineJson[] | { [key: string]: EngineJson }
 export type EngineConfiguration = Readonly<Record<string, EngineJson>>
@@ -54,7 +54,8 @@ export type EngineConfigurations = Partial<Record<EngineKind, Record<string, Eng
 const configurationsByEngine = z.record(z.string().min(1).max(200), engineConfigurationSchema)
   .refine(value => Object.keys(value).length <= 128, 'Too many engine configurations')
 export const engineConfigurationsSchema = z.object({ ocr: configurationsByEngine.optional(),
-  image: configurationsByEngine.optional(), translation: configurationsByEngine.optional() }).strict()
+  image: configurationsByEngine.optional(), translation: configurationsByEngine.optional(),
+  embedding: configurationsByEngine.optional() }).strict()
   .refine(value => JSON.stringify(value).length <= 65_536, 'Engine configurations exceed their limit')
 export function engineBinding(kind: EngineKind, engineId: string, configurations?: EngineConfigurations): EngineBinding {
   return { engineId, config: configurations?.[kind]?.[engineId] ?? {} }

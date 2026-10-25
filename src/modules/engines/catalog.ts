@@ -5,7 +5,8 @@ import { engineDescriptorSchema, engineKinds, type EngineKind } from './types.js
 export const engineCatalogSchema = z.object({
   revision: z.string().min(1).max(128),
   engines: z.object({ ocr: z.array(engineDescriptorSchema).max(128),
-    image: z.array(engineDescriptorSchema).max(128), translation: z.array(engineDescriptorSchema).max(128) }),
+    image: z.array(engineDescriptorSchema).max(128), translation: z.array(engineDescriptorSchema).max(128),
+    embedding: z.array(engineDescriptorSchema).max(128).optional() }),
 })
 export type EngineCatalogSnapshot = z.infer<typeof engineCatalogSchema>
 export const engineCatalogRequestSchema = z.object({ revision: z.string().min(1).max(128).optional() }).strict().default({})
@@ -14,7 +15,7 @@ export const engineCatalogRequestSchema = z.object({ revision: z.string().min(1)
 export class EngineCatalog {
   private readonly sources = new Map<EngineKind, { source: EngineDirectorySource; stop(): void }>()
   private readonly listeners = new Set<() => void>()
-  private snapshot: EngineCatalogSnapshot = { revision: crypto.randomUUID(), engines: { ocr: [], image: [], translation: [] } }
+  private snapshot: EngineCatalogSnapshot = { revision: crypto.randomUUID(), engines: { ocr: [], image: [], translation: [], embedding: [] } }
   private disposed = false
   read = (): EngineCatalogSnapshot => structuredClone(this.snapshot)
   attach(kind: EngineKind, source: EngineDirectorySource): () => void {

@@ -32,6 +32,8 @@ export const settingsLocales = {
     'settings.enginesHelp': '按需调用所选引擎；模型或远程引擎会接收待处理的文字或图片。',
     'settings.ocrEngine': 'OCR 引擎',
     'settings.imageEngine': '图像理解引擎',
+    'settings.embeddingEngine': '语义检索引擎',
+    'settings.embeddingHelp': '按需为文档文字建立语义索引。默认关闭，仍可关键词检索；远程引擎会接收检索范围内的文字。',
     'settings.imageHelp': '理解图片内容；解释模式的最终回答仍由当前会话模型完成。',
     'settings.engineConfigurations': '引擎配置',
     'settings.engineConfigInvalid': '请检查所选引擎的配置。',
@@ -92,6 +94,8 @@ export const settingsLocales = {
     'settings.enginesHelp': 'Engines run on demand. Model or remote engines receive the text or images being processed.',
     'settings.ocrEngine': 'OCR engine',
     'settings.imageEngine': 'Image understanding engine',
+    'settings.embeddingEngine': 'Semantic search engine',
+    'settings.embeddingHelp': 'Indexes document text on demand. Off by default; keyword search remains available. Remote engines receive text from the search scope.',
     'settings.imageHelp': 'Interprets images. The current chat model still provides the final explanation.',
     'settings.engineConfigurations': 'Engine configuration',
     'settings.engineConfigInvalid': 'Check the selected engine configuration.',
@@ -146,11 +150,12 @@ export const settingsLocales = {
 } as const
 
 const promptFields = ['explanationGeneralInstruction', 'explanationTextInstruction', 'explanationImageInstruction'] as const
-const fields = ['ocrEngine', 'imageEngine', 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
+const fields = ['ocrEngine', 'imageEngine', 'embeddingEngine', 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
   'explanationPromptTemplate'] as const
 type Field = typeof fields[number]
 const fieldHints: Partial<Record<Field, keyof typeof settingsLocales.zh>> = {
   ocrEngine: 'settings.ocrHelp', imageEngine: 'settings.imageHelp', translationEngine: 'settings.translationHelp',
+  embeddingEngine: 'settings.embeddingHelp',
   translationTimeoutMs: 'settings.translationTimeoutHelp', historyCapacity: 'settings.historyHelp',
 }
 type Draft = Record<Field, string>
@@ -229,7 +234,7 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
         validation[field] = tr('settings.invalidTimeout')
       }
     }
-    for (const [kind, field] of [['ocr', 'ocrEngine'], ['image', 'imageEngine'], ['translation', 'translationEngine']] as const) {
+    for (const [kind, field] of [['ocr', 'ocrEngine'], ['image', 'imageEngine'], ['translation', 'translationEngine'], ['embedding', 'embeddingEngine']] as const) {
       const touched = editor.draft[field] !== editor.source[field]
         || JSON.stringify(configurations[kind]?.[editor.draft[field]])
           !== JSON.stringify(sourceConfigurations[kind]?.[editor.source[field]])
@@ -340,9 +345,9 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     className: 'dsh-pdf-settings-control',
   })
 
-  const engineFields = (kind: EngineKind, field: 'ocrEngine' | 'imageEngine' | 'translationEngine') => {
+  const engineFields = (kind: EngineKind, field: 'ocrEngine' | 'imageEngine' | 'translationEngine' | 'embeddingEngine') => {
     if (!editor) return null
-    const engines = descriptors(kind).filter(engine => engine.execution !== 'disabled')
+    const engines = descriptors(kind).filter(engine => kind === 'embedding' || engine.execution !== 'disabled')
     const selected = engines.find(engine => engine.id === editor.draft[field])
     return <div className="dsh-pdf-settings-engine">
       {fieldRow(field, <select {...attributes(field)} value={editor.draft[field]}
@@ -387,6 +392,7 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
         {engineFields('ocr', 'ocrEngine')}
         {engineFields('image', 'imageEngine')}
         {engineFields('translation', 'translationEngine')}
+        {engineFields('embedding', 'embeddingEngine')}
         {submitted && validation.engineConfigurations && <p role="alert" className="dsh-pdf-settings-error">{validation.engineConfigurations}</p>}
         {fieldRow('translationTimeoutMs', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
       </section>

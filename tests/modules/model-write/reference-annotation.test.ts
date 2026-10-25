@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { createEvidenceReader, createMemoryEvidenceReferenceStore, createTextReferenceResolver,
   evidenceSha256, type TextReferenceResolverPort } from '../../../src/modules/evidence/index.ts'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
+import { createPdfRetrieval } from '../../../src/adapters/host/dsh/retrieval.ts'
 import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
@@ -108,13 +109,14 @@ test('context and related references spanning line-interleaved columns reject ma
   } }
   const references = createMemoryEvidenceReferenceStore()
   const evidence = createEvidenceReader(f.state.workspaces, pages, references)
+  const retrieval = createPdfRetrieval(f.state.workspaces, pages, references)
   const writes = createModelWriteService(f.state.workspaces, pages,
     createTextReferenceResolver(f.state.workspaces, pages, references))
   try {
     const context = await evidence.context(sessionId, { documentId: f.opened.id,
       focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
-    const related = await evidence.related(sessionId, { documentId: f.opened.id,
-      query: 'Left start', maxPages: 1 }, signal)
+    const related = await retrieval.search(sessionId, { documentId: f.opened.id,
+      query: 'Left start', mode: 'lexical', maxPages: 1 }, signal)
     const refs = [context.chunks[0]!.evidence.refId, related.candidates[0]!.evidence.refId]
     for (const refId of refs) await assert.rejects(writes.annotate(sessionId, {
       ...f.input, target: { kind: 'reference', refId } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
@@ -129,7 +131,7 @@ test('context and related references spanning line-interleaved columns reject ma
     assert.equal(precise.status, 'updated', 'an unambiguous single-column quote must still succeed')
     assert.equal(precise.revision, f.opened.revision + 1)
     assert.equal(precise.coverage.pages[0]!.text, 'Left start')
-  } finally { writes.dispose(); await f.state.workspaces.dispose() }
+  } finally { writes.dispose(); await retrieval.dispose(); await f.state.workspaces.dispose() }
 })
 
 test('source replacement and cancellation after resolving evidence still apply zero model changes', async () => {

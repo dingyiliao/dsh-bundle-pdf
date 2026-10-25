@@ -1,3 +1,4 @@
+// Frozen pre-index lexical baseline for retrieval-component-v1 comparisons only.
 /** Cheap, deterministic candidate generation. The agent judges meaning after reading context. */
 const stopWords = new Set(['about', 'after', 'also', 'been', 'does', 'from', 'have', 'into', 'that',
   'their', 'there', 'these', 'this', 'those', 'what', 'when', 'where', 'which', 'with', 'would',

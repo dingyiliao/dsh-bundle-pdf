@@ -6,13 +6,14 @@ import { createDocumentToolContext, type PdfToolContext } from '../../../../src/
 const agent = { session: { id: 'session' } }
 const signal = new AbortController().signal
 
-function fixture(acquire: Parameters<typeof createDocumentToolContext>[1]['acquire']) {
+function fixture(acquire: Parameters<typeof createDocumentToolContext>[1]['acquire'],
+  options?: Parameters<typeof createDocumentToolContext>[2]) {
   const definitions = new Map<string, ToolDefinition>()
   const ctx = { get: () => undefined, tools: { register(definition: ToolDefinition) {
     definitions.set(definition.name, definition)
     return () => { definitions.delete(definition.name) }
   } } }
-  const wrapped = createDocumentToolContext(ctx as PdfToolContext, { acquire })
+  const wrapped = createDocumentToolContext(ctx as PdfToolContext, { acquire }, options)
   function register(name: string, execute: (raw: unknown, exec: Parameters<ToolDefinition['execute']>[1]) => Promise<Record<string, string>>) {
     return wrapped.tools.register(defineTool({ name, description: 'Lifecycle fixture',
       parameters: { documentId: { type: 'string', required: true } },
@@ -50,6 +51,37 @@ test('document operations hold one pin across the whole tool, including approval
     assert.equal(f.definitions.has(name), false, 'registration ownership is preserved')
   }
   assert.equal(acquired, 4)
+})
+
+test('Host-owned continuation IDs resolve to an authorized document before the operation holds its pin', async () => {
+  let acquired = 0, pinned = 0, bodies = 0
+  const f = fixture(async (sessionId, documentId) => {
+    assert.equal(sessionId, 'session'); assert.equal(documentId, 'stored-document')
+    acquired++; pinned++
+    return () => { pinned-- }
+  }, { resolveDocumentId(name, raw, sessionId) {
+    assert.equal(name, 'pdf_find_related'); assert.equal(sessionId, 'session')
+    if ((raw as { searchId: string }).searchId !== 'rel_123456789abc') {
+      throw Object.assign(new Error('Unknown search ID'), { code: 'pdf/unknown-search' })
+    }
+    return 'stored-document'
+  } })
+  f.lifecycle.tools.register(defineTool({ name: 'pdf_find_related', description: 'Search fixture',
+    parameters: { searchId: { type: 'string', required: true } },
+    output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
+    async execute(_raw, exec) {
+      bodies++; assert.equal(pinned, 1)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(pinned, 1); exec.signal.throwIfAborted()
+      return { hasMore: false }
+    },
+  }))
+  const tool = f.definitions.get('pdf_find_related')!
+  assert.deepEqual(await tool.execute({ searchId: 'rel_123456789abc' }, { agent, signal } as never), { hasMore: false })
+  assert.equal(pinned, 0); assert.equal(acquired, 1)
+  await assert.rejects(tool.execute({ searchId: 'rel_changed' }, { agent, signal } as never), { code: 'pdf/unknown-search' })
+  assert.equal(acquired, 1); assert.equal(bodies, 1, 'unknown handles cannot acquire arbitrary documents')
+  await f.lifecycle.dispose()
 })
 
 test('tool errors and cancellation release pins, while rejected acquisition never executes the body', async () => {

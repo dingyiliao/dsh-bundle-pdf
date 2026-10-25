@@ -20,6 +20,7 @@ async function probe(service: Pick<AgentOcrPort, 'availability'> | Pick<AgentIma
 /** Report this document and selected backends, not just registered service names. */
 export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sessionId: string,
   services: { ocr?: Pick<AgentOcrPort, 'availability'>; image?: Pick<AgentImageUnderstandingPort, 'availability'>;
+    retrieval?: Pick<AgentOcrPort, 'availability'>;
     navigation: boolean; visible: boolean },
   signal: AbortSignal) {
   signal.throwIfAborted()
@@ -27,8 +28,9 @@ export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sess
   const readOnly = document.readOnly || document.signed || document.encrypted
   const writeReason = readOnly ? document.readOnlyReason ?? 'This PDF is read-only'
     : snapshot.conflict ? 'The PDF source conflicts with this draft; resolve the conflict before writing' : undefined
-  const [ocr, imageUnderstanding] = await Promise.all([
+  const [ocr, imageUnderstanding, semanticSearch] = await Promise.all([
     probe(services.ocr, 'OCR', sessionId, signal), probe(services.image, 'Image understanding', sessionId, signal),
+    probe(services.retrieval, 'Semantic retrieval', sessionId, signal),
   ])
   signal.throwIfAborted()
   const annotation = { supported: true, available: writeReason === undefined,
@@ -49,9 +51,9 @@ export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sess
     ...(!services.navigation ? { reason: 'Reader navigation is not installed' }
       : !services.visible ? { reason: 'No matching PDF Reader is visible' } : {}) }
   return { readOnly, ...(document.readOnlyReason ? { readOnlyReason: document.readOnlyReason } : {}),
-    capabilities: { readText: true, searchText: true, findRelatedText: true,
+    capabilities: { readText: true, searchText: true, findRelatedText: true, semanticSearch: semanticSearch.available,
       writeAnnotations: annotation.available, fillForms: forms.available, editBookmarks: bookmarks.available,
       navigateVisibleReader: navigation.available, ocr: ocr.available, imageUnderstanding: imageUnderstanding.available },
     capabilityDetails: { writeAnnotations: annotation, fillForms: forms, editBookmarks: bookmarks,
-      navigateVisibleReader: navigation, ocr, imageUnderstanding } }
+      navigateVisibleReader: navigation, ocr, imageUnderstanding, semanticSearch } }
 }

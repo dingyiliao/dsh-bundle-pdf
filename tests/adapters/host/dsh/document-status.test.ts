@@ -20,7 +20,7 @@ test('capabilities report writable documents and a matching visible Reader, not 
     image: { availability: async () => ({ status: 'available', kind: 'direct-image' }) },
   }, signal)
   assert.equal(result.readOnly, false)
-  assert.deepEqual(result.capabilities, { readText: true, searchText: true, findRelatedText: true,
+  assert.deepEqual(result.capabilities, { readText: true, searchText: true, findRelatedText: true, semanticSearch: false,
     writeAnnotations: true, fillForms: true, editBookmarks: true, navigateVisibleReader: true,
     ocr: false, imageUnderstanding: true })
   assert.deepEqual(result.capabilityDetails.ocr, { supported: true, available: false,

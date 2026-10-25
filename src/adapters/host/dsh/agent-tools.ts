@@ -25,6 +25,8 @@ import { createPdfEngineRouting } from './engine-routing.js'
 import { documentCapabilities } from './document-status.js'
 import { textNavigationTargetSchema } from '../../../contracts/navigation.js'
 import { createDocumentToolContext } from './document-tools.js'
+import { createPdfRetrieval, type PdfRetrieval } from './retrieval.js'
+import { createSearchSessions } from '../../../modules/search/index.js'
 
 type Workspaces = Pick<ReturnType<typeof createWorkingCopyService>,
   'readSnapshot' | 'execute' | 'isUiOwned' | 'releaseBackground' | 'acquire' | 'listDocuments' | 'touch' | 'onIdle' | 'suspend'>
@@ -48,15 +50,16 @@ const ocrPageArgs = z.object({ documentId, page, maxEdge: z.number().int().min(2
 const imageContextArgs = z.object({ documentId, refId: z.string().min(1).max(128) }).strict()
 const readArgs = z.object({ documentId, page, offset: z.number().int().nonnegative().optional(),
   maxChars: z.number().int().min(2).max(8000).optional() }).strict()
-const searchArgs = z.object({ documentId, query: z.string().min(2).max(128),
-  fromPage: page.optional(), offset: z.number().int().nonnegative().optional(),
-  cursor: z.string().min(1).max(4096).optional() }).strict()
-  .refine(value => value.cursor === undefined || value.fromPage === undefined && value.offset === undefined,
-    'Continue with cursor and the same query only; omit fromPage and offset')
-const relatedArgs = z.object({ documentId, query: z.string().min(4).max(512),
+const continueSearchArgs = z.object({ searchId: z.string().min(1).max(64) }).strict()
+const startSearchArgs = z.object({ documentId, query: z.string().min(2).max(128),
+  fromPage: page.optional(), offset: z.number().int().nonnegative().optional() }).strict()
+const searchArgs = z.union([continueSearchArgs, startSearchArgs])
+const startRelatedArgs = z.object({ documentId, query: z.string().min(4).max(512),
   terms: z.array(z.string().min(2).max(80)).max(12).optional(),
-  fromPage: page.optional(), maxPages: z.number().int().min(1).max(50).optional(),
-  cursor: z.string().min(1).max(4096).optional() }).strict()
+  mode: z.enum(['auto', 'lexical', 'semantic', 'hybrid']).optional(),
+  topK: z.number().int().min(1).max(20).optional(),
+  fromPage: page.optional(), maxPages: z.number().int().min(1).max(100000).optional() }).strict()
+const relatedArgs = z.union([continueSearchArgs, startRelatedArgs])
 const statusArgs = z.object({ documentId }).strict()
 const navigateArgs = z.union([
   z.object({ documentId, page, contentVersion: z.string().min(1).max(512),
@@ -126,11 +129,25 @@ export { windowPageText } from '../../../modules/evidence/index.js'
 export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on?: Context['on'] }, workspaces: Workspaces,
   pdfService: PdfService, readerContexts: ReaderContexts,
   referenceStore?: EvidenceReferenceStore, sourceFiles?: Pick<WorkingCopyFilePort, 'read'>,
-  agentNavigation?: AgentNavigation): () => Promise<void> {
-  const toolContext = createDocumentToolContext(ctx, workspaces)
+  agentNavigation?: AgentNavigation, configuredRetrieval?: PdfRetrieval): () => Promise<void> {
+  const textSearches = createSearchSessions<z.infer<typeof startSearchArgs>>({ prefix: 'txt_' })
+  const relatedSearches = createSearchSessions<z.infer<typeof startRelatedArgs>>({ prefix: 'rel_' })
+  const toolContext = createDocumentToolContext(ctx, workspaces, {
+    resolveDocumentId(name, raw, sessionId) {
+      if (name === 'pdf_search') {
+        const input = searchArgs.parse(raw)
+        return 'searchId' in input ? textSearches.documentId(sessionId, input.searchId) : input.documentId
+      }
+      if (name === 'pdf_find_related') {
+        const input = relatedArgs.parse(raw)
+        return 'searchId' in input ? relatedSearches.documentId(sessionId, input.searchId) : input.documentId
+      }
+    },
+  })
   const background = createBackgroundDocuments(workspaces, pdfService)
   const references = referenceStore ?? createMemoryEvidenceReferenceStore()
   const evidence = createEvidenceReader(workspaces, pdfService, references)
+  const retrieval = configuredRetrieval ?? createPdfRetrieval(workspaces, pdfService, references)
   const textTargets = createTextReferenceResolver(workspaces, pdfService, references)
   const routing = createPdfEngineRouting(ctx)
   const imageEvidence = createImageEvidenceRegistry(workspaces, references,
@@ -165,6 +182,9 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
   // the bounded storage adapter.
   ctx.on?.('session/disposed', session => {
     if (stopped || detachedSessions.has(session.id)) return
+    textSearches.deleteSession(session.id)
+    relatedSearches.deleteSession(session.id)
+    retrieval.cancelSession(session.id)
     // Increment the background generation before awaiting anything, so a late
     // open cannot regain ownership after this runtime has been detached.
     const release = background.closeSession(session.id)
@@ -282,7 +302,8 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
         item.documentId === documentId && item.contentVersion === result.contentVersion)
       const selectedBindings = JSON.stringify(routing.bindings())
       const capabilities = await documentCapabilities(observed, sessionId, {
-        ocr: routing.ocr(), image: routing.image(), navigation: agentNavigation !== undefined, visible: visibleInReader,
+        ocr: routing.ocr(), image: routing.image(), retrieval,
+        navigation: agentNavigation !== undefined, visible: visibleInReader,
       }, exec.signal)
       const latest = workspaces.readSnapshot(sessionId, documentId)
       if (latest.revision !== observed.revision || latest.contentVersion !== observed.contentVersion
@@ -304,20 +325,25 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
 
   toolContext.tools.register(defineTool({
     name: 'pdf_find_related',
-    description: 'Find possible evidence for a concept or question in an opened PDF, including unread pages. Supply useful alternate terms, synonyms or translations when the user uses different wording than the source. Scans at most 50 physical pages per call; follow nextCursor through the document before claiming absence or the best match. Returns exact quoted leads with session-bound source references, not semantic verdicts. Read surrounding context and judge meaning before answering or annotating. Does not navigate the reader or edit the PDF; scanned pages without a text layer are not covered.',
-    parameters: { documentId: DOCUMENT_INPUT,
-      query: { type: 'string', required: true, description: 'The user question or concept, 4-512 characters.' },
+    description: 'Find evidence for a concept or question in an opened PDF, including unread pages. Start with documentId and query; the default scope is the whole document, restricted only by optional fromPage/maxPages. Indexing is bounded and incremental. When hasMore is true, call this same tool with ONLY {searchId}; Host preserves the original query, terms, mode and scope. Do not repeat or change other parameters, invent an ID, or pass a pdf_search ID. Unknown/expired IDs require a new search with documentId and query. building/incomplete returns coverage, not globally ranked candidates; only complete ranks the whole requested scope. auto uses hybrid BM25 + embeddings when the configured engine is available, otherwise reports lexical fallback; explicit semantic/hybrid never silently fall back. Results are original quoted leads with reusable evidence.refId, not verified answers. Read context before answering or annotating; inspect complex pages. Image-only content is not indexed. No navigation or editing occurs.',
+    parameters: { documentId: { type: 'string', description: 'Required to start a search. Omit when continuing with searchId.' },
+      query: { type: 'string', description: 'Required to start: the user question or concept, 4-512 characters. Omit with searchId.' },
       terms: { type: 'json', description: 'Optional array of up to 12 concrete alternate terms, synonyms or translations to improve recall.' },
-      fromPage: { type: 'integer', description: 'Initial physical page, default 1; omit when continuing with cursor.' },
-      maxPages: { type: 'integer', description: 'Physical pages per call, 1-50; default 30.' },
-      cursor: { type: 'string', description: 'Continuation returned by this tool; reuse with exactly the same query, terms and page options.' } },
+      mode: { type: 'string', enum: ['auto', 'lexical', 'semantic', 'hybrid'], description: 'Default auto; lexical uses BM25. Semantic/hybrid require a configured available embedding engine.' },
+      topK: { type: 'integer', description: 'Ranked candidates, 1-20; default 6.' },
+      fromPage: { type: 'integer', description: 'Initial search scope starts at this physical page; default 1. Omit with searchId.' },
+      maxPages: { type: 'integer', description: 'Initial search scope length, 1-100000; omit to search through the last page. Omit with searchId.' },
+      searchId: { type: 'string', description: 'Continue an unfinished search using ONLY this short ID from pdf_find_related. Omit all other parameters. Scoped to this session/tool; expires after inactivity or Host reset.' } },
     output,
     isConcurrencySafe: () => true,
     async execute(raw, exec) {
       const args = relatedArgs.parse(raw)
       const sessionId = requireSession(exec)
-      background.touch(sessionId, args.documentId)
-      return evidence.related(sessionId, args, exec.signal)
+      return relatedSearches.run(sessionId, args, exec.signal, async (input, cursor) => {
+        background.touch(sessionId, input.documentId)
+        const { nextCursor, ...value } = await retrieval.search(sessionId, { ...input, cursor }, exec.signal)
+        return { value, nextCursor }
+      })
     },
   }))
 
@@ -504,21 +530,23 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
 
   toolContext.tools.register(defineTool({
     name: 'pdf_search',
-    description: 'Search case-sensitive extracted text in up to ten PDF pages of this chat session. Continue with the opaque nextCursor and the SAME query until null; omit fromPage/offset on continuation. Cursors bind the session, document, query and version; changed inputs or a changed PDF require restarting. Each match carries an evidence.refId for that exact occurrence, reusable by pdf_context, pdf_annotate and pdf_navigate after revalidation; read surrounding context before answering or marking. Invalid character mappings can be repaired locally; ocrRepairedPages identifies approximate recognized text, not certified native glyphs. This does not automatically OCR scanned pages or understand images.',
-    parameters: { documentId: DOCUMENT_INPUT,
-      query: { type: 'string', required: true, description: 'Exact case-sensitive text, 2-128 characters.' },
+    description: 'Search case-sensitive extracted text in up to ten PDF pages per call in this chat session. Start with documentId and query. While hasMore is true, call this same tool with ONLY {searchId}; Host retains query, page and offset. Do not pass a pdf_find_related ID or repeat/change search parameters. Unknown/expired IDs or a changed PDF require a new search with documentId and query. Each match carries an evidence.refId for that exact occurrence, reusable by pdf_context, pdf_annotate and pdf_navigate after revalidation; read context before answering or marking. Invalid character mappings can be repaired locally; ocrRepairedPages identifies approximate recognized text. This does not automatically OCR scanned pages or understand images.',
+    parameters: { documentId: { type: 'string', description: 'Required to start a search. Omit when continuing with searchId.' },
+      query: { type: 'string', description: 'Required to start: exact case-sensitive text, 2-128 characters. Omit with searchId.' },
       fromPage: { type: 'integer', description: 'First physical page to search; default 1.' },
-      offset: { type: 'integer', description: 'Initial UTF-16 offset within fromPage; default 0. Omit when continuing with cursor.' },
-      cursor: { type: 'string', description: 'Opaque nextCursor from this tool. Reuse unchanged with the same query, without fromPage/offset. Restart after PDF changes.' } },
+      offset: { type: 'integer', description: 'Initial UTF-16 offset within fromPage; default 0. Omit with searchId.' },
+      searchId: { type: 'string', description: 'Continue using ONLY the short ID returned by pdf_search while hasMore is true. Omit all other parameters. Scoped to this session/tool; expires after inactivity or Host reset.' } },
     output,
     isConcurrencySafe: () => true,
     async execute(raw, exec) {
       const args = searchArgs.parse(raw)
       const sessionId = requireSession(exec)
-      background.touch(sessionId, args.documentId)
-      return searchPageWindows(workspaces, pdfService, sessionId, args.documentId, {
-        query: args.query, fromPage: args.fromPage, offset: args.offset, cursor: args.cursor,
-      }, exec.signal, references)
+      return textSearches.run(sessionId, args, exec.signal, async (input, cursor) => {
+        background.touch(sessionId, input.documentId)
+        const { nextCursor, ...value } = await searchPageWindows(workspaces, pdfService, sessionId, input.documentId,
+          cursor ? { query: input.query, cursor } : input, exec.signal, references)
+        return { value, nextCursor }
+      })
     },
   }))
 
@@ -558,10 +586,14 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
   }))
   return async () => {
     stopped = true
+    textSearches.dispose()
+    relatedSearches.dispose()
+    const retrievalDrain = retrieval.dispose()
     await toolContext.dispose()
     const results = await Promise.allSettled([...pendingCleanup])
     disposeWrites()
     evidence.dispose()
+    await retrievalDrain
     await background.dispose()
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Could not release disposed PDF session resources')

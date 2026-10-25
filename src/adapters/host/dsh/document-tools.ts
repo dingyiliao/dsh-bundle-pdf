@@ -15,7 +15,11 @@ export interface PdfDocumentToolContext extends PdfToolContext {
 
 /** A document tool holds the shared copy through every await, including save approval. */
 export function createDocumentToolContext(ctx: PdfToolContext,
-  workspaces: Pick<ReturnType<typeof createWorkingCopyService>, 'acquire'>): PdfDocumentToolContext {
+  workspaces: Pick<ReturnType<typeof createWorkingCopyService>, 'acquire'>,
+  options: {
+    /** Resolve Host-owned handles before acquiring the same authorized document pin. */
+    resolveDocumentId?: (tool: string, raw: unknown, sessionId: string) => string | undefined
+  } = {}): PdfDocumentToolContext {
   const sessions = new Map<string, { controller: AbortController; pending: Set<Promise<unknown>>; closing?: Promise<void> }>()
   let stopped = false, disposal: Promise<void> | undefined
   const error = (code: string, message: string) => Object.assign(new Error(message), { code })
@@ -37,7 +41,8 @@ export function createDocumentToolContext(ctx: PdfToolContext,
           const signal = AbortSignal.any([exec.signal, session.controller.signal])
           const task = (async () => {
             signal.throwIfAborted()
-            const documentId = raw && typeof raw === 'object' && 'documentId' in raw ? raw.documentId : undefined
+            const documentId = options.resolveDocumentId?.(definition.name, raw, sessionId)
+              ?? (raw && typeof raw === 'object' && 'documentId' in raw ? raw.documentId : undefined)
             // Open creates its reference; close must not pin the reference it
             // releases. Both still participate in runtime cancellation/drain.
             if (['pdf_open', 'pdf_close', 'pdf_current'].includes(definition.name)

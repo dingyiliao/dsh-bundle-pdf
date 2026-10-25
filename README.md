@@ -13,6 +13,7 @@ I built this plugin because I often read papers and books in PDF form. The reade
 - **Ask in context.** Select several text passages or a single-page image region, attach a question to each, and send them together to the current conversation.
 - **Navigate without losing your place.** Use the PDF outline, search results, annotations, and a multi-step back history. Ordinary scrolling does not add history entries.
 - **Edit the PDF's bookmarks.** Add, rename, remove a subtree, change target pages, reorder, or reparent entries in the same undoable draft. Saving writes those changes into the PDF.
+- **Search by meaning (experimental branch).** Combine keyword matching with a local embedding model to find paraphrases and cross-language passages. Results remain original text references; incomplete indexing and image-only pages are reported explicitly. Embedding is off by default.
 
 ## Preview
 
@@ -64,7 +65,9 @@ flowchart TB
     Tools["Agent tools"]
     Features["PDF and AI use cases"]
     Copy["Shared working copy<br/>Drafts, revisions, undo, save"]
-    AI["Typed services<br/>OCR · Image understanding · Translation"]
+    AI["Typed services<br/>OCR · Image understanding · Translation · Embedding"]
+    Retrieval["Text retrieval<br/>BM25 + embeddings · Rebuildable cache"]
+    Evidence["Existing evidence references<br/>Revalidate before marking or navigation"]
     Catalog["Read-only engine catalog<br/>Change notifications"]
     Config["Per-feature engine bindings<br/>Configuration and credential references"]
     Backends["Default and contributor engines<br/>Same registration / Fiber-owned disposal"]
@@ -74,6 +77,10 @@ flowchart TB
     Tools --> Features
     Features --> Copy
     Features --> AI
+    Features --> Retrieval
+    Retrieval --> AI
+    Retrieval --> Evidence
+    Evidence --> Copy
     Copy --> Native
     Copy --> Files
     AI --> Backends
@@ -90,7 +97,9 @@ flowchart TB
 
 The Client and agent tools share one Host-side working copy per resource session and canonical path. A background-opened PDF can later be adopted by the Reader with the same document ID, draft and undo history; changes synchronize in both directions. Closing a view releases its reference, not the draft. Idle resource eviction keeps the document identity and restores its working set on demand. Reading does not open a sidebar tab, and an agent-requested overwrite still requires approval. The native worker handles rendering and text extraction behind the Host boundary.
 
-Host plugins can register OCR, image-understanding and translation engines. The settings catalog updates on registration and removal; unloaded selections remain visible and never silently fall back. Requests capture their engine/configuration, and unloading cancels that engine's active work. Each service retains its typed API; the catalog is not another execution registry. See [engine extensions](docs/ENGINE_EXTENSIONS.md) for contributor contracts. Automatic character-map repair remains a separate local-only path, never routed to a selected remote OCR engine.
+Host plugins can register OCR, image-understanding, translation and embedding engines. The settings catalog updates on registration and removal; unloaded selections remain visible. Requests capture their engine/configuration, and unloading cancels that engine's active work. Each service retains its typed API; the catalog is not another execution registry. Only retrieval's explicit `auto` mode may report a lexical fallback. See [engine extensions](docs/ENGINE_EXTENSIONS.md) for contributor contracts. Automatic character-map repair remains a separate local-only path, never routed to a selected remote OCR engine.
+
+The `pdf_search` and `pdf_find_related` tools start with a document, query and options, then return `searchId` and `hasMore`. To continue, the model passes only that ID to the same tool; Host retains the query and progress. Related results are ranked only after the requested scope is fully indexed. See the [tool contracts](docs/AI_READER_TOOLS.md) for coverage and search-session lifetime rules.
 
 Bookmark edits use the shared outline domain and the existing pdf-lib save transaction. The agent can obtain exact `outlineId` values with `pdf_bookmarks`, then submit an atomic draft edit through `pdf_outline_edit`. New outline-edit interactions still need real Desktop and external-reader acceptance testing.
 
@@ -101,6 +110,14 @@ Form inspection returns a numbered page image and the writable controls on that 
 ## Development
 
 For a source checkout, run `npm ci`, `npm run native:build`, and `npm run build`, then install the directory with `dsh plugin --profile web add .`. A Git URL installation does not include a prebuilt native worker. Run `npm run check` for type and Node tests, `npm run test:web` for browser interactions, and `npm run test:coverage:project` for project coverage.
+
+On `feat/pdf-hybrid-retrieval`, you can reuse an existing Apple Silicon MLX environment and cached Qwen3 embedding model:
+
+```sh
+/absolute/path/to/mlx-lm-local-demo/.venv/bin/python scripts/local-embedding-server.py --port 8001
+```
+
+Then choose **Local Qwen3 embedding** in PDF settings. The launcher starts only the embedding service, downloads nothing, and remains a separately managed process. It requires the cached model and dependencies described in the [experiment setup and measurements](docs/RETRIEVAL_EXPERIMENT.md). `npm run bench:retrieval` runs the model-free baseline; that document also gives the real-model command. This experimental branch is not a claim that the published `main` artifacts already contain semantic retrieval. Images, charts and formula layout are not indexed by the text retriever.
 
 Ordinary AcroForm fields can be filled in the Reader or by the model. Inspection puts small IDs inside controls on a base-page image without widget appearances or annotations; current draft values are available through `includeValues:true` metadata, not the deliberately blank-looking image. Each fill atomically updates one page of the shared undoable draft using a single inspection ID and label/value entries; the Host restores the page. Inspect multiple pages together, then fill independent pages in separate calls. Shared-field and declared-dependency conflicts require reinspection. The model can supply explicit conditional and exclusive-choice checks; the Host validates those supplied rules and field types without inferring business meaning. Inspection needs a vision-capable model; overwriting the PDF still requires approval. PDF scripts and actions are not executed; signed PDFs remain read-only and signatures are not verified. XFA and encrypted PDFs are not supported. Text search does not automatically index scanned pages, and a background `pdf_open` tool call does not open a Reader tab. See [SPEC.md](SPEC.md) for the remaining limits.
 

@@ -76,6 +76,25 @@ test('PDF Settings keeps ready writable controls editable without a mode field',
     translationEngines: [{ id: 'dsh-model', label: 'DSH model' }],
   }))
   const controls = [...html.matchAll(/<(?:select|input)\b[^>]*>/g)].map(match => match[0])
-  assert.equal(controls.length, 5)
+  assert.equal(controls.length, 6)
   for (const control of controls) assert.doesNotMatch(control, /\bdisabled(?:\s|=|>)/)
+})
+
+test('semantic search settings follow the engine catalog and retain an unloaded selection', () => {
+  const snapshot: ConfigFormSnapshot = { status: 'ready', value: { ...defaultSettings,
+    embeddingEngine: 'custom-embedding' }, base: {}, user: {}, revision: 1, writable: true }
+  const form: ConfigForm = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true }
+  const catalog: EngineCatalogSnapshot = { revision: 'one', engines: { ocr: [], image: [], translation: [], embedding: [
+    { id: 'none', name: 'Disabled', version: '1', execution: 'disabled' },
+    { id: 'custom-embedding', name: 'My local encoder', version: '1', execution: 'local' },
+  ] } }
+  const render = () => renderToStaticMarkup(React.createElement(Settings, { form, engineCatalog: catalog,
+    translationEngines: [], t: key => (settingsLocales.en as Record<string, string>)[key] ?? key }))
+  assert.match(render(), /My local encoder/)
+  assert.match(render(), /value="none"/)
+  catalog.engines.embedding = [catalog.engines.embedding![0]!]
+  const unloaded = render()
+  assert.match(unloaded, /custom-embedding/)
+  assert.match(unloaded, /Engine not loaded/)
+  assert.equal(snapshot.value!.embeddingEngine, 'custom-embedding')
 })

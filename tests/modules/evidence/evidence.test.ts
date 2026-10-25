@@ -79,45 +79,6 @@ test('locate scans at most ten pages, distinguishes partial from not found, and 
   await assert.rejects(reader.locate('alice', input, signal), { code: 'pdf/stale-reader' })
 })
 
-test('related search reports bounded coverage and exact leads from later unread pages', async () => {
-  const texts = Array.from({ length: 5 }, (_, index) => index === 4
-    ? 'This chapter explains causal identification with a natural experiment.'
-    : 'Unrelated introduction about the document structure.')
-  const { reader, change } = fixture(texts)
-  const input = { documentId: 'doc-1', query: '前面说的因果推断这里是否讨论',
-    terms: ['causal identification', 'natural experiment'], maxPages: 2 }
-  const first = await reader.related('alice', input, signal)
-  assert.equal(first.status, 'partial')
-  assert.deepEqual(first.coverage.pagesScanned, [1, 2])
-  assert.equal(first.candidates.length, 0)
-  const second = await reader.related('alice', { ...input, cursor: first.coverage.nextCursor! }, signal)
-  assert.deepEqual(second.coverage.pagesScanned, [3, 4])
-  const last = await reader.related('alice', { ...input, cursor: second.coverage.nextCursor! }, signal)
-  assert.equal(last.status, 'complete')
-  assert.deepEqual(last.coverage.pagesScanned, [5])
-  assert.equal(last.candidates[0]?.page, 5)
-  assert.equal(last.candidates[0]?.annotationReady, true)
-  assert.equal(last.candidates[0]?.evidence.snapshot.text, last.candidates[0]?.quote)
-  assert.throws(() => reader.reference('bob', last.candidates[0]!.evidence.refId), { code: 'pdf/reference-unavailable' })
-  await assert.rejects(reader.related('alice', { ...input, query: 'a different question',
-    cursor: first.coverage.nextCursor! }, signal), { code: 'pdf/stale-reader' })
-  change()
-  await assert.rejects(reader.related('alice', { ...input, cursor: first.coverage.nextCursor! }, signal),
-    { code: 'pdf/stale-reader' })
-})
-
-test('related search rejects a document changed after reading its last page', async () => {
-  const source = fixture(['The discussion connects causal identification to this example.'])
-  let reads = 0
-  const reader = createEvidenceReader({ readSnapshot(sessionId, documentId) {
-    const snapshot = source.workspaces.readSnapshot(sessionId, documentId)
-    return ++reads < 3 ? snapshot : { ...snapshot, revision: snapshot.revision + 1 }
-  } }, source.pages)
-  await assert.rejects(reader.related('alice', { documentId: 'doc-1', query: 'causal identification' }, signal),
-    { code: 'pdf/stale-reader' })
-  assert.equal(reads, 3)
-})
-
 test('locate handles same-page repetition, normalized matching and exact absence', async () => {
   const { reader } = fixture(['Alpha alpha\n   ALPHA', 'other'])
   const exact = await reader.locate('alice', { documentId: 'doc-1', quote: 'alpha', page: 1 }, signal)

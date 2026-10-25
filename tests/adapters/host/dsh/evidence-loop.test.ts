@@ -22,7 +22,8 @@ if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(nativeExecut
 }
 const native = { skip: !existsSync(nativeExecutable) }
 type CapturedTool = { name: string; execute(raw: unknown, exec: unknown): Promise<unknown> }
-type SearchResult = { revision: number; matches: Array<{ page: number; offset: number; evidence: PdfTextEvidence }> }
+type SearchResult = { revision: number; searchId: string; hasMore: boolean;
+  matches: Array<{ page: number; offset: number; evidence: PdfTextEvidence }> }
 type AnnotationResult = { status: string; revision: number; annotationId: string; dirty: boolean; canUndo: boolean;
   coverage: { complete: true; pages: Array<{ annotationId: string; refId: string; text: string; startUtf16: number }> } }
 
@@ -65,6 +66,9 @@ async function fixture() {
   }
   assert.equal(opened.readerUiOpened, false)
   const search = await run('pdf_search', { documentId: opened.documentId, query: quote }) as SearchResult
+  assert.match(search.searchId, /^txt_[a-f0-9]{12}$/)
+  assert.equal(search.hasMore, false)
+  assert.equal('nextCursor' in search, false)
   assert.equal(search.matches.length, 2)
   assert.equal(search.matches[0]!.evidence.snapshot.text, quote)
   assert.equal(search.matches[1]!.evidence.snapshot.text, quote)

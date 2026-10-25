@@ -1,6 +1,6 @@
 # 面向 AI 阅读的 PDF 工具设计
 
-> 状态：只读证据工具、持久文字/图像引用与三个文字工具卡已接入；搜索、相关检索、定位和上下文产生的文字引用可经 Host 重验，用于直接标注及可见 Reader 的精确页内导航，成功跳转进入同一多级回退历史。标注增删改、表单和内置书签编辑写入共享可撤销草稿；只有覆盖原 PDF 需要交互批准。搜索/书签采用版本化不透明续读游标，`pdf_status` 报告当前可用性及原因。真实 Desktop 与外部阅读器验收仍需完成；这不等于完整语义索引或答案正文内联引用。本文同时记录已落地契约与尚未实现的目标，示例目标结构不等于当前 TypeScript API。
+> 状态：只读证据工具、持久文字/图像引用与三个文字工具卡已接入；搜索、相关检索、定位和上下文产生的文字引用可经 Host 重验，用于直接标注及可见 Reader 的精确页内导航，成功跳转进入同一多级回退历史。标注增删改、表单和内置书签编辑写入共享可撤销草稿；只有覆盖原 PDF 需要交互批准。搜索与相关检索使用短 `searchId` 续读，书签、定位和上下文保留各自的版本化游标；`pdf_status` 报告当前可用性及原因。本实验分支新增有界 BM25／embedding 混合文字索引，embedding 默认关闭；复杂页面视觉索引与答案正文内联引用未实现。真实 Desktop 与外部阅读器验收仍需完成。本文同时记录已落地契约与尚未实现的目标，示例目标结构不等于当前 TypeScript API。
 
 ## 产品判断
 
@@ -34,7 +34,7 @@ Host 的基础读取工具包括 `pdf_open`、`pdf_close`、`pdf_current`、`pdf
 | 现有 | `pdf_render_page`、`pdf_ocr_page` | 有界整页图像或文字；图片能否直达当前模型由视觉能力决定。OCR 和辅助视觉结果是派生文字，不能宣称当前模型看过原图。现有页图不合成未保存的草稿覆盖层。 |
 | 已接入 | `pdf_form_inspect_page`、`pdf_fill_form` | 在可填写组件内标记编号，返回精简的类型、选项与可选当前值；一次检查／填写一页，凭单个 inspection ID 与编号直接原子写入共享可撤销草稿。支持先检查多页、再填写独立页；保存仍单独批准。仅填写已有 AcroForm。 |
 | 第一阶段已实现 | `pdf_status`、`pdf_locate`、`pdf_context` | 查询**已打开**工作副本状态、在有界页窗内定位引文、打包有界文字上下文；版本化游标和会话限定的持久文字引用。能力布尔值代表观察时可用性，`capabilityDetails` 区分支持、可用与不可用原因；不是实时文件检查或执行预约。 |
-| 首版已接入，待真实模型验收 | `pdf_find_related` | 模型可提供同义词/译名等扩展词，逐次扫描最多 50 个物理页，在已提取文字中排序并返回精确摘录、来源引用和已扫描范围。分数只供当前页窗排序，不是语义相关概率；必须续扫、补读、由模型判断相关性。无文字层的扫描页需另走 OCR/视觉工具。 |
+| 实验分支已接入，待真实阅读验收 | `pdf_find_related` | 默认检索整份文档，可显式限制页范围；分步建立有界、可复用的文字索引。支持 `auto/lexical/semantic/hybrid`，仅在所请求范围完成索引后返回候选与精确原文引用；返回覆盖情况、`searchId` 和 `hasMore`，未完成时仅凭该 ID 续调同一工具。embedding 默认关闭，自动模式明确报告词法回退。扫描页及图片需另走 OCR/视觉工具。 |
 | 第一阶段已接入 | `pdf_image_context`、读工具来源元数据与工具卡 | `pdf_render_page`、`pdf_ocr_page` 返回 `refId`；新工具在同一 Agent 会话和已授权工作副本中重验源字节、版本及附件，直送图像仍要求当前模型支持图像。`pdf_read_page`、`pdf_render_page`、`pdf_ocr_page` 写入有界 `tool/result.meta`；Client 为 `pdf_read_page`、`pdf_locate`、`pdf_context` 注册可回放卡。尚无图像工具卡或答案正文引用。 |
 | 第一阶段已接入，待真实 Desktop 验收 | `pdf.region`、`pdf.selection`、`pdf.image` `prepare-reference`（Client↔Host RPC） | 解释模式的单页框选区域由 Host 根据已授权工作副本绘制 PNG、核对附件字节并生成 `pdf-region` 引用；文字选段由 Host 按 PDFium 字形位置重新提取、核对整页文字并签发引用。发送区域图像时，Client 用 `prepare-reference` 让 Host 再核对会话、文档、源文件、附件和摘要，直送图片只使用 Host 返回的字节，不使用 Client 暂存 Blob。它们都不是模型导航工具。 |
 | 第二阶段已实现 | `pdf_annotate`、`pdf_annotation_update`、`pdf_annotation_delete`、`pdf_save` | 新增、修改颜色/评论、删除可编辑标注均直接进入 Reader 共用的可撤销草稿；修改/删除须使用 `pdf_page_annotations` 的精确 ID 与当前修订。只有覆盖保存原 PDF 时才要求交互批准。 |
@@ -126,7 +126,11 @@ type PdfEvidence = {
 
 ### 结果与错误
 
-新工具输出使用判别式 `status`（如 `ok`、`partial`、`no_text`、`ambiguous`、`not_found`），同时给 `coverage`、`truncated`、`nextCursor`。预期的“找不到/多个候选”是数据结果；越权、无效参数、版本冲突和后端故障用稳定的 `error.code`，并给出可否重试。`pdf_search`、`pdf_bookmarks` 的 `nextCursor` 是不透明字符串，绑定工具种类、会话、文档、内容版本、修订、源字节摘要及查询/列表摘要；跨查询或版本续读会失败，不能拼接结果。搜索首调可用 `fromPage/offset`，续调用同一 `query + cursor`，禁止混入初始定位参数。书签续调允许改变 `limit`，树增删或移动后必须重新列举。游标不是文件访问权限；非法格式报 `pdf/invalid-window`，身份/查询/版本不匹配报 `pdf/stale-reader`。
+工具按其契约返回判别式 `status`（如 `ok`、`partial`、`no_text`、`ambiguous`、`not_found`）及覆盖／截断信息。预期的“找不到/多个候选”是数据结果；越权、无效参数、版本冲突和后端故障用稳定的 `error.code`，并给出可否重试。
+
+`pdf_search` 和 `pdf_find_related` 首调使用 `documentId`、`query` 及该工具的初始查询选项，输出短 `searchId` 和布尔值 `hasMore`，**不公开 `nextCursor`**。`hasMore: true` 时，仅以 `{searchId: "txt_…"}` 或 `{searchId: "rel_…"}` 续调产生该 ID 的同一工具，不能附带 `documentId`、查询或其他初始参数。Host 保存原查询、范围、版本约束及进度；ID 是会话和工具限定的不透明句柄，不是文档访问权限。重置、TTL 到期或预算驱逐会令 ID 失效；未知／过期 ID 必须用完整初始参数重新开始。更改查询、范围或选项也应发起新搜索，源／版本不匹配时不能拼接结果。
+
+`pdf_bookmarks`、`pdf_locate`、`pdf_context` 等工具继续使用各自的 `nextCursor`／`cursor` 契约，不能改用搜索 ID。书签游标绑定工具、会话、文档、内容版本、修订、源字节摘要及列表摘要；续调允许改变 `limit`，树增删或移动后必须重新列举。游标不是文件访问权限；非法格式报 `pdf/invalid-window`，身份／查询／版本不匹配报 `pdf/stale-reader`。
 
 所有工具继续由 `exec.agent.session.id` 限定资源访问。不要因为 UI 当前聚焦某个标签就对它隐式写入；读工具也不自动改变阅读位置。大型输出先设页数、字符数、图片像素和候选数量的硬上限，并报告实际覆盖范围；`tokenBudget` 至多是估算，不能代替字节/字符硬上限。长任务支持取消；未做异步作业底座前不要承诺 `pdf_job_status`。
 
@@ -134,7 +138,7 @@ type PdfEvidence = {
 
 ### `pdf_status`
 
-已实现：输入仅 `documentId`，返回路径、物理页数、源摘要、`sourceVersion/contentVersion/revision`、`dirty/conflict`、可见性、能力及 `observedAt`。`capabilities` 布尔值代表**观察时可用性**，`capabilityDetails` 为每项给出 `supported/available/reason?`：只读、签名或冲突文档不会报告可写；表单、目录及可见 Reader 依据文档/当前状态判断；OCR/图像理解实际探测已选择后端，缺失、禁用、未知或探测失败不当成可用。取消不转成普通不可用结果，探测期间文档变化会拒绝过期状态。能力不是资源预约，各工具执行时仍重新检查；`conflict: false` 也不保证外部文件此刻未变化。`pdf_current` 只代表正在显示的 PDF；Host 后台打开不创建侧栏标签。
+已实现：输入仅 `documentId`，返回路径、物理页数、源摘要、`sourceVersion/contentVersion/revision`、`dirty/conflict`、可见性、能力及 `observedAt`。`capabilities` 布尔值代表**观察时可用性**，`capabilityDetails` 为每项给出 `supported/available/reason?`：只读、签名或冲突文档不会报告可写；表单、目录及可见 Reader 依据文档/当前状态判断；OCR/图像理解以及实验性的 `semanticSearch` 实际探测已选择后端，缺失、禁用、未知或探测失败不当成可用。`findRelatedText` 可用不等于已启用 embedding，仍可进行词法检索。取消不转成普通不可用结果，探测期间文档变化会拒绝过期状态。能力不是资源预约，各工具执行时仍重新检查；`conflict: false` 也不保证外部文件此刻未变化。`pdf_current` 只代表正在显示的 PDF；Host 后台打开不创建侧栏标签。
 
 ### `pdf_locate`
 
@@ -142,11 +146,49 @@ type PdfEvidence = {
 
 已实现精确的**拼接文字**偏移与至多五个候选、十页扫描窗口、版本化续读游标；读取结果内可用的估算矩形仍标 `approximate-geometry`，不是可直接写入的坐标。后续标注、精确导航和历史文字卡消费 `refId` 时，统一在 Host 重验整页摘要及保存的起止文字范围，再用当前 native 字形重建精确几何。缺字、OCR 派生文字、跨栏回跳或不能验证的布局明确失败，不把近似框升级成事实。
 
+### `pdf_search`
+
+用于精确、大小写敏感的提取文字搜索。首调接受 `documentId`、`query`（2–128 个字符），可选 `fromPage`（默认第一页）及该页内的 UTF-16 `offset`（默认 0）。每次最多扫描十页、返回 20 个命中；结果是按扫描位置分页的匹配项，不是相关度排名或页面列表。每次返回 `searchId: "txt_…"` 和 `hasMore`；`hasMore: true` 时只用 `{searchId: "txt_…"}` 续调 `pdf_search`，`hasMore: false` 表示本次搜索已完成。Host 保留首个尚未返回命中的位置；不能因一批没有命中就提前断言全文不存在该文字。
+
+每个命中的 `evidence.refId` 保存查询匹配本身的精确 UTF-16 范围，可用于补读、标注及导航。编码异常页面可使用明确标记的本地修复文字，普通扫描页不会自动 OCR。搜索完成只代表该搜索范围的提取文字已扫描，不代表图像内容已被理解。
+
+### `pdf_find_related`（实验分支）
+
+用于围绕概念或问题寻找原文线索。它扩展现有工具，不新增第二套证据、草稿或导航接口；`pdf_search` 保持精确、大小写敏感的匹配语义。以下是 `pdf_find_related` 的初始调用参数：
+
+| 输入 | 含义 |
+| --- | --- |
+| `documentId` | 已在本会话打开并获授权的工作副本文档 |
+| `query` | 4–512 个字符的问题或概念 |
+| `terms?` | 最多 12 个同义词／译名，每项 2–80 字符；用于词法召回，不改写原文 |
+| `mode?` | 默认 `auto`；`lexical` 使用 BM25；`semantic` 使用向量；`hybrid` 合并两路候选 |
+| `topK?` | 1–20，默认 6 |
+| `fromPage?` | 检索范围首个物理页，从 1 开始，默认 1 |
+| `maxPages?` | 检索范围最多包含的页数，1–100000；省略表示到文档末页 |
+
+续调仅接受 `{searchId: "rel_…"}`，不能重复表内参数或传入 `cursor`。例如首调 `{"documentId":"doc_…","query":"cross-language retrieval","mode":"hybrid"}` 返回 `searchId` 后，在 `hasMore: true` 时用 `{"searchId":"rel_…"}` 调用同一 `pdf_find_related`。
+
+**迁移注意：`maxPages` 已由旧版“每次扫描窗口大小”改为“完整检索范围大小”；公开续调已由重复查询和 `cursor` 改为仅传 `searchId`。** 实际每轮处理的页面与 embedding 批次仍由 Host 预算控制；不能通过增大此值要求一次同步处理整本书。默认检索整本书不等于一次调用就已读完整本书。
+
+输出包含 `searchId`、`hasMore`、`requestedMode/effectiveMode`、必要时的 `fallbackReason`、`indexGeneration`、`scope: { fromPage, toPage }`、文档及来源版本、`coverage` 和 `candidates`。状态为：
+
+- `building`：仍在提取文字或生成向量。`candidates` 为空，`hasMore: true`，仅凭 `searchId` 续调。
+- `incomplete`：范围内存在尚未成功读取的页。返回失败页及尝试信息，不把其他页的排名冒充全范围结果；根据错误指引处理，`hasMore: true` 时仅凭 `searchId` 续调。
+- `complete`：所请求范围的文字与该模式所需向量已处理完成，`hasMore: false`，可以返回排名候选。该状态不表示图像、公式、表格结构或扫描文字已被理解。
+
+`coverage` 明确给出 `indexedPages/totalPages`、`noTextPages`、`ocrPages`、`failedPages`、`qualityWarnings`、`embeddedChunks/totalChunks` 以及 `visual: 'not-indexed'`。默认索引提取关闭自动 OCR 恢复，避免整本书检索隐式启动大量 OCR；字符解码异常会报告警告。独立 OCR 工具的输出当前不会自动并入索引。
+
+每个候选包含 `page`、原文 `quote`、排序 `score`、`annotationStatus` 和既有 `evidence.refId`。`annotationStatus: 'requires-geometry-check'` 仅说明还需原生字形验证；`unavailable` 表示当前来源不具备原生精确标注条件。不能把文字范围精确等同于几何必然可标注。候选先经重新读页和原文摘要验证，再签发现有引用；随后用 `pdf_context` 补读，按用户意图调用 `pdf_annotate` 或 `pdf_navigate`，后者仍进入现有多级回退历史。
+
+`auto` 在所选 embedding 可用时用混合检索；禁用或不可用时返回词法结果并说明回退原因。显式 `semantic/hybrid` 不静默降级。设置错误、在途模型变化和无效向量不得伪装成成功结果。Host 保存并校验会话、源内容、索引／引擎代次、查询与范围；更改模式、关键词、`topK` 或范围后应使用新的初始调用，不能修改旧 `searchId` 所代表的查询。
+
+混合结果通过 RRF 排序，并在截断前保留词法第一候选与语义前两候选（数量允许时），防止弱词法命中挤掉跨语言线索。`topK: 1` 只能优先保留语义第一项。这是候选覆盖策略，不是置信度估计；未找到结果不能证明 PDF 没有答案，存在结果也不能证明回答已得到支持。实测、限制与复现命令见 [检索实验记录](RETRIEVAL_EXPERIMENT.md)。
+
 ### `pdf_context`
 
 确定性地为模型组装一次**有限阅读**，不负责回答问题。输入显式 `documentId` 与**单个** `focus`：已有 `refId`、指定的页及偏移，或模型提出的检索词；可指定最大页数/字符数与续读游标。首版每调用最多处理十页、输出最多 12,000 个 UTF-16 字符并受字节上限约束。多选段解释若需补读，须分别传入各段的会话限定引用；没有引用时不悄悄读取整本书。`pdf_context` 只能续接自身产生的游标；检索尚未扫完时应另用 `pdf_locate` 继续定位，再以选定的引用聚焦。
 
-输出按来源分块，每块含 `PdfEvidence`、正文、近邻上下文、实际字符数；`coverage` 报已扫描页、无文字页、未扫页范围、被截断的块与继续读取位置。首版检索只基于确定性的原文匹配及邻近页，不宣称已有语义向量检索、可靠章节抽取或表格还原；搜不到时返回未覆盖原因，让模型决定是否调 `pdf_render_page` / `pdf_ocr_page`。未来若有索引，可新增明确的 `retrievalMode: 'semantic'`，并标注索引版本及召回局限。
+输出按来源分块，每块含 `PdfEvidence`、正文、近邻上下文、实际字符数；`coverage` 报已扫描页、无文字页、未扫页范围、被截断的块与继续读取位置。`pdf_context` 自身仍只进行确定性的原文匹配及邻近页补读；语义召回通过 `pdf_find_related` 获得候选引用，再传给此工具。可靠章节抽取和表格还原尚未实现；缺少文字时返回未覆盖原因，让模型决定是否调用 `pdf_render_page` / `pdf_ocr_page`。
 
 例如，一次围绕指定页的请求及返回形态可以是（仅示意关键字段；实际 `focus`、`chunks` 和 `coverage` 结构以工具 schema 为准）：
 
@@ -158,7 +200,7 @@ type PdfEvidence = {
 {"status":"partial","chunks":[{"refId":"pdfref_…","page":42,"source":"pdf-text","text":"…","precision":"page-only"}],"coverage":{"pagesScanned":[41,42,43],"noTextPages":[],"remaining":"pages 44–end","nextCursor":"opaque-version-bound-cursor"}}
 ```
 
-旧工具增强的实际范围：`pdf_read_page` 有来源版本及有界回放快照；`pdf_render_page` 与 `pdf_ocr_page` 返回会话限定 `refId`，元数据只存受保护附件标识或派生文字摘要，不内联 PNG。`pdf_search` 仍是精确、大小写敏感的十页/20 命中搜索，每个命中新增持久 `evidence.refId`，保存**查询匹配本身**的 UTF-16 起止范围而非周围 excerpt；重复词用不同偏移区分，不要求模型再次抄写或定位。来源信息令输出接近 64,000 字符时会提前续读，游标指向首个未返回命中。带草稿覆盖层的页图及 OCR 精确坐标换算仍是后续目标。
+旧工具增强的实际范围：`pdf_read_page` 有来源版本及有界回放快照；`pdf_render_page` 与 `pdf_ocr_page` 返回会话限定 `refId`，元数据只存受保护附件标识或派生文字摘要，不内联 PNG。`pdf_search` 仍是精确、大小写敏感的十页/20 命中搜索，每个命中新增持久 `evidence.refId`，保存**查询匹配本身**的 UTF-16 起止范围而非周围 excerpt；重复词用不同偏移区分，不要求模型再次抄写或定位。来源信息令输出接近 64,000 字符时会提前续读，Host 在 `searchId` 对应的状态中保存首个未返回命中的位置。带草稿覆盖层的页图及 OCR 精确坐标换算仍是后续目标。
 
 ### `pdf_image_context` 与解释区域证据
 
@@ -212,4 +254,4 @@ DSH 的 `userQuestions` 是可由插件注册回答者的交互服务，接口�
 
 ## 未来扩展的判据
 
-有稳定的结构树、跨页表格提取和标注来源评测后，再考虑 `pdf_read_section` / `pdf_tables`；有可解释的召回评测与版本化索引后，再加语义检索。若要提供 MCP，只在相同的 Host 服务上做独立 adapter，重新审视会话身份、文件权限与写入确认；不能把 DSH 内部工具注册等同于已经安全地对外暴露。表单、签名、真脱敏、校验和转换应作为独立的文档处理能力评估，不驱动当前阅读器的工具列表膨胀。
+有稳定的结构树、跨页表格提取和标注来源评测后，再考虑 `pdf_read_section` / `pdf_tables`。当前实验已有版本化文字索引与真实本地 embedding 评测；视觉索引、重排和跨文档召回仍需各自的准确性及资源验证。若要提供 MCP，只在相同的 Host 服务上做独立 adapter，重新审视会话身份、文件权限与写入确认；不能把 DSH 内部工具注册等同于已经安全地对外暴露。表单、签名、真脱敏、校验和转换应作为独立的文档处理能力评估，不驱动当前阅读器的工具列表膨胀。

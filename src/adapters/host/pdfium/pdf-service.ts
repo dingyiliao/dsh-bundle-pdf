@@ -245,7 +245,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const release = await workspaces.acquire(sessionId, input.id, agent, signal)
     try { return await nativeRequestDispatch(sessionId, raw, agent, signal) } finally { release() }
   }
-  async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
+  async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
+    readOptions?: { recover?: boolean }): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }> {
     const read = await withHandleLease(async () => {
@@ -264,7 +265,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       lang: z.string().nullable(), quality: z.object({ unmappedCharacters: integer.min(0) }).optional() }).parse(reply.value)
     return { snapshot, content }
     })
-    if (!read.content.quality?.unmappedCharacters || !options.textRecovery) return read
+    if (readOptions?.recover === false || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
     const key = `${documentId}:${workspaces.bytesHash(read.snapshot.bytes)}:${page}`
     const repair = textRepairs.then(async () => {
       const abort = AbortSignal.any([signal, recoveryLifetime.signal])

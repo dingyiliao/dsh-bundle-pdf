@@ -12,7 +12,8 @@ import { rememberTextEvidence } from './text-evidence.js'
 import type { EvidenceReferenceStore, PdfTextEvidence } from './reference-store.js'
 
 export interface AgentPageReadPort {
-  readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
+  readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
+    options?: { recover?: boolean }): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }>
 }

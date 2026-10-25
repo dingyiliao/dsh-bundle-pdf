@@ -3,6 +3,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { createEvidenceReferenceStore } from '../adapters/host/storage/evidence-references.js'
+import { createRetrievalCache, retrievalCacheRecordSchema } from '../adapters/host/storage/retrieval-cache.js'
+import { createPdfRetrieval } from '../adapters/host/dsh/retrieval.js'
+import { EmbeddingRegistry, createDisabledEmbeddingEngine } from '../embedding/index.js'
+import { createOpenAiCompatibleEmbeddingEngine } from '../adapters/host/embedding/openai-compatible.js'
 import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation,
   savedReferenceSchema } from '../modules/evidence/index.js'
 import { Config, readConfig, type HostConfig } from './reader-host-config.js'
@@ -83,6 +87,11 @@ export async function apply(
     name: `pdf_evidence_${suffix}`, version: 1, layout: 'per-record',
     invalidRecords: 'backup-and-skip', tables: { references: domainTable(savedReferenceSchema) },
   })).catch(async error => { await positionDomain.close(); await domain.close(); throw error })
+  const retrievalDomain = await ctx.storageDomain.open(defineDomain({
+    name: `pdf_retrieval_${suffix}`, version: 1, layout: 'per-record', invalidRecords: 'backup-and-skip',
+    tables: { cache: domainTable(retrievalCacheRecordSchema) },
+  })).catch(async error => { await evidenceDomain.close(); await positionDomain.close(); await domain.close(); throw error })
+  const retrievalCache = createRetrievalCache(retrievalDomain.table('cache'))
   const referenceStore = createEvidenceReferenceStore(evidenceDomain.table('references'))
   const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfLibDocumentAdapter)
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))
@@ -106,8 +115,21 @@ export async function apply(
   }
   const retain = (dispatch: Parameters<typeof retainPdfDocument>[0]) => track(retainPdfDocument(dispatch, workspaces.acquire))
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
+  const embeddings = new EmbeddingRegistry()
+  embeddings.register(createDisabledEmbeddingEngine())
+  embeddings.register(createOpenAiCompatibleEmbeddingEngine())
+  const retrieval = createPdfRetrieval(workspaces, pdfService, referenceStore,
+    { cache: retrievalCache, embeddings, settings: () => readConfig(config),
+      async retain(sessionId, documentId, signal) {
+        const resolved = await ctx.sessionController.resolveAgent(sessionId)
+        if ('error' in resolved) throw resolved.error
+        if (resolved.agent.session.id !== sessionId) throw new Error('PDF retrieval session identity mismatch')
+        return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
+      },
+    })
   const engineCatalog = new EngineCatalog()
   const stopTranslations = engineCatalog.attach('translation', translations.registry)
+  const stopEmbeddings = engineCatalog.attach('embedding', embeddings)
   // The image-understanding plugin may start before or after this reader.
   // Resolve the current agent and attachment store for each request, not at
   // plugin startup, so neither mounting order nor an old Session grants access.
@@ -140,8 +162,11 @@ export async function apply(
     // Close operation admission synchronously, then release transports. Domain
     // writes remain available until every already-admitted operation settles.
     transportLifetime.abort(new DOMException('PDF reader is unloading', 'AbortError'))
+    const retrievalDrain = retrieval.dispose()
     const drain = workspaces.dispose()
     translations.registry.dispose()
+    embeddings.dispose()
+    stopEmbeddings()
     stopTranslations()
     engineCatalog.dispose()
     readerContexts.dispose()
@@ -153,8 +178,9 @@ export async function apply(
       // observation failure; otherwise one failed wait would retain both stores.
       // Draining queued position writes comes first: they resolve the working
       // copy they belong to, so releasing workspaces first would drop them.
-      for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, () => positions.dispose(), () => drain, () => pdfService.dispose(),
-        () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
+      for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, async () => { await retrievalDrain },
+        () => positions.dispose(), () => drain, () => pdfService.dispose(), () => retrievalCache.dispose(),
+        () => retrievalDomain.close(), () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }
       }
       capabilities.dispose()
@@ -215,6 +241,7 @@ export async function apply(
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
+    ctx.effect(() => ctx.reflect.provide('pdfEmbedding', embeddings), 'pdf: Host embedding engines')
     ctx.effect(() => ctx.reflect.provide('pdfAiSettings', () => readConfig(config)), 'pdf: Host AI selections')
     ctx.effect(() => {
       const ocr = ctx.inject(['ocr'], scope => scope.effect(() => engineCatalog.attach('ocr', scope.ocr), 'pdf: OCR directory'))
@@ -226,7 +253,7 @@ export async function apply(
     ctx.effect(() => ctx.reflect.provide('pdfImageEvidence', imageEvidence), 'pdf: image evidence resolver')
     // ToolRuntime binds registrations to this plugin Fiber and removes them on unload.
     ctx.effect(() => registerPdfAgentTools(ctx, workspaces, pdfService, readerContexts, referenceStore, files,
-      agentNavigation),
+      agentNavigation, retrieval),
       'pdf: agent tools and background documents')
     // Reader guidance is injected, not declared, so a Host without the
     // system-prompt service still loads the reader without this section.
