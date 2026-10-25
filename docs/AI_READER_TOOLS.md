@@ -1,6 +1,6 @@
 # 面向 AI 阅读的 PDF 工具设计
 
-> 状态：只读证据工具、持久文字/图像引用与三个文字工具卡已接入；搜索、相关检索、定位和上下文产生的文字引用可经 Host 重验，用于直接标注及可见 Reader 的精确页内导航，成功跳转进入同一多级回退历史。标注增删改、表单和内置书签编辑写入共享可撤销草稿；只有覆盖原 PDF 需要交互批准。搜索与相关检索使用短 `searchId` 续读，书签、定位和上下文保留各自的版本化游标；`pdf_status` 报告当前可用性及原因。本实验分支新增有界 BM25／embedding 混合文字索引，embedding 默认关闭；复杂页面视觉索引与答案正文内联引用未实现。真实 Desktop 与外部阅读器验收仍需完成。本文同时记录已落地契约与尚未实现的目标，示例目标结构不等于当前 TypeScript API。
+> 状态：只读证据工具、持久文字/图像引用与三个文字工具卡已接入；搜索、相关检索、定位和上下文产生的文字引用可经 Host 重验，用于直接标注及可见 Reader 的精确页内导航，成功跳转进入同一多级回退历史。标注增删改、表单和内置书签编辑写入共享可撤销草稿；只有覆盖原 PDF 需要交互批准。搜索与相关检索使用短 `searchId` 续读，书签、定位和上下文保留各自的版本化游标；`pdf_status` 报告当前可用性及原因。有界 BM25／embedding 混合文字索引已作为实验功能接入，embedding 默认关闭；复杂页面视觉索引与答案正文内联引用未实现。真实 Desktop 与外部阅读器验收仍需完成。本文同时记录已落地契约与尚未实现的目标，示例目标结构不等于当前 TypeScript API。
 
 ## 产品判断
 
@@ -34,7 +34,7 @@ Host 的基础读取工具包括 `pdf_open`、`pdf_close`、`pdf_current`、`pdf
 | 现有 | `pdf_render_page`、`pdf_ocr_page` | 有界整页图像或文字；图片能否直达当前模型由视觉能力决定。OCR 和辅助视觉结果是派生文字，不能宣称当前模型看过原图。现有页图不合成未保存的草稿覆盖层。 |
 | 已接入 | `pdf_form_inspect_page`、`pdf_fill_form` | 在可填写组件内标记编号，返回精简的类型、选项与可选当前值；一次检查／填写一页，凭单个 inspection ID 与编号直接原子写入共享可撤销草稿。支持先检查多页、再填写独立页；保存仍单独批准。仅填写已有 AcroForm。 |
 | 第一阶段已实现 | `pdf_status`、`pdf_locate`、`pdf_context` | 查询**已打开**工作副本状态、在有界页窗内定位引文、打包有界文字上下文；版本化游标和会话限定的持久文字引用。能力布尔值代表观察时可用性，`capabilityDetails` 区分支持、可用与不可用原因；不是实时文件检查或执行预约。 |
-| 实验分支已接入，待真实阅读验收 | `pdf_find_related` | 默认检索整份文档，可显式限制页范围；分步建立有界、可复用的文字索引。支持 `auto/lexical/semantic/hybrid`，仅在所请求范围完成索引后返回候选与精确原文引用；返回覆盖情况、`searchId` 和 `hasMore`，未完成时仅凭该 ID 续调同一工具。embedding 默认关闭，自动模式明确报告词法回退。扫描页及图片需另走 OCR/视觉工具。 |
+| 实验功能已接入，待真实阅读验收 | `pdf_find_related` | 默认检索整份文档，可显式限制页范围；分步建立有界、可复用的文字索引。支持 `auto/lexical/semantic/hybrid`，仅在所请求范围完成索引后返回候选与精确原文引用；返回覆盖情况、`searchId` 和 `hasMore`，未完成时仅凭该 ID 续调同一工具。embedding 默认关闭，自动模式明确报告词法回退。扫描页及图片需另走 OCR/视觉工具。 |
 | 第一阶段已接入 | `pdf_image_context`、读工具来源元数据与工具卡 | `pdf_render_page`、`pdf_ocr_page` 返回 `refId`；新工具在同一 Agent 会话和已授权工作副本中重验源字节、版本及附件，直送图像仍要求当前模型支持图像。`pdf_read_page`、`pdf_render_page`、`pdf_ocr_page` 写入有界 `tool/result.meta`；Client 为 `pdf_read_page`、`pdf_locate`、`pdf_context` 注册可回放卡。尚无图像工具卡或答案正文引用。 |
 | 第一阶段已接入，待真实 Desktop 验收 | `pdf.region`、`pdf.selection`、`pdf.image` `prepare-reference`（Client↔Host RPC） | 解释模式的单页框选区域由 Host 根据已授权工作副本绘制 PNG、核对附件字节并生成 `pdf-region` 引用；文字选段由 Host 按 PDFium 字形位置重新提取、核对整页文字并签发引用。发送区域图像时，Client 用 `prepare-reference` 让 Host 再核对会话、文档、源文件、附件和摘要，直送图片只使用 Host 返回的字节，不使用 Client 暂存 Blob。它们都不是模型导航工具。 |
 | 第二阶段已实现 | `pdf_annotate`、`pdf_annotation_update`、`pdf_annotation_delete`、`pdf_save` | 新增、修改颜色/评论、删除可编辑标注均直接进入 Reader 共用的可撤销草稿；修改/删除须使用 `pdf_page_annotations` 的精确 ID 与当前修订。只有覆盖保存原 PDF 时才要求交互批准。 |
@@ -152,7 +152,7 @@ type PdfEvidence = {
 
 每个命中的 `evidence.refId` 保存查询匹配本身的精确 UTF-16 范围，可用于补读、标注及导航。编码异常页面可使用明确标记的本地修复文字，普通扫描页不会自动 OCR。搜索完成只代表该搜索范围的提取文字已扫描，不代表图像内容已被理解。
 
-### `pdf_find_related`（实验分支）
+### `pdf_find_related`（实验功能）
 
 用于围绕概念或问题寻找原文线索。它扩展现有工具，不新增第二套证据、草稿或导航接口；`pdf_search` 保持精确、大小写敏感的匹配语义。以下是 `pdf_find_related` 的初始调用参数：
 

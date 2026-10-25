@@ -43,7 +43,7 @@ Cordis `Context`、DSH Remote/Slots/Tools、文件沙箱和原生 worker 的具�
 
 读页、搜索、OCR、图像理解不会暗中移动用户视图；导航是单独的 Client 动作。Host 的“后台打开文档”与 Client 的“在侧栏显示文档”仍是两个操作。
 
-### 混合文字检索（实验分支）
+### 混合文字检索（实验功能）
 
 `modules/retrieval` 只拥有可重建的索引，不拥有第二份文档或草稿。`adapters/host/dsh/retrieval.ts` 从共享工作副本取得已授权快照，通过 PDFium 原生文字端口按页读取，保留原始 UTF-16 范围及整页摘要；分块、BM25、向量排名与候选合并均在独立模块中。`pdf_find_related` 的默认范围是全文，内部有界分步处理；`building/incomplete` 只报告覆盖和进度，`complete` 才返回范围内统一排名。公开续调仅使用短 `searchId: "rel_…"`；Host 保存初始查询、范围、进度及源／引擎代次约束。旧版逐窗口关键词排序路径已删除。
 

@@ -8,12 +8,46 @@ I built this plugin because I often read papers and books in PDF form. The reade
 
 ## What it does
 
-- **Go from a question to the source.** The agent can search unread pages, inspect nearby text, and mark a matching passage. It can move your visible reader when you ask it to; reading tools alone do not interrupt you.
-- **Edit one shared draft.** Your highlights, comments, and page notes appear in the same undoable PDF draft as edits made by the agent. An agent-requested overwrite of the original PDF requires your approval.
-- **Ask in context.** Select several text passages or a single-page image region, attach a question to each, and send them together to the current conversation.
-- **Navigate without losing your place.** Use the PDF outline, search results, annotations, and a multi-step back history. Ordinary scrolling does not add history entries.
-- **Edit the PDF's bookmarks.** Add, rename, remove a subtree, change target pages, reorder, or reparent entries in the same undoable draft. Saving writes those changes into the PDF.
-- **Search by meaning (experimental branch).** Combine keyword matching with a local embedding model to find paraphrases and cross-language passages. Results remain original text references; incomplete indexing and image-only pages are reported explicitly. Embedding is off by default.
+- **Read and find.** Continuous scrolling, zoom and fit modes, page thumbnails, text selection, and text search.
+- **Navigate and return.** Jump through pages, links, bookmarks, or annotations, then choose an earlier position from multi-step back history.
+- **Annotate.** Add highlights, underlines, strikeouts, comments and draggable, resizable page notes; edit colors and comment threads.
+- **Edit bookmarks.** Add, rename, delete, reorder and nest the PDF's built-in bookmarks, then save them into the document.
+- **Fill forms.** Fill existing AcroForm controls manually or let the model inspect numbered controls and fill one page at a time.
+- **Save your work.** Undo/redo, recover drafts, save or save as, and detect source-file conflicts. User and model edits share the same draft; model-requested saves require approval.
+- **Translate selections.** Get pronunciation, meanings, parts of speech and examples for words; meanings and examples for phrases; direct translations for sentences.
+- **Ask in context.** Select several text passages or single-page image regions, attach a question to each, and send them together to the current conversation.
+- **Capture and recognize.** Copy or download a page region, run OCR on a page or region, and use the configured image-understanding backend.
+- **Let the model work with the PDF.** Read unread pages, find related passages, mark evidence, edit forms and bookmarks, and navigate an already visible Reader.
+- **Extend AI engines.** Register OCR, image-understanding, translation and embedding implementations through plugin APIs; available engines appear in PDF settings.
+- **Search by meaning (experimental).** Combine keyword matching with a local embedding model to find paraphrases and cross-language passages. Results remain original text references; incomplete indexing and image-only pages are reported explicitly. Embedding is off by default.
+
+## Agent tools
+
+The bundle provides the following tools. Image/OCR availability depends on the current model and selected backend; navigation requires an already visible Reader. See the [tool contracts](docs/AI_READER_TOOLS.md) for inputs and limits.
+
+- `pdf_current` — List PDFs visible in the current conversation and their page hints.
+- `pdf_open` — Open a PDF in the background and obtain its shared document reference.
+- `pdf_close` — Release the model's document reference; Reader tabs keep their own references.
+- `pdf_status` — Inspect revisions, unsaved changes, conflicts and available capabilities.
+- `pdf_read_page` — Read a bounded text window from a specified page.
+- `pdf_search` — Search for exact text and return source references.
+- `pdf_find_related` — Find passages related to a question or concept and return source references.
+- `pdf_locate` — Locate a quoted passage in the original page text.
+- `pdf_context` — Read surrounding text for a position, quote or source reference.
+- `pdf_render_page` — Return a page image or derived text from the configured image-understanding backend.
+- `pdf_ocr_page` — Recognize text on a page using the selected OCR backend.
+- `pdf_image_context` — Retrieve previously recorded image or OCR evidence after revalidation.
+- `pdf_form_inspect_page` — Return a page image with numbered writable controls and their types/options.
+- `pdf_fill_form` — Fill one inspected page atomically in the shared draft.
+- `pdf_page_annotations` — List a page's annotations, comments and exact IDs.
+- `pdf_annotate` — Add a highlight, underline, strikeout or page note; text ranges can span pages.
+- `pdf_annotation_update` — Update text-mark colors or the text of a mark, note or comment reply.
+- `pdf_annotation_delete` — Delete an editable annotation or comment reply by ID.
+- `pdf_bookmarks` — Read the PDF's built-in bookmark tree and IDs.
+- `pdf_outline_edit` — Add, rename, delete, reorder or reparent built-in bookmarks.
+- `pdf_navigate` — Jump to a verified passage or page in a visible Reader, preserving back history.
+- `pdf_save` — Request user approval and save the current draft over its source PDF.
+- `ocr_recognize` — Transcribe a session-scoped image handle; provided by the bundled OCR plugin.
 
 ## Preview
 
@@ -111,13 +145,13 @@ Form inspection returns a numbered page image and the writable controls on that 
 
 For a source checkout, run `npm ci`, `npm run native:build`, and `npm run build`, then install the directory with `dsh plugin --profile web add .`. A Git URL installation does not include a prebuilt native worker. Run `npm run check` for type and Node tests, `npm run test:web` for browser interactions, and `npm run test:coverage:project` for project coverage.
 
-On `feat/pdf-hybrid-retrieval`, you can reuse an existing Apple Silicon MLX environment and cached Qwen3 embedding model:
+For experimental semantic retrieval, you can reuse an existing Apple Silicon MLX environment and cached Qwen3 embedding model:
 
 ```sh
 /absolute/path/to/mlx-lm-local-demo/.venv/bin/python scripts/local-embedding-server.py --port 8001
 ```
 
-Then choose **Local Qwen3 embedding** in PDF settings. The launcher starts only the embedding service, downloads nothing, and remains a separately managed process. It requires the cached model and dependencies described in the [experiment setup and measurements](docs/RETRIEVAL_EXPERIMENT.md). `npm run bench:retrieval` runs the model-free baseline; that document also gives the real-model command. This experimental branch is not a claim that the published `main` artifacts already contain semantic retrieval. Images, charts and formula layout are not indexed by the text retriever.
+Then choose **Local Qwen3 embedding** in PDF settings. The launcher starts only the embedding service, downloads nothing, and remains a separately managed process. It requires the cached model and dependencies described in the [experiment setup and measurements](docs/RETRIEVAL_EXPERIMENT.md). `npm run bench:retrieval` runs the model-free baseline; that document also gives the real-model command. Semantic retrieval is experimental and off by default; availability depends on the build or release you install. Images, charts and formula layout are not indexed by the text retriever.
 
 Ordinary AcroForm fields can be filled in the Reader or by the model. Inspection puts small IDs inside controls on a base-page image without widget appearances or annotations; current draft values are available through `includeValues:true` metadata, not the deliberately blank-looking image. Each fill atomically updates one page of the shared undoable draft using a single inspection ID and label/value entries; the Host restores the page. Inspect multiple pages together, then fill independent pages in separate calls. Shared-field and declared-dependency conflicts require reinspection. The model can supply explicit conditional and exclusive-choice checks; the Host validates those supplied rules and field types without inferring business meaning. Inspection needs a vision-capable model; overwriting the PDF still requires approval. PDF scripts and actions are not executed; signed PDFs remain read-only and signatures are not verified. XFA and encrypted PDFs are not supported. Text search does not automatically index scanned pages, and a background `pdf_open` tool call does not open a Reader tab. See [SPEC.md](SPEC.md) for the remaining limits.
 

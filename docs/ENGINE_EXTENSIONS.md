@@ -1,6 +1,6 @@
 # Engine extensions
 
-OCR, image understanding, translation and embedding are Host services, not Reader components. Contributors inject the service they extend and own the registration disposer through `ctx.effect()`. They do not need a Client entry or changes to PDF settings. Plugin code is trusted executable code, not a sandbox boundary. Embedding is experimental on `feat/pdf-hybrid-retrieval` and disabled by default.
+OCR, image understanding, translation and embedding are Host services, not Reader components. Contributors inject the service they extend and own the registration disposer through `ctx.effect()`. They do not need a Client entry or changes to PDF settings. Plugin code is trusted executable code, not a sandbox boundary. Embedding is experimental and disabled by default.
 
 | Service | Public types | Execution contract |
 | --- | --- | --- |
