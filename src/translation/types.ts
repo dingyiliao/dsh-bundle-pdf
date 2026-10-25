@@ -76,6 +76,7 @@ export interface TranslationEngineDescriptor {
   version: string
   execution: 'disabled' | 'local' | 'remote'
   maxInputCharacters?: number
+  configurationFields?: import('../modules/engines/types.js').EngineConfigurationField[]
 }
 
 export interface TranslationAvailability {

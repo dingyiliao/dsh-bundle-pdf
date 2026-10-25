@@ -11,23 +11,26 @@ function document(rotation = 0): PdfDocumentInfo {
       required: true, maxLength: 32, widgets: [{ page: 1, rect: [50, 100, 100, 130] }] }] }
 }
 
-test('form numbering maps exact IDs without default values and respects all rotations, crop and UserUnit', () => {
-  const expected = [[51.2, 371.2, 115.2, 409.6], [102.4, 51.2, 140.8, 115.2],
-    [140.8, 102.4, 204.8, 140.8], [371.2, 140.8, 409.6, 204.8]]
+test('in-field numbering respects all rotations, crop and UserUnit without exposing values by default', () => {
+  const expected = [[.2, .725, .45, .8], [.2, .2, .275, .45],
+    [.55, .2, .8, .275], [.725, .55, .8, .8]]
   for (let index = 0; index < 4; index++) {
-    const inspection = inspectFormPage(document(index * 90), 1, index % 2 ? 512 : 256, index % 2 ? 256 : 512)
+    const inspection = inspectFormPage(document(index * 90), 1, 512)
     const field = inspection.fields[0], control = field.controls[0]
     assert.equal(field.fieldId, 'Text1'); assert.equal(field.required, true); assert.equal(field.maxLength, 32)
-    assert.equal('value' in field, false)
+    assert.equal(field.valueContract.valueType, 'string'); assert.equal('value' in field, false)
     assert.equal(control.label, 'F01'); assert.equal(control.fieldId, field.fieldId)
-    control.rectImage.forEach((value, position) => assert.ok(Math.abs(value - expected[index][position]) < 0.001))
-    assert.ok(control.labelRect[0] >= 0 && control.labelRect[2] <= inspection.width)
-    assert.ok(control.labelRect[1] >= 0 && control.labelRect[3] <= inspection.height)
+    assert.deepEqual(inspection.pageRect, [0, 0, inspection.width, inspection.height])
+    control.rectImage.forEach((value, position) => {
+      const normalized = value / (position % 2 ? inspection.height : inspection.width)
+      assert.ok(Math.abs(normalized - expected[index][position]) < .001)
+      assert.ok(position < 2 ? control.labelRect[position] > value : control.labelRect[position] < value)
+    })
   }
-  assert.equal(inspectFormPage(document(), 1, 256, 512, true).fields[0].value, 'Do not expose by default')
+  assert.equal(inspectFormPage(document(), 1, 512, true).fields[0].value, 'Do not expose by default')
 })
 
-test('read-only, unsupported, off-page and fully clipped widgets are not marked; radio options stay distinct', () => {
+test('read-only, unsupported, off-page and clipped widgets are not marked; radio options stay distinct', () => {
   const pdf = document()
   pdf.formFields!.push({ ...pdf.formFields![0], name: 'locked', readOnly: true },
     { ...pdf.formFields![0], name: 'unknown', type: 'unsupported' },
@@ -35,44 +38,80 @@ test('read-only, unsupported, off-page and fully clipped widgets are not marked;
     { name: 'contact', type: 'radio', value: '', options: ['a', 'b'], readOnly: false, required: false,
       widgets: [{ page: 1, option: 'a', rect: [100, 200, 110, 210] }, { page: 1, option: 'b', rect: [150, 200, 160, 210] },
         { page: 2, option: 'b', rect: [150, 200, 160, 210] }] })
-  const inspection = inspectFormPage(pdf, 1, 256, 512)
+  const inspection = inspectFormPage(pdf, 1, 1024)
   assert.deepEqual(inspection.fields.map(field => field.fieldId), ['Text1', 'contact'])
   assert.deepEqual(inspection.fields[1].controls.map(control => [control.label, control.fieldId, control.option]),
     [['F02', 'contact', 'a'], ['F03', 'contact', 'b']])
-  assert.deepEqual(inspectFormPage({ ...pdf, readOnly: true }, 1, 256, 512).fields, [])
+  assert.deepEqual(inspection.fields[1].valueContract.examples, ['a'])
+  assert.deepEqual(inspectFormPage({ ...pdf, readOnly: true }, 1, 512).fields, [])
 })
 
-test('numbered raster decoration is bounded, readable and does not modify document metadata', () => {
-  const pdf = document(), before = structuredClone(pdf)
-  const inspection = inspectFormPage(pdf, 1, 256, 512)
-  const raster = new Uint8Array(256 * 512 * 4).fill(255)
-  const marker = inspection.fields[0].controls[0]
-  paintFormLabels(raster, 256, 512, [marker])
-  const at = (x: number, y: number) => [...raster.slice((Math.floor(y) * 256 + Math.floor(x)) * 4,
-    (Math.floor(y) * 256 + Math.floor(x)) * 4 + 4)]
-  assert.deepEqual(at(marker.labelRect[0] + 1, marker.labelRect[1] + 1), [24, 83, 201, 255])
-  assert.deepEqual(at(marker.labelRect[0] + 4, marker.labelRect[1] + 3), [255, 255, 255, 255])
-  assert.deepEqual(at(marker.rectImage[0] + 1, marker.rectImage[1] + 1), [24, 83, 201, 255])
-  assert.deepEqual(pdf, before)
-  assert.throws(() => paintFormLabels(new Uint8Array(1), 256, 512, [marker]), /raster/)
+test('small translucent glyphs modify only their widget interiors without backgrounds or mutating input', () => {
+  const pdf = document(), before = structuredClone(pdf), inspection = inspectFormPage(pdf, 1, 512)
+  const { width, height } = inspection, marker = inspection.fields[0].controls[0]
+  const raster = new Uint8Array(width * height * 4)
+  for (let offset = 0; offset < raster.length; offset += 4) raster.set([120, 180, 240, 255], offset)
+  const [left, top, right, bottom] = marker.labelRect
+  // Place black printed ink below an actual glyph. Multiply must not erase it.
+  const ink = (Math.ceil(top) * width + Math.ceil(left)) * 4
+  raster.set([0, 0, 0, 255], ink)
+  const original = raster.slice(), decorated = paintFormLabels(raster, width, height, inspection)
+  let tinted = 0
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const offset = pixel * 4, x = pixel % width, y = Math.floor(pixel / width)
+    if (!decorated.subarray(offset, offset + 4).every((value, index) => value === original[offset + index])) {
+      tinted++
+      assert.ok(x >= Math.floor(left) && x < Math.ceil(right) && y >= Math.floor(top) && y < Math.ceil(bottom))
+      assert.ok(decorated[offset] <= original[offset] && decorated[offset + 2] <= original[offset + 2])
+    }
+  }
+  assert.ok(tinted > 50); assert.deepEqual(decorated.subarray(ink, ink + 4), new Uint8Array([0, 0, 0, 255]))
+  assert.deepEqual(raster, original); assert.deepEqual(pdf, before)
+  assert.throws(() => paintFormLabels(new Uint8Array(1), width, height, inspection), /raster/)
+  assert.throws(() => paintFormLabels(raster, width, height, { ...inspection, width: 2049 }), /raster/)
+  marker.labelRect[0] = -1
+  assert.throws(() => paintFormLabels(raster, width, height, inspection), /label/)
 })
 
-test('a control against the top page edge places its number below the control', () => {
+test('page-edge controls retain their bounds and complete IDs inside the page', () => {
   const pdf = document()
-  pdf.formFields![0].widgets = [{ page: 1, rect: [50, 400, 100, 420] }]
-  const marker = inspectFormPage(pdf, 1, 256, 512).fields[0].controls[0]
-  assert.equal(marker.rectImage[1], 0)
-  assert.equal(marker.labelRect[1], marker.rectImage[3] + 2)
-  assert.ok(marker.labelRect[3] <= 512)
+  pdf.formFields![0].widgets = [{ page: 1, rect: [10, 400, 30, 420] }, { page: 1, rect: [190, 20, 210, 40] }]
+  const inspection = inspectFormPage(pdf, 1, 512), [first, last] = inspection.fields[0].controls
+  assert.equal(first.rectImage[0], 0); assert.equal(first.rectImage[1], 0)
+  assert.equal(last.rectImage[2], inspection.width); assert.equal(last.rectImage[3], inspection.height)
+  assert.ok(first.labelRect[0] > 0 && last.labelRect[2] < inspection.width)
+  assert.ok(first.labelRect[1] > 0 && last.labelRect[3] < inspection.height)
+  assert.equal(paintFormLabels(new Uint8Array(inspection.width * inspection.height * 4).fill(255),
+    inspection.width, inspection.height, inspection).length, inspection.width * inspection.height * 4)
 })
 
-test('inspection fails closed instead of truncating ambiguous or oversized mappings', () => {
-  assert.throws(() => inspectFormPage(document(), 2, 256, 512), /outside/)
-  assert.throws(() => inspectFormPage(document(), 1, 0, 512), /size/)
-  assert.throws(() => inspectFormPage(document(), 1, 20, 512), /narrow/)
+test('100 dense controls retain complete nonoverlapping in-field IDs, including landscape pages', () => {
+  for (const rotation of [0, 90]) {
+    const pdf = document(rotation)
+    pdf.formFields![0].widgets = Array.from({ length: 100 }, (_, index) => ({ page: 1,
+      rect: [15 + index % 10 * 19, 25 + Math.floor(index / 10) * 38,
+        31 + index % 10 * 19, 55 + Math.floor(index / 10) * 38] }))
+    const inspection = inspectFormPage(pdf, 1), controls = inspection.fields[0].controls
+    assert.equal(controls.length, 100); assert.equal(controls[99].label, 'F100')
+    assert.ok(inspection.width <= 2048 && inspection.height <= 2048)
+    for (const marker of controls) {
+      const a = marker.labelRect, r = marker.rectImage
+      assert.ok(a[0] > r[0] && a[1] > r[1] && a[2] < r[2] && a[3] < r[3])
+    }
+    assert.throws(() => inspectFormPage(pdf, 1, 256), /too small for a readable in-field ID/)
+  }
+})
+
+test('inspection fails closed on tiny, overlapping, invalid or oversized mappings instead of truncating', () => {
+  assert.throws(() => inspectFormPage(document(), 2, 512), /outside/)
+  for (const size of [0, 20, 2049]) assert.throws(() => inspectFormPage(document(), 1, size), /size/)
   const duplicate = document(); duplicate.formFields!.push(duplicate.formFields![0])
-  assert.throws(() => inspectFormPage(duplicate, 1, 256, 512), /Duplicate/)
+  assert.throws(() => inspectFormPage(duplicate, 1, 512), /Duplicate/)
+  const overlap = document(); overlap.formFields![0].widgets.push(overlap.formFields![0].widgets[0])
+  assert.throws(() => inspectFormPage(overlap, 1), /Overlapping/)
+  const tiny = document(); tiny.formFields![0].widgets[0].rect = [50, 100, 51, 101]
+  assert.throws(() => inspectFormPage(tiny, 1), /too small/)
   const crowded = document()
   crowded.formFields![0].widgets = Array.from({ length: 101 }, () => ({ page: 1, rect: [50, 100, 100, 130] }))
-  assert.throws(() => inspectFormPage(crowded, 1, 256, 512), /100 visible/)
+  assert.throws(() => inspectFormPage(crowded, 1, 512), /100 visible/)
 })

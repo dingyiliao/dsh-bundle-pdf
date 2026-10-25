@@ -49,7 +49,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
         ? { agent: { session: { id: options.resolvedAgentId ?? options.agentSessionId, header: {} } } }
         : { error: new Error('No active agent') }
     } },
-    get(name: string) { return name === 'attachments' ? options.attachments : undefined },
+    get(name: string) { return name === 'attachments' ? options.attachments : services.get(name) },
     storageDomain: { async open(definition: { name: string }) {
       if (opened.length + 1 === options.failOpenAt) throw new Error('Domain open failed')
       opened.push(definition.name)
@@ -114,22 +114,22 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
     'loader', 'tools', 'pdfNative', 'subprocess'])
   await apply(runtime.ctx, runtime.config, assets)
   try {
-    assert.equal(runtime.routes.size, 13)
+    assert.equal(runtime.routes.size, 14)
     assert.deepEqual(runtime.registrations, [
       '/api/pdf.dispatch.v2', '/api/pdf.watch', '/api/pdf.native', '/api/pdf.position',
       '/api/pdf.translation', '/api/pdf.ocr', '/api/pdf.region', '/api/pdf.selection',
       '/api/pdf.readercontext', '/api/pdf.navigation', '/api/pdf.evidence',
-      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info',
+      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines',
     ])
     assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
       ['pdf_drafts', 'pdf_positions', 'pdf_evidence'])
-    assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
+    assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
     assert.ok(runtime.tools.includes('pdf_read_page'))
     assert.ok(runtime.tools.includes('pdf_find_related'))
     assert.ok(runtime.tools.includes('pdf_navigate'))
-    assert.deepEqual(runtime.injections, [['systemPrompt']])
-    assert.equal(runtime.effects.length, 7)
+    assert.deepEqual(runtime.injections, [['ocr'], ['imageUnderstanding'], ['systemPrompt']])
+    assert.equal(runtime.effects.length, 9)
 
     const info = runtime.routes.get('/api/pdf.info')!
     assert.deepEqual(info.methods, ['POST'])
@@ -149,6 +149,29 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
   assert.equal(runtime.routes.size, 0)
   assert.deepEqual(runtime.releases, [...runtime.registrations].reverse())
   assert.deepEqual(runtime.closed, [...runtime.opened].reverse())
+})
+
+test('Host settings bootstrap reads a profile with retired form configuration without reviving that engine', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  const active = { ocr: { 'fixture.ocr': { language: 'auto' } },
+    image: { 'fixture.image': { model: 'fixture-vision' } },
+    translation: { 'fixture.translation': { language: 'zh' } } }
+  const config = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({
+    engineConfigurations: { ...active, form: { 'fixture.forms': { model: 'retired' } } },
+  })
+  await apply(runtime.ctx, config, assets)
+  try {
+    const response = await runtime.routes.get('/api/pdf.info')!.fetch(infoRequest({
+      type: 'client-request', method: 'pdf.info', rpcId: 'retired-form-settings',
+    }))
+    const body = await response.json() as { result: { ok: boolean; value: {
+      settings: { engineConfigurations: unknown }; engineCatalog: { engines: Record<string, unknown> }
+    } } }
+    assert.equal(body.result.ok, true)
+    assert.deepEqual(body.result.value.settings.engineConfigurations, active)
+    assert.equal('form' in body.result.value.engineCatalog.engines, false)
+    assert.equal(runtime.services.has('formUnderstanding'), false)
+  } finally { await runtime.disposeEffects() }
 })
 
 test('Host watch endpoint validates document and revision before waiting for a working copy', async (t) => {
@@ -171,6 +194,49 @@ test('Host watch endpoint validates document and revision before waiting for a w
     }
     const missing = await watch({ sessionId: 'watch-session', id: 'missing', knownRevision: 0 })
     assert.equal(missing.ok, false)
+  } finally { await runtime.disposeEffects() }
+})
+
+test('engine catalog metadata needs no resource session and rejects malformed revisions or cancelled watches', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  await apply(runtime.ctx, runtime.config, assets)
+  const route = runtime.routes.get('/api/pdf.engines')!
+  const read = (payload?: unknown, signal?: AbortSignal) => route.fetch(infoRequest({
+    type: 'client-request', method: 'pdf.engines', rpcId: 'engine-catalog-test',
+    ...(payload === undefined ? {} : { payload }),
+  }, { signal }))
+  try {
+    const response = await read()
+    const initial = await response.json() as { result: { ok: boolean; value: { revision: string; engines: { translation: unknown[] } } } }
+    assert.equal(initial.result.ok, true)
+    assert.equal(initial.result.value.engines.translation.length, 1)
+    for (const input of [null, 'invalid', [], { extra: true }, { revision: 1 }, { revision: 'x'.repeat(129) }]) {
+      const rejected = await read(input)
+      assert.equal((await rejected.json() as { result: { ok: boolean } }).result.ok, false)
+    }
+    const controller = new AbortController(), pending = read({ revision: initial.result.value.revision }, controller.signal)
+    await new Promise(resolve => setImmediate(resolve))
+    controller.abort()
+    assert.equal((await pending).status, 499)
+  } finally { await runtime.disposeEffects() }
+})
+
+test('Reader OCR route binds its configured engine rather than borrowing the generic service default', async t => {
+  const assets = await assetFixture(t), runtime = host({ agentSessionId: 'engine-session' })
+  await apply(runtime.ctx, runtime.config, assets)
+  let observed: unknown
+  runtime.services.set('ocr', {
+    async availability(_session: string, _signal: AbortSignal, binding: unknown) {
+      observed = binding; return { status: 'available' }
+    },
+    selectedDescriptor() { return undefined },
+  })
+  try {
+    const route = runtime.routes.get('/api/pdf.ocr')!
+    const response = await route.fetch(infoRequest({ type: 'client-request', method: 'pdf.ocr', rpcId: 'engine-ocr',
+      payload: { action: 'availability', sessionId: 'engine-session' } }))
+    assert.equal((await response.json() as { result: { ok: boolean } }).result.ok, true)
+    assert.deepEqual(observed, { engineId: 'session-llm', config: {} })
   } finally { await runtime.disposeEffects() }
 })
 
@@ -330,7 +396,7 @@ test('Host image evidence resolver binds each request to a live matching Session
     }
     await assert.rejects(resolver.resolve('session-a', 'missing-document',
       'pdfref_00000000-0000-4000-8000-000000000000', new AbortController().signal),
-    /Image evidence is unavailable/)
+    { code: 'pdf/unknown-document' })
   } finally { await mounted.disposeEffects() }
 })
 

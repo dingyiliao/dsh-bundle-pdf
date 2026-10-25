@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
+import { engineBinding, validateEngineConfiguration } from '../../../modules/engines/index.js'
 import { createTranslationRegistry, TranslationError } from '../../../translation/index.js'
 import { createDshModelTranslationEngine, type DshTranslationModelRoute, type DshTranslationLlm } from './translation-model.js'
 import { effectiveTranslationEngine, translationSourceLanguage, translationTargetLanguages, type PdfSettings } from '../../../shared/contracts.js'
@@ -65,15 +67,24 @@ export function createHostTranslations(ctx: TranslationHostContext, namespace: s
     const settings = readSettings()
     const engineId = effectiveTranslationEngine(settings.translationEngine)
     if (request.engineId !== engineId) throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
-    const revision = JSON.stringify([engineId, settings.translationTimeoutMs])
-    registry.select({ id: `${namespace}/${engineId}`, engineId,
-      configurationRevision: revision, config: {} })
+    const binding = engineBinding('translation', engineId, settings.engineConfigurations)
+    const descriptor = registry.list().find(engine => engine.id === engineId)
+    if (!descriptor) throw new TranslationError('engine-unavailable', 'The selected translation engine is not installed.')
+    let config
+    try { config = validateEngineConfiguration(descriptor, binding.config) }
+    catch (cause) { throw new TranslationError('not-configured', 'The selected translation configuration is invalid.', { cause }) }
+    const configurationRevision = (settings: PdfSettings) => createHash('sha256').update(JSON.stringify([
+      effectiveTranslationEngine(settings.translationEngine), settings.translationTimeoutMs,
+      engineBinding('translation', effectiveTranslationEngine(settings.translationEngine), settings.engineConfigurations).config,
+    ])).digest('hex')
+    const revision = configurationRevision(settings)
     const result = await registry.translate({ text: request.text, sourceLanguage: translationSourceLanguage, targetLanguage: request.targetLanguage,
       timeoutMs: Math.min(request.timeoutMs, settings.translationTimeoutMs), signal,
-      context: { ...request.context, sessionId } })
+      context: { ...request.context, sessionId } }, { id: `${namespace}/${engineId}`, engineId,
+      configurationRevision: revision, config })
     signal.throwIfAborted()
     const current = readSettings()
-    if (revision !== JSON.stringify([effectiveTranslationEngine(current.translationEngine), current.translationTimeoutMs])) {
+    if (revision !== configurationRevision(current)) {
       throw new TranslationError('stale-result', 'Translation settings changed. Retry the selection.')
     }
     return result

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { createPdfService } from '../pdfium/index.js'
 import type { WorkingCopyReadPort } from '../../../modules/working-copy/index.js'
 import type { PdfDispatch } from './transport.js'
+import type { EngineBinding } from '../../../modules/engines/index.js'
 
 const identity = z.string().min(1).max(512)
 const pdfRect = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])
@@ -21,7 +22,7 @@ function unavailable(reason: string): never {
 export function createPdfOcrDispatch(ctx: Pick<Context, 'get'>,
   workspaces: WorkingCopyReadPort,
   pdf: Pick<ReturnType<typeof createPdfService>, 'renderOcrImage'>,
-  timeoutMs: () => number): PdfDispatch {
+  timeoutMs: () => number, readBinding?: () => EngineBinding): PdfDispatch {
   return async (sessionId, input, agent, signal) => {
     const args = request.parse(input)
     if (args.sessionId !== sessionId || agent.session.id !== sessionId) {
@@ -33,10 +34,11 @@ export function createPdfOcrDispatch(ctx: Pick<Context, 'get'>,
       if (args.action === 'availability') return { status: 'unavailable', reason: 'The OCR plugin is not installed.' }
       return unavailable('The OCR plugin is not installed.')
     }
-    const availability = await ocr.availability(sessionId, signal)
+    const binding = readBinding ? structuredClone(readBinding()) : undefined
+    const availability = await ocr.availability(sessionId, signal, binding)
     signal.throwIfAborted()
     if (args.action === 'availability') {
-      const descriptor = ocr.selectedDescriptor()
+      const descriptor = ocr.selectedDescriptor(binding)
       return { ...availability, ...(descriptor ? { descriptor } : {}) }
     }
     if (availability.status !== 'available') return unavailable(availability.reason ?? `OCR is ${availability.status}.`)
@@ -44,11 +46,11 @@ export function createPdfOcrDispatch(ctx: Pick<Context, 'get'>,
     const rendered = await pdf.renderOcrImage(sessionId, args.documentId, args.page,
       args.region, args.maxEdge ?? 1024, signal)
     signal.throwIfAborted()
-    const supported = ocr.selectedDescriptor()?.languages
+    const supported = ocr.selectedDescriptor(binding)?.languages
     const result = await ocr.recognize({ sessionId, image: rendered.png, mediaType: 'image/png',
       width: rendered.width, height: rendered.height,
       languages: supported?.length ? [...supported.slice(0, 4)] : ['auto'],
-      timeoutMs: timeoutMs(), signal })
+      timeoutMs: timeoutMs(), signal, binding })
     signal.throwIfAborted()
     const latest = workspaces.readSnapshot(sessionId, args.documentId)
     if (latest.contentVersion !== rendered.snapshot.contentVersion || latest.revision !== rendered.snapshot.revision) {

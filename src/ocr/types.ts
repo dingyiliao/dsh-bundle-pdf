@@ -76,12 +76,7 @@ export interface OcrEngineDescriptor {
   geometry: readonly ('block' | 'line' | 'word')[]
   confidence: boolean
   maxPixels?: number
-  configurationFields?: readonly {
-    key: string
-    label: string
-    type: 'string' | 'number' | 'boolean' | 'secret-reference'
-    required?: boolean
-  }[]
+  configurationFields?: import('../modules/engines/types.js').EngineConfigurationField[]
 }
 
 export interface OcrAvailability {

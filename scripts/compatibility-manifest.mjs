@@ -139,15 +139,19 @@ export async function collectCompatibilityManifest() {
       endpoints.push(endpoint)
     }
   }
-  // `pdf.info` is the one Connection fetch route that deliberately has no resource session.
-  const infoPaths = []
-  visit(infoRoute, node => {
-    if (!ts.isPropertyAssignment(node) || node.name.getText(infoRoute) !== 'path') return
-    const path = literal(node.initializer)
-    if (path?.startsWith('/api/pdf.')) infoPaths.push(path)
-  })
-  if (infoPaths.length !== 1) throw new Error(`Cannot determine PDF info route in ${infoRoute.fileName}`)
-  endpoints.push(infoPaths[0].slice('/api/'.length))
+  // Connection-scoped read-only routes share the bounded info envelope. Read
+  // their literal method arguments, rather than guessing a template's value.
+  const factory = infoRoute.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createPdfInfoRoute')
+  const defaultMethod = literal(factory?.parameters[1]?.initializer)
+  const infoCalls = calls(reader, 'createPdfInfoRoute')
+  if (!defaultMethod || !infoCalls.length || !infoRoute.text.includes('`/api/${method}`')) {
+    throw new Error(`Cannot determine PDF info route in ${infoRoute.fileName}`)
+  }
+  for (const call of infoCalls) {
+    const method = call.arguments[1] ? literal(call.arguments[1]) : defaultMethod
+    if (!method?.startsWith('pdf.')) throw new Error('Nonliteral PDF metadata method')
+    endpoints.push(method)
+  }
   const toolNames = []
   for (const file of [tools, modelWriteTools, modelFormTools, ocrTool]) {
     for (const call of calls(file, 'defineTool')) {

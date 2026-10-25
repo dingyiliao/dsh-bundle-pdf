@@ -22,7 +22,7 @@ test('same-name controls have independent IDs; draft/undo/recovery/save preserve
     const fields = opened.document.formFields!, boxes = fields.filter(field => field.name === 'same-name')
     assert.equal(boxes.length, 3); assert.equal(new Set(boxes.map(formFieldId)).size, 3)
     const text = fields.find(field => field.name === 'unique-text')!
-    const inspected = inspectFormPage(opened.document, 1, 768, 1024)
+    const inspected = inspectFormPage(opened.document, 1, 1024)
     assert.deepEqual(inspected.fields.filter(field => field.name === 'same-name').map(field => field.fieldId), boxes.map(formFieldId))
     const shared = fields.find(field => field.name === 'repeated-widget')!
     assert.equal(shared.widgets.length, 2, 'multiple widgets of one canonical field retain one ID')

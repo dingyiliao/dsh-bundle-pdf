@@ -78,7 +78,7 @@ test('selected backend registration is scoped, and removal aborts in-flight prep
     async prepare() { started(); return new Promise<never>(() => undefined) },
   }
   const unregister = service.register(backend)
-  assert.deepEqual(service.list(), [{ id: 'community-description', kind: 'derived-text' }])
+  assert.deepEqual(service.list().map(({ id, kind }) => ({ id, kind })), [{ id: 'community-description', kind: 'derived-text' }])
   try {
     const pending = service.prepare(request())
     await began

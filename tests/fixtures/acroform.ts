@@ -51,3 +51,26 @@ export async function duplicateFieldNamesFixture() {
   }
   return new Uint8Array(await pdf.save())
 }
+
+/** Dense printed labels above fields reproduce the old number-over-text obstruction. */
+export async function denseFormFixture() {
+  const pdf = await PDFDocument.create(), page = pdf.addPage([600, 840])
+  const form = pdf.getForm(), font = await pdf.embedFont(StandardFonts.Helvetica)
+  page.drawText('SAMPLE FORM - printed content must stay readable', { x: 20, y: 815, font, size: 14 })
+  page.drawText('Select applicable options. Complete details only when Yes is selected.', { x: 20, y: 795, font, size: 10 })
+  for (let index = 0; index < 24; index++) {
+    const x = 20 + index % 3 * 190, y = 760 - Math.floor(index / 3) * 17
+    page.drawText(`Printed option ${index + 1}`, { x: x + 18, y: y + 2, font, size: 10 })
+    const checkbox = form.createCheckBox(`option-${index}`)
+    checkbox.addToPage(page, { x, y, width: 12, height: 12 })
+    if (index % 4 === 0) checkbox.check()
+  }
+  for (let index = 0; index < 18; index++) {
+    const x = 20 + index % 3 * 190, y = 580 - Math.floor(index / 3) * 65
+    page.drawText(`Printed field ${index + 1}`, { x, y: y + 22, font, size: 10 })
+    const field = form.createTextField(`details-${index}`)
+    field.addToPage(page, { x, y, width: 165, height: 18 })
+    field.setText(`Sample value ${index + 1}`)
+  }
+  return new Uint8Array(await pdf.save())
+}

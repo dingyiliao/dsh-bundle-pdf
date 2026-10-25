@@ -12,8 +12,11 @@ const agent = { session: { id: 'session', header: {} } }
 test('background document manager yields ownership to an existing UI reader', async () => {
   let released = 0
   const manager = createBackgroundDocuments({
+    listDocuments() { return [] },
+    onIdle() { return () => {} },
+    touch() {},
     isUiOwned(_sessionId: string, id: string) { return id === 'visible' },
-    async releaseBackground() { return 'released' as const },
+    async releaseBackground(_sessionId: string, _id: string, evict?: () => Promise<unknown>) { await evict?.(); return 'released' as const },
   } as never, { async releaseDocument() { released++ } } as never, { schedule: false })
   assert.equal(await manager.adopt('session', 'visible', 20), 'ui')
   assert.equal(manager.diagnostics().documents, 0)
@@ -21,7 +24,7 @@ test('background document manager yields ownership to an existing UI reader', as
   assert.equal(await manager.adopt('session', 'hidden', 20), 'background')
   assert.equal((await manager.close('session', 'hidden')), 'released')
   assert.equal(released, 1)
-  manager.dispose()
+  await manager.dispose()
 })
 
 test('reader presence rejects stale document versions and out-of-range pages before announcing a tab', () => {

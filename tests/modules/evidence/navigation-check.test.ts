@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { evidenceNavigationRequestSchema, evidenceSha256,
-  revalidateEvidenceNavigation } from '../../../src/modules/evidence/index.ts'
+  createMemoryEvidenceReferenceStore, revalidateEvidenceNavigation } from '../../../src/modules/evidence/index.ts'
 import type { AgentPageReadPort } from '../../../src/modules/evidence/index.ts'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/modules/working-copy/index.ts'
 
@@ -120,4 +120,30 @@ test('text navigation rejects a concurrent external overwrite and respects cance
 test('navigation request bounds the excerpt and requires exact UTF-16 span', () => {
   assert.equal(evidenceNavigationRequestSchema.safeParse({ ...request, endUtf16: 900 }).success, false)
   assert.equal(evidenceNavigationRequestSchema.safeParse({ ...request, excerpt: 'x'.repeat(8001) }).success, false)
+})
+
+test('historical cards reissue the same exact native target contract as tool references', async () => {
+  const state = snapshot([9, 8, 7], 4)
+  state.document.pages = [{ page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }]
+  const pageText = { ...content, items: [{ ...content.items[0]!, transform: [10, 0, 0, 10, 20, 200],
+    glyphs: Array.from(text, (_, index) => [20 + index * 5, 200, 5]) }] }
+  const h = harness(state, pageText)
+  const references = createMemoryEvidenceReferenceStore()
+  const value = await revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal, h.readSource, references)
+  assert.equal(value.target?.kind, 'text')
+  assert.equal(value.target?.revision, state.revision)
+  assert.equal(value.target?.startUtf16, startUtf16)
+  assert.equal(value.target?.endUtf16, startUtf16 + excerpt.length)
+  assert.equal(value.target?.textSha256, evidenceSha256(excerpt))
+  assert.deepEqual(value.target?.rectPdf, [30, 198, 105, 208])
+  assert.equal(value.target?.sourceDigest, value.sourceDigest)
+  assert.ok(references.get(value.target!.refId))
+})
+
+test('production historical-card navigation never falls back to approximate boxes without native glyphs', async () => {
+  const state = snapshot([9, 8, 7], 4)
+  state.document.pages = [{ page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }]
+  const h = harness(state)
+  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal,
+    h.readSource, createMemoryEvidenceReferenceStore()), { code: 'pdf/text-geometry-unavailable' })
 })

@@ -5,7 +5,8 @@ import { resolve } from 'node:path'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/index.ts'
 import { questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { summarizeOutline } from '../../../../src/modules/navigation/index.ts'
-import { evidenceSha256, windowPageText, type EvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
+import { createMemoryEvidenceReferenceStore, evidenceSha256, windowPageText,
+  type EvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { nativeTestSubprocess } from '../../../native-test-subprocess.ts'
 import { createReaderContexts } from '../../../../src/modules/navigation/index.ts'
@@ -40,6 +41,11 @@ function captureTools(services: Record<string, unknown> = {}) {
     },
   } as unknown as Parameters<typeof registerPdfAgentTools>[0]
   return { ctx, definitions }
+}
+
+/** Metadata-only tool fixtures do not construct a document registry. */
+function metadataWorkspaces() {
+  return { async acquire() { return () => {} }, onIdle() { return () => {} }, listDocuments() { return [] } } as never
 }
 
 function readTool(definitions: Map<string, CapturedTool>, name: string, args: unknown, sessionId?: string) {
@@ -95,7 +101,7 @@ test('runtime session detach retains durable evidence references', async () => {
     async delete() {},
     async deleteSession(sessionId) { deleted.push(sessionId) },
   }
-  const dispose = registerPdfAgentTools(ctx, {} as never, {} as never, { current: () => [] }, references)
+  const dispose = registerPdfAgentTools(ctx, metadataWorkspaces(), {} as never, { current: () => [] }, references)
   assert.ok(onDisposed)
   onDisposed({ id: 'disposed-session' })
   await dispose()
@@ -104,7 +110,7 @@ test('runtime session detach retains durable evidence references', async () => {
 
 test('image-context replay requires a fresh-source adapter', async () => {
   const { ctx, definitions } = captureTools()
-  const dispose = registerPdfAgentTools(ctx, {} as never, {} as never, { current: () => [] })
+  const dispose = registerPdfAgentTools(ctx, metadataWorkspaces(), {} as never, { current: () => [] })
   try {
     await assert.rejects(readTool(definitions, 'pdf_image_context', {
       documentId: 'doc', refId: 'pdfref_00000000-0000-4000-8000-000000000000',
@@ -120,7 +126,8 @@ test('pdf_navigate forwards only a validated same-session target to the visible-
     forwarded.push({ sessionId, ...input })
     return { status: 'opened' as const, requestId: 'request-1', page: input.page, reason: null, tabIds: [] }
   } }
-  const dispose = registerPdfAgentTools(ctx, {} as never, {} as never, { current: () => [] }, undefined, undefined, navigation as never)
+  const dispose = registerPdfAgentTools(ctx, metadataWorkspaces(), {} as never,
+    { current: () => [] }, undefined, undefined, navigation as never)
   try {
     const result = await readTool(definitions, 'pdf_navigate', {
       documentId: 'doc-1', page: 3, contentVersion: 'version-1',
@@ -312,10 +319,10 @@ test('pdf_open reuses a caller-owned Host working copy without publishing a read
     const closed = await readTool(definitions, 'pdf_close', { documentId: first.documentId }, 'pdf-open-alice') as Record<string, unknown>
     assert.equal(closed.status, 'released')
     assert.deepEqual(nativeClosed, [first.documentId])
-    assert.throws(() => state.workspaces.readSnapshot('pdf-open-alice', String(first.documentId)), /unavailable|reopen/i)
+    assert.throws(() => state.workspaces.readSnapshot('pdf-open-alice', String(first.documentId)), /acquire|suspend/i)
     assert.ok(state.workspaces.readSnapshot('pdf-open-bob', String(other.documentId)))
     const reopenedAfterClose = await readTool(definitions, 'pdf_open', { path: '/fixtures/native.pdf' }, 'pdf-open-alice') as Record<string, unknown>
-    assert.notEqual(reopenedAfterClose.documentId, first.documentId)
+    assert.equal(reopenedAfterClose.documentId, first.documentId, 'closing releases residency, not the logical document identity')
     const uiOpened = await state.workspaces.execute('pdf-open-alice', {
       action: 'open', sessionId: 'pdf-open-alice',
       address: 'dsh-resource://file/session/pdf-open-alice//fixtures/native.pdf',
@@ -327,6 +334,70 @@ test('pdf_open reuses a caller-owned Host working copy without publishing a read
     assert.ok(state.workspaces.readSnapshot('pdf-open-alice', uiOpened.id))
     await assert.rejects(readTool(definitions, 'pdf_close', { documentId: uiOpened.id }, 'pdf-open-bob'), /session/i)
   } finally { await state.workspaces.dispose() }
+})
+
+test('closing a background document during a tool read defers reclamation until its operation finishes', async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'background-operation-pin'
+  const { ctx, definitions } = captureTools()
+  let beginRead!: () => void, finishRead!: () => void
+  const started = new Promise<void>(resolve => { beginRead = resolve })
+  const pending = new Promise<void>(resolve => { finishRead = resolve })
+  const nativeClosed: string[] = []
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, {
+    async readPageText(callerSession: string, id: string) {
+      beginRead(); await pending
+      return { snapshot: state.workspaces.readSnapshot(callerSession, id), content: { items: [], styles: {}, lang: null } }
+    },
+    async releaseDocument(id: string) { nativeClosed.push(id) },
+  } as never, { current: () => [] })
+  try {
+    const opened = await readTool(definitions, 'pdf_open', { path: '/fixtures/native.pdf' }, sessionId) as { documentId: string }
+    const reading = readTool(definitions, 'pdf_read_page', { documentId: opened.documentId, page: 1 }, sessionId)
+    await started
+    const closed = await readTool(definitions, 'pdf_close', { documentId: opened.documentId }, sessionId) as { status: string }
+    assert.equal(closed.status, 'retained-operation')
+    assert.equal(state.workspaces.listDocuments().find(item => item.id === opened.documentId)!.pins, 1)
+    assert.deepEqual(nativeClosed, [], 'a suspended native request must not lose its shared working copy')
+    finishRead()
+    assert.equal((await reading as { status: string }).status, 'no_text')
+    // The last unpin schedules cache-only reclamation; give its bounded queue
+    // a turn, without waiting for the real idle timer.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(state.workspaces.listDocuments().find(item => item.id === opened.documentId)!.resident, false)
+    assert.deepEqual(nativeClosed, [opened.documentId])
+    const resumed = await readTool(definitions, 'pdf_status', { documentId: opened.documentId }, sessionId) as { documentId: string }
+    assert.equal(resumed.documentId, opened.documentId, 'a subsequent explicit operation resumes the same logical document')
+  } finally { finishRead(); await dispose(); await state.workspaces.dispose() }
+})
+
+test('a model save keeps its draft alive throughout trusted human approval despite a concurrent close', async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'background-save-pin'
+  let asked!: () => void, approve!: () => void
+  const approvalRequested = new Promise<void>(resolve => { asked = resolve })
+  const approval = new Promise<void>(resolve => { approve = resolve })
+  const { ctx, definitions } = captureTools({ userQuestions: {
+    async ask(request: { signal: AbortSignal; questions: Array<{ id: string; options: Array<{ label: string }> }> }) {
+      asked(); await approval; request.signal.throwIfAborted()
+      const question = request.questions[0]
+      return { answers: [{ id: question.id, selected: [question.options[0].label] }] }
+    },
+  } })
+  const dispose = registerPdfAgentTools(ctx, state.workspaces, { async releaseDocument() {} } as never, { current: () => [] })
+  try {
+    const opened = await readTool(definitions, 'pdf_open', { path: '/fixtures/native.pdf' }, sessionId) as { documentId: string; revision: number }
+    const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: opened.documentId, revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'pending-approved-save', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'Persist after approval',
+      } }] }, agent(sessionId), signal)
+    assert.ok('bytes' in changed)
+    const saving = readTool(definitions, 'pdf_save', { documentId: opened.documentId, expectedRevision: changed.revision }, sessionId)
+    await approvalRequested
+    const closed = await readTool(definitions, 'pdf_close', { documentId: opened.documentId }, sessionId) as { status: string }
+    assert.equal(closed.status, 'retained-operation'); assert.equal(state.writes(), 0)
+    approve()
+    const result = await saving as { status: string; dirty: boolean }
+    assert.equal(result.status, 'saved'); assert.equal(result.dirty, false); assert.equal(state.writes(), 1)
+  } finally { approve(); await dispose(); await state.workspaces.dispose() }
 })
 
 test('pdf_bookmarks lists native outline items with bounded, session-fenced pages', async () => {
@@ -349,12 +420,12 @@ test('pdf_bookmarks lists native outline items with bounded, session-fenced page
   try {
     const first = await readTool(definitions, 'pdf_bookmarks', {
       documentId: opened.id, limit: 2,
-    }, sessionId) as { total: number; entries: Array<Record<string, unknown>>; nextCursor: number | null }
+    }, sessionId) as { total: number; entries: Array<Record<string, unknown>>; nextCursor: string | null }
     assert.equal(first.total, 3)
     assert.deepEqual(first.entries.map(item => [item.title, item.page]), [
       ['Chapter', 1], ['Section', 3],
     ])
-    assert.equal(first.nextCursor, 2)
+    assert.equal(typeof first.nextCursor, 'string')
     const second = await readTool(definitions, 'pdf_bookmarks', {
       documentId: opened.id, cursor: first.nextCursor, limit: 2,
     }, sessionId) as typeof first
@@ -363,7 +434,17 @@ test('pdf_bookmarks lists native outline items with bounded, session-fenced page
     ])
     assert.equal(second.nextCursor, null)
     await assert.rejects(readTool(definitions, 'pdf_bookmarks', { documentId: opened.id }, 'pdf-bookmark-other'), /session|belong|access/i)
-    await assert.rejects(readTool(definitions, 'pdf_bookmarks', { documentId: opened.id, cursor: 5 }, sessionId), /cursor|outside/i)
+    await assert.rejects(readTool(definitions, 'pdf_bookmarks', { documentId: opened.id, cursor: 5 }, sessionId))
+    await assert.rejects(readTool(definitions, 'pdf_bookmarks', {
+      documentId: opened.id, cursor: 'invalid',
+    }, sessionId), { code: 'pdf/invalid-window' })
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'cursor-draft-change', page: 1, subtype: 'Text', rect: [20, 20, 30, 30],
+      } }] }, agent(sessionId), signal)
+    await assert.rejects(readTool(definitions, 'pdf_bookmarks', {
+      documentId: opened.id, cursor: first.nextCursor,
+    }, sessionId), { code: 'pdf/stale-reader' })
   } finally {
     await state.workspaces.dispose()
   }
@@ -508,7 +589,7 @@ test('pdf_render_page gates on exact model image capability and stores a bounded
       async availability() { return { status: 'available' } },
       async recognize(request: { image: Uint8Array; signal: AbortSignal; sessionId: string }) {
         assert.equal(request.sessionId, sessionId)
-        assert.equal(request.signal, signal)
+        assert.equal(request.signal.aborted, false, 'OCR receives the live caller/runtime combined signal')
         assert.deepEqual([...request.image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
         return { text: 'Recognized page text', blocks: [{ id: 'block-1', text: 'Recognized page text', box: null, confidence: null }],
           lines: [], words: [], confidence: null, status: 'complete', coverage: [], warnings: [],
@@ -1146,23 +1227,46 @@ test('pdf_search returns bounded hits and a cursor that resumes without duplicat
     },
   }
   const { ctx, definitions } = captureTools()
-  registerPdfAgentTools(ctx, state.workspaces, pdfService as never, { current: () => [] })
+  const references = createMemoryEvidenceReferenceStore()
+  registerPdfAgentTools(ctx, state.workspaces, pdfService as never, { current: () => [] }, references)
   try {
     const first = await readTool(definitions, 'pdf_search', {
       documentId: opened.id, query: 'needle',
-    }, sessionId) as { matches: { page: number; offset: number }[]; nextCursor: { page: number; offset: number } | null }
+    }, sessionId) as { matches: { page: number; offset: number; evidence: { refId: string } }[]; nextCursor: string | null }
     assert.equal(first.matches.length, 20)
     assert.ok(first.nextCursor)
-    assert.equal(first.nextCursor.page, 1)
+    assert.equal(typeof first.nextCursor, 'string')
 
     const second = await readTool(definitions, 'pdf_search', {
-      documentId: opened.id, query: 'needle', fromPage: first.nextCursor.page,
-      offset: first.nextCursor.offset,
+      documentId: opened.id, query: 'needle', cursor: first.nextCursor,
     }, sessionId) as typeof first
     assert.equal(second.matches.length, 5)
     assert.equal(second.nextCursor, null)
     const offsets = [...first.matches, ...second.matches].map(match => match.offset)
     assert.deepEqual(offsets, Array.from({ length: 25 }, (_, index) => index * 7))
+    const refIds = [...first.matches, ...second.matches].map(match => match.evidence.refId)
+    assert.equal(new Set(refIds).size, 25, 'repeated words retain independent exact evidence references')
+    for (const match of [...first.matches, ...second.matches]) {
+      const saved = references.get(match.evidence.refId)!
+      assert.equal(saved.sessionId, sessionId)
+      assert.equal(saved.evidence.source, 'pdf-text')
+      assert.equal(saved.evidence.locator.kind, 'text-window')
+      if (saved.evidence.locator.kind === 'text-window') {
+        assert.equal(saved.evidence.locator.startUtf16, match.offset)
+        assert.equal(saved.evidence.locator.endUtf16, match.offset + 'needle'.length)
+      }
+    }
+    await assert.rejects(readTool(definitions, 'pdf_search', {
+      documentId: opened.id, query: 'Needle', cursor: first.nextCursor,
+    }, sessionId), { code: 'pdf/stale-reader' })
+    for (const locator of [{ fromPage: 1 }, { offset: 0 }]) {
+      await assert.rejects(readTool(definitions, 'pdf_search', {
+        documentId: opened.id, query: 'needle', cursor: first.nextCursor, ...locator,
+      }, sessionId))
+    }
+    await assert.rejects(readTool(definitions, 'pdf_search', {
+      documentId: opened.id, query: 'needle', cursor: { page: 1, offset: 1 },
+    }, sessionId))
     await assert.rejects(readTool(definitions, 'pdf_search', {
       documentId: opened.id, query: 'needle', fromPage: 5,
     }, sessionId), { code: 'pdf/invalid-page' })

@@ -20,6 +20,9 @@ import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { readPagePresentationMeta } from '../src/adapters/host/dsh/pdf-evidence-meta.ts'
 import { evidenceSha256 } from '../src/modules/evidence/index.ts'
 import { joinPageText } from '../src/shared/page-text.ts'
+import { brokenTextMappingFixture } from './fixtures/broken-text-mapping.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import type { ToolExecutionInput, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
@@ -37,8 +40,145 @@ const LONG_ANNOTATION_PAGE_COUNT = 1151
 const LARGE_PAGE_COUNT = 128
 const NOTE = 'Saved through the PDF reader browser UI'
 
-it('fills an AcroForm field through the Reader and saves its Unicode appearance', async () => {
+/** The released SDK dispatches one call; newer source test hosts dispatch batches. */
+async function executeScaffoldTool(tools: Context['tools'], input: ToolExecutionInput): Promise<ToolExecutionResult> {
+  if (!('setExecutor' in tools)) return tools.execute(input)
+  const batchTools = tools as unknown as {
+    execute(input: { signal: AbortSignal; agent?: ToolExecutionInput['agent'];
+      calls: Array<{ type: 'tool-call'; id: ToolExecutionInput['callId']; name: string; arguments: string }> }):
+      Promise<{ results: Array<{ callId: ToolExecutionInput['callId']; result: ToolExecutionResult }> }>
+  }
+  const batch = await batchTools.execute({ signal: input.signal, agent: input.agent,
+    calls: [{ type: 'tool-call', id: input.callId, name: input.name, arguments: JSON.stringify(input.arguments) }] })
+  expect(batch.results).toHaveLength(1)
+  expect(batch.results[0]!.callId).toBe(input.callId)
+  return batch.results[0]!.result
+}
+
+it('updates engine settings live when a contributor plugin loads and unloads, retaining missing selections', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  let contributor: { dispose(): unknown } | undefined
+  try {
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-engine-directory-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached' })
+    await openSettings(page, 'en')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    const pdfSettings = settings.locator('.dsh-pdf-settings')
+    expect(await pdfSettings.getByRole('heading', { level: 3 }).allTextContents())
+      .toEqual(['AI engines', 'Reading and navigation', 'Explanation prompts'])
+    expect(await pdfSettings.getByText('Engines run on demand.', { exact: false }).count()).toBe(1)
+    expect(await pdfSettings.locator('textarea').count()).toBe(3)
+    if (process.env.PDF_SETTINGS_SCREENSHOT) await settings.screenshot({ path: process.env.PDF_SETTINGS_SCREENSHOT })
+    const ocr = settings.getByRole('combobox', { name: 'OCR engine', exact: true })
+    const image = settings.getByRole('combobox', { name: 'Image understanding engine', exact: true })
+    const translation = settings.getByRole('combobox', { name: 'Translation engine', exact: true })
+    await expect.poll(() => ocr.inputValue()).toBe('session-llm')
+    await expect.poll(() => image.inputValue()).toBe('session-vision')
+    contributor = scaffold.ctx.plugin({ inject: ['ocr', 'imageUnderstanding', 'pdfTranslation'], apply(ctx: Context) {
+      ctx.effect(() => ctx.ocr.register({ descriptor: { id: 'fixture.ocr', name: 'Fixture local OCR', version: '1',
+        execution: 'local', geometry: [], confidence: false,
+        configurationFields: [{ key: 'language', label: 'Fixture language', type: 'string', required: true },
+          { key: 'accuracy', label: 'Fixture accuracy', type: 'number' },
+          { key: 'enabled', label: 'Fixture enabled', type: 'boolean' },
+          { key: 'credential', label: 'Fixture credential reference', type: 'secret-reference' }] },
+        async availability() { return { status: 'available' } },
+        async recognize() { return { text: 'Fixture', blocks: [], lines: [], words: [], confidence: null,
+          status: 'complete', coverage: [], warnings: [] } } }))
+      ctx.effect(() => ctx.imageUnderstanding.register({ id: 'fixture.image', kind: 'derived-text',
+        descriptor: { id: 'fixture.image', name: 'Fixture image engine', version: '1', execution: 'local' },
+        async availability() { return { available: true } },
+        async prepare() { return { kind: 'derived-text', text: 'Fixture image', mode: 'image-description' } } }))
+      ctx.effect(() => ctx.pdfTranslation.register({ descriptor: { id: 'fixture.translation', name: 'Fixture translator',
+        version: '1', execution: 'local' }, async translate() { return { text: 'Fixture translation', status: 'complete', warnings: [] } } }))
+    } })
+    await expect.poll(() => ocr.locator('option[value="fixture.ocr"]').count(), { timeout: 10_000 }).toBe(1)
+    await expect.poll(() => image.locator('option[value="fixture.image"]').count()).toBe(1)
+    await expect.poll(() => translation.locator('option[value="fixture.translation"]').count()).toBe(1)
+    await ocr.selectOption('fixture.ocr')
+    expect(await ocr.locator('..').locator('.dsh-pdf-settings-engine-kind').textContent()).toBe('Local')
+    await settings.getByRole('textbox', { name: 'Fixture language' }).fill('eng')
+    await settings.getByRole('spinbutton', { name: 'Fixture accuracy' }).fill('2')
+    await settings.getByRole('spinbutton', { name: 'Fixture accuracy' }).fill('')
+    await settings.getByRole('spinbutton', { name: 'Fixture accuracy' }).fill('3')
+    await settings.getByRole('checkbox', { name: 'Fixture enabled' }).check()
+    await settings.getByRole('textbox', { name: 'Fixture credential reference' }).fill('fixture.credential')
+    await image.selectOption('fixture.image')
+    await translation.selectOption('fixture.translation')
+    await settings.getByRole('button', { name: 'Save settings', exact: true }).click()
+    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await contributor.dispose()
+    contributor = undefined
+    await expect.poll(() => ocr.locator('option[value="fixture.ocr"]').isDisabled(), { timeout: 10_000 }).toBe(true)
+    await expect.poll(() => image.locator('option[value="fixture.image"]').isDisabled()).toBe(true)
+    await expect.poll(() => translation.locator('option[value="fixture.translation"]').isDisabled()).toBe(true)
+    expect(await ocr.inputValue()).toBe('fixture.ocr')
+    expect(await image.inputValue()).toBe('fixture.image')
+    expect(await translation.inputValue()).toBe('fixture.translation')
+    expect(await settings.getByRole('textbox', { name: 'Fixture language' }).count()).toBe(0)
+    // Missing providers must not block unrelated settings edits or force fallback.
+    await settings.getByRole('spinbutton', { name: 'Navigation history capacity' }).fill('91')
+    await settings.getByRole('button', { name: 'Save settings', exact: true }).click()
+    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    expect(await ocr.inputValue()).toBe('fixture.ocr')
+    expect(tripwire.pageErrors).toEqual([])
+    await page.setViewportSize({ width: 640, height: 900 })
+    const overflows = await pdfSettings.evaluate(element => [...element.querySelectorAll('select, input, textarea')]
+      .some(control => control.getBoundingClientRect().right > element.getBoundingClientRect().right + 1))
+    expect(overflows).toBe(false)
+    if (process.env.PDF_SETTINGS_SCREENSHOT) {
+      await pdfSettings.getByRole('heading', { name: 'PDF', exact: true }).scrollIntoViewIfNeeded()
+      await settings.screenshot({ path: process.env.PDF_SETTINGS_SCREENSHOT.replace(/\.png$/, '-narrow.png') })
+      await pdfSettings.getByRole('textbox', { name: 'Image regions', exact: true }).scrollIntoViewIfNeeded()
+      await settings.screenshot({ path: process.env.PDF_SETTINGS_SCREENSHOT.replace(/\.png$/, '-prompts.png') })
+    }
+  } finally { await contributor?.dispose(); await browser?.close(); await scaffold.close() }
+})
+
+it('recovers an invalid Unicode text layer and allows dragging the formerly missing English label', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-text-recovery-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF text recovery test' })
+    const path = join(scaffold.workspaceCwd, 'reader-broken-text-e2e.pdf'), bytes = await brokenTextMappingFixture()
+    await writeFile(path, bytes)
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.getByRole('treeitem').filter({ hasText: 'PDF text recovery test' }).click()
+    const column = page.locator('[data-rightbar-col]')
+    await page.locator('[data-sidebar-right-expand]').click()
+    await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+    await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+    await column.locator('[data-files-reload]').click()
+    await column.locator('[data-files-entry="file"]').getByRole('button', { name: 'reader-broken-text-e2e.pdf' }).click()
+    const reader = page.locator('.dsh-pdf-reader')
+    const words = reader.locator('[data-pdf-page="1"] .dsh-pdf-text-layer span')
+    await expect.poll(() => words.allTextContents()).toEqual(['Full ', 'name ', 'in ', 'English'])
+    const first = await words.first().boundingBox(), last = await words.last().boundingBox()
+    expect(first).not.toBeNull(); expect(last).not.toBeNull()
+    await page.mouse.move(first!.x + 1, first!.y + first!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(last!.x + last!.width - 1, last!.y + last!.height / 2, { steps: 12 })
+    await page.mouse.up()
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Full name in English')
+    await expect.poll(() => reader.locator('.dsh-pdf-selection-overlay div').count()).toBeGreaterThan(0)
+    expect(new Uint8Array(await readFile(path))).toEqual(bytes)
+  } finally { await browser?.close(); await scaffold.close() }
+})
+
+it('fills an AcroForm field through the Reader and saves its Unicode appearance', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] },
+    replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
+    replayProvidersOnly: true })
   let browser: Browser | undefined
   try {
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
@@ -48,11 +188,16 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
     const path = join(scaffold.workspaceCwd, 'reader-form-e2e.pdf')
     const document = await PDFDocument.create()
     const pageSource = document.addPage([300, 400])
+    pageSource.drawText('1. PERSONAL DETAILS', { x: 20, y: 330, size: 12 })
+    pageSource.drawText('Applicant name', { x: 30, y: 143, size: 10 })
+    pageSource.drawText('If option 2 is checked, provide applicant name', { x: 20, y: 250, size: 9 })
+    pageSource.drawText('Select one option', { x: 20, y: 280, size: 9 })
     document.getForm().createTextField('applicant').addToPage(pageSource,
       { x: 30, y: 100, width: 150, height: 30 })
     for (let index = 0; index < 3; index++) {
       const checkbox = document.getForm().createCheckBox(`original-${index}`)
       checkbox.addToPage(pageSource, { x: 30 + index * 40, y: 180, width: 20, height: 20 })
+      pageSource.drawText(`Option ${index + 1}`, { x: 30 + index * 40, y: 205, size: 7 })
       checkbox.acroField.setPartialName('shared-choice')
     }
     await writeFile(path, await document.save())
@@ -78,8 +223,14 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
 
     // The model uses the exact same working copy as the already-visible Reader.
     // Draft edits must appear without a reload and support the user's Undo.
+    await scaffold.ctx.sessionController.selectModel({ sessionId,
+      provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' })
     const resolved = await scaffold.ctx.sessionController.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
+    // Selection is pending until a request starts. This keyless tool invocation
+    // records that request header without making an external model call.
+    resolved.agent.session.append('request/header', { reason: 'change',
+      header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' } } })
     const pdf = scaffold.ctx.get('pdf') as unknown as {
       dispatch(sessionId: string, input: Record<string, unknown>, agent: typeof resolved.agent,
         signal: AbortSignal): Promise<{ id: string; revision: number; document: { formFields: Array<{ id: string; name: string }> } }>
@@ -87,17 +238,76 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
     const signal = new AbortController().signal
     const address = `dsh-resource://file/session/${encodeURIComponent(sessionId)}/${path.split('/').map(encodeURIComponent).join('/')}`
     const opened = await pdf.dispatch(sessionId, { action: 'open', sessionId, address }, resolved.agent, signal)
-    const filled = await scaffold.ctx.tools.execute({ signal, callId: ToolCallId('pdf-fill-form-web-e2e'),
+    const inspected = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-inspect-form-web-e2e'),
+      name: 'pdf_form_inspect_page', arguments: { documentId: opened.id, page: 1 }, agent: resolved.agent })
+    expect(inspected.isError, JSON.stringify(inspected)).toBe(false)
+    const inspectText = inspected.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    const inspection = JSON.parse(inspectText.slice(inspectText.indexOf('{'))) as { inspectionId: string; revision: number;
+      fields: Array<{ type: string; controls: Array<{ label: string }>; value?: string | boolean }> }
+    expect(inspectText).not.toContain('fieldId')
+    expect(inspected.content.filter(block => block.type === 'image')).toHaveLength(1)
+    expect(inspection).not.toHaveProperty('context')
+    expect(inspection).not.toHaveProperty('understanding')
+    expect(inspection).not.toHaveProperty('semanticQuestions')
+    const inspectionId = inspection.inspectionId
+    const applicantLabel = inspection.fields.find(field => field.type === 'text')!.controls[0].label
+    const checkboxLabel = inspection.fields.filter(field => field.type === 'checkbox')[1]!.controls[0].label
+    const failed = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-fill-form-invalid-web-e2e'),
       name: 'pdf_fill_form', arguments: { documentId: opened.id, expectedRevision: opened.revision,
-        fields: [{ fieldId: opened.document.formFields.find(field => field.name === 'applicant')!.id,
-          value: '模型填写' }] }, agent: resolved.agent })
+        inspectionId, fields: [{ label: applicantLabel, value: '模型填写' }, { label: checkboxLabel, value: 'Yes' }] },
+      agent: resolved.agent })
+    expect(failed.isError, JSON.stringify(failed)).toBe(false)
+    const text = failed.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    const failure = JSON.parse(text.slice(text.indexOf('{'))) as { status: string; appliedCount: number;
+      revision: number; page: number; issues: Array<{ code: string; label: string; expected: string }> }
+    expect(failure.status).toBe('validation_failed'); expect(failure.appliedCount).toBe(0)
+    expect(failure.page).toBe(1)
+    expect(failure.issues[0]).toMatchObject({ label: checkboxLabel, code: 'value_type_mismatch', expected: 'boolean' })
+    expect(await field.inputValue()).toBe('')
+    // Printed dependencies and independent-checkbox groups are supplied explicitly.
+    const conditions = [{ fields: [{ label: applicantLabel }],
+      when: { label: checkboxLabel, equals: true },
+      evidence: { quote: 'If option 2 is checked, provide applicant name' } }]
+    const inactive = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-fill-inactive-web-e2e'),
+      name: 'pdf_fill_form', arguments: { documentId: opened.id, expectedRevision: failure.revision,
+        inspectionId, conditions, fields: [{ label: applicantLabel, value: 'Must not fill' }] }, agent: resolved.agent })
+    const inactiveText = inactive.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    expect(inactiveText).toContain('condition_failed'); expect(inactiveText).toContain('condition_not_met')
+    expect(await field.inputValue()).toBe('')
+    const alternatives = inspection.fields.filter(field => field.type === 'checkbox').map(field => ({ label: field.controls[0].label }))
+    const choiceGroups = [{ fields: alternatives, evidence: { quote: 'Select one option' } }]
+    const multiple = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-fill-exclusive-invalid-web-e2e'),
+      name: 'pdf_fill_form', arguments: { documentId: opened.id, expectedRevision: failure.revision,
+        inspectionId, conditions, choiceGroups, fields: [{ label: applicantLabel, value: 'Must not write' },
+          ...alternatives.slice(0, 2).map(ref => ({ ...ref, value: true }))] }, agent: resolved.agent })
+    const multipleText = multiple.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    expect(multipleText).toContain('choice_failed'); expect(multipleText).toContain('multiple_choices_selected')
+    expect(multipleText).not.toContain('fieldId')
+    expect(await field.inputValue()).toBe('')
+    const filled = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-fill-form-web-e2e'),
+      name: 'pdf_fill_form', arguments: { documentId: opened.id, expectedRevision: failure.revision,
+        inspectionId, conditions, choiceGroups, fields: [{ label: applicantLabel, value: '模型填写' }, { label: checkboxLabel, value: true }] }, agent: resolved.agent })
     expect(filled.isError, JSON.stringify(filled)).toBe(false)
+    const filledText = filled.content.find(block => block.type === 'text')!.text
+    const filledData = JSON.parse(filledText.slice(filledText.indexOf('{')))
+    expect(filledData.status).toBe('updated')
+    expect(filled.content.filter(block => block.type === 'image')).toHaveLength(0)
+    expect(filledData).not.toHaveProperty('semanticReview')
+    expect(filledData.choiceReview.evaluated).toBe(1)
     await expect.poll(() => field.inputValue()).toBe('模型填写')
+    const verified = await executeScaffoldTool(scaffold.ctx.tools, { signal, callId: ToolCallId('pdf-verify-form-web-e2e'),
+      name: 'pdf_form_inspect_page', arguments: { documentId: opened.id, page: 1, includeValues: true }, agent: resolved.agent })
+    expect(verified.isError, JSON.stringify(verified)).toBe(false)
+    const verifiedText = verified.content.find(block => block.type === 'text')!.text
+    const verifiedFields = (JSON.parse(verifiedText.slice(verifiedText.indexOf('{'))) as typeof inspection).fields
+    expect(verifiedFields.find(field => field.type === 'text')!.value).toBe('模型填写')
+    expect(verifiedFields.filter(field => field.type === 'checkbox').map(field => field.value)).toEqual([false, true, false])
     expect((await PDFDocument.load(await readFile(path))).getForm().getTextField('applicant').getText()).toBeUndefined()
     await reader.locator('.dsh-pdf-toolbar-undo').click()
     await expect.poll(() => field.inputValue()).toBe('')
     const sameNameBoxes = reader.getByRole('checkbox', { name: 'shared-choice', exact: true })
     expect(await sameNameBoxes.count()).toBe(3)
+    expect(await sameNameBoxes.nth(1).isChecked()).toBe(false)
     await sameNameBoxes.nth(1).click()
     await expect.poll(() => sameNameBoxes.nth(1).isChecked()).toBe(true)
     expect(await sameNameBoxes.nth(0).isChecked()).toBe(false)
@@ -1992,7 +2202,7 @@ it('routes a recorded PDF evidence card through the real session Slot, Host chec
       .toContain('Browser PDF page two')
     expect(validationReads).toBeGreaterThanOrEqual(2)
 
-    const related = await scaffold.ctx.tools.execute({
+    const related = await executeScaffoldTool(scaffold.ctx.tools, {
       signal: new AbortController().signal,
       callId: ToolCallId('pdf-find-related-web-e2e'),
       name: 'pdf_find_related',
@@ -2003,7 +2213,7 @@ it('routes a recorded PDF evidence card through the real session Slot, Host chec
     expect(related.isError).toBe(false)
     expect(related.content.filter(block => block.type === 'text').map(block => block.text).join(''))
       .toContain('Browser PDF page two')
-    const annotation = await scaffold.ctx.tools.execute({
+    const annotation = await executeScaffoldTool(scaffold.ctx.tools, {
       signal: new AbortController().signal,
       callId: ToolCallId('pdf-mark-related-web-e2e'),
       name: 'pdf_annotate',
@@ -2017,7 +2227,7 @@ it('routes a recorded PDF evidence card through the real session Slot, Host chec
 
     // An annotation changes the working-copy revision. Navigation must still
     // accept the unchanged page-content version and preserve Reader history.
-    const navigation = await scaffold.ctx.tools.execute({
+    const navigation = await executeScaffoldTool(scaffold.ctx.tools, {
       signal: new AbortController().signal,
       callId: ToolCallId('pdf-agent-navigate-web-e2e'),
       name: 'pdf_navigate',
@@ -2034,6 +2244,86 @@ it('routes a recorded PDF evidence card through the real session Slot, Host chec
     await browser?.close()
     await scaffold.close()
   }
+}, 120_000)
+
+it('reuses evidence references for exact repeated-text jumps, annotation and multi-level Reader history', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-exact-evidence-web-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF exact evidence test' })
+    const filename = 'reader-exact-evidence-e2e.pdf', path = join(scaffold.workspaceCwd, filename)
+    const source = await PDFDocument.create(), font = await source.embedFont(StandardFonts.Helvetica)
+    source.addPage([400, 1400]).drawText('Origin reading position', { x: 50, y: 1300, size: 15, font })
+    const evidencePage = source.addPage([400, 1400])
+    evidencePage.drawText('Repeated evidence', { x: 50, y: 1100, size: 15, font })
+    evidencePage.drawText('Different surrounding context', { x: 50, y: 800, size: 15, font })
+    evidencePage.drawText('Repeated evidence', { x: 50, y: 500, size: 15, font })
+    // A following page keeps both targets away from the document-end scroll clamp.
+    source.addPage([400, 1400]).drawText('Following page', { x: 50, y: 1300, size: 15, font })
+    await writeFile(path, await source.save({ useObjectStreams: false }))
+    const resolved = await scaffold.ctx.sessionController.resolveAgent(sessionId)
+    if ('error' in resolved) throw resolved.error
+    let call = 0
+    const tool = async (name: string, args: Record<string, unknown>) => {
+      const result = await executeScaffoldTool(scaffold.ctx.tools, { signal: new AbortController().signal,
+        callId: ToolCallId(`pdf-exact-evidence-${++call}`), name, arguments: args, agent: resolved.agent })
+      expect(result.isError, result.content.filter(part => part.type === 'text').map(part => part.text).join('')).toBe(false)
+      const text = result.content.filter(part => part.type === 'text').map(part => part.text).join('')
+      return JSON.parse(text.slice(text.indexOf('{')))
+    }
+    const opened = await tool('pdf_open', { path }) as { documentId: string; revision: number }
+    const related = await tool('pdf_find_related', { documentId: opened.documentId, query: 'Where is the repeated evidence?',
+      terms: ['Repeated evidence'], maxPages: 2 }) as { candidates: Array<{ page: number; evidence: { refId: string } }> }
+    expect(related.candidates.some(candidate => candidate.page === 2)).toBe(true)
+    const located = await tool('pdf_locate', { documentId: opened.documentId, page: 2, quote: 'Repeated evidence' }) as {
+      matches: Array<{ offset: number; evidence: { refId: string } }>
+    }
+    expect(located.matches).toHaveLength(2)
+    const [first, second] = [...located.matches].sort((a, b) => a.offset - b.offset)
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser), tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-exact-evidence-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.getByRole('treeitem').filter({ hasText: 'PDF exact evidence test' }).click()
+    const column = page.locator('[data-rightbar-col]')
+    await page.locator('[data-sidebar-right-expand]').click()
+    await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+    await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+    await column.locator('[data-files-reload]').click()
+    await column.locator('[data-files-entry="file"]').getByRole('button', { name: filename, exact: true }).click()
+    const reader = page.locator('.dsh-pdf-reader'), scroll = reader.locator('.dsh-pdf-scroll')
+    await reader.locator('[data-pdf-page="1"] [data-pdf-text="active"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await chooseZoom(reader, '100%')
+    const position = () => scroll.evaluate(element => ({ top: element.scrollTop, left: element.scrollLeft }))
+    const origin = await position()
+    await tool('pdf_navigate', { documentId: opened.documentId, refId: first!.evidence.refId })
+    await expect.poll(() => reader.locator('.dsh-pdf-page-input:visible').first().inputValue()).toBe('2')
+    const firstPosition = await position()
+    await tool('pdf_navigate', { documentId: opened.documentId, refId: second!.evidence.refId })
+    const secondPosition = await position()
+    expect(secondPosition.top - firstPosition.top).toBeGreaterThan(500)
+    const targetInViewport = await reader.locator('[data-pdf-page="2"]').evaluate(element => {
+      const bounds = element.getBoundingClientRect(), viewport = element.closest('.dsh-pdf-scroll')!.getBoundingClientRect()
+      return bounds.top + bounds.height * (1400 - 500) / 1400 - viewport.top
+    })
+    expect(targetInViewport).toBeGreaterThan(65)
+    expect(targetInViewport).toBeLessThan(180)
+    // The very same exact reference can be written without re-quoting or guessing geometry.
+    await tool('pdf_annotate', { documentId: opened.documentId, expectedRevision: opened.revision,
+      subtype: 'Highlight', target: { kind: 'reference', refId: second!.evidence.refId } })
+    await expect.poll(() => reader.locator('[data-pdf-page="2"] .dsh-pdf-annotation-overlay path').count()).toBeGreaterThan(0)
+    const back = reader.getByRole('button', { name: 'Back', exact: true })
+    await expect.poll(() => back.isEnabled()).toBe(true)
+    await back.click()
+    await expect.poll(async () => Math.abs((await position()).top - firstPosition.top)).toBeLessThan(2)
+    await expect.poll(() => back.isEnabled()).toBe(true)
+    await back.click()
+    await expect.poll(async () => Math.abs((await position()).top - origin.top)).toBeLessThan(2)
+    expect(tripwire.pageErrors).toEqual([])
+  } finally { await browser?.close(); await scaffold.close() }
 }, 120_000)
 
 it('loads the installed PDF plugin and saves a browser-created note into the real PDF file', async () => {
@@ -2066,7 +2356,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     // OCR availability is now determined by the Host for the active session,
     // rather than a user-facing toggle in PDF settings.
     expect(await ocrSwitch.count()).toBe(0)
-    expect(await settings.getByRole('combobox', { name: 'OCR engine' }).count()).toBe(0)
+    expect(await settings.getByRole('combobox', { name: 'OCR engine' }).count()).toBe(1)
     expect(await settings.getByRole('textbox', { name: 'Recognition languages' }).count()).toBe(0)
     expect(await settings.getByRole('spinbutton', { name: 'Recognition timeout (milliseconds)' }).count()).toBe(0)
     expect(await settings.getByLabel('Source language').count()).toBe(0)
@@ -2771,7 +3061,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
   }
 }, 120_000)
 
-it('auto-collapses the reading sidebar below 760px without overriding manual sidebar choices', async () => {
+it('auto-collapses the reading sidebar below 760px without reopening it when space returns', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined
   try {
@@ -2964,7 +3254,13 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
     }
     await assertFeedbackAboveSidebar()
 
-    await setReaderWidth(960)
+    // Growing the outer DSH pane must not turn a layout collapse into an
+    // unsolicited sidebar opening, even when repeatedly crossing the threshold.
+    for (const width of [960, 759, 760, 700, 960]) {
+      await setReaderWidth(width)
+      expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    }
+    await toggle.click()
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
 
     await setReaderWidth(700)
@@ -2992,8 +3288,10 @@ it('auto-collapses the reading sidebar below 760px without overriding manual sid
 
     await toggle.click()
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
-    await setReaderWidth(960)
-    expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    for (const width of [960, 700, 960]) {
+      await setReaderWidth(width)
+      expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    }
     await assertToolbarOverlaysSidebar()
     await assertFeedbackAboveSidebar()
     expect(tripwire.pageErrors).toEqual([])

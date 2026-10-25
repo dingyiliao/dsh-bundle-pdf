@@ -6,7 +6,7 @@ import { createHostOcrApi } from '../src/adapters/client/remote/host-ocr-api.ts'
 import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
-test('global PDF settings explain Host-controlled OCR instead of showing a permanently disabled switch', () => {
+test('global PDF settings offer an OCR engine selector instead of a permanently disabled switch', () => {
   const snapshot: ConfigFormSnapshot = {
     status: 'ready', value: { ...defaultSettings }, base: {}, user: {}, revision: 1,
     writable: true,
@@ -20,7 +20,8 @@ test('global PDF settings explain Host-controlled OCR instead of showing a perma
     form, t: key => (settingsLocales.en as Record<string, string>)[key] ?? key,
     translationEngines: [{ id: 'dsh-model', label: 'DSH model' }],
   }))
-  assert.match(html, /reader asks the Host/)
+  assert.match(html, /<label[^>]*>OCR engine<\/label>/)
+  assert.match(html, /<select[^>]*id="[^"]*-ocrEngine"/)
   assert.doesNotMatch(html, /role="switch"/)
   assert.doesNotMatch(html, /Unavailable for now/)
 })

@@ -3,6 +3,7 @@ import {
   type ImageUnderstandingBackend,
 } from '../../../modules/image-understanding/index.js'
 import type { SessionOcrAttachmentStore, SessionOcrLlm } from './ocr-session-llm.js'
+import type { EngineConfiguration } from '../../../modules/engines/index.js'
 
 export interface AuxiliaryVisionModel {
   provider: string
@@ -52,8 +53,12 @@ export function createAuxiliaryVisionBackend(dependencies: AuxiliaryVisionDepend
     throw new RangeError('Auxiliary vision maxOutputTokens must be an integer from 1 to 16384.')
   }
 
-  const resolve = async (signal: AbortSignal) => {
-    const route = dependencies.selectedModel()
+  const resolve = async (signal: AbortSignal, config?: EngineConfiguration) => {
+    const route = config?.provider !== undefined || config?.model !== undefined ? {
+      provider: typeof config.provider === 'string' ? config.provider : '',
+      model: typeof config.model === 'string' ? config.model : '',
+      ...(typeof config.reasoningEffort === 'string' ? { reasoningEffort: config.reasoningEffort } : {}),
+    } : dependencies.selectedModel()
     if (!route?.provider?.trim() || !route.model?.trim()) {
       throw fail('pdf/image-unconfigured', 'Configure an auxiliary vision provider and model first.')
     }
@@ -82,9 +87,15 @@ export function createAuxiliaryVisionBackend(dependencies: AuxiliaryVisionDepend
   return {
     id: 'auxiliary-vision',
     kind: 'derived-text',
-    async availability(_sessionId, signal) {
+    descriptor: { id: 'auxiliary-vision', name: 'Auxiliary vision model', version: '1', execution: 'remote',
+      configurationFields: [
+        { key: 'provider', label: 'Provider', type: 'string' },
+        { key: 'model', label: 'Model', type: 'string' },
+        { key: 'reasoningEffort', label: 'Reasoning effort', type: 'string' },
+      ] },
+    async availability(_sessionId, signal, config) {
       try {
-        await resolve(signal)
+        await resolve(signal, config)
         return { available: true,
           limitation: 'The auxiliary model describes the image; the current session model receives text, not image pixels.' }
       } catch (error) {
@@ -93,8 +104,8 @@ export function createAuxiliaryVisionBackend(dependencies: AuxiliaryVisionDepend
           reason: error instanceof ImageUnderstandingError ? error.message : 'The auxiliary vision model is unavailable.' }
       }
     },
-    async prepare({ sessionId, image, question, signal }) {
-      const { route, llm, attachments } = await resolve(signal)
+    async prepare({ sessionId, image, question, signal }, config) {
+      const { route, llm, attachments } = await resolve(signal, config)
       // The LLM service accepts durable image references, not ad hoc base64 blocks.
       let attachment: Awaited<ReturnType<SessionOcrAttachmentStore['saveImage']>>
       try {

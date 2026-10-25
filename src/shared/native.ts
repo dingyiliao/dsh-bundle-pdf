@@ -14,6 +14,11 @@ export interface NativeTextContent {
     glyphs?: [x: number, y: number, advance: number][] }[]
   styles: Record<string, { fontFamily: string; ascent: number; descent: number; vertical: boolean }>
   lang: string | null
+  /** A mapping failure is distinct from a scanned/empty page. */
+  quality?: { unmappedCharacters: number }
+  /** Local, derived recognition must never be presented as exact native text. */
+  extraction?: 'local-ocr'
+  warnings?: string[]
 }
 export interface NativeOutlineItem {
   /** Stable outline identity supplied by the Host, independent of tree position. */

@@ -32,17 +32,87 @@ test('bookmark listing paginates the current embedded outline', async () => {
     items: [{ id: 'chapter', title: 'Chapter', dest: [1], items: [
       { id: 'section', title: 'Section', dest: [3], items: [] },
     ] }] } } }
-  const first = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, 0, 1, signal)
+  const first = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, undefined, 1, signal)
   assert.equal(first.total, 2)
   assert.deepEqual(first.entries.map(item => [item.outlineId, item.page]), [['chapter', 2]])
-  assert.equal(first.nextCursor, 1)
-  const second = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, first.nextCursor, 1, signal)
+  assert.equal(typeof first.nextCursor, 'string')
+  const second = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, first.nextCursor!, 30, signal)
   assert.deepEqual(second.entries.map(item => [item.outlineId, item.page]), [['section', 4]])
   assert.equal(second.nextCursor, null)
-  const end = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, 2, undefined, signal)
-  assert.deepEqual(end.entries, [])
-  await assert.rejects(listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, 3, 1, signal),
+  await assert.rejects(listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, 'invalid', 1, signal),
     { code: 'pdf/invalid-window' })
+})
+
+test('bookmark continuations reject inserts, deletions and moves rather than duplicating or omitting entries', async () => {
+  const snapshot = source()
+  const workspaces: WorkingCopyReadPort = { readSnapshot() { return snapshot } }
+  const initial = ['A', 'B', 'C'].map(title => ({ id: title, title, dest: [0], items: [] }))
+  let items = initial
+  const outline: AgentOutlinePort = { async readOutline() { return { snapshot, items } } }
+  const first = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, undefined, 2, signal)
+  assert.deepEqual(first.entries.map(item => item.title), ['A', 'B'])
+  for (const changed of [
+    [{ id: 'X', title: 'X', dest: [0], items: [] }, ...initial],
+    initial.slice(1), [initial[2]!, initial[0]!, initial[1]!],
+  ]) {
+    items = changed
+    await assert.rejects(listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, first.nextCursor!, 2, signal),
+      { code: 'pdf/stale-reader' })
+  }
+})
+
+test('bookmark cursors bind document, session, revision, content and source digest', async () => {
+  const initial = source()
+  let current = initial
+  const workspaces: WorkingCopyReadPort = { readSnapshot() { return current } }
+  const outline: AgentOutlinePort = { async readOutline() { return { snapshot: current,
+    items: ['A', 'B'].map(title => ({ title, dest: [0], items: [] })) } } }
+  const first = await listAgentBookmarks(workspaces, outline, 'session-1', initial.id, undefined, 1, signal)
+  for (const [sessionId, changed] of [
+    ['session-2', initial], ['session-1', { ...initial, id: 'doc-2' }],
+    ['session-1', { ...initial, revision: 2 }], ['session-1', { ...initial, contentVersion: 'content-2' }],
+    ['session-1', { ...initial, bytes: new Uint8Array([9]) }],
+  ] as const) {
+    current = changed
+    await assert.rejects(listAgentBookmarks(workspaces, outline, sessionId, current.id, first.nextCursor!, 1, signal),
+      { code: 'pdf/stale-reader' })
+  }
+})
+
+test('empty outlines terminate, cursor offsets are bounded and limit is validated', async () => {
+  const snapshot = source()
+  const workspaces: WorkingCopyReadPort = { readSnapshot() { return snapshot } }
+  let items = ['A', 'B'].map(title => ({ title, dest: [0], items: [] }))
+  const outline: AgentOutlinePort = { async readOutline() { return { snapshot, items } } }
+  const first = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, undefined, 1, signal)
+  const decoded = JSON.parse(Buffer.from(first.nextCursor!, 'base64url').toString('utf8')) as Record<string, unknown>
+  const outside = Buffer.from(JSON.stringify({ ...decoded, offset: 3 })).toString('base64url')
+  await assert.rejects(listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, outside, 1, signal),
+    { code: 'pdf/invalid-window' })
+  for (const limit of [0, -1, 51, 1.5]) {
+    await assert.rejects(listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, undefined, limit, signal),
+      { code: 'pdf/invalid-window' })
+  }
+  items = []
+  const empty = await listAgentBookmarks(workspaces, outline, 'session-1', snapshot.id, undefined, undefined, signal)
+  assert.deepEqual(empty.entries, [])
+  assert.equal(empty.nextCursor, null)
+})
+
+test('bookmark reads reject cancellation and source changes during native extraction', async () => {
+  const initial = source()
+  let current = initial
+  const workspaces: WorkingCopyReadPort = { readSnapshot() { return current } }
+  const controller = new AbortController()
+  const cancelled: AgentOutlinePort = { async readOutline() { controller.abort(); return { snapshot: initial, items: [] } } }
+  await assert.rejects(listAgentBookmarks(workspaces, cancelled, 'session-1', initial.id, undefined, undefined, controller.signal),
+    { name: 'AbortError' })
+  const changed: AgentOutlinePort = { async readOutline() {
+    current = { ...initial, bytes: new Uint8Array([9]) }
+    return { snapshot: initial, items: [] }
+  } }
+  await assert.rejects(listAgentBookmarks(workspaces, changed, 'session-1', initial.id, undefined, undefined, signal),
+    { code: 'pdf/stale-reader' })
 })
 
 test('bookmark listing rejects a changed outline snapshot or revision changed during listing', async () => {

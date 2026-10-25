@@ -119,8 +119,19 @@ const capabilityBuild = await build({
   ...common, entryPoints: ['src/modules/capabilities/index.ts'], outfile: 'dist/capabilities.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
+await build({
+  ...browser, entryPoints: ['src/modules/engines/index.ts'], outfile: 'dist/engines.js', format: 'esm',
+})
 const bridgeBuild = await build({
   ...browser, entryPoints: ['src/ocr/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
+})
+const recoveryBuild = await build({
+  ...common, entryPoints: ['src/adapters/host/ocr/text-recovery-worker.ts'],
+  outfile: 'dist/assets/ocr/text-recovery.mjs', platform: 'node', target: 'node22', format: 'esm',
+  banner: { js: 'import { createRequire as __pdfWorkerRequire } from "node:module";\nconst require = __pdfWorkerRequire(import.meta.url);' },
+})
+await unlink(join(dist, 'assets/ocr/text-recovery.cjs')).catch(error => {
+  if (error.code !== 'ENOENT') throw error
 })
 
 const assetFiles = ['ocr/bridge.js']
@@ -134,6 +145,9 @@ await copyAsset(join(tesseractRoot, 'dist/worker.min.js'), 'ocr/worker.min.js')
 for (const file of (await readdir(coreRoot, { withFileTypes: true })).filter((entry) => entry.isFile() && /^tesseract-core.*\.(?:js|wasm)$/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
   await copyAsset(join(coreRoot, file.name), `ocr/core/${file.name}`)
 }
+// The package itself is ESM; upstream's Node-loadable core files are CommonJS.
+// This Host-only marker does not change how browsers load the same scripts.
+await writeFile(join(dist, 'assets/ocr/core/package.json'), '{"type":"commonjs"}\n', 'utf8')
 for (const language of ['eng', 'chi_sim']) {
   await copyAsset(join(packageRoot(`@tesseract.js-data/${language}`), '4.0.0_best_int', `${language}.traineddata.gz`), `ocr/lang/${language}.traineddata.gz`)
 }
@@ -153,7 +167,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, capabilityBuild, bridgeBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, capabilityBuild, bridgeBuild, recoveryBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)

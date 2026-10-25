@@ -5,6 +5,7 @@ import { createAuxiliaryVisionBackend, createImageUnderstandingDispatch, createO
   type PdfImageEvidenceResolver, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
 import { HostImageUnderstandingService, ImageUnderstandingError } from '../modules/image-understanding/index.js'
 import { pdfCapabilities } from '../modules/capabilities/index.js'
+import { createPdfEngineRouting } from '../adapters/host/dsh/engine-routing.js'
 
 export type { ImageUnderstandingBackend, ImageUnderstandingAvailability, ImageUnderstandingPreparation,
   ImageUnderstandingRequest } from '../modules/image-understanding/index.js'
@@ -34,6 +35,7 @@ export type Config = z.infer<typeof Config>
 
 export function apply(ctx: Context, config: Config): void {
   const service = new HostImageUnderstandingService(() => config.backend)
+  const routing = createPdfEngineRouting(ctx)
   const references: PdfImageEvidenceResolver = {
     resolve(sessionId, documentId, refId, signal) {
       const mounted = ctx.get('pdfImageEvidence')
@@ -67,6 +69,7 @@ export function apply(ctx: Context, config: Config): void {
     return () => fiber.dispose()
   }, 'image-understanding: optional capability catalog')
   ctx.effect(() => registerPdfTransport(ctx as unknown as Parameters<typeof registerPdfTransport>[0],
-    createImageUnderstandingDispatch(service, references), { endpoint: 'pdf.image', maxRequestBytes: MAX_IMAGE_REQUEST_BYTES }),
+    createImageUnderstandingDispatch(service, references, routing.bindings),
+    { endpoint: 'pdf.image', maxRequestBytes: MAX_IMAGE_REQUEST_BYTES }),
   'image-understanding: authenticated PDF image route')
 }

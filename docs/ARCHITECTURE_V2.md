@@ -1,6 +1,6 @@
 # PDF 插件架构 V2（实施记录与后续设计）
 
-> 状态：源码分层、Client Reader 拆分、旧 V1 草稿读取、普通 PDF 评论回复解析/编辑、AcroForm 用户填写、浏览器保存重开、文字与图像来源引用、解释模式 Host 证据链，以及经人类审批的模型批注/保存工具已接入；真实 Desktop、外部阅读器互操作、旧版二进制回退、跨平台 CI 与端到端性能仍需验收。本文保留 2026-10-18 的设计目标与迁移基线；标为“目标”“后续”的条款不代表已实现。工具的逐项状态见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
+> 状态：源码分层、Client Reader 拆分、旧 V1 草稿读取、普通 PDF 评论回复解析/编辑、AcroForm 用户填写、浏览器保存重开、文字与图像来源引用、解释模式 Host 证据链、模型草稿编辑及经人类审批的保存工具已接入；真实 Desktop、外部阅读器互操作、旧版二进制回退、跨平台 CI 与端到端性能仍需验收。本文保留 2026-10-18 的设计目标与迁移基线；标为“目标”“后续”的条款不代表已实现。工具的逐项状态见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
 
 当前入口位于 `src/entrypoints/`，DSH、文件、PDFium、pdf-lib 和存储接入位于 `src/adapters/`，业务能力位于 `src/modules/`，跨端契约和纯几何/缓存分别位于 `src/contracts/` 与 `src/shared/`。兼容层仍保留部分 `src/host/`、`src/client/`、`src/core/` 和 `src/engine/framing.ts` 等仍有用途的文件，不能把目录地图理解为已彻底删除旧路径。`npm run arch:report` 可重复生成当前行数、复杂度代理值和模块依赖图；测试目录已按 `tests/modules/`、`tests/adapters/`、`tests/contracts/`、`tests/entrypoints/` 组织，浏览器 E2E 与原生集成另测。
 
@@ -47,11 +47,19 @@ Cordis `Context`、DSH Remote/Slots/Tools、文件沙箱和原生 worker 的具�
 
 Host 的 `pdfCapabilities` 是进程内能力目录：稳定的操作 ID 描述需求，Cordis 插件按 Fiber 生命周期注册/注销提供者，目录在请求时结合会话和取消信号判断是否可用。其他 Host 插件可从 `@local/dsh-pdf/capabilities` 引入能力 ID 与提供者类型，再注入 `pdfCapabilities` 注册自己的实现。提供者保留自己的有类型实现接口；目录不以一个无类型 `execute()` 替代 PDF、OCR、识图各自的输入输出契约。OCR 与识图可以在 Reader 之前或之后加载，它们的后端选择和可用性仍由各自服务决定。
 
+AI 引擎扩展由 `modules/engines` 提供描述、配置校验、类型化目录的共用记账、可取消探测和只读聚合目录。`ocr`、`imageUnderstanding`、`pdfTranslation` 各自拥有唯一实现目录；默认与第三方引擎同样注册并随 Fiber 注销。Reader 配置中的 OCR/图像/翻译选择及各引擎配置通过 Host 绑定到单次请求，人和模型工具复用同一绑定适配器；翻译用请求级实例，不通过修改全局选择路由并发请求。`pdf.engines` 通过认证连接传递有修订的目录快照与长轮询通知，Client 不再只在启动时缓存翻译列表。卸载取消任务，未知选择保留且不自动回退；断线保留上次目录，重新连接后刷新。真实会话模型/凭据可用性仍由 Host 在使用时检查。声明式设置仅接受普通标量及凭据引用，不接收第三方实现函数。详见 [ENGINE_EXTENSIONS.md](./ENGINE_EXTENSIONS.md)。
+
 打开 PDF 时先经 `pdf-lib` 检查源文档和只读条件，再由 PDFium 探测页数、表单类型及签名数。`modules/capabilities/pdf-open.ts` 合并两个解析器发现的需求，不能因其中一个漏报而静默忽略表单：普通页面、AcroForm/XFA 外观以及签名读取。当前页面实际由 `pdfium.native` 执行，因此打开检查**只接受这个执行者自身声明的能力**；不能因为另一个插件声称支持 XFA，就让仍由 PDFium 绘制的页面被错误放行。缺失能力时报告 `pdf/native-unsupported` 及所需操作 ID。未来接入另一 PDF 引擎时，须先实现对应的有类型 reader/renderer 端口并让打开、读页和绘制真正路由到该实现，再允许它参与打开规划。
 
 当前 PDFium 绘制普通页和 AcroForm 原有外观；Client 按 Host 解析的字段与 widget 坐标覆盖可编辑控件。修改作为 `set-field` 操作进入现有工作副本，支持草稿、撤销／重做，保存时由 `pdf-lib` 更新字段值与外观并走相同的版本检查和原子发布。中文外观使用随包提供的 OFL 字体。阅读器不执行 PDF 脚本、网络动作；带数字签名的 PDF 可只读预览，但不会验证签名真伪，也不能保存；XFA 和加密文档仍不支持。加密文件在探测前需要独立的解锁／授权步骤，不能仅注册一个“支持加密”的布尔能力就绕过密码与源字节转换。能力目录是可扩展的发现与规划层，不代表这些实现已经存在。
 
-模型表单入口只有 `pdf_form_inspect_page` 与 `pdf_fill_form`：`modules/forms` 产生逐页编号及字段映射，复用 `NativeViewport` 处理 crop/旋转/UserUnit；PDFium 适配器在已有整页栅格上叠加编号，DSH 适配器完成会话、视觉能力、源版本与附件校验。页图明确来自原文件，未保存字段值仅按需作为元数据返回，不能把旧外观冒充当前草稿。模型填写在 `model-write` 中转换成相同的 `set-field` 操作，复用 `working-copy` 的整批校验、队列及持久化，而非独立维护模型表单状态；文件覆盖继续经过既有保存审批。
+模型表单入口只有 `pdf_form_inspect_page` 与 `pdf_fill_form`。检查输入仅 `documentId`、物理 `page` 和可选 `includeValues`；输出分成 JSON 文本块与编号页图。JSON 顶层仅含 `documentId/page/revision/inspectionId/readOnly/readOnlyReason?/fields`；字段仅含 `sharedFieldKey/type/valueType/required`、适用的选项及长度等约束、可选当前值和 `controls: [{label, option?}]`，只有原生单选控件附 `option`。不把原生名称、ID、坐标、widget 清单、示例或固定渲染状态暴露给模型。原生字段关联用同版本内的 `sharedFieldKey` 表达，独立复选框不推断分组。`inspection-references` 保存有界的单页定位映射，绑定会话／文档／原始检查修订／内容版本／源摘要，十分钟过期、最多 128 份，不存图片或填写值，随会话及插件清理。
+
+`pdf_fill_form` 输入为 `documentId`、原始检查的 `expectedRevision`、单个 `inspectionId` 和 `fields: [{label, value}]`，只允许写该检查页，页号和真实字段由 Host 恢复；不再接受页号或 ID 数组。可选条件／互斥规则引用 `{label}`（本页）或 `{sharedFieldKey}`（同会话、文档及原始快照中已检查的字段），后者可建立跨页读取依赖，不能扩大写入范围；证据只传 `quote`，页号由 Host 补齐。规则仍由模型提供，Host 不自动推断语义。
+
+Host 在文档级队列中串行执行检查记录解析、冲突检查、工作副本 CAS 写入和记录推进，领域操作仍复用 Reader 的类型、选项、长度和身份校验，原子写入同一草稿及撤销历史，不另存模型表单。同版本批量检查后，已知 `pdf_fill_form` 仅修改独立页时，无关页可持原始凭据安全应用到最新草稿；目标页、共享字段或声明的跨页依赖被修改则拒绝。同页修改整页失效；UI 编辑、撤销／重做等未知修订，以及源文件／结构／内容版本变化保守要求重新检查。该有界追踪不是通用并发编辑合并；填写依赖仍须按控制项先行、重新检查后再处理依赖项的顺序执行。`no_changes` 与校验失败不推进修订；草稿填写不要求人工确认，覆盖保存仍需批准。
+
+`modules/forms` 与 `forms/inspection-layout` 内部保留控件和编号几何，复用 `NativeViewport` 处理 crop／旋转／UserUnit，将透明底小编号放进真实控件。PDFium 复用 Reader 基线 handle，关闭 widget 和批注外观，以不超过 1024 像素的块组成最长 2048 像素的整页。检查页图的长边由 Host 内部固定，模型工具不暴露尺寸参数。空白外观不表示值为空；`includeValues` 仅通过结构化字段数据返回当前草稿值，关闭时省略 `value`。模型侧读写格式一致：text／radio／dropdown 为字符串（空 `""`），checkbox 为布尔值（未选 `false`），option-list 为字符串数组（空 `[]`）；适配器将 dropdown 的内部数组表示规范为单个字符串，不改变 Reader 原有值模型。适配器核对会话、视觉能力、源／修订和附件尺寸。模型根据页图理解印刷标签及条件，使用填写返回状态和显式读回检查结果；普通 `pdf_render_page` 仍绘制源基线，不验证未保存草稿外观。Host 不生成语义题目、自动推断规则或自动采集填后图。
 
 表单字段以 PDF 对象引用形成 `pdf-field:<object>:<generation>` 身份，`name` 仅用于显示；导入表单可存在同名但独立的字段，不得用名称全局去重或任取第一个字段。`modules/forms/identity` 统一解析 UI、模型、工作副本与 pdf-lib 写入目标。新 `set-field` 写 `fieldId`；旧草稿的 `name` 目标仅在唯一匹配时接受，歧义时明确拒绝，不影响同文档其他目标。多 widget 的同一规范字段只枚举一次，跨页仍共享 ID；对象引用由 pdf-lib 在保存时保留，基线恢复重算同一身份，不重命名用户原字段或重新挂接不明归属的 widget。
 
@@ -83,7 +91,7 @@ src/
       ports.ts
       index.ts
     annotations/                  # 不依赖工作副本的批注模型、投影与校验
-    forms/                        # 表单检查页的编号、精确字段映射与几何约束
+    forms/                        # 表单身份、值契约、整批校验、编号与几何约束
     outlines/                     # 内置书签树操作、校验与原生导航投影
     working-copy/                 # 会话内副本、草稿、撤销/重做、CAS 与保存
       application/
@@ -151,9 +159,13 @@ tests/                            # 按模块和边界组织测试
 | `src/client/Reader.tsx`、`src/client/native/*`、侧栏/工具栏组件 | `viewer` 的 controller、rendering、组件与 feature 样式 |
 | `src/client/native/viewport.ts`、`src/engine/byte-cache.ts` | 跨端纯 `shared/geometry`、`shared/cache` |
 
-搜索不能被“统一用例”误合并：当前 Reader 在 Client 按需遍历全书、忽略大小写、最多展示 500 个结果，并包含已获得的 OCR 页级命中；`pdf_search` 工具则区分大小写、单次最多十页/20 个命中、只查原生文字。两者可以复用文本规范化和位置映射的纯内核，但保留各自的获取、限额、取消与结果精度契约；迁移测试要逐项锁定这些差异。
+搜索不能被“统一用例”误合并：Reader 按需遍历全书、忽略大小写、最多展示 500 个结果，包含已缓存 OCR 的页级命中；`pdf_search` 区分大小写、单次最多十页/20 个命中，扫描当前提取文字（编码修复文字明确标记，不自动 OCR 普通扫描页）。每个工具命中借 `text-evidence` 保存精确匹配偏移和会话限定引用；不把周围 excerpt 作为命中范围。搜索/书签的 `tool-cursor` 绑定工具、会话、文档、内容版本、修订、源摘要及查询/列表摘要，异步读取后复核，不能把不同版本结果拼起来。两端共享文本/位置内核，保留各自获取、限额、取消与精度契约。
 
 ## 前后端接口与数据边界
+
+字符映射故障在 native 提取时以 `quality.unmappedCharacters` 报告，不能将“有字形但无有效 Unicode”误当空白页。Host PDF 服务统一为 Reader 和模型读页修复异常页：随包本地 Tesseract 在一个可终止的 Worker thread 中运行，不联网，不嵌套启动子 worker；正常页不触发，修复结果按文档基线缓存，取消/卸载释放线程。`modules/document/text-recovery` 只负责 OCR 单词到 PDF 坐标的纯转换，识别适配器位于 `adapters/host/ocr`；恢复文字携带 `extraction: local-ocr` 和近似性说明，不覆盖原 PDF，也不创建第二套可选择的重叠文字层。
+
+表单填写支持调用方显式提供有印刷依据的 `conditions` 和 `choiceGroups`。`forms/conditions` 与 `forms/choice-groups` 按整批最终字段状态校验依赖及独立复选框的互斥，包括未提交的旧值；Host 不推断未上报规则或业务语义。冲突整批拒绝，不自行清空旧值或取消选择。填写直接进入共享未保存草稿，无额外确认；保存继续独立确认。模型负责页图理解、歧义询问及填后读回，用户手工编辑不受模型传入规则限制。
 
 `contracts/rpc/` 定义请求、响应和错误的运行时 schema；Host 与 Client 由同一契约生成/推导 TypeScript 类型。RPC 适配器负责鉴权、校验、超时/取消、错误归一化与序列化，不在其中实现查找、标注或保存。当前 `pdf.dispatch.v2` 可以作为迁移外壳；若更改语义或破坏旧调用者，需显式协商新协议版本，不能只改字段类型。
 
@@ -161,7 +173,7 @@ tests/                            # 按模块和边界组织测试
 
 | 字段 | 当前含义与变化条件 | 允许用于什么校验 |
 | --- | --- | --- |
-| `documentId` | 当前资源会话中的工作副本句柄；关闭/重开不能假定不变 | 查找该会话已授权的副本，不能单独证明权限 |
+| `documentId` | 当前 Host 生命周期中按资源会话＋规范路径登记的工作副本身份；关闭视图、后台资源回收及重新接管保留 ID；Host 重启后须重新获取 | 查找该会话已授权的副本，不能单独证明权限 |
 | `sourceDigest`（当前草稿的 `sourceHash`） | 源 PDF **字节** SHA-256；保存批注也会改变它 | 基线完整性、外部源文件比较、引用重新定位的第一步 |
 | `sourceVersion` | DSH 文件/预览所有者观察到的文件系统版本；不是字节摘要 | 判断是否需要重新读取/刷新；不能替代保存的目标字节摘要检查 |
 | `contentVersion` | **页面逻辑内容身份**；当前实现给新副本分配 UUID，批注编辑和仅保存批注时保持不变；外部来源变化/重新加载可更新；不是跨重启稳定的内容哈希 | 页文字和逻辑锚点的失效边界；**不能单独判断批注或页图是否更新** |
@@ -170,6 +182,8 @@ tests/                            # 按模块和边界组织测试
 | `reader.bytesHash` | 原生阅读器当前基线字节的身份 | 与 `reader.generation`、页/缩放/区域等参数一起校验 PDFium 句柄、位图与 tile；不等于未保存标注投影 |
 
 `working-copy` 是唯一写入仲裁者：UI 与模型使用同一个会话副本、每会话串行队列、批注投影和文件适配器。`pdf_annotate` 直接以预期修订与源摘要进入一个可撤销操作组；`pdf.watch` 只传轻量修订通知，Reader 随后从已鉴权的工作副本刷新。现有 `pdf.dispatch.v2` 修改/保存请求仍传 `id + revision`，**不在旧 RPC 中强加新必填字段**；未来新写入工具的版本化契约可显式传预期 `contentVersion`。覆盖保存仍须用户批准，再核对沙箱权限、源/目标的已观察字节摘要及覆盖意图，由文件适配器按规范路径串行执行。页文字和不含外观的逻辑锚点缓存可按 `contentVersion` 失效；PDFium bitmap/tile 至少还要按 `reader.bytesHash + reader.generation` 及页/缩放/区域等渲染参数区分，由截图产生的 OCR 也须绑定实际图像输入与引擎配置。带批注的快照、引用和游标还须核对 `revision`；`sourceDigest` 变化后，旧引用即使原文看似相同也必须重新验证，不能按旧坐标盲跳。普通文件系统不能保证与无关外部写入者之间的真正跨进程事务；保留现有最终摘要复核与“不确定”错误语义。
+
+打开文档表也由该服务拥有，不另建 UI／模型副本表。具名 UI 引用、模型所有权与操作 pin 独立计数；`background-documents` 只根据登记表的驻留状态执行空闲／容量策略，不再拥有第二份文档生命周期。挂起释放完整快照和 native 资源，保留 ID、路径、修订及恢复记录；恢复用原基线重建草稿，再检查磁盘变化，不用新源文件静默覆盖旧修改。UI 的 `open(referenceId)`、`release` 与不增加引用的 `refresh` 由同一服务处理；引用令牌结束后，迟到的打开请求不得复活它。基线持久缓存仍沿用 V1 存储，未承诺全进程内存受驻留预算约束。
 
 续读位置仍持久化源字节哈希。保存批注或目录会改变源字节而保持 `contentVersion`，旧位置可能被标记过期；这是保留的 V1 行为，未来应通过稳定页面内容指纹改进，不能直接改为跨进程不稳定的 `contentVersion`。个人书签能力已移除，旧域不再打开或修改；旧数据留在磁盘，不迁移进 PDF。
 
@@ -188,15 +202,19 @@ tests/                            # 按模块和边界组织测试
 
 ### V1 持久化与保存恢复协议
 
+表单外观的字体选择以最终字段状态及 `needsAppearancesUpdate()` 为准，不读取中途填过什么。单选项的导出值不是待绘制文字，列表即使取消选择仍需绘制全部选项；无 widget 或不更新外观的字段不为本次保存引入字体。空外观使用标准字体，避免未使用的 CJK 字体触发底层空子集编码异常。完整历史的填写／清空／单选修改须在隔离子进程中覆盖崩溃回归，最终值与原生绘制还需分别验证。
+
 第一轮仅改变源码组织：保留 `pdf_drafts_${suffix}`、`pdf_positions_${suffix}` 两个 Storage Domain 的名称、`version: 1`、表名、profile namespace 派生后缀及键算法；草稿继续写 `format: 1`。旧主分支源码生成的冻结 fixture 与旧 schema 读取**批注类**新记录的测试已加入，但**尚未用实际发布旧二进制完成回滚演练**。后续 AcroForm 填写和内置书签编辑扩展了同一操作联合类型：新版可读取旧草稿；旧二进制不支持新增的 `outline-add`、`outline-update`、`outline-delete`、`outline-move` 操作，含 `set-field` 的新草稿也不能保证旧版可回读。降级前须先保存或丢弃表单及目录草稿，并备份源文件及插件存储；格式号仍为 1 不代表旧版兼容，未来正式发布前应为这类操作设计独立版本迁移。冻结样本覆盖内联 `original` 与独立 `baseKey` 草稿、阅读位置；源文件改名/删除、外部改动和损坏基线仍需按场景持续验证。
 
 保存顺序不得因拆模块而改变：先确保操作草稿及其基线持久化；若物化后的字节不同于源 PDF，在发布前持久化 `renderedHash`；然后通过文件适配器做权限检查、规范路径队列、观察版本检查、原子替换及最终摘要复核。重启时，只有磁盘字节摘要等于 `renderedHash`，才能认定此前的保存已提交并把副本恢复为 clean；若不匹配，保留草稿与冲突信息，不能把操作盲目应用到另一份源文件。清理时先删草稿操作记录，成功后才删其独立基线；清理失败只给可重试警告，不能把已经提交的文件重新标成未保存。另存覆盖同一文件、保存结果不确定及退出时已接纳操作的 drain 都要有测试。
 
 如果将来确需 V2 格式，必须作为**独立迁移发布**：停写并排空队列 → 备份现有 V1 域（包括历史遗留域）和**仍可取得**的源文件，逐条验证草稿基线原始字节与 `sourceHash` → 在新域/命名空间幂等复制 → 比对记录数、所属会话、键、摘要和恢复结果 → 切换读取。源 PDF 已删除时保留原有草稿/冲突语义，不用另一份文件替代，也不把它当作迁移失败的唯一理由。失败时 V1 仍是权威数据。V2 一旦接纳新写入，旧二进制不再天然可回滚；必须先完成并验证兼容双写或备份恢复/降级工具，才允许清除 V1。迁移测试覆盖旧版写入→新版打开/编辑→重启恢复→旧版回退，以及崩溃于每个关键阶段的重试。不得假定 Storage Domain 的 `version` 字段会自动迁移数据。
 
-证据的 `refId` 是会话范围内的快照句柄，不等于永久 PDF 元素 ID。已实现的**文字与图像来源**记录存于独立 `pdf_evidence_${suffix}` Storage Domain；每次写入淘汰超过 30 天或总数 256 条以外的记录，查询同时检查所属会话。图像证据只在此域保存受保护的附件句柄、来源/版本、页或 PDF 区域及摘要，或保存有界 OCR/辅助视觉派生文字，**不复制 PNG 字节**。`session/disposed` 只是运行时 detach/HMR/退出信号：它关闭临时后台工作副本，**不代表会话日志删除，也不删除持久引用**。Host 重启或同一路径 PDF 重开后，使用文字引用还须先在原会话重新获得文件访问，并核对源路径、整页文字摘要与引文；图像引用另重验源字节、页、附件或派生文字，附件不存在时失败。同字节但临时工作副本/修订变化时可重签发新 `refId`；引用本身不授予文件或附件访问权。解释模式的区域图像经 `pdf.region`、文字选段经 `pdf.selection` 生成会话限定引用；发送区域图像时再经 `pdf.image` `prepare-reference` 核对会话、文档、源文件、附件与摘要，直接图片使用 Host 返回的字节。
+证据的 `refId` 是会话范围内的快照句柄，不等于永久 PDF 元素 ID。已实现的**文字与图像来源**记录存于独立 `pdf_evidence_${suffix}` Storage Domain；每次写入淘汰超过 30 天或总数 256 条以外的记录，查询同时检查所属会话。图像证据只在此域保存受保护的附件句柄、来源/版本、页或 PDF 区域及摘要，或保存有界 OCR/辅助视觉派生文字，**不复制 PNG 字节**。`session/disposed` 只是运行时 detach/HMR/退出信号：它取消并排空该代任务，释放模型引用及不再使用的驻留资源，**不删除逻辑文档身份、草稿、会话日志或持久引用**。Host 重启或同一路径 PDF 重开后，使用文字引用还须先在原会话重新获得文件访问，并核对源路径、整页文字摘要与引文；图像引用另重验源字节、页、附件或派生文字，附件不存在时失败。同字节但临时工作副本/修订变化时可重签发新 `refId`；引用本身不授予文件或附件访问权。解释模式的区域图像经 `pdf.region`、文字选段经 `pdf.selection` 生成会话限定引用；发送区域图像时再经 `pdf.image` `prepare-reference` 核对会话、文档、源文件、附件与摘要，直接图片使用 Host 返回的字节。
 
-`tool/result.meta` 已为 `pdf_read_page`、`pdf_locate`、`pdf_context` 写入有界文字快照；页图、OCR 与 `pdf_image_context` 写入来源信息，图片只记受保护的附件标识而不内联 PNG 字节。`pdf_render_page`、`pdf_ocr_page` 返回来源 `refId`，`pdf_image_context` 在同一 Agent 会话内重验后将受保护附件交给视觉模型，或只返回 OCR/辅助视觉派生文字。Client 的 `tool.call.toolview` 已为三个文字工具注册卡片；卡片可回放当时的摘录。点击导航先通过已鉴权的 `pdf.evidence` RPC 在 Host 重验会话、路径和整页文字，再由 Client 核对仍可见的 Reader 与摘录；仅保存批注导致源字节变化但页文字不变时仍可跳，其他失效情况不能盲跳。`pdf.region` 是解释模式的已鉴权 Client↔Host 区域绘制入口：Host 绘制、存放并按确切 PNG 字节验证附件，再签发 `pdf-region` 引用；`pdf.selection` 按字形位置重提取文字并签发引用。Client 仅在来源仍匹配时把它们纳入待发送提词；区域发送时经 `pdf.image` `prepare-reference` 再验证会话、源文件、附件和哈希，直送图片只用 Host 字节。`pdfImageEvidence` 由 reader-host 注册，image-understanding-host 每次请求动态查找该服务，因此两个插件加载顺序不影响功能。模型写入工具已通过精确引文几何校验和同一工作副本事务接入；批注直接写入可撤销草稿，`pdf_save` 才请求用户批准且只覆盖原路径。图像工具卡与答案正文内联引用仍未实现；模型页级导航经 `pdf.navigation` 接入可见 Reader，待 Desktop 验收。模型工具适配器处理 schema、会话权限、限额和 metadata，读写用例分别实现；旧九个工具名保留，新增工具的边界见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
+`tool/result.meta` 为读页、定位、上下文保存有界文字快照，Client 提供三个可回放文字卡。`text-evidence` 统一签发搜索/检索/上下文的文字证据；`text-target` 是模型标注、精确导航及历史卡片共用的引用解析入口：先授权当前工作副本并重验新鲜源，再核对整页摘要与已存 UTF-16 范围，最后从当前 native 字形重建四边形，不消费缓存的近似 bbox。相同引文按精确偏移区分；OCR 派生文字、缺失/异常几何或并发变化不能降级为猜测坐标。`pdf_annotate` 的 reference 目标经该解析器进入同一草稿事务；`pdf_navigate(documentId, refId, tabId?)` 和历史卡片将验证后的目标交给可见 Reader，Client 再核对版本与 lease，通过既有导航记录同页/跨页多级返回历史。仅页导航仍支持 `page + contentVersion`。读工具不自动跳转，不新增模型 back 工具；真实 Desktop 验收仍待完成。
+
+页图、OCR 与 `pdf_image_context` 的来源元数据只保存受保护附件句柄或有界派生文字，不复制 PNG。解释模式的 `pdf.region`、`pdf.selection` 及发送前 `prepare-reference` 继续重验源文件、附件和摘要，直送图片仅使用 Host 字节；image-understanding-host 动态取得 reader-host 的证据服务，加载顺序不影响调用。普通模型页图仍不合成未保存草稿覆盖层；图像工具卡与答案正文内联引用未实现。`pdf_status` 的布尔能力代表观察时可用性，详细 `supported/available/reason` 由文档只读/冲突状态、表单/目录信息、可见 Reader 及所选引擎实际探测合成，取消和文档变化不能被吞成成功结果。模型适配器保留 schema、权限、限额及 metadata，领域用例不依赖工具协议。覆盖保存仍由 `pdf_save` 单独请求批准。逐项契约见 [AI_READER_TOOLS.md](./AI_READER_TOOLS.md)。
 
 ## Client 拆分方式
 
@@ -214,7 +232,7 @@ Reader 玻璃材质由 `client/glass.css` 统一组合主题底色、透明度�
 | 标签 occurrence（`tab.id` + `tab.signal`） | 返回栈、最后阅读位置、已得 OCR 页和转写 | 该 occurrence 结束才清理；恢复出同 ID 的新 occurrence 不复用旧回调 |
 | 页面逻辑内容（`documentId`、`contentVersion`） | 页文本、原生文字搜索索引与逻辑定位 | 页面内容身份变化时失效；仅 `revision` 变化时更新批注投影，不无谓重算原文 |
 | 渲染输入（`reader.bytesHash`、`generation`、渲染参数） | 原生句柄、页位图/tile、由截图生成的 OCR | 基线字节、区域/缩放/方向或 OCR 引擎配置变化时重新校验；不能只看 `contentVersion` |
-| 资源会话 | 工作副本归属、待打开请求、草稿清理队列 | 切换会话先阻止新打开，等待旧打开完成并记录句柄，再按所属会话丢弃；手动关标签与切会话丢弃不能混同 |
+| 资源会话 | 规范路径文档表、具名 UI 引用、模型引用与操作 pin | 关闭／切换 UI 仅终止该视图令牌；即使打开响应丢失也可按令牌释放。运行时会话 detach 取消并排空模型任务，释放模型引用，不删除文档身份或持久草稿 |
 | 单次任务 | 搜索/OCR/翻译/解释/截图的 AbortController、序号和期望版本 | 标签、文档或会话失效时中止；晚到的结果按序号/版本丢弃，不能覆盖新标签 |
 | 插件 Fiber / Host | RPC、服务、原生进程、位置写入和存储域 | 先停接新操作，排空已接纳任务与位置写入，再关闭工作副本、原生 worker 和存储域；卸载过程幂等 |
 

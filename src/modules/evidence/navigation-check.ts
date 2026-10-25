@@ -4,6 +4,10 @@ import type { WorkingCopyReadPort } from '../working-copy/index.js'
 import type { AgentPageReadPort } from './agent-page-read.js'
 import { evidenceSha256 } from './provenance.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
+import type { EvidenceReferenceStore } from './reference-store.js'
+import { rememberTextEvidence } from './text-evidence.js'
+import { createTextReferenceResolver } from './text-target.js'
+import { textNavigationTargetSchema } from '../../contracts/navigation.js'
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 
@@ -32,7 +36,7 @@ function stale(message: string): never {
  */
 export async function revalidateEvidenceNavigation(workspaces: WorkingCopyReadPort,
   pages: AgentPageReadPort, request: EvidenceNavigationRequest, signal: AbortSignal,
-  readSource: FreshSourceRead) {
+  readSource: FreshSourceRead, references?: EvidenceReferenceStore) {
   signal.throwIfAborted()
   const { sessionId, documentId, page } = request
   const before = workspaces.readSnapshot(sessionId, documentId)
@@ -58,7 +62,25 @@ export async function revalidateEvidenceNavigation(workspaces: WorkingCopyReadPo
     || text.slice(request.startUtf16, request.endUtf16) !== request.excerpt) {
     return stale('Referenced page text changed; locate the quote again')
   }
+  // Historical cards contain text evidence, not trusted geometry. Reissue a
+  // current reference and use the same resolver as model annotation/navigation.
+  // Native geometry is normally cached; no second coordinate algorithm lives here.
+  let target
+  if (references) {
+    const evidence = await rememberTextEvidence(references, sessionId, before, page, text,
+      request.startUtf16, request.endUtf16, read.content)
+    const resolved = await createTextReferenceResolver(workspaces, pages, references)
+      .resolve(sessionId, documentId, evidence.refId, signal, readSource)
+    if (!sameSnapshot(workspaces.readSnapshot(sessionId, documentId))) {
+      return stale('PDF changed while preparing the reference; retry')
+    }
+    const { documentId: _id, contentVersion: _version, sourceVersion: _source,
+      page: _page, text: _text, ...geometry } = resolved
+    target = textNavigationTargetSchema.parse({ kind: 'text', ...geometry })
+  }
+  signal.throwIfAborted()
   return { status: 'valid' as const, documentId: before.id, page,
     sourceDigest: evidenceSha256(before.bytes), sourceVersion: before.sourceVersion,
-    contentVersion: before.contentVersion, revision: before.revision }
+    contentVersion: before.contentVersion, revision: before.revision,
+    ...(target ? { target } : {}) }
 }

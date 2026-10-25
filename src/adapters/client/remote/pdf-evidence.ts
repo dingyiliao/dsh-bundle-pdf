@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { responseSchema } from '../../../contracts/rpc/index.js'
+import { textNavigationTargetSchema } from '../../../contracts/navigation.js'
 import type { RevalidateEvidence } from '../../../client/toolview/pdf-evidence-navigation.js'
 import type { PdfConnection } from './pdf-api.js'
 
@@ -8,6 +9,7 @@ const validEvidence = z.object({
   status: z.literal('valid'), documentId: z.string(), page: z.number().int().positive(),
   sourceDigest: digest, sourceVersion: z.string(), contentVersion: z.string(),
   revision: z.number().int().nonnegative(),
+  target: textNavigationTargetSchema.optional(),
 }).strict()
 
 /** The Host owns authorization and whole-page equivalence. The Client only

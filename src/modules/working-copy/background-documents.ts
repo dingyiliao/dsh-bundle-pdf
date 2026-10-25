@@ -1,7 +1,15 @@
-/** Agent-owned document lifetime has no dependency on DSH or the PDF reader implementation. */
+import type { DocumentResidency, DocumentReleaseStatus } from './ports.js'
+export type { DocumentResidency } from './ports.js'
+export type DocumentRelease = DocumentReleaseStatus
+
+/** Residency policy over the working-copy registry, not a second document table. */
 export interface BackgroundWorkspacePort {
+  listDocuments(): DocumentResidency[]
   isUiOwned(sessionId: string, documentId: string): boolean
-  releaseBackground(sessionId: string, documentId: string): Promise<'released' | 'retained-ui' | 'already-closed'>
+  touch(sessionId: string, documentId: string): void
+  onIdle(listener: () => void): () => void
+  suspend(sessionId: string, documentId: string, evict?: () => Promise<unknown>): Promise<DocumentRelease>
+  releaseBackground(sessionId: string, documentId: string, evict?: () => Promise<unknown>, expectedReferenceId?: string | null): Promise<DocumentRelease>
 }
 
 export interface BackgroundReaderPort {
@@ -14,13 +22,9 @@ const MAX_BYTES_GLOBAL = 256 * 1024 * 1024
 const IDLE_MS = 10 * 60 * 1000
 const SWEEP_MS = 60 * 1000
 
-interface Entry { sessionId: string; documentId: string; bytes: number; touched: number }
-const key = (sessionId: string, documentId: string) => JSON.stringify([sessionId, documentId])
-
-/** Bounds only Agent-owned copies; a Client-opened copy always remains with the reader UI. */
+/** Logical IDs/drafts belong to Workspaces; only resident resources expire. */
 export function createBackgroundDocuments(workspaces: BackgroundWorkspacePort, pdfService: BackgroundReaderPort,
   options: { now?: () => number; schedule?: boolean } = {}) {
-  const entries = new Map<string, Entry>()
   const sessionEpochs = new Map<string, number>()
   const now = options.now ?? Date.now
   let operations: Promise<unknown> = Promise.resolve()
@@ -32,81 +36,97 @@ export function createBackgroundDocuments(workspaces: BackgroundWorkspacePort, p
     return next
   }
 
-  async function release(entry: Entry): Promise<'released' | 'retained-ui' | 'already-closed'> {
-    entries.delete(key(entry.sessionId, entry.documentId))
-    const result = await workspaces.releaseBackground(entry.sessionId, entry.documentId)
-    if (result === 'released') await pdfService.releaseDocument(entry.documentId)
-    return result
-  }
+  const resident = () => workspaces.listDocuments().filter(entry => entry.resident && !entry.uiReferences)
+  const releaseNative = (id: string) => () => pdfService.releaseDocument(id)
+  const suspend = (entry: DocumentResidency) => workspaces.suspend(entry.sessionId, entry.id, releaseNative(entry.id))
 
   async function prune(): Promise<void> {
+    if (stopped) return
     const expiry = now() - IDLE_MS
-    for (const entry of [...entries.values()]) if (entry.touched <= expiry) await release(entry)
-  }
-
-  async function enforce(sessionId: string): Promise<void> {
-    while (true) {
-      const session = [...entries.values()].filter(entry => entry.sessionId === sessionId)
-      const sessionBytes = session.reduce((sum, entry) => sum + entry.bytes, 0)
-      const totalBytes = [...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0)
-      if (session.length <= MAX_DOCUMENTS_PER_SESSION && sessionBytes <= MAX_BYTES_PER_SESSION
-        && totalBytes <= MAX_BYTES_GLOBAL) return
-      // A limit can only be exceeded when entries is nonempty. This loop is
-      // serialized, so no other admission or eviction can remove it here.
-      const oldest = session.length > MAX_DOCUMENTS_PER_SESSION || sessionBytes > MAX_BYTES_PER_SESSION
-        ? session[0]! : entries.values().next().value as Entry
-      await release(oldest)
+    for (const entry of resident()) {
+      if (!entry.pins && (!entry.modelOwned || entry.touched <= expiry)) await suspend(entry)
     }
   }
 
+  async function enforce(): Promise<void> {
+    // In-flight operations can temporarily exceed the budget. Their final
+    // unpin retries this policy; never spin or destroy an active document.
+    const attempted = new Set<string>()
+    while (!stopped) {
+      const all = resident()
+      const sessions = new Map<string, { count: number; bytes: number }>()
+      for (const entry of all) {
+        const totals = sessions.get(entry.sessionId) ?? { count: 0, bytes: 0 }
+        totals.count++; totals.bytes += entry.bytes; sessions.set(entry.sessionId, totals)
+      }
+      const overSession = [...sessions].find(([, total]) =>
+        total.count > MAX_DOCUMENTS_PER_SESSION || total.bytes > MAX_BYTES_PER_SESSION)?.[0]
+      const overGlobal = all.reduce((sum, entry) => sum + entry.bytes, 0) > MAX_BYTES_GLOBAL
+      if (!overSession && !overGlobal) return
+      const oldest = all.filter(entry => !entry.pins && !attempted.has(entry.id)
+        && (!overSession || entry.sessionId === overSession))
+        .sort((left, right) => left.touched - right.touched)[0]
+      if (!oldest) return
+      attempted.add(oldest.id)
+      await suspend(oldest)
+    }
+  }
+
+  async function reclaim(): Promise<void> { await prune(); await enforce() }
+  const stopIdle = workspaces.onIdle(() => {
+    if (!stopped) void serialize(reclaim).catch(() => undefined)
+  })
   const timer = options.schedule === false ? undefined : setInterval(() => {
-    if (!stopped) void serialize(prune).catch(() => undefined)
+    if (!stopped) void serialize(reclaim).catch(() => undefined)
   }, SWEEP_MS)
   timer?.unref()
 
   return {
     epoch(sessionId: string): number { return sessionEpochs.get(sessionId) ?? 0 },
-    async adopt(sessionId: string, documentId: string, bytes: number, expectedEpoch = sessionEpochs.get(sessionId) ?? 0): Promise<'background' | 'ui'> {
+    async adopt(sessionId: string, documentId: string, bytes: number,
+      expectedEpoch = sessionEpochs.get(sessionId) ?? 0, referenceId?: string): Promise<'background' | 'ui'> {
       return serialize(async () => {
         if (stopped) throw Object.assign(new Error('PDF tools are unloading'), { code: 'pdf/unavailable' })
         if (expectedEpoch !== (sessionEpochs.get(sessionId) ?? 0)) {
-          await release({ sessionId, documentId, bytes, touched: now() })
+          await workspaces.releaseBackground(sessionId, documentId, releaseNative(documentId), referenceId)
           throw Object.assign(new Error('The session was disposed while opening this PDF'), { code: 'pdf/session-disposed' })
         }
-        if (workspaces.isUiOwned(sessionId, documentId)) {
-          entries.delete(key(sessionId, documentId))
-          return 'ui'
-        }
-        if (bytes > MAX_BYTES_PER_SESSION) {
-          await release({ sessionId, documentId, bytes, touched: now() })
+        workspaces.touch(sessionId, documentId)
+        const ui = workspaces.isUiOwned(sessionId, documentId)
+        if (!ui && bytes > MAX_BYTES_PER_SESSION) {
+          await workspaces.releaseBackground(sessionId, documentId, releaseNative(documentId), referenceId)
           throw Object.assign(new Error('PDF exceeds the background working-set limit'), { code: 'pdf/background-size' })
         }
-        const id = key(sessionId, documentId)
-        entries.delete(id)
-        entries.set(id, { sessionId, documentId, bytes, touched: now() })
-        await prune()
-        await enforce(sessionId)
-        return 'background'
+        await reclaim()
+        return ui ? 'ui' : 'background'
       })
     },
-    touch(sessionId: string, documentId: string): void {
-      const id = key(sessionId, documentId)
-      const entry = entries.get(id)
-      if (entry) { entries.delete(id); entries.set(id, { ...entry, touched: now() }) }
-    },
-    close(sessionId: string, documentId: string): Promise<'released' | 'retained-ui' | 'already-closed'> {
-      return serialize(() => release(entries.get(key(sessionId, documentId))
-        ?? { sessionId, documentId, bytes: 0, touched: now() }))
+    touch(sessionId: string, documentId: string): void { workspaces.touch(sessionId, documentId) },
+    close(sessionId: string, documentId: string): Promise<DocumentRelease> {
+      const referenceId = workspaces.listDocuments().find(entry => entry.sessionId === sessionId && entry.id === documentId)?.modelReferenceId ?? null
+      return serialize(() => workspaces.releaseBackground(sessionId, documentId, releaseNative(documentId), referenceId))
     },
     closeSession(sessionId: string): Promise<void> {
       sessionEpochs.set(sessionId, (sessionEpochs.get(sessionId) ?? 0) + 1)
+      const departing = workspaces.listDocuments().filter(entry => entry.sessionId === sessionId && entry.modelOwned)
       return serialize(async () => {
-        for (const entry of [...entries.values()]) if (entry.sessionId === sessionId) await release(entry)
+        for (const entry of departing) {
+          await workspaces.releaseBackground(sessionId, entry.id, releaseNative(entry.id), entry.modelReferenceId)
+        }
       })
     },
-    dispose(): void { stopped = true; if (timer) clearInterval(timer); entries.clear(); sessionEpochs.clear() },
+    async sweep(): Promise<void> { await serialize(reclaim) },
+    async dispose(): Promise<void> {
+      if (stopped) { await operations; return }
+      stopped = true
+      if (timer) clearInterval(timer)
+      stopIdle()
+      await operations
+      sessionEpochs.clear()
+    },
     diagnostics(): { documents: number; bytes: number } {
-      return { documents: entries.size, bytes: [...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0) }
+      const all = resident()
+      return { documents: all.length, bytes: all.reduce((sum, entry) => sum + entry.bytes, 0) }
     },
   }
 }

@@ -47,7 +47,9 @@ export const workingCopyOperationSchema = z.union([operationSchema,
 
 export const requestSchema = z.discriminatedUnion('action', [
   z.object({ ...wireHints, action: z.literal('open'), sessionId: idSchema, address: z.string().min(1).max(32768),
-    owner: z.enum(['ui', 'agent']).optional() }).strict(),
+    owner: z.enum(['ui', 'agent']).optional(), referenceId: idSchema.optional() }).strict(),
+  z.object({ ...wireHints, action: z.literal('refresh'), sessionId: idSchema, id: idSchema }).strict(),
+  z.object({ action: z.literal('release'), sessionId: idSchema, id: idSchema.optional(), referenceId: idSchema }).strict(),
   z.object({ ...wireHints, action: z.literal('inspectTarget'), sessionId: idSchema, path: pathSchema }).strict(),
   ...(['undo', 'redo', 'reload', 'discard'] as const).map(action => z.object({
     ...wireHints, action: z.literal(action), sessionId: idSchema, id: idSchema, revision: z.number().int().min(0),

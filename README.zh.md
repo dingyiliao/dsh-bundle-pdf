@@ -28,6 +28,8 @@
 
 ## 安装
 
+已验证 DSH `0.2.1-rc.3`。支持的运行时版本在 [package.json](package.json) 中声明，测试 SDK 与浏览器测试宿主固定到已验证版本。
+
 插件暂未发布到 npm。请从 `main` 分支构建成功的 [GitHub Actions](https://github.com/dingyiliao/dsh-bundle-pdf/actions) 运行中，下载与你的系统及 CPU 对应的 `dsh-pdf-npm-package-<target>` 产物，解压 ZIP 后安装其中的 `.tgz`。支持 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 和 `win32-x64`。兼容的 DSH 版本见 [package.json](package.json)。
 
 已有 Web profile 可运行：
@@ -47,26 +49,60 @@ dsh plugin --profile desktop add /absolute/path/to/package.tgz
 
 在 DSH 文件栏打开有权访问的本地 PDF，即可开始阅读。插件使用你在 DSH 中配置的模型和凭据，不提供免费模型；图像理解与 OCR 是否可用取决于所选模型或另行配置的后端。
 
+字符映射异常的页面会在本地恢复可选择、可读取的文字层，不上传或改写 PDF。恢复结果是近似 OCR，不等于自动识别所有扫描文档。
+
 ## 架构
 
 ```mermaid
-flowchart LR
-  C["DSH Client<br/>阅读器与交互"] <-->|DSH 认证连接| H["PDF Host<br/>草稿、工具与文件访问"]
-  H --> N["原生 PDFium worker<br/>渲染与文字提取"]
-  H --> M["DSH 模型与可选的<br/>OCR/图像后端"]
+flowchart TB
+  subgraph Client["Client · 展示与交互"]
+    Reader["PDF 阅读器"]
+    Settings["PDF 设置<br/>动态引擎列表与配置"]
+  end
+  subgraph Host["Host · 业务与状态权威"]
+    RPC["鉴权 RPC"]
+    Tools["模型工具"]
+    Features["PDF 与 AI 功能用例"]
+    Copy["共享工作副本<br/>草稿、修订、撤销、保存"]
+    AI["类型化服务<br/>OCR · 图像理解 · 翻译"]
+    Catalog["只读目录聚合<br/>引擎变化通知"]
+    Config["各功能的引擎绑定<br/>配置与凭据引用"]
+    Backends["默认与第三方引擎<br/>同一注册接口 · Fiber 生命周期"]
+    Native["PDF 适配层<br/>pdf-lib · 原生 PDFium"]
+    Files["文件与草稿存储"]
+    RPC --> Features
+    Tools --> Features
+    Features --> Copy
+    Features --> AI
+    Copy --> Native
+    Copy --> Files
+    AI --> Backends
+    AI --> Config
+    AI -. "描述与目录变化" .-> Catalog
+    Catalog --> RPC
+    RPC --> Config
+  end
+  Reader <--> RPC
+  Settings <--> RPC
+  Model["DSH 会话模型"] <--> Tools
+  Backends --> Dependencies["DSH LLM · 本地进程 · 远程 API"]
 ```
 
-Client 与模型工具使用 Host 侧的同一份工作副本。读取不会自动打开新的侧栏标签；模型修改会更新阅读器中的未保存草稿，模型请求覆盖原 PDF 时则需要单独批准。原生 worker 在 Host 边界之后负责渲染与文字提取。
+Client 与模型工具按资源会话和规范路径，共用 Host 侧的一份工作副本。后台打开的 PDF 随后可由阅读器接管，沿用同一文档 ID、草稿与撤销历史，修改双向同步。关闭视图只释放引用，不丢弃草稿；空闲回收保留文档身份，使用时按需恢复资源。读取不会自动打开侧栏标签，模型覆盖原 PDF 仍需单独批准。原生 worker 在 Host 边界之后负责渲染与文字提取。
+
+Host 插件可注册 OCR、图像理解和翻译引擎，设置列表会随注册与卸载自动更新。已卸载的选择仍会保留，不会静默回退；任务固定使用启动时的实现与配置，卸载会取消该引擎的在途任务。各服务保留类型化接口，聚合目录不维护另一套执行注册表。扩展契约见[引擎扩展](docs/ENGINE_EXTENSIONS.md)。字符映射自动修复仍走本地专用通道，不会因选择远程 OCR 而上传页面。
 
 书签编辑复用同一套目录领域规则和现有 pdf-lib 保存事务。模型可通过 `pdf_bookmarks` 获取精确的 `outlineId`，再用 `pdf_outline_edit` 提交一组原子的草稿修改。新增目录编辑的真实 Desktop 和外部阅读器验收仍待完成。
 
 接口与实现状态详见[架构文档](docs/ARCHITECTURE_V2.md)、[AI 阅读工具设计](docs/AI_READER_TOOLS.md)和[功能规格](SPEC.md)。部分高级工具交互仍需真实 Desktop 与模型场景验收。
 
+表单检查返回编号页图及本页可写控件的类型、选项和位置，透明底小编号放在每个控件内。调用模型根据页图理解印刷内容与控件的对应关系；检查工具不会另行调用模型或 OCR。
+
 ## 开发
 
 从源码运行时，依次执行 `npm ci`、`npm run native:build`、`npm run build`，再通过 `dsh plugin --profile web add .` 安装本地目录。直接用 Git URL 安装不会得到预构建的原生 worker。类型与 Node 测试使用 `npm run check`，浏览器交互测试使用 `npm run test:web`，项目级覆盖率使用 `npm run test:coverage:project`。
 
-普通 AcroForm 字段可由用户或模型填写：`pdf_form_inspect_page` 返回编号控件页图与精确字段 ID，`pdf_fill_form` 修改同一份可撤销草稿。检查页图要求视觉模型，模型覆盖保存仍需单独批准。不会执行 PDF 脚本或动作。签名 PDF 仍只读预览，且不验证签名真伪；XFA 与加密 PDF 不支持。文字搜索不会自动索引扫描页，Host 后台调用 `pdf_open` 也不会打开阅读器标签。其他边界见 [SPEC.md](SPEC.md)。
+普通 AcroForm 字段可由用户或模型填写。检查工具将小编号放在填写框内，页图不绘制控件外观和批注；当前草稿值通过 `includeValues:true` 元数据读取，不能从空白图判断字段状态。填写只传单个检查 ID 和编号／值，Host 恢复页号，原子更新该页的共享可撤销草稿。可先批量检查多页，再分别填写独立页；共享字段或声明的依赖冲突时仍需重新检查。模型可显式提供条件和互斥选项检查；Host 校验这些传入规则及字段类型，不推断业务含义。检查页图要求视觉模型，模型覆盖保存仍需单独批准。不会执行 PDF 脚本或动作。签名 PDF 仍只读预览，且不验证签名真伪；XFA 与加密 PDF 不支持。文字搜索不会自动索引扫描页，Host 后台调用 `pdf_open` 也不会打开阅读器标签。其他边界见 [SPEC.md](SPEC.md)。
 
 草稿仍使用 `format: 1`，但旧二进制不理解新增的目录操作或按 ID 定位的表单操作。降级前须先保存或丢弃表单及目录草稿，并备份 PDF 与插件存储；不能把格式号未变理解为新操作可由旧二进制回读。
 

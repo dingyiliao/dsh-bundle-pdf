@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { PdfReadingContextUpdate, ReaderContextReporter, PdfAgentNavigationApi } from '../ports/reader.js'
+import type { AgentNavigationRequest } from '../../../contracts/navigation.js'
 
 export interface ReaderContextLeaseOptions {
   sessionId: string
@@ -13,7 +14,7 @@ export interface ReaderContextLeaseOptions {
   enabled: boolean
   report?: ReaderContextReporter
   agentNavigation?: PdfAgentNavigationApi
-  onAgentNavigate?: (page: number) => Promise<boolean>
+  onAgentNavigate?: (request: AgentNavigationRequest, signal: AbortSignal) => Promise<'opened' | 'stale' | 'unavailable'>
 }
 
 /** Publish only a short-lived page hint, never file authorization or PDF content. */
@@ -93,14 +94,35 @@ export function useReaderContextLease(options: ReaderContextLeaseOptions): void 
           const request = await navigation.wait(context, signal)
           if (!request || signal.aborted) continue
           const active = published.current
+          const current = latest.current.snapshot
           const valid = latest.current.visible && active?.leaseId === lease.leaseId
             && active.documentId === request.documentId && active.contentVersion === request.contentVersion
+            && current?.id === request.documentId && current.contentVersion === request.contentVersion
           let status: 'opened' | 'stale' | 'unavailable' = valid ? 'unavailable' : 'stale'
           if (valid) {
-            try { status = await latest.current.onAgentNavigate?.(request.page) ? 'opened' : 'unavailable' }
+            const execution = new AbortController(), watching = new AbortController()
+            const operationSignal = AbortSignal.any([signal, execution.signal])
+            const watchSignal = AbortSignal.any([signal, watching.signal])
+            let finished = false
+            // The tool may be cancelled after delivery. A tab lifetime alone
+            // must not let that obsolete request move the user's reading view.
+            void (async () => {
+              try {
+                while (!watchSignal.aborted && !finished) {
+                  const result = await navigation.watchRequest({ ...context, requestId: request.requestId }, watchSignal)
+                  if (!result.active && !finished) { execution.abort(); break }
+                }
+              } catch {
+                if (!watchSignal.aborted && !finished) execution.abort()
+              }
+            })()
+            try { status = await latest.current.onAgentNavigate?.(request, operationSignal) ?? 'unavailable' }
             catch { status = 'unavailable' }
+            finally { finished = true; watching.abort() }
+            if (operationSignal.aborted) status = 'unavailable'
           }
-          if (!signal.aborted) await navigation.complete({ ...context, requestId: request.requestId, status }, signal)
+          if (!signal.aborted) await navigation.complete({ ...context, requestId: request.requestId, status,
+            ...(request.target ? { targetRevision: request.target.revision, sourceDigest: request.target.sourceDigest } : {}) }, signal)
         } catch (failure) {
           if (signal.aborted) break
           console.warn('[pdf] Could not handle an agent navigation request', failure)

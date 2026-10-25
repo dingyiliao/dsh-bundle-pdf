@@ -3,7 +3,8 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { locateTextRange, locateTextTarget } from '../../../src/modules/model-write/text-target.ts'
+import { locateTextRange, locateTextOffsetRange, locateTextTarget } from '../../../src/shared/geometry/text-target.ts'
+import { joinPageText } from '../../../src/shared/page-text.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
@@ -49,6 +50,26 @@ test('range targeting rejects an end before its start and a possible second-colu
     { code: 'pdf/ambiguous-reading-order' })
 })
 
+test('strict offset targets reject line-interleaved columns but preserve ordinary paragraphs and split runs', () => {
+  const columns = page([run('Left first', 60, 300), run('Right unrelated', 300, 300), run('Left second', 60, 280)])
+  assert.throws(() => locateTextOffsetRange(columns, 0, joinPageText(columns.items).length),
+    { code: 'pdf/ambiguous-reading-order' })
+  const quote = joinPageText(columns.items)
+  assert.throws(() => locateTextRange(columns, quote, quote), { code: 'pdf/ambiguous-reading-order' })
+  assert.throws(() => locateTextTarget(columns, quote), { code: 'pdf/ambiguous-reading-order' })
+  const cases = [
+    page([run('Normal long paragraph', 60, 300), run(' continues', 186, 300, true), run('Next line', 60, 280)]),
+    page([run('Normal', 60, 300), run(' words', 102, 300, true), run('Next line', 60, 280)]),
+    page([run('A', 60, 300), run('B', 66, 300), run('C', 72, 300, true), run('D', 60, 280)]),
+    page([run('Indented paragraph', 120, 300, true), run('Continued below', 60, 280)]),
+  ]
+  for (const content of cases) {
+    const text = joinPageText(content.items)
+    assert.equal(locateTextOffsetRange(content, 0, text.length).text, text)
+    assert.equal(locateTextRange(content, text, text).text, text)
+  }
+})
+
 test('text targeting fails closed on an absent or ambiguous quote and missing glyph positions', () => {
   const duplicate = page([run('MMFAR', 72, 380, true), run('MMFAR', 72, 300)])
   assert.throws(() => locateTextTarget(duplicate, 'missing'), { code: 'pdf/text-not-found' })
@@ -68,7 +89,42 @@ test('a supplementary Unicode character remains one positioned glyph', () => {
   assert.deepEqual(result.rect, [78, 377.6, 90, 389.6])
 })
 
+test('one-scalar native runs use their exact origin and width without guessing multi-character geometry', () => {
+  const single = (str: string, x: number) => ({ ...run(str, x, 180), glyphs: undefined })
+  const content = page([single('A', 60), single('𝑅', 66), single('B', 72)])
+  const result = locateTextTarget(content, 'A𝑅B')
+  assert.deepEqual(result.rect, [60, 177.6, 78, 189.6])
+  assert.equal(result.quadPoints.length, 24)
+  for (const item of [
+    { ...single('A', 60), width: 0 },
+    { ...single('A', 60), width: Number.NaN },
+    { ...single('A', 60), transform: [12, 0, 0, 12, Number.POSITIVE_INFINITY, 180] },
+    { ...single('A', 60), glyphs: [] },
+    single('AB', 60),
+  ]) assert.throws(() => locateTextTarget(page([item]), item.str), { code: 'pdf/text-geometry-unavailable' })
+  assert.throws(() => locateTextTarget({ ...page([single('A', 60)]), extraction: 'local-ocr' }, 'A'),
+    { code: 'pdf/text-geometry-unavailable' })
+})
+
 const executable = resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
+test('real PDFium one-character text objects remain exactly targetable when native glyph arrays are omitted',
+  { skip: !existsSync(executable) }, async () => {
+    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
+    const pdfPage = pdf.addPage([400, 300])
+    pdfPage.drawText('A', { x: 60, y: 180, size: 12, font })
+    pdfPage.drawText('B', { x: 60 + font.widthOfTextAtSize('A', 12), y: 180, size: 12, font })
+    const worker = new NativeWorker(executable, nativeTestSubprocess)
+    try {
+      await worker.request({ command: 'open', documentId: 'single-glyph-target' }, await pdf.save())
+      const content = (await worker.request({ command: 'text', documentId: 'single-glyph-target', pageIndex: 0 })).value as NativeTextContent
+      assert.deepEqual(content.items.map(item => item.str), ['A', 'B'])
+      assert.ok(content.items.every(item => item.glyphs === undefined))
+      const result = locateTextTarget(content, 'AB')
+      assert.equal(result.quadPoints.length, 16)
+      assert.ok(result.rect[0] >= 59 && result.rect[2] <= 80)
+      assert.ok(result.rect[1] < 180 && result.rect[3] > 180)
+    } finally { await worker.dispose() }
+  })
 test('real PDFium glyph positions select the title and not the nearby row', { skip: !existsSync(executable) }, async () => {
   const pdf = await PDFDocument.create()
   const page = pdf.addPage([400, 300]), font = await pdf.embedFont(StandardFonts.Helvetica)

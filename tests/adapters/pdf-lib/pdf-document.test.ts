@@ -288,6 +288,30 @@ test('a reply to a duplicate same-page alias targets the canonical surviving par
   assert.equal(after.annotations.at(-1)?.replyToId, result.document.annotations.at(-1)?.replyToId)
 })
 
+test('reply writes reject both an explicitly locked parent and a read-only canonical alias in a cyclic import', async () => {
+  for (const cyclic of [false, true]) {
+    const doc = await PDFDocument.create(), page = doc.addPage([200, 200])
+    const parent = doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Text',
+      Rect: [20, 30, 40, 50], ...(cyclic ? {} : { F: 64 }) }))
+    if (cyclic) {
+      const other = doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Text',
+        Rect: [60, 30, 80, 50], IRT: parent }))
+      doc.context.lookup(parent, PDFDict).set(PDFName.of('IRT'), other)
+      page.node.set(PDFName.of('Annots'), doc.context.obj([parent, parent, other]))
+    } else page.node.set(PDFName.of('Annots'), doc.context.obj([parent]))
+    const bytes = await doc.save(), before = await loadPdfDocument(bytes)
+    assert.equal(before.annotations[0].editable, false)
+    // A malformed cycle can leave a secondary alias independently editable;
+    // the canonical dictionary remains protected when the writer resolves it.
+    const target = before.annotations[cyclic ? 1 : 0]
+    if (cyclic) assert.equal(target.editable, true)
+    await assert.rejects(applyPdfOperations(bytes, [{ type: 'add', annotation: {
+      id: 'cannot-reply', replyToId: target.id, page: 1, subtype: 'Text', rect: [20, 30, 21, 31], contents: 'Fixture reply',
+    } }]), (error: unknown) => error instanceof PdfDocumentError && error.code === 'annotation-read-only')
+    assert.deepEqual((await loadPdfDocument(bytes)).annotations, before.annotations, 'a rejected reply cannot alter source annotations')
+  }
+})
+
 test('a cross-page /IRT orphan risk marks the referenced parent read-only before operations', async () => {
   const { bytes, highlight } = await fixture()
   const doc = await PDFDocument.load(bytes)

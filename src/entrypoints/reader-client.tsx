@@ -17,7 +17,9 @@ import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '.
 import { sessionFile } from '../shared/address.ts'
 import type { ReaderProps } from '../client/contracts.ts'
 import { createTranslationRegistry } from '../translation/index.js'
-import { createHostTranslationEngine } from '../adapters/client/remote/translation-api.js'
+import { createEngineCatalogStore } from '../adapters/client/remote/engine-catalog.js'
+import { createTranslationDirectoryMirror } from '../adapters/client/remote/translation-directory.js'
+import { engineBinding, engineCatalogSchema, engineConfigurationsSchema } from '../modules/engines/index.js'
 import { persistTranslationLanguage } from '../adapters/client/dsh/persist-translation-language.js'
 import { PdfEvidenceToolCard, type PdfToolCallProps } from '../client/toolview/PdfEvidenceToolCard.js'
 import { createPdfEvidenceNavigation } from '../client/toolview/pdf-evidence-navigation.js'
@@ -58,6 +60,8 @@ interface ClientContext {
 }
 
 const settingsSchema = z.object({
+  ocrEngine: z.string().optional(), imageEngine: z.string().optional(),
+  engineConfigurations: engineConfigurationsSchema.optional(),
   ocrTimeoutMs: z.number(),
   translationEngine: z.string(), translationTargetLanguage: z.string(), translationTimeoutMs: z.number(),
   historyCapacity: z.number(), maxFileBytes: z.number(),
@@ -72,6 +76,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => () => lifetime.abort(), 'pdf: client lifetime')
   const bootstrap = z.discriminatedUnion('ok', [
     z.object({ ok: z.literal(true), value: z.object({ namespace: z.string(), settingsNamespace: z.string(), settings: settingsSchema,
+      engineCatalog: engineCatalogSchema,
       translationEngines: z.array(z.object({ id: z.string(), name: z.string(), version: z.string(),
         execution: z.enum(['disabled', 'local', 'remote']), maxInputCharacters: z.number().int().positive().optional() })) }) }),
     z.object({ ok: z.literal(false), error: z.object({ message: z.string() }) }),
@@ -89,13 +94,19 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const regionEvidence = createRegionEvidenceApi(ctx.connection, lifetime.signal)
   const textSelectionEvidence = createTextSelectionEvidenceApi(ctx.connection, lifetime.signal)
   const translation = createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })
-  for (const engine of info.translationEngines) translation.register(createHostTranslationEngine(ctx.connection, lifetime.signal, engine))
+  const catalog = createEngineCatalogStore(ctx.connection, lifetime.signal, info.engineCatalog)
+  const translationMirror = createTranslationDirectoryMirror(translation, ctx.connection, lifetime.signal)
+  const synchronizeDirectory = () => translationMirror.update(catalog.getSnapshot().engines.translation)
+  synchronizeDirectory()
+  ctx.effect(() => catalog.subscribe(synchronizeDirectory), 'pdf: dynamic engine directory')
+  ctx.effect(() => () => { translationMirror.dispose(); catalog.dispose() }, 'pdf: engine directory lifecycle')
   const synchronizeTranslation = () => {
     const state = form.getSnapshot()
     const settings = state.value ?? info.settings
     const engineId = effectiveTranslationEngine(settings.translationEngine)
+    const binding = engineBinding('translation', engineId, settings.engineConfigurations as PdfSettings['engineConfigurations'])
     translation.select({ id: `${info.namespace}/${engineId}`, engineId,
-      configurationRevision: JSON.stringify([engineId, settings.translationTimeoutMs]), config: {} })
+      configurationRevision: JSON.stringify([engineId, settings.translationTimeoutMs, binding.config]), config: binding.config ?? {} })
   }
   synchronizeTranslation()
   ctx.effect(() => form.subscribe(synchronizeTranslation), 'pdf: translation configuration')
@@ -106,9 +117,9 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const agentNavigation = createPdfAgentNavigationApi(ctx.connection, lifetime.signal)
   const sessionLifecycle = createPdfSessionLifecycle({
     currentSession: ctx.uiSession.adapter.current, sidebar: ctx.sidebarRight, api, signal: lifetime.signal,
-    onError: error => { console.error('[pdf] Failed to discard PDFs after Session switch', error) },
+    onError: error => { console.error('[pdf] Failed to release closed PDF views', error) },
   })
-  ctx.effect(() => () => sessionLifecycle.dispose(), 'pdf: Session switch cleanup')
+  ctx.effect(() => () => sessionLifecycle.dispose(), 'pdf: view reference lifecycle')
   ctx.effect(() => ctx.locale.register(NS, {
     zh: { ...readerLocales.zh, ...settingsLocales.zh, title: 'PDF 阅读与标注' },
     en: { ...readerLocales.en, ...settingsLocales.en, title: 'PDF reader & annotations' },
@@ -132,6 +143,11 @@ export async function apply(ctx: ClientContext): Promise<void> {
   function PdfSurface(props: OwnerProps) {
     const state = useSyncExternalStore(subscribeSettings, readSettings, readSettings)
     const currentSettings = state.value ?? info.settings ?? defaultSettings
+    const engines = useSyncExternalStore(catalog.subscribe, catalog.getSnapshot, catalog.getSnapshot)
+    const configuredOcr = useMemo(() => ({ ...hostOcr }),
+      [engines.revision, currentSettings.ocrEngine, currentSettings.engineConfigurations])
+    const configuredImages = useMemo(() => ({ ...imageUnderstanding }),
+      [engines.revision, currentSettings.imageEngine, currentSettings.ocrEngine, currentSettings.engineConfigurations])
     const [pendingTargetLanguage, setPendingTargetLanguage] = useState<string>()
     const targetWriteGeneration = useRef(0)
     const rememberTranslationTargetLanguage = useCallback(async (language: string) => {
@@ -160,8 +176,8 @@ export async function apply(ctx: ClientContext): Promise<void> {
       ...api,
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
     }), [owner])
-    return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={hostOcr}
-      imageUnderstanding={imageUnderstanding} regionEvidence={regionEvidence}
+    return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={configuredOcr}
+      imageUnderstanding={configuredImages} regionEvidence={regionEvidence}
       textSelectionEvidence={textSelectionEvidence} translation={translation}
       allowReadingContext={props.sessionId === file.sessionId} reportReadingContext={reportReadingContext}
       agentNavigation={agentNavigation}
@@ -175,7 +191,9 @@ export async function apply(ctx: ClientContext): Promise<void> {
         translationTargetLanguage: pendingTargetLanguage ?? currentSettings.translationTargetLanguage }} />
   }
   function PdfSettingsSection(props: { t: (key: string) => string }) {
+    const engines = useSyncExternalStore(catalog.subscribe, catalog.getSnapshot, catalog.getSnapshot)
     return <Settings t={props.t} form={form}
+      engineCatalog={engines}
       translationEngines={translation.list().map(engine => ({ id: engine.id, label: engine.name }))} />
   }
   ctx.effect(() => ctx.documentPreviews.register({ id: ID, extensions: ['pdf'], binaryExtensions: ['pdf'],

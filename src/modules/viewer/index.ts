@@ -31,6 +31,7 @@ export { ReaderSelectionBar, ReaderAnnotationBar,
 export { readerSidebarPanels, type ReaderSidebarPanelsOptions } from './components/ReaderSidebarPanels.js'
 export { readerPageScale, captureReaderPosition, resolvePdfDestination, type ReaderViewportState } from './controllers/navigation-position.js'
 export { useReaderNavigation, type ReaderNavigationOptions } from './controllers/use-reader-navigation.js'
+export { navigateAgentRequest, textTargetPosition, type ReaderNavigationGuard } from './controllers/agent-text-navigation.js'
 export { useReaderExplanation, type ReaderExplanationOptions } from './controllers/use-reader-explanation.js'
 export { useReaderContextLease, type ReaderContextLeaseOptions } from './controllers/use-reader-context-lease.js'
 export { useReaderSidebarLayout, type ReaderSidebarLayoutOptions } from './controllers/use-reader-sidebar-layout.js'

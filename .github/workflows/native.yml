@@ -20,7 +20,7 @@ jobs:
           repository: deepseek-ai/deepseek-harness
           # Keep the adjacent test host reproducible; bump deliberately when
           # adopting a new DSH contract.
-          ref: 687f282e8625c6b8d11ff58211a90524be2e4317
+          ref: d02ea370ee15556a643207eeb21810c29ca8c437
           path: deepseek-harness
       - uses: actions/setup-node@v4
         with:

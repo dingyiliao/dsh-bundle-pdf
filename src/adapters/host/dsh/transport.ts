@@ -30,6 +30,19 @@ export type PdfDispatch = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+/** Retain a document across a complete authenticated RPC, not just its file transaction. */
+export function retainPdfDocument(dispatch: PdfDispatch,
+  acquire: (sessionId: string, id: string, agent: PdfAgent, signal: AbortSignal) => Promise<() => void>): PdfDispatch {
+  return async (sessionId, input, agent, signal) => {
+    const id = input.documentId ?? input.id
+    if (typeof id !== 'string' || !id || id.length > 512 || input.action === 'release') {
+      return dispatch(sessionId, input, agent, signal)
+    }
+    const release = await acquire(sessionId, id, agent, signal)
+    try { return await dispatch(sessionId, input, agent, signal) } finally { release() }
+  }
+}
+
 const binaryTag = Symbol('pdf.binary-response')
 interface BinaryResult { [binaryTag]: true; value: Record<string, unknown>; bytes: Uint8Array; mime: string }
 /** Uses Connection's documented multipart attachment codec; never Base64 JSON. */

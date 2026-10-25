@@ -43,3 +43,14 @@ test('lifetime cancellation rejects before contacting Host', async () => {
   await assert.rejects(revalidate(request, new AbortController().signal), { name: 'AbortError' })
   assert.equal(calls, 0)
 })
+
+test('historical evidence transport preserves only a strict Host-issued exact navigation target', async () => {
+  const target = { kind: 'text', refId: 'ref', revision: 3, sourceDigest: digest, pageTextDigest: digest,
+    startUtf16: 4, endUtf16: 9, textSha256: digest, rectPdf: [1, 2, 10, 12], quadPoints: [1, 12, 10, 12, 1, 2, 10, 2] }
+  const signal = new AbortController().signal
+  let reply: unknown = { ...value, target }
+  const revalidate = createPdfEvidenceRevalidator({ rpc: { async call() { return { ok: true, value: reply } } } }, signal)
+  assert.deepEqual((await revalidate(request, signal)).target, target)
+  reply = { ...value, target: { ...target, sourceDigest: 'invalid' } }
+  await assert.rejects(revalidate(request, signal))
+})

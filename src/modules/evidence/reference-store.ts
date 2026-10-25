@@ -16,6 +16,7 @@ export const textEvidenceSchema = z.object({
   revision: z.number().int().nonnegative(),
   page: z.number().int().min(1).max(100_000),
   source: z.literal('pdf-text'),
+  extraction: z.literal('local-ocr').optional(),
   pageTextDigest: digest.optional(),
   snapshot: z.object({ text: z.string().max(8000), sha256: digest }).strict(),
   locator: z.object({ kind: z.literal('text-window'), startUtf16: z.number().int().nonnegative(),

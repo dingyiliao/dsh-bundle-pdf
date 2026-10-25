@@ -24,6 +24,9 @@ export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] a
 export const translationSourceLanguage = 'auto' as const
 
 export interface PdfSettings {
+  ocrEngine?: string
+  imageEngine?: string
+  engineConfigurations?: import('../modules/engines/types.js').EngineConfigurations
   ocrTimeoutMs: number
   translationEngine: string
   translationTargetLanguage: string
@@ -38,6 +41,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
+  ocrEngine: 'session-llm', imageEngine: 'session-vision', engineConfigurations: {},
   ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,
@@ -75,7 +79,9 @@ export interface WorkspaceSnapshot {
 export interface PdfClientApi {
   native: NativeReaderApi
   positions: PdfReadingPositionApi
-  open(sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  open(sessionId: string, address: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
+  /** Omit id to permanently close this occurrence's reference, including opens whose reply was lost. */
+  release(sessionId: string, id: string | undefined, referenceId: string, signal?: AbortSignal): Promise<void>
   change(sessionId: string, id: string, revision: number, operations: PdfWorkingCopyOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>
   undo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   redo(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
@@ -84,7 +90,7 @@ export interface PdfClientApi {
   discard(sessionId: string, id: string, revision: number, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Dispose working copies and durable drafts without reading or writing their PDF files. */
   discardMany(sessionId: string, ids: readonly string[], signal?: AbortSignal): Promise<void>
-  /** Clear drafts for restored PDF tabs that have not mounted a reader yet. */
+  /** Explicit destructive draft cleanup; never use for view close or Session switching. */
   discardAddresses(sessionId: string, addresses: readonly string[], signal?: AbortSignal): Promise<void>
   inspectTarget(sessionId: string, path: string, signal?: AbortSignal): Promise<{ version: string | null }>
   save(sessionId: string, id: string, revision: number, options: { path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }, signal?: AbortSignal): Promise<WorkspaceSnapshot>

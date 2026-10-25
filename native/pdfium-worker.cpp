@@ -239,6 +239,7 @@ json text_content(Document& doc, const json& request) {
   double width = 0, size = 0;
   std::vector<std::array<double, 3>> glyphs;
   bool positioned = true;
+  int unmapped = 0;
   auto flush = [&](bool eol) {
     if (!value.empty()) {
       json run = {{"str", value}, {"transform", transform}, {"width", std::max(0.0, width)},
@@ -252,6 +253,10 @@ json text_content(Document& doc, const json& request) {
   };
   for (int i = 0; i < chars; i++) {
     const auto cp = FPDFText_GetUnicode(text_page, i);
+    // Real glyphs can be encoded as CIDs/control codes when both ToUnicode
+    // and the font's cmap are absent. Generated CR/LF are not broken glyphs.
+    if (FPDFText_IsGenerated(text_page, i) == 0
+      && (FPDFText_HasUnicodeMapError(text_page, i) == 1 || cp < 32 || cp == 0xfffd)) unmapped++;
     if (cp == '\r' || cp == '\n') { flush(true); continue; }
     if (!cp || cp < 32) continue;
     // PDFium exposes supplementary characters as adjacent UTF-16 surrogates.
@@ -306,6 +311,7 @@ json text_content(Document& doc, const json& request) {
   flush(false);
   json result = {{"items", runs}, {"styles", {{"nativeSans", {{"fontFamily", "sans-serif"}, {"ascent", 0.8},
     {"descent", -0.2}, {"vertical", false}}}}}, {"lang", nullptr}};
+  if (unmapped) result["quality"] = {{"unmappedCharacters", unmapped}};
   // Preserve the existing text response for unusually dense pages instead of
   // crossing the worker's JSON frame limit just to add selection positions.
   if (result.dump().size() > max_json - 4096) for (auto& run : result["items"]) run.erase("glyphs");
@@ -375,6 +381,7 @@ json render_tile(Document& doc, const json& request, std::vector<unsigned char>&
   const int rotation = integer(request,"rotation",0,270);
   require(rotation % 90 == 0 && x+w <= full_w+2 && y+h <= full_h+2, "Invalid native tile coordinates");
   require(!request.contains("annotations") || request["annotations"].is_boolean(), "Annotation flag must be boolean");
+  require(!request.contains("forms") || request["forms"].is_boolean(), "Form appearance flag must be boolean");
   const int flags = FPDF_REVERSE_BYTE_ORDER | (request.value("annotations",true) ? FPDF_ANNOT : 0);
   const double page_w = FPDF_GetPageWidthF(page), page_h = FPDF_GetPageHeightF(page);
   require(page_w > 0 && page_h > 0, "Native page geometry is invalid");
@@ -393,7 +400,7 @@ json render_tile(Document& doc, const json& request, std::vector<unsigned char>&
   if (!bitmap.handle) throw Failure("pdf/native-bitmap", "PDFium bitmap allocation failed");
   FS_RECTF clip{0,0,float(w),float(h)};
   FPDF_RenderPageBitmapWithMatrix(bitmap.handle,page,&matrix,&clip,flags);
-  if (doc.form) {
+  if (doc.form && request.value("forms", true)) {
     // Form fields are document content even when a screenshot excludes markup
     // annotations. Offset PDFium's form layer by the tile origin so widget
     // appearances remain aligned across seams.

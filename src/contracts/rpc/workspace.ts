@@ -11,7 +11,7 @@ const wireFormFieldSchema = z.object({
   value: z.union([z.string(), z.boolean(), z.array(z.string())]),
   widgets: z.array(z.object({ page: z.number().int().positive(),
     rect: z.tuple([z.number(), z.number(), z.number(), z.number()]), option: z.string().optional() })),
-  options: z.array(z.string()).optional(), maxLength: z.number().int().optional(),
+  description: z.string().max(256).optional(), options: z.array(z.string()).optional(), maxLength: z.number().int().optional(),
   multiline: z.boolean().optional(), multiple: z.boolean().optional(), readOnly: z.boolean(), required: z.boolean(),
 })
 

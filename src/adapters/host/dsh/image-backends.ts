@@ -27,6 +27,7 @@ export function createSessionVisionBackend(ctx: Pick<Context, 'get'>): ImageUnde
   }
   return {
     id: 'session-vision', kind: 'direct-image', availability: check,
+    descriptor: { id: 'session-vision', name: 'Current session vision model', version: '1', execution: 'remote' },
     async prepare({ sessionId, signal }) {
       const result = await check(sessionId, signal)
       if (!result.available) throw new ImageUnderstandingError('pdf/image-unavailable', result.reason)
@@ -40,19 +41,20 @@ export function createOcrTextBackend(ctx: Pick<Context, 'get'>): ImageUnderstand
   const getOcr = () => ctx.get('ocr') as HostOcrService | undefined
   return {
     id: 'ocr-text', kind: 'derived-text',
-    async availability(sessionId, signal) {
+    descriptor: { id: 'ocr-text', name: 'OCR text extraction (uses selected OCR engine)', version: '1', execution: 'remote' },
+    async availability(sessionId, signal, _config, context) {
       const ocr = getOcr()
       if (!ocr) return { available: false, reason: 'The OCR plugin is not installed.' }
-      const result = await ocr.availability(sessionId, signal)
+      const result = await ocr.availability(sessionId, signal, context?.ocrBinding)
       return result.status === 'available'
         ? { available: true, limitation: 'OCR extracts visible text only; diagrams and layout are not understood.' }
         : { available: false, reason: result.reason ?? 'The selected OCR backend is unavailable.' }
     },
-    async prepare({ sessionId, image, signal }) {
+    async prepare({ sessionId, image, signal, ocrBinding }) {
       const ocr = getOcr()
       if (!ocr) throw new ImageUnderstandingError('pdf/image-unavailable', 'The OCR plugin is not installed.')
       const result = await ocr.recognize({ sessionId, image: image.data, mediaType: image.mediaType,
-        width: image.width, height: image.height, languages: ['auto'], signal })
+        width: image.width, height: image.height, languages: ['auto'], signal, binding: ocrBinding })
       signal.throwIfAborted()
       return { kind: 'derived-text', mode: 'ocr-text', text: result.text,
         limitations: result.status === 'partial'

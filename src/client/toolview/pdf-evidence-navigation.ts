@@ -1,5 +1,6 @@
 import type { WorkspaceSnapshot } from '../../shared/contracts.js'
 import type { PdfEvidenceEntry } from './pdf-evidence-model.js'
+import type { TextNavigationTarget } from '../../contracts/navigation.js'
 
 export interface VisiblePdfReader {
   sessionId: string
@@ -8,6 +9,7 @@ export interface VisiblePdfReader {
   current(): WorkspaceSnapshot | null
   readPageText(page: number, signal: AbortSignal): Promise<string>
   jump(page: number): Promise<boolean>
+  navigateTarget?(page: number, target: TextNavigationTarget, signal: AbortSignal): Promise<EvidenceNavigationResult>
 }
 
 export type EvidenceNavigationResult = 'opened' | 'stale' | 'unavailable'
@@ -40,6 +42,7 @@ export interface EvidenceRevalidationResult {
   sourceVersion: string
   contentVersion: string
   revision: number
+  target?: TextNavigationTarget
 }
 
 export type RevalidateEvidence = (request: EvidenceRevalidationRequest, signal: AbortSignal) => Promise<EvidenceRevalidationResult>
@@ -133,6 +136,10 @@ export function createPdfEvidenceNavigation(revalidate: RevalidateEvidence,
           || !await pageStillMatches(evidence, pageText, hashText)) return 'stale'
         signal.throwIfAborted()
         if (!stillVisible(entry, sessionId, evidence)) return 'stale'
+        if (validated.target) {
+          // A verified exact target may never degrade to a page-only jump.
+          return reader.navigateTarget ? await reader.navigateTarget(evidence.page, validated.target, signal) : 'unavailable'
+        }
         return await reader.jump(evidence.page) ? 'opened' : 'unavailable'
       } catch {
         return signal.aborted ? 'unavailable' : 'stale'

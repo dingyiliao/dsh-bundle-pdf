@@ -513,7 +513,7 @@ test('committed-save recovery retains the baseline if operation-record cleanup f
   } finally { await restartedWorkspaces.dispose() }
 })
 
-test('background release preserves drafts and refuses to close a Client-owned copy', async () => {
+test('background release preserves logical references and drafts and retains active UI views', async () => {
   const state = harness(await fixture())
   const workspaces = createWorkspaces(state.files, state.drafts)
   try {
@@ -521,10 +521,10 @@ test('background release preserves drafts and refuses to close a Client-owned co
     assert.equal(workspaces.isUiOwned(sessionId, first.id), false)
     const edited = await snapshot(workspaces, edit(first.id, first.revision, note('background-draft')))
     assert.equal(await workspaces.releaseBackground(sessionId, first.id), 'released')
-    assert.throws(() => workspaces.readSnapshot(sessionId, first.id), { code: 'pdf/unknown-document' })
+    assert.throws(() => workspaces.readSnapshot(sessionId, first.id), { code: 'pdf/document-suspended' })
     assert.ok(state.records.size > 0, 'releasing memory must not delete the saved draft')
     const reopened = await snapshot(workspaces, { action: 'open', address, owner: 'agent' })
-    assert.notEqual(reopened.id, first.id)
+    assert.equal(reopened.id, first.id, 'cache eviction must not replace the logical document reference')
     assert.equal(reopened.dirty, true)
     assert.equal(reopened.document.annotations.find(item => item.id === 'background-draft')?.contents, 'background-draft')
     const ui = await snapshot(workspaces, { action: 'open', address })

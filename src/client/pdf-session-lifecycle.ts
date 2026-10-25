@@ -39,17 +39,20 @@ export interface PdfSessionOwner {
 
 interface LifecycleApi {
   open: PdfClientApi['open']
-  discardMany(resourceSessionId: string, workspaceIds: readonly string[]): Promise<void>
-  discardAddresses(resourceSessionId: string, addresses: readonly string[]): Promise<void>
+  release: PdfClientApi['release']
 }
-
-interface PendingTab extends OpenTab { readonly resourceSessionId: string }
 
 interface OwnerRecord {
   owner: PdfSessionOwner
-  readonly pending: Set<Promise<WorkspaceSnapshot>>
-  readonly workspaces: Map<string, Set<string>>
+  readonly referenceId: string
+  readonly resourceSessions: Set<string>
+  readonly documents: Map<string, { sessionId: string; id: string }>
   readonly release: () => void
+  generation: number
+  pendingOpens: number
+  navigationSettled: boolean
+  adopted?: string
+  retiring?: Promise<void>
   closing: boolean
 }
 
@@ -60,10 +63,10 @@ export interface PdfSessionLifecycle {
   open(owner: PdfSessionOwner, sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Retry an earlier failed cleanup before admitting further opens. */
   drain(): Promise<void>
-  dispose(): void
+  dispose(): Promise<void>
 }
 
-/** Close departing Session tabs and discard their shared Host working copies. */
+/** Close departing tabs and release only their views of shared Host drafts. */
 export function createPdfSessionLifecycle(options: {
   readonly currentSession: PdfSessionSource
   readonly sidebar: PdfSidebarNavigation
@@ -75,11 +78,11 @@ export function createPdfSessionLifecycle(options: {
   const closing = new Set<OwnerRecord>()
   // These exact records were present when their Session was left. A missing
   // record is retired, so a later new tab with the same id is never targeted.
-  const pendingTabs = new Map<string, PendingTab>()
-  const discardedAddresses = new Map<string, Set<string>>()
+  const pendingTabs = new Map<string, OpenTab>()
   let selected = options.currentSession.getSnapshot().key
   let cleanup: Promise<void> | undefined
   let disposed = false
+  let disposal: Promise<void> | undefined
 
   function assertLive(): void {
     options.signal.throwIfAborted()
@@ -89,6 +92,27 @@ export function createPdfSessionLifecycle(options: {
   function forget(record: OwnerRecord): void {
     record.release()
     if (owners.get(record.owner.signal) === record) owners.delete(record.owner.signal)
+  }
+
+  const documentKey = (sessionId: string, id: string) => JSON.stringify([sessionId, id])
+
+  function retirePreviousDocuments(record: OwnerRecord): void {
+    if (disposed || record.closing || !record.navigationSettled) return
+    const operation = (record.retiring ?? Promise.resolve()).then(async () => {
+      if (disposed || record.closing || !record.navigationSettled) return
+      const results = await Promise.allSettled([...record.documents].filter(([key]) => key !== record.adopted).map(async ([key, document]) => {
+        await options.api.release(document.sessionId, document.id, record.referenceId)
+        record.documents.delete(key)
+      }))
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (failed) throw failed.reason
+    }).catch(error => {
+      // A failed retirement does not hide the new document. Keep its identity
+      // for a later retry or the final terminal occurrence release.
+      if (!disposed && !options.signal.aborted) options.onError?.(error)
+    })
+    record.retiring = operation
+    void operation.then(() => { if (record.retiring === operation) record.retiring = undefined })
   }
 
   const tabKey = (tab: OpenTab): string => JSON.stringify([tab.sessionId, tab.tabId])
@@ -101,7 +125,7 @@ export function createPdfSessionLifecycle(options: {
       try {
         const file = sessionFile(tab.contentId)
         if (!/\.pdf$/i.test(file.path)) continue
-        pendingTabs.set(tabKey(tab), { ...tab, resourceSessionId: file.sessionId })
+        pendingTabs.set(tabKey(tab), { ...tab })
       } catch { /* Other resource grammars do not belong to this plugin. */ }
     }
   }
@@ -112,9 +136,6 @@ export function createPdfSessionLifecycle(options: {
     for (const [key, tab] of pendingTabs) {
       if (current.some(candidate => sameTab(candidate, tab))) continue
       pendingTabs.delete(key)
-      let addresses = discardedAddresses.get(tab.resourceSessionId)
-      if (!addresses) { addresses = new Set(); discardedAddresses.set(tab.resourceSessionId, addresses) }
-      addresses.add(tab.contentId)
     }
     void beginCleanup().catch(() => undefined)
   }
@@ -139,43 +160,23 @@ export function createPdfSessionLifecycle(options: {
   }
 
   async function clean(): Promise<void> {
-    while (closing.size || discardedAddresses.size) {
+    while (closing.size) {
       assertLive()
       const batch = [...closing]
-      const addressBatch = new Map([...discardedAddresses].map(([sessionId, addresses]) => [sessionId, [...addresses]]))
-      // Open calls deliberately retain the plugin signal. Even after a tab has
-      // closed we must observe its eventual id before deleting its draft.
-      await Promise.allSettled(batch.flatMap(record => [...record.pending]))
-      assertLive()
-      const groups = new Map<string, Set<string>>()
-      for (const record of batch) {
-        for (const [sessionId, workspaces] of record.workspaces) {
-          let ids = groups.get(sessionId)
-          if (!ids) { ids = new Set(); groups.set(sessionId, ids) }
-          for (const id of workspaces) ids.add(id)
-        }
-      }
-      // A partial failure retains the entire batch. Host discard is idempotent,
-      // so retrying cannot resurrect or accidentally reopen any working copy.
-      const results = await Promise.allSettled([
-        ...[...groups].map(([sessionId, ids]) =>
-          ids.size ? options.api.discardMany(sessionId, [...ids]) : Promise.resolve()),
-        ...[...addressBatch].map(([sessionId, addresses]) => options.api.discardAddresses(sessionId, addresses)),
-      ])
+      // Closing the named occurrence also covers pending/lost open responses.
+      // Host tombstones the token, so cleanup never waits on those responses.
+      const results = await Promise.allSettled(batch.flatMap(record =>
+        [...record.resourceSessions].map(sessionId =>
+          options.api.release(sessionId, undefined, record.referenceId))))
       const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
       if (failed) throw failed.reason
       for (const record of batch) { closing.delete(record); forget(record) }
-      for (const [sessionId, addresses] of addressBatch) {
-        const remaining = discardedAddresses.get(sessionId)
-        for (const address of addresses) remaining?.delete(address)
-        if (!remaining?.size) discardedAddresses.delete(sessionId)
-      }
     }
   }
 
   function beginCleanup(): Promise<void> {
     if (cleanup) return cleanup
-    if (!closing.size && !discardedAddresses.size) return Promise.resolve()
+    if (!closing.size) return Promise.resolve()
     // Defer until all close callbacks in this synchronous switch have run.
     const operation = Promise.resolve().then(clean)
     cleanup = operation
@@ -191,7 +192,7 @@ export function createPdfSessionLifecycle(options: {
 
   async function drain(): Promise<void> {
     assertLive()
-    while (cleanup || closing.size || discardedAddresses.size) await (cleanup ?? beginCleanup())
+    while (cleanup || closing.size) await (cleanup ?? beginCleanup())
     assertLive()
   }
 
@@ -232,18 +233,31 @@ export function createPdfSessionLifecycle(options: {
       // Navigation may change the file and its authorizing Session without
       // ending the occurrence. A delayed open from an earlier render must not
       // replace the latest registered close/address metadata.
-      if (updateOwner) existing.owner = owner
+      if (updateOwner) {
+        if (existing.owner.resourceSessionId !== owner.resourceSessionId ||
+          existing.owner.resourceAddress !== owner.resourceAddress) {
+          existing.generation++
+          existing.pendingOpens = 0
+          existing.navigationSettled = false
+        }
+        existing.owner = owner
+      }
       closeIfDeparted(existing)
       return existing
     }
     owner.signal.throwIfAborted()
     const aborted = (): void => {
-      // Manual close preserves drafts. Session-switch cleanup owns the record
-      // until its pending opens and durable deletion have settled.
-      if (!record.closing) forget(record)
+      // Both manual close and Session switches release view references. Neither
+      // action owns the shared draft, which may still be used by model tools.
+      if (!record.closing) {
+        record.closing = true
+        closing.add(record)
+        void beginCleanup().catch(() => undefined)
+      }
     }
     const record: OwnerRecord = {
-      owner, pending: new Set(), workspaces: new Map(), closing: false,
+      owner, referenceId: crypto.randomUUID(), resourceSessions: new Set(), documents: new Map(),
+      generation: 0, pendingOpens: 0, navigationSettled: false, closing: false,
       release: () => owner.signal.removeEventListener('abort', aborted),
     }
     owners.set(owner.signal, record)
@@ -270,18 +284,24 @@ export function createPdfSessionLifecycle(options: {
   const unsubscribe = options.currentSession.subscribe(changed)
   changed()
 
-  function dispose(): void {
-    if (disposed) return
+  function dispose(): Promise<void> {
+    if (disposal) return disposal
     disposed = true
     unsubscribe()
     unsubscribeInventory()
     unsubscribeMounted()
     options.signal.removeEventListener('abort', dispose)
-    for (const record of owners.values()) record.release()
+    const records = [...owners.values()]
+    for (const record of records) record.release()
+    // Teardown RPCs have an independent bounded lifetime: sibling Cordis
+    // disposers may already have aborted ordinary PDF requests.
+    disposal = Promise.resolve().then(() => Promise.allSettled(records.flatMap(record =>
+      [...record.resourceSessions].map(sessionId =>
+        Promise.resolve().then(() => options.api.release(sessionId, undefined, record.referenceId)))))).then(() => undefined)
     owners.clear()
     closing.clear()
     pendingTabs.clear()
-    discardedAddresses.clear()
+    return disposal
   }
   options.signal.addEventListener('abort', dispose, { once: true })
   if (options.signal.aborted) dispose()
@@ -291,28 +311,41 @@ export function createPdfSessionLifecycle(options: {
     async open(owner, sessionId, address, signal) {
       if (sessionId !== owner.resourceSessionId) throw new Error('PDF resource Session mismatch')
       const record = recordFor(owner, false)
-      // Waiting calls are not in pending: a closing batch must never wait on
-      // an open that is itself waiting for that same batch's cleanup.
+      const generation = record.generation
       await drain()
+      // Finish an earlier nonterminal release before this occurrence can
+      // reacquire that same document/token pair during a rapid A → B → A.
+      while (record.retiring) await record.retiring
       signal?.throwIfAborted()
       owner.signal.throwIfAborted()
       if (record.closing) throw new DOMException('PDF tab closed after Session switch', 'AbortError')
-      const pending = options.api.open(sessionId, address, options.signal).then(snapshot => {
-        // Capture the Session of this request, including late responses from
-        // a document this same occurrence has since navigated away from.
-        let ids = record.workspaces.get(sessionId)
-        if (!ids) { ids = new Set(); record.workspaces.set(sessionId, ids) }
-        ids.add(snapshot.id)
-        return snapshot
-      })
-      record.pending.add(pending)
+      if (record.generation !== generation || record.owner.resourceSessionId !== sessionId ||
+        record.owner.resourceAddress !== address) throw new DOMException('PDF navigation was superseded', 'AbortError')
+      // Record authorization before dispatch; a failed reply must not leave an
+      // acquired Host reference unreachable from this occurrence's cleanup.
+      record.resourceSessions.add(sessionId)
+      record.pendingOpens++
+      record.navigationSettled = false
       try {
-        const snapshot = await pending
-        signal?.throwIfAborted()
+        const snapshot = await options.api.open(sessionId, address, options.signal, record.referenceId)
+        const key = documentKey(sessionId, snapshot.id)
+        record.documents.set(key, { sessionId, id: snapshot.id })
+        assertLive()
         owner.signal.throwIfAborted()
         if (record.closing) throw new DOMException('PDF tab closed after Session switch', 'AbortError')
+        if (record.generation !== generation) throw new DOMException('PDF navigation was superseded', 'AbortError')
+        // Canonical aliases can return the same id. Retire by actual identity,
+        // not the addressed string, so alias navigation keeps its shared lease.
+        record.adopted = key
+        signal?.throwIfAborted()
         return snapshot
-      } finally { record.pending.delete(pending) }
+      } finally {
+        if (record.generation === generation) {
+          record.pendingOpens--
+          if (!record.pendingOpens) record.navigationSettled = true
+        }
+        retirePreviousDocuments(record)
+      }
     },
     drain,
     dispose,

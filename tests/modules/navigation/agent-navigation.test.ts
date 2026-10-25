@@ -106,3 +106,47 @@ test('waiting Reader receives later navigation, and cancellation and disposal wa
     assert.equal(await waitingOnDispose, null)
   } finally { second.service.dispose(); second.contexts.dispose() }
 })
+
+test('request watchers propagate caller cancellation and do not accept a late Reader completion', async () => {
+  const { service, contexts, lease } = setup()
+  const caller = new AbortController()
+  try {
+    const navigation = service.navigate(sessionId, { documentId, contentVersion, page: 4 }, caller.signal)
+    const rejected = assert.rejects(navigation, /caller cancelled/)
+    const request = await service.dispatch(sessionId, { action: 'wait', ...lease }, signal) as { requestId: string }
+    const watch = { action: 'watch-request', ...lease, requestId: request.requestId }
+    assert.deepEqual(await service.dispatch(sessionId, { ...watch, leaseId: 'wrong' }, signal), { active: false })
+    await assert.rejects(service.dispatch('another-session', watch, signal), { code: 'pdf/session-mismatch' })
+    const watching = service.dispatch(sessionId, watch, signal)
+    caller.abort(new Error('caller cancelled'))
+    assert.deepEqual(await watching, { active: false })
+    await rejected
+    assert.deepEqual(await service.dispatch(sessionId, { action: 'complete', ...lease,
+      requestId: request.requestId, status: 'opened' }, signal), { accepted: false })
+  } finally { service.dispose(); contexts.dispose() }
+})
+
+test('request watchers release on tool timeout, UI abort, completion and service disposal', async () => {
+  for (const reason of ['timeout', 'ui-abort', 'completed', 'disposed'] as const) {
+    const { service, contexts, lease } = setup(reason === 'timeout' ? 20 : 1000)
+    try {
+      const navigation = service.navigate(sessionId, { documentId, contentVersion, page: 4 }, signal)
+      const request = await service.dispatch(sessionId, { action: 'wait', ...lease }, signal) as { requestId: string }
+      const controller = new AbortController()
+      const watching = service.dispatch(sessionId, { action: 'watch-request', ...lease,
+        requestId: request.requestId }, controller.signal)
+      if (reason === 'ui-abort') {
+        const rejected = assert.rejects(watching, /UI watch cancelled/)
+        controller.abort(new Error('UI watch cancelled'))
+        await rejected
+        await service.dispatch(sessionId, { action: 'complete', ...lease,
+          requestId: request.requestId, status: 'opened' }, signal)
+      } else if (reason === 'completed') {
+        await service.dispatch(sessionId, { action: 'complete', ...lease,
+          requestId: request.requestId, status: 'opened' }, signal)
+      } else if (reason === 'disposed') service.dispose()
+      if (reason !== 'ui-abort') assert.deepEqual(await watching, { active: false })
+      assert.equal((await navigation).status, reason === 'completed' || reason === 'ui-abort' ? 'opened' : 'unavailable')
+    } finally { service.dispose(); contexts.dispose() }
+  }
+})

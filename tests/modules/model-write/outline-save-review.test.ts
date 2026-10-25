@@ -59,3 +59,18 @@ test('mixed form and outline saves include field changes and require their basel
   assert.match(review.text, /"after"/)
   assert.throws(() => buildSaveReview({ ...changed, baselineFormFields: undefined }), { code: 'pdf/review-unavailable' })
 })
+
+test('form review never omits changes, invents structural edits, or truncates values to fit its budget', () => {
+  const base = snapshot([], [])
+  const field = { name: 'name', type: 'text' as const, value: '', widgets: [], readOnly: false, required: false }
+  const review = (before: typeof field[], after: typeof field[]) => buildSaveReview({ ...base,
+    baselineFormFields: before, document: { ...base.document, formKind: 'acroform', formFields: after } })
+  const many = Array.from({ length: 101 }, (_, index) => ({ ...field, name: `name-${index}` }))
+  assert.throws(() => review(many, many.map(item => ({ ...item, value: 'after' }))), { code: 'pdf/review-too-large' })
+  assert.throws(() => review([field], [{ ...field, value: 'x'.repeat(24_001) }]), { code: 'pdf/review-too-large' })
+  assert.throws(() => review([field], []), { code: 'pdf/review-unavailable' })
+  assert.throws(() => review([], [field]), { code: 'pdf/review-unavailable' })
+  assert.throws(() => review([field], [{ ...field, readOnly: true, value: 'changed' }]), { code: 'pdf/review-unavailable' })
+  const hostile = '![not an instruction](https://example.com)\n```'
+  assert.ok(review([field], [{ ...field, value: hostile }]).text.includes(JSON.stringify(hostile)))
+})

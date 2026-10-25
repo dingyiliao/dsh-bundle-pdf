@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
+import { encodePng } from '../src/adapters/host/pdfium/png.ts'
 import { NativeViewport } from '../src/modules/viewer/index.ts'
 import { applyPdfOperations, loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { createPdfService } from '../src/adapters/host/pdfium/index.ts'
@@ -13,10 +15,23 @@ import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 import { PDFDocument, PDFHexString, PDFName, PDFString, rgb } from 'pdf-lib'
 import { memoryWorkspace, nativeFixture, supplementaryTextPdf } from './native-fixture.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
+import { brokenTextMappingFixture } from './fixtures/broken-text-mapping.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
 const skip = !existsSync(executable), signal = new AbortController().signal
+
+test('native text reports invalid real-glyph Unicode mappings without confusing generated line breaks', { skip }, async () => {
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    await worker.request({ command: 'open', documentId: 'broken-unicode' }, await brokenTextMappingFixture())
+    const bad = (await worker.request({ command: 'text', documentId: 'broken-unicode', pageIndex: 0 })).value as { quality?: { unmappedCharacters: number } }
+    assert.ok(bad.quality!.unmappedCharacters > 0)
+    await worker.request({ command: 'open', documentId: 'ordinary-unicode' }, await nativeFixture())
+    const good = (await worker.request({ command: 'text', documentId: 'ordinary-unicode', pageIndex: 0 })).value as { quality?: unknown }
+    assert.equal(good.quality, undefined)
+  } finally { await worker.dispose() }
+})
 
 test('PDFium renders crop, intrinsic/additional rotation and UserUnit in the UI coordinate system', { skip }, async () => {
   const bytes = await nativeFixture(), metadata = await loadPdfDocument(bytes), worker = new NativeWorker(executable, nativeTestSubprocess)
@@ -401,6 +416,13 @@ test('AcroForm opens editable and native rendering includes the form appearance'
       const render = async (annotations: boolean) => (await worker.request({ command: 'render', documentId: 'form-appearance',
         pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400, annotations })).bytes
       const plain = await render(false), withForm = await render(true)
+      const recoveryImage = (await worker.request({ command: 'render', documentId: 'form-appearance',
+        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400,
+        annotations: false, forms: false })).bytes
+      assert.ok(recoveryImage.every(byte => byte === 255), 'Automatic static-text recovery must exclude filled form appearances')
+      await assert.rejects(worker.request({ command: 'render', documentId: 'form-appearance',
+        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400,
+        forms: 'false' }), /Form appearance flag/)
       field.setText('')
       await worker.request({ command: 'open', documentId: 'empty-form' }, await document.save())
       const empty = (await worker.request({ command: 'render', documentId: 'empty-form',
@@ -432,6 +454,32 @@ test('AcroForm opens editable and native rendering includes the form appearance'
     assert.equal(withNote.document.formFields?.[0]?.value, 'A visible value')
     assert.ok(withNote.document.annotations.some(annotation => annotation.id === 'note-on-form'))
   } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('native appearance after fill-clear history matches an independently cleared interactive form', { skip }, async () => {
+  const document = await PDFDocument.create(), page = document.addPage([400, 600])
+  page.drawText('SYNTHETIC FORM - save regression', { x: 30, y: 560, size: 14 })
+  page.drawText('Cleared text must stay empty after saving and reopening.', { x: 30, y: 530, size: 10 })
+  const field = document.getForm().createTextField('sample-text')
+  field.addToPage(page, { x: 30, y: 470, width: 280, height: 32 }); field.setText('Original sample')
+  const source = await document.save()
+  const saved = await applyPdfOperations(source, [
+    { type: 'set-field', name: 'sample-text', value: '测试' }, { type: 'set-field', name: 'sample-text', value: '' },
+  ])
+  field.setText('')
+  const expected = await document.save()
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    const render = async (id: string, bytes: Uint8Array) => {
+      await worker.request({ command: 'open', documentId: id }, bytes)
+      return (await worker.request({ command: 'render', documentId: id, pageIndex: 0, rotation: 0,
+        rasterWidth: 400, rasterHeight: 600, x: 0, y: 0, width: 400, height: 600, annotations: true, forms: true })).bytes
+    }
+    const actual = await render('cleared-history', saved.bytes)
+    assert.deepEqual(actual, await render('independent-clear', expected), 'No transient historical text may reappear in the saved widget')
+    assert.equal(saved.document.formFields![0].value, '')
+    if (process.env.PDF_FORM_SAVE_SCREENSHOT) await writeFile(process.env.PDF_FORM_SAVE_SCREENSHOT, await encodePng(actual, 400, 600))
+  } finally { await worker.dispose() }
 })
 
 test('a separate XFA provider cannot make PDFium silently open unsupported form content', { skip }, async () => {

@@ -12,6 +12,7 @@ import { createHostTranslations, createPdfOcrDispatch, createPdfRegionDispatch, 
   registerPdfSystemPrompt, registerPdfTransport,
   type PdfImageEvidenceResolver, type TranslationHostContext } from '../adapters/host/dsh/index.js'
 import { createPdfInfoRoute } from '../adapters/host/dsh/info-route.js'
+import { retainPdfDocument } from '../adapters/host/dsh/transport.js'
 import { createLocalFiles } from '../adapters/host/filesystem/local-files.js'
 import { pdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter.js'
 import { createV1DraftRepository } from '../adapters/host/storage/v1-drafts.js'
@@ -23,6 +24,8 @@ import { createPdfService } from '../adapters/host/pdfium/index.js'
 import type { PdfNativeService } from './native-host.js'
 import { ImageUnderstandingError } from '../modules/image-understanding/index.js'
 import { CapabilityRegistry } from '../modules/capabilities/index.js'
+import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
+import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../modules/engines/index.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -88,15 +91,29 @@ export async function apply(
     executable: ctx.pdfNative.executable,
     subprocess: ctx.subprocess,
     capabilities,
+    textRecovery: createLocalTextRecovery(),
   })
   const readerContexts = createReaderContexts(workspaces)
   const agentNavigation = createAgentNavigation(workspaces, readerContexts)
+  const transportLifetime = new AbortController()
+  const pendingRequests = new Set<Promise<unknown>>()
+  const track = (dispatch: Parameters<typeof retainPdfDocument>[0]): typeof dispatch => async (sessionId, input, agent, signal) => {
+    const requestSignal = AbortSignal.any([signal, transportLifetime.signal])
+    requestSignal.throwIfAborted()
+    const task = dispatch(sessionId, input, agent, requestSignal)
+    pendingRequests.add(task)
+    try { return await task } finally { pendingRequests.delete(task) }
+  }
+  const retain = (dispatch: Parameters<typeof retainPdfDocument>[0]) => track(retainPdfDocument(dispatch, workspaces.acquire))
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
+  const engineCatalog = new EngineCatalog()
+  const stopTranslations = engineCatalog.attach('translation', translations.registry)
   // The image-understanding plugin may start before or after this reader.
   // Resolve the current agent and attachment store for each request, not at
   // plugin startup, so neither mounting order nor an old Session grants access.
   const imageEvidence: PdfImageEvidenceResolver = {
     async resolve(sessionId, documentId, refId, signal) {
+      signal = AbortSignal.any([signal, transportLifetime.signal])
       signal.throwIfAborted()
       const resolved = await ctx.sessionController.resolveAgent(sessionId)
       if ('error' in resolved) throw resolved.error
@@ -107,8 +124,13 @@ export async function apply(
       if (!attachments) {
         throw new ImageUnderstandingError('pdf/attachment-unavailable', 'PDF image attachments are not mounted.')
       }
-      return createPdfImageEvidenceResolver(workspaces, referenceStore, attachments,
-        freshSourceReader(files, resolved.agent)).resolve(sessionId, documentId, refId, signal)
+      const release = await workspaces.acquire(sessionId, documentId, resolved.agent, signal)
+      try {
+        const task = createPdfImageEvidenceResolver(workspaces, referenceStore, attachments,
+          freshSourceReader(files, resolved.agent)).resolve(sessionId, documentId, refId, signal)
+        pendingRequests.add(task)
+        try { return await task } finally { pendingRequests.delete(task) }
+      } finally { release() }
     },
   }
   const disposers: (() => Promise<void>)[] = []
@@ -117,8 +139,11 @@ export async function apply(
     if (disposed) return disposed
     // Close operation admission synchronously, then release transports. Domain
     // writes remain available until every already-admitted operation settles.
+    transportLifetime.abort(new DOMException('PDF reader is unloading', 'AbortError'))
     const drain = workspaces.dispose()
     translations.registry.dispose()
+    stopTranslations()
+    engineCatalog.dispose()
     readerContexts.dispose()
     agentNavigation.dispose()
     disposed = (async () => {
@@ -128,7 +153,7 @@ export async function apply(
       // observation failure; otherwise one failed wait would retain both stores.
       // Draining queued position writes comes first: they resolve the working
       // copy they belong to, so releasing workspaces first would drop them.
-      for (const close of [() => positions.dispose(), () => drain, () => pdfService.dispose(),
+      for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, () => positions.dispose(), () => drain, () => pdfService.dispose(),
         () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }
       }
@@ -139,7 +164,7 @@ export async function apply(
   }
   try {
     ctx.effect(() => {
-      disposers.push(registerPdfTransport(ctx, pdfService.dispatch))
+      disposers.push(registerPdfTransport(ctx, track(pdfService.dispatch)))
       disposers.push(registerPdfTransport(ctx, async (sessionId, input, _agent, signal) => {
         const id = typeof input.id === 'string' && input.id.length <= 512 ? input.id : undefined
         const knownRevision = input.knownRevision
@@ -148,40 +173,54 @@ export async function apply(
         }
         return { revision: await workspaces.waitForRevision(sessionId, id, knownRevision, signal) }
       }, { endpoint: 'pdf.watch', maxRequestBytes: 4096 }))
-      disposers.push(registerPdfTransport(ctx, pdfService.native, { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
-      disposers.push(registerPdfTransport(ctx, positions.dispatch, { endpoint: 'pdf.position', maxRequestBytes: 4096 }))
+      disposers.push(registerPdfTransport(ctx, track(pdfService.native), { endpoint: 'pdf.native', maxRequestBytes: 64 * 1024 }))
+      disposers.push(registerPdfTransport(ctx, retain(positions.dispatch), { endpoint: 'pdf.position', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, translations.dispatch, { endpoint: 'pdf.translation', maxRequestBytes: 64 * 1024 }))
-      disposers.push(registerPdfTransport(ctx, createPdfOcrDispatch(ctx, workspaces, pdfService,
-        () => config.ocrTimeoutMs.get()), { endpoint: 'pdf.ocr', maxRequestBytes: 4096 }))
-      disposers.push(registerPdfTransport(ctx, createPdfRegionDispatch(ctx, workspaces, pdfService, referenceStore),
+      disposers.push(registerPdfTransport(ctx, retain(createPdfOcrDispatch(ctx, workspaces, pdfService,
+        () => config.ocrTimeoutMs.get(), () => {
+          const settings = readConfig(config)
+          return engineBinding('ocr', settings.ocrEngine ?? 'session-llm', settings.engineConfigurations)
+        })), { endpoint: 'pdf.ocr', maxRequestBytes: 4096 }))
+      disposers.push(registerPdfTransport(ctx, retain(createPdfRegionDispatch(ctx, workspaces, pdfService, referenceStore)),
         { endpoint: 'pdf.region', maxRequestBytes: 4096 }))
-      disposers.push(registerPdfTransport(ctx, createPdfSelectionDispatch(workspaces, pdfService, referenceStore,
-        agent => freshSourceReader(files, agent)),
+      disposers.push(registerPdfTransport(ctx, retain(createPdfSelectionDispatch(workspaces, pdfService, referenceStore,
+        agent => freshSourceReader(files, agent))),
         { endpoint: 'pdf.selection', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerPdfTransport(ctx, async (sessionId, input) => readerContexts.update(sessionId, input),
         { endpoint: 'pdf.readercontext', maxRequestBytes: 4096 }))
-      disposers.push(registerPdfTransport(ctx, (sessionId, input, _agent, signal) =>
-        agentNavigation.dispatch(sessionId, input, signal),
+      disposers.push(registerPdfTransport(ctx, retain((sessionId, input, _agent, signal) =>
+        agentNavigation.dispatch(sessionId, input, signal)),
       { endpoint: 'pdf.navigation', maxRequestBytes: 4096 }))
       // A tool-result card may request navigation only after the currently
       // authorized working copy passes a fresh, whole-page evidence check.
-      disposers.push(registerPdfTransport(ctx, async (_sessionId, input, agent, signal) => {
+      disposers.push(registerPdfTransport(ctx, retain(async (_sessionId, input, agent, signal) => {
         const request = evidenceNavigationRequestSchema.parse(input)
         // The transport derives sessionId from the same validated input field
         // and resolves its agent before dispatching this request.
         return revalidateEvidenceNavigation(workspaces, pdfService, request, signal,
-          freshSourceReader(files, agent))
+          freshSourceReader(files, agent), referenceStore)
       // An 8,000-character UTF-16 excerpt can exceed 16 KiB as UTF-8 (for
       // example Chinese text), even before the RPC envelope is serialized.
-      }, { endpoint: 'pdf.evidence', maxRequestBytes: 64 * 1024 }))
+      }), { endpoint: 'pdf.evidence', maxRequestBytes: 64 * 1024 }))
       disposers.push(registerAssets(ctx, testAssetRoot))
       // Settings bootstrap carries no file contents and works outside a session.
       disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(() => ({
         namespace, settingsNamespace, settings: readConfig(config), translationEngines: translations.registry.list(),
+        engineCatalog: engineCatalog.read(),
       }))))
+      disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(async (payload, signal) => {
+        const { revision } = engineCatalogRequestSchema.parse(payload)
+        return engineCatalog.wait(revision, signal)
+      }, 'pdf.engines')))
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')
+    ctx.effect(() => ctx.reflect.provide('pdfAiSettings', () => readConfig(config)), 'pdf: Host AI selections')
+    ctx.effect(() => {
+      const ocr = ctx.inject(['ocr'], scope => scope.effect(() => engineCatalog.attach('ocr', scope.ocr), 'pdf: OCR directory'))
+      const image = ctx.inject(['imageUnderstanding'], scope => scope.effect(() => engineCatalog.attach('image', scope.imageUnderstanding), 'pdf: image directory'))
+      return () => { ocr.dispose(); image.dispose() }
+    }, 'pdf: dynamic engine sources')
     ctx.effect(() => ctx.reflect.provide('pdfCapabilities', capabilities), 'pdf: capability providers')
     ctx.effect(() => ctx.reflect.provide('pdf', pdfService), 'pdf: shared document service')
     ctx.effect(() => ctx.reflect.provide('pdfImageEvidence', imageEvidence), 'pdf: image evidence resolver')

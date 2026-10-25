@@ -16,13 +16,6 @@
   line-height: 1.5;
 }
 
-.dsh-pdf-settings-header p {
-  margin: 4px 0 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .dsh-pdf-settings-form {
   display: flex;
   flex-direction: column;
@@ -60,6 +53,29 @@
 
 .dsh-pdf-settings-field + .dsh-pdf-settings-field {
   border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-pdf-settings-field-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dsh-pdf-settings-engine-kind {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.dsh-pdf-settings-engine-options {
+  padding-left: 12px;
+  border-left: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.dsh-pdf-settings-engine-options:empty {
+  display: none;
 }
 
 .dsh-pdf-settings-label {

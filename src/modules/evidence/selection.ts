@@ -161,11 +161,12 @@ export async function prepareTextSelectionEvidence(workspaces: WorkingCopyReadPo
         sourcePath: initial.path, sourceDigest, sourceVersion: initial.sourceVersion,
         contentVersion: initial.contentVersion, revision: initial.revision, page: item.page,
         source: 'pdf-text', pageTextDigest: evidenceSha256(item.pageText),
+        ...(item.content.extraction ? { extraction: item.content.extraction } : {}),
         snapshot: { text: item.text, sha256: evidenceSha256(item.text) },
         locator: { kind: 'text-window', startUtf16: item.startUtf16, endUtf16: item.endUtf16,
           ...(rects ? { rectsPdf: rects } : {}) },
         precision: rects ? 'approximate-geometry' : 'exact-text',
-        limitations: ['Host PDFium glyph positions approximate the selected painted area; whitespace is canonicalized from the PDF text stream.'],
+        limitations: [...(item.content.warnings ?? []), 'Host text positions approximate the selected painted area; whitespace is canonicalized from the positioned text.'].slice(0, 8),
       }
       await references.put(excerpt.refId, { sessionId: input.sessionId, evidence: excerpt,
         pageTextDigest: evidenceSha256(item.pageText), createdAt: Date.now() })

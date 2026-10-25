@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PdfRect } from '../core/pdf-types.js'
 import type { ReaderProps } from './contracts.js'
+import type { AgentNavigationRequest } from '../contracts/navigation.js'
 import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReaderExplanation, useReaderNavigation, useReaderOcr,
   useReaderAnnotations, useReaderScreenshot, useReaderSearch, useReaderSave, useReaderSidebarLayout, useReaderPages,
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
   usePdfWheelZoom, usePdfViewportSize,
   clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition,
   readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels,
+  navigateAgentRequest,
   } from '../modules/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
 
@@ -74,14 +76,25 @@ export function Reader(props: ReaderProps) {
     setPageInput, setZoom, setFit, setPositionNotice, onError: notifyError, t })
   const { pageScale, jump, destination, navigateHistory, navigationLock,
     navigationTarget, navigating, historySnapshot } = navigation
+  const agentView = useRef({ pdf, visible: tab.visible, ready: documentReady })
+  agentView.current = { pdf, visible: tab.visible, ready: documentReady }
+  const navigateEvidence = useCallback((request: AgentNavigationRequest, signal: AbortSignal) =>
+    navigateAgentRequest(request, signal, {
+      current: () => ({ snapshot: state.current.snapshot, document: agentView.current.pdf,
+        visible: agentView.current.visible && !tab.signal.aborted, ready: agentView.current.ready(),
+        viewportHeight: state.current.scrollRoot?.clientHeight ?? 0 }),
+      subscribe: (id, changed) => api.subscribe(id, changed), jump,
+    }), [api, jump, tab.signal])
   useLayoutEffect(() => {
     if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !documentReady()) return
     return props.evidenceNavigation.register({ sessionId, snapshot,
       current: () => !tab.signal.aborted && state.current.snapshot === snapshot ? snapshot : null,
       readPageText: async (page, signal) => joinPageText((await pdf.text(page, signal)).items),
       jump: page => jump(page),
+      navigateTarget: (page, target, signal) => navigateEvidence({ requestId: crypto.randomUUID(),
+        page, documentId: snapshot.id, contentVersion: snapshot.contentVersion, target }, signal),
     })
-  }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump])
+  }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump, navigateEvidence])
   const sidebar = useReaderSidebarLayout({ bodyRef: readerBody, navigationLock, navigating,
     resourceAddress: props.resourceAddress, visible: tab.visible })
   const { section: sidebarSection, expanded: sidebarExpanded,
@@ -96,11 +109,7 @@ export function Reader(props: ReaderProps) {
     snapshot, currentPage, documentReady: documentReady(),
     enabled: !!props.allowReadingContext, report: props.reportReadingContext,
     agentNavigation: props.agentNavigation,
-    onAgentNavigate: async page => {
-      if (!tab.visible || tab.signal.aborted || state.current.snapshot?.id !== snapshot?.id
-        || state.current.snapshot?.contentVersion !== snapshot?.contentVersion) return false
-      return jump(page)
-    } })
+    onAgentNavigate: navigateEvidence })
   useLayoutEffect(() => () => {
     // Layout cleanup captures geometry before React detaches the page elements.
     navigation.persistOnUnmount()

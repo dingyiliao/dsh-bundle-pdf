@@ -1,8 +1,20 @@
 import type { PdfDocumentInfo, PdfFormField, PdfRect } from '../../core/pdf-types.js'
 import { NativeViewport } from '../../shared/geometry/native-viewport.js'
 import { formFieldId } from './identity.js'
+import { layoutFormInspection } from './inspection-layout.js'
 export { formFieldId, resolveFormField } from './identity.js'
+export { formConditionSchema, formRuleEvidenceSchema, checkFormConditions, FormConditionError } from './conditions.js'
+export type { FormCondition, FormConditionIssue } from './conditions.js'
+export { formChoiceGroupSchema, checkFormChoiceGroups, FormChoiceError } from './choice-groups.js'
+export type { FormChoiceGroup, FormChoiceIssue } from './choice-groups.js'
 export type { FormFieldIdentity, FormFieldTarget } from './identity.js'
+export { createFormInspectionRegistry, FormInspectionReferenceError, formControlReferenceSchema,
+  modelFormInspectionFields } from './inspection-references.js'
+export type { FormInspectionRegistry, FormInspectionIdentity, FormControlReference,
+  FormInspectionTarget } from './inspection-references.js'
+export { formValueContract, validateFormChanges, projectedFormValue, FormValidationError } from './validation.js'
+export type { FormValueContract, FormValidationIssue } from './validation.js'
+import { formValueContract, type FormValueContract } from './validation.js'
 
 export type FormControlMarker = {
   label: string
@@ -10,6 +22,7 @@ export type FormControlMarker = {
   rectPdf: PdfRect
   /** Top-left image pixels, not PDF coordinates. */
   rectImage: PdfRect
+  /** Small ID glyph bounds inside rectImage, in the same image coordinates. */
   labelRect: PdfRect
   option?: string
 }
@@ -18,10 +31,13 @@ export type FormPageInspection = {
   page: number
   width: number
   height: number
+  /** Full page bounds; inspection adds no margins. */
+  pageRect: PdfRect
   fields: Array<{
     fieldId: string
     name: string
     type: PdfFormField['type']
+    valueContract: FormValueContract
     required: boolean
     options?: string[]
     maxLength?: number
@@ -37,16 +53,15 @@ function fail(message: string): never {
 }
 
 /** One mapping owns both the numbered raster and the model's exact field IDs. */
-export function inspectFormPage(document: PdfDocumentInfo, page: number, width: number, height: number,
+export function inspectFormPage(document: PdfDocumentInfo, page: number, maxEdge = 2048,
   includeValues = false): FormPageInspection {
   const geometry = document.pages[page - 1]
   if (!Number.isSafeInteger(page) || !geometry) fail('Page is outside this PDF')
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
-    || width > 1024 || height > 1024) fail('Invalid form inspection raster size')
+  if (!Number.isSafeInteger(maxEdge) || maxEdge < 256 || maxEdge > 2048) fail('Invalid form inspection raster size: use 256–2048')
   const viewport = new NativeViewport(geometry, 1)
-  if (!(viewport.width > 0 && viewport.height > 0)) fail('Invalid PDF page geometry')
+  if (![viewport.width, viewport.height].every(Number.isFinite) || !(viewport.width > 0 && viewport.height > 0)) fail('Invalid PDF page geometry')
   const identities = new Set<string>()
-  const result: FormPageInspection = { page, width, height, fields: [] }
+  const result: FormPageInspection = { page, width: 0, height: 0, pageRect: [0, 0, 0, 0], fields: [] }
   let count = 0
   for (const field of document.formFields ?? []) {
     const fieldId = formFieldId(field)
@@ -57,32 +72,26 @@ export function inspectFormPage(document: PdfDocumentInfo, page: number, width: 
     for (const widget of field.widgets.filter(item => item.page === page)) {
       if (!widget.rect.every(Number.isFinite)) fail('Invalid form widget geometry')
       const points = viewport.convertToViewportRectangle(widget.rect)
-      const rectImage: PdfRect = [Math.max(0, Math.min(points[0], points[2]) * width / viewport.width),
-        Math.max(0, Math.min(points[1], points[3]) * height / viewport.height),
-        Math.min(width, Math.max(points[0], points[2]) * width / viewport.width),
-        Math.min(height, Math.max(points[1], points[3]) * height / viewport.height)]
+      const rectImage: PdfRect = [Math.max(0, Math.min(points[0], points[2])), Math.max(0, Math.min(points[1], points[3])),
+        Math.min(viewport.width, Math.max(points[0], points[2])), Math.min(viewport.height, Math.max(points[1], points[3]))]
       if (rectImage[2] <= rectImage[0] || rectImage[3] <= rectImage[1]) continue
       if (++count > 100) fail('More than 100 visible editable controls on this page; inspection is not truncated')
       const label = `F${String(count).padStart(2, '0')}`
-      const labelWidth = label.length * 12 + 8, labelHeight = 20
-      if (width < labelWidth || height < labelHeight) fail('The page is too narrow to label controls reliably')
-      const left = Math.min(Math.max(0, rectImage[0]), Math.max(0, width - labelWidth))
-      const top = rectImage[1] >= labelHeight + 2 ? rectImage[1] - labelHeight - 2
-        : Math.min(rectImage[3] + 2, Math.max(0, height - labelHeight))
       controls.push({ label, fieldId, rectPdf: [...widget.rect], rectImage,
-        labelRect: [left, top, left + labelWidth, top + labelHeight],
+        labelRect: [0, 0, 0, 0],
         ...(widget.option !== undefined ? { option: widget.option } : {}) })
     }
     if (!controls.length) continue
     if (fieldId.length > 2048 || field.name.length > 2048 || (field.options?.length ?? 0) > 1000
       || field.options?.some(option => option.length > 2048)) fail('Field metadata exceeds the model tool limits')
-    result.fields.push({ fieldId, name: field.name, type: field.type, required: field.required, controls,
+    result.fields.push({ fieldId, name: field.name, type: field.type, valueContract: formValueContract(field), required: field.required, controls,
       ...(field.options ? { options: [...field.options] } : {}),
       ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
       ...(field.multiline !== undefined ? { multiline: field.multiline } : {}),
       ...(field.multiple !== undefined ? { multiple: field.multiple } : {}),
       ...(includeValues ? { value: Array.isArray(field.value) ? [...field.value] : field.value } : {}) })
   }
+  Object.assign(result, layoutFormInspection(viewport, result.fields.flatMap(field => field.controls), maxEdge))
   if (JSON.stringify(result).length > 64_000) fail('Form metadata exceeds the model tool budget; no partial mapping was returned')
   return result
 }

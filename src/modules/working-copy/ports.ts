@@ -5,6 +5,21 @@ import type { DraftRecord, WorkspaceRecord } from './schema.js'
 /** Host-only snapshot; PDF bytes never cross the Client RPC boundary. */
 export type HostWorkspaceSnapshot = Omit<WorkspaceSnapshot, 'reader'> & { bytes: Uint8Array }
 
+export type DocumentReleaseStatus = 'released' | 'retained-ui' | 'retained-model' | 'retained-operation' | 'already-closed'
+
+/** Lightweight registry metadata, independent of resident snapshots/native buffers. */
+export interface DocumentResidency {
+  sessionId: string
+  id: string
+  bytes: number
+  resident: boolean
+  touched: number
+  uiReferences: number
+  modelOwned: boolean
+  modelReferenceId?: string
+  pins: number
+}
+
 /** Minimum authority needed by read-only features after session authorization. */
 export interface WorkingCopyReadPort {
   readSnapshot(sessionId: string, documentId: string): HostWorkspaceSnapshot

@@ -26,6 +26,8 @@ export interface PdfFormField {
   id?: string
   /** Display name; imported PDFs can contain distinct fields with the same name. */
   name: string
+  /** Optional author-supplied /TU hint; not proof of a visible printed label. */
+  description?: string
   type: 'text' | 'checkbox' | 'radio' | 'dropdown' | 'option-list' | 'unsupported'
   value: string | boolean | string[]
   widgets: PdfFormWidget[]

@@ -1,3 +1,4 @@
+import { EngineDirectory, validateEngineConfiguration } from '../modules/engines/index.js'
 import {
   TranslationError, type TranslationAvailability, type TranslationEngine,
   type TranslationEngineDescriptor, type TranslationInstance, type TranslationLimits,
@@ -46,7 +47,7 @@ function validateDetail(value: unknown, maxLength: number): TranslationOutput['d
 
 /** A shared engine directory. Requests capture their engine/configuration before starting. */
 export class TranslationRegistry {
-  private readonly engines = new Map<string, TranslationEngine>()
+  private readonly engines = new EngineDirectory<TranslationEngine>(engine => engine.descriptor)
   private readonly tasks = new Map<AbortController, TranslationEngine>()
   private selected?: TranslationInstance
   private selectionKey?: string
@@ -64,19 +65,18 @@ export class TranslationRegistry {
   register(engine: TranslationEngine): () => void {
     this.assertLive()
     if (this.engines.has(engine.descriptor.id)) throw new Error(`Translation engine already registered: ${engine.descriptor.id}`)
-    this.engines.set(engine.descriptor.id, engine)
-    return () => {
-      if (this.engines.get(engine.descriptor.id) !== engine) return
-      this.engines.delete(engine.descriptor.id)
+    return this.engines.register(engine, () => {
       for (const [controller, active] of this.tasks) {
         if (active === engine) controller.abort(new TranslationError('engine-unavailable', 'The translation engine was removed.'))
       }
-    }
+    })
   }
 
   list(): TranslationEngineDescriptor[] {
     return [...this.engines.values()].map(engine => structuredClone(engine.descriptor))
   }
+
+  subscribe(listener: () => void): () => void { return this.engines.subscribe(listener) }
 
   select(instance: TranslationInstance): void {
     this.assertLive()
@@ -105,7 +105,7 @@ export class TranslationRegistry {
     return engine.availability?.(structuredClone(this.selected.config)) ?? { status: 'available' }
   }
 
-  async translate(request: TranslationRequest): Promise<TranslationResult> {
+  async translate(request: TranslationRequest, selection?: TranslationInstance): Promise<TranslationResult> {
     this.assertLive()
     if (!request.text.trim() || !request.targetLanguage.trim() || request.targetLanguage.length > 100
         || (request.sourceLanguage !== undefined && (!request.sourceLanguage.trim() || request.sourceLanguage.length > 100))) {
@@ -114,10 +114,16 @@ export class TranslationRegistry {
     if (request.timeoutMs !== undefined && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0)) {
       throw new TranslationError('invalid-request', 'The translation deadline must be a positive integer.')
     }
-    const instance = this.selected
+    // Host consumers pass an instance per request; concurrent consumers never
+    // mutate a process-wide selection while another request is executing.
+    const instance = selection ? structuredClone(selection) : this.selected
     if (!instance) throw new TranslationError('not-configured', 'Select a translation engine in PDF settings.')
     const engine = this.engines.get(instance.engineId)
     if (!engine) throw new TranslationError('engine-unavailable', 'The selected translation engine is not installed.')
+    const descriptor = this.engines.descriptor(instance.engineId)!
+    // SDK callers may keep engine-specific opaque configuration. Host bindings
+    // use descriptors to validate configuration before entering this registry.
+    if (engine.descriptor.configurationFields) validateEngineConfiguration(engine.descriptor, instance.config)
     const maximum = Math.min(this.limits.maxInputCharacters, engine.descriptor.maxInputCharacters ?? Infinity)
     if (request.text.length > maximum) throw new TranslationError('limit-exceeded', 'The selected text exceeds the translation input limit.')
 
@@ -162,7 +168,7 @@ export class TranslationRegistry {
         status: output.status, warnings: [...output.warnings],
         ...(output.detectedSourceLanguage === undefined ? {} : { detectedSourceLanguage: output.detectedSourceLanguage }),
         ...(detail === undefined ? {} : { detail }),
-        source: { engineId: engine.descriptor.id, engineVersion: engine.descriptor.version,
+        source: { engineId: descriptor.id, engineVersion: descriptor.version,
           instanceId: instance.id, configurationRevision: instance.configurationRevision },
       }
     }
@@ -183,7 +189,7 @@ export class TranslationRegistry {
     if (this.disposed) return
     this.disposed = true
     for (const controller of this.tasks.keys()) controller.abort(new TranslationError('cancelled', 'Translation was disposed.'))
-    this.engines.clear()
+    this.engines.dispose()
     this.selected = undefined
   }
 

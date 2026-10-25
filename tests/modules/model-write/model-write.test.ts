@@ -274,7 +274,7 @@ test('model edit validates verified text geometry, note content, revision, sessi
   try {
     await assert.rejects(writes.annotate(sessionId, {
       ...annotation(opened.id, opened.revision), target: { kind: 'reference', refId: 'pdfref_123' },
-    }, agent, signal), { code: 'pdf/approximate-target' })
+    }, agent, signal), { code: 'pdf/reference-unavailable' })
     await assert.rejects(writes.annotate(sessionId, {
       ...annotation(opened.id, opened.revision), target: { kind: 'pdf-region', page: 1, rectPdf: [60, 80, 120, 100] },
     }, agent, signal), { code: 'pdf/unverified-region' })

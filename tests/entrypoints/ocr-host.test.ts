@@ -4,6 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { apply, Config, inject, name, provide } from '../../src/entrypoints/ocr-host.ts'
 import type { HostOcrService } from '../../src/modules/ocr/index.js'
 import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilities/index.js'
+import { defaultSettings } from '../../src/shared/contracts.ts'
 
 test('OCR plugin wires its session-model backend, agent tool and Fiber disposal', async () => {
   const services = new Map<string, unknown>()
@@ -117,4 +118,28 @@ test('OCR capability appears when the Reader catalog loads after OCR', async () 
     await fiber.dispose()
     assert.deepEqual(capabilities.list(), [])
   } finally { await root.fiber.dispose() }
+})
+
+test('generic OCR capability checks match the returned implementation and ignore another consumer PDF binding', async () => {
+  const root = new Context(), capabilities = new CapabilityRegistry()
+  root.reflect.provide('tools', { register() { return () => undefined } })
+  root.reflect.provide('pdfCapabilities', capabilities)
+  root.reflect.provide('pdfAiSettings', () => ({ ...defaultSettings, ocrEngine: 'missing.pdf.engine' }))
+  try {
+    const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({ backend: 'generic.local' }))
+    await fiber
+    const service = root.get('ocr')!
+    service.register({ descriptor: { id: 'generic.local', name: 'Generic consumer OCR', version: '1',
+      execution: 'local', geometry: [], confidence: false },
+      async availability() { return { status: 'available' } }, async recognize() {
+        return { text: 'Generic fixture', blocks: [], lines: [], words: [], coverage: [], warnings: [], confidence: null, status: 'complete' }
+      } })
+    const resolved = await capabilities.resolve(pdfCapabilities.recognizeImage, { sessionId: 'fixture-session' })
+    assert.equal(resolved.provider?.implementation, service)
+    assert.equal((await service.recognize({ sessionId: 'fixture-session', image: new Uint8Array([1]),
+      mediaType: 'image/png', width: 1, height: 1, languages: ['auto'] })).text, 'Generic fixture')
+    assert.equal((await service.availability('fixture-session', new AbortController().signal,
+      { engineId: 'missing.pdf.engine' })).status, 'unavailable')
+    await fiber.dispose()
+  } finally { await root.fiber.dispose(); capabilities.dispose() }
 })

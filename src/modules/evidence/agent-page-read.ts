@@ -7,12 +7,17 @@ import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy
 import { findExactInPage } from '../search/index.js'
 import { windowPageText } from './text-window.js'
 import { evidenceSha256 } from './provenance.js'
+import { assertToolCursorIdentity, decodeToolCursor, encodeToolCursor } from './tool-cursor.js'
+import { rememberTextEvidence } from './text-evidence.js'
+import type { EvidenceReferenceStore, PdfTextEvidence } from './reference-store.js'
 
 export interface AgentPageReadPort {
   readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }>
 }
+
+const MAX_SEARCH_OUTPUT_CHARS = 64_000
 
 function stale(message: string): never {
   throw Object.assign(new Error(message), { code: 'pdf/stale-reader' })
@@ -34,42 +39,82 @@ export async function readPageWindow(workspaces: WorkingCopyReadPort, pages: Age
     page, pageCount: snapshot.document.pageCount, revision: snapshot.revision,
     contentVersion: snapshot.contentVersion, sourceVersion: snapshot.sourceVersion,
     sourceDigest: evidenceSha256(snapshot.bytes), pageTextDigest: evidenceSha256(text),
+    ...(content.extraction ? { extraction: content.extraction, limitations: content.warnings ?? [] } : {}),
     ...windowPageText(text, offset, maxChars) }
 }
 
-/** Legacy exact/case-sensitive model search, distinct from the interactive reader search. */
+/** Exact/case-sensitive model search, with continuations fenced to one query and PDF version. */
 export async function searchPageWindows(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
-  sessionId: string, documentId: string, query: string, fromPage: number | undefined,
-  offset: number | undefined, signal: AbortSignal) {
+  sessionId: string, documentId: string,
+  input: { query: string; fromPage?: number; offset?: number; cursor?: string }, signal: AbortSignal,
+  references?: EvidenceReferenceStore) {
+  signal.throwIfAborted()
   const snapshot = workspaces.readSnapshot(sessionId, documentId)
-  const startPage = fromPage ?? 1
-  if (startPage > snapshot.document.pageCount) {
+  if (input.cursor !== undefined && (input.fromPage !== undefined || input.offset !== undefined)) {
+    throw Object.assign(new Error('Continue with cursor and the same query only; omit fromPage and offset'),
+      { code: 'pdf/invalid-window' })
+  }
+  const identity = { kind: 'search' as const, sessionId, documentId: snapshot.id,
+    contentVersion: snapshot.contentVersion, revision: snapshot.revision, sourceDigest: evidenceSha256(snapshot.bytes),
+    queryHash: evidenceSha256(JSON.stringify({ query: input.query, exact: true, caseSensitive: true,
+      maxPages: 10, maxMatches: 20 })) }
+  const previous = input.cursor === undefined ? undefined : decodeToolCursor(input.cursor)
+  if (previous) assertToolCursorIdentity(previous, identity)
+  const startPage = previous?.kind === 'search' ? previous.page : input.fromPage ?? 1
+  const startOffset = previous?.offset ?? input.offset ?? 0
+  if (!Number.isSafeInteger(startPage) || startPage < 1 || startPage > snapshot.document.pageCount) {
     throw Object.assign(new Error('Page is outside the document'), { code: 'pdf/invalid-page' })
   }
+  const ensureCurrent = (current: HostWorkspaceSnapshot) => {
+    if (current.id !== snapshot.id || !sameRevision(snapshot, current)
+      || current.bytes !== snapshot.bytes && evidenceSha256(current.bytes) !== identity.sourceDigest) {
+      stale('PDF changed while searching; retry from the current version')
+    }
+  }
+  const continuation = (page: number, offset: number) => encodeToolCursor({ version: 1, ...identity, page, offset })
+  const response = (throughPage: number, nextCursor: string | null) => {
+    signal.throwIfAborted()
+    ensureCurrent(workspaces.readSnapshot(sessionId, documentId))
+    return { documentId: snapshot.id, path: snapshot.path, pageCount: snapshot.document.pageCount,
+      revision: snapshot.revision, contentVersion: snapshot.contentVersion, fromPage: startPage, throughPage,
+      matches, noTextPages, ...(ocrRepairedPages.length ? { ocrRepairedPages } : {}), nextCursor }
+  }
   const throughPage = Math.min(snapshot.document.pageCount, startPage + 9)
-  const matches: { page: number; offset: number; excerpt: string }[] = []
+  const matches: { page: number; offset: number; excerpt: string; evidence?: PdfTextEvidence }[] = []
   const noTextPages: number[] = []
+  const ocrRepairedPages: number[] = []
   for (let current = startPage; current <= throughPage; current++) {
     signal.throwIfAborted()
     const read = await pages.readPageText(sessionId, documentId, current, signal)
-    if (!sameRevision(snapshot, read.snapshot)) stale('PDF changed while searching; retry from the current version')
+    signal.throwIfAborted()
+    ensureCurrent(read.snapshot)
     const pageText = joinPageText(read.content.items)
+    if (read.content.extraction === 'local-ocr') ocrRepairedPages.push(current)
     if (!pageText.trim()) noTextPages.push(current)
-    const start = current === startPage ? offset ?? 0 : 0
+    const start = current === startPage ? startOffset : 0
     if (start > pageText.length) throw Object.assign(new Error('Search offset is outside the page'), { code: 'pdf/invalid-window' })
-    const found = findExactInPage(pageText, query, start, 20 - matches.length)
-    matches.push(...found.matches.map(match => ({ page: current, offset: match.offset, excerpt: match.excerpt })))
+    const found = findExactInPage(pageText, input.query, start, 20 - matches.length)
+    for (const match of found.matches) {
+      const evidence = references ? await rememberTextEvidence(references, sessionId, snapshot, current,
+        pageText, match.offset, match.endOffset, read.content, identity.sourceDigest) : undefined
+      signal.throwIfAborted()
+      ensureCurrent(workspaces.readSnapshot(sessionId, documentId))
+      const candidate = { page: current, offset: match.offset, excerpt: match.excerpt, ...(evidence ? { evidence } : {}) }
+      // Full provenance can be larger than the short search excerpt. Resume at the omitted
+      // match, not at the end of the native search batch; always emit one item for progress.
+      if (matches.length && JSON.stringify({ path: snapshot.path, matches: [...matches, candidate], noTextPages,
+        ocrRepairedPages }).length > MAX_SEARCH_OUTPUT_CHARS) {
+        return response(current, continuation(current, match.offset))
+      }
+      matches.push(candidate)
+    }
     if (matches.length === 20) {
       const nextOffset = found.nextOffset ?? pageText.length
-      return { documentId: snapshot.id, path: snapshot.path, pageCount: snapshot.document.pageCount,
-        revision: snapshot.revision, contentVersion: snapshot.contentVersion, fromPage: startPage, throughPage: current,
-        matches, noTextPages, nextCursor: nextOffset < pageText.length ? { page: current, offset: nextOffset }
-          : current < snapshot.document.pageCount ? { page: current + 1, offset: 0 } : null }
+      return response(current, nextOffset < pageText.length ? continuation(current, nextOffset)
+        : current < snapshot.document.pageCount ? continuation(current + 1, 0) : null)
     }
   }
-  return { documentId: snapshot.id, path: snapshot.path, pageCount: snapshot.document.pageCount,
-    revision: snapshot.revision, contentVersion: snapshot.contentVersion, fromPage: startPage, throughPage,
-    matches, noTextPages, nextCursor: throughPage < snapshot.document.pageCount ? { page: throughPage + 1, offset: 0 } : null }
+  return response(throughPage, throughPage < snapshot.document.pageCount ? continuation(throughPage + 1, 0) : null)
 }
 
 /** Navigation and form entries are not the markup a reader means by an annotation. */

@@ -43,6 +43,26 @@ test('auxiliary vision refuses oversized identifiers, unavailable services and m
   await assert.rejects(modelFailure.prepare(request()), hasCode('pdf/image-unavailable'))
 })
 
+test('auxiliary vision accepts an explicit engine-instance route without changing its profile default', async () => {
+  const routes: unknown[] = []
+  const backend = createAuxiliaryVisionBackend(dependencies({ getLlm: () => ({
+    async resolveModelInfo(provider, model) { routes.push([provider, model]); return { inputModalities: ['image'] } },
+    async *stream(options) {
+      assert.equal(options.provider, 'configured-provider'); assert.equal(options.model, 'configured-model')
+      assert.equal(options.reasoningEffort, 'low')
+      yield { type: 'text-delta', index: 0, text: 'Fixture image description.' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }) }))
+  const configuration = { provider: 'configured-provider', model: 'configured-model', reasoningEffort: 'low' }
+  assert.equal((await backend.availability('session', request().signal, configuration)).available, true)
+  const prepared = await backend.prepare(request(), configuration)
+  assert.equal(prepared.kind, 'derived-text')
+  if (prepared.kind === 'derived-text') assert.equal(prepared.model, 'configured-provider/configured-model')
+  assert.deepEqual(routes, [['configured-provider', 'configured-model'], ['configured-provider', 'configured-model']])
+  assert.equal((await backend.availability('session', request().signal, { provider: 'incomplete' })).available, false)
+})
+
 test('auxiliary vision does not start inference if durable image storage fails', async () => {
   let started = 0
   const backend = createAuxiliaryVisionBackend(dependencies({

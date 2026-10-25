@@ -5,6 +5,8 @@ import type { HostWorkspaceSnapshot } from '../working-copy/index.js'
 
 const MAX_REVIEW_ITEMS = 8
 const MAX_REVIEW_CHARS = 6000
+const MAX_FORM_REVIEW_ITEMS = 100
+const MAX_FORM_REVIEW_CHARS = 24_000
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
@@ -152,11 +154,25 @@ export function buildSaveReview(snapshot: HostWorkspaceSnapshot): { text: string
       fail('pdf/review-unavailable', 'PDF form baseline is unavailable; save in the PDF Reader UI')
     }
     const oldFields = formIndex(snapshot.baselineFormFields), newFields = formIndex(snapshot.document.formFields)
-    for (const name of [...new Set([...oldFields.keys(), ...newFields.keys()])].sort()) {
-      const oldValue = oldFields.get(name), newValue = newFields.get(name)
+    const formLines: string[] = []
+    for (const id of [...new Set([...oldFields.keys(), ...newFields.keys()])].sort()) {
+      const oldValue = oldFields.get(id), newValue = newFields.get(id)
       if (JSON.stringify(oldValue) === JSON.stringify(newValue)) continue
-      append(`${lines.length + 1}. 修改PDF表单字段：${JSON.stringify(name)}\n字段：${value(oldValue)} → ${value(newValue)}`)
+      if (!oldValue || !newValue
+        || JSON.stringify({ ...oldValue, value: undefined }) !== JSON.stringify({ ...newValue, value: undefined })) {
+        fail('pdf/review-unavailable', 'Unexpected form structure changes cannot be reviewed as field-value edits; save in the PDF Reader UI')
+      }
+      // Full values, not full widget dictionaries. A normal form can have far
+      // more than eight fields; keep a separate, explicit budget without ever
+      // truncating an approval or omitting other draft changes.
+      formLines.push(`${lines.length + formLines.length + 1}. 修改PDF表单字段 ID：${JSON.stringify(id)}`
+        + `；名称：${value(newValue.name)}；页码：${value([...new Set(newValue.widgets.map(widget => widget.page))])}`
+        + `；类型：${newValue.type}\n值：${value(oldValue.value)} → ${value(newValue.value)}`)
+      if (formLines.length > MAX_FORM_REVIEW_ITEMS || formLines.join('\n\n').length > MAX_FORM_REVIEW_CHARS) {
+        fail('pdf/review-too-large', 'Complete form changes exceed the save review budget; save manually in the PDF Reader UI')
+      }
     }
+    lines.push(...formLines)
   }
   if (!lines.length) fail('pdf/review-unavailable', 'The dirty draft has no reviewable PDF difference; save in the PDF Reader UI')
   return { text: lines.join('\n\n'), count: lines.length }

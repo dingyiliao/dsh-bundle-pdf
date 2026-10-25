@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { EngineDirectory, engineProbe, validateEngineConfiguration, type EngineBinding, type EngineConfiguration } from '../engines/index.js'
 import { validateOcrOutput, validateOcrRequest } from '../../ocr/validation.js'
 import {
   OcrError, type OcrAvailability, type OcrEngineDescriptor, type OcrOutput, type OcrRequest,
@@ -8,13 +9,15 @@ import {
 export interface HostOcrRequest extends OcrRequest {
   sessionId: string
   mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+  /** Trusted consumer selection. PDF RPC callers cannot choose a backend. */
+  binding?: EngineBinding
 }
 
 /** Backends may be contributed by separate plugins and removed with their Fiber. */
 export interface HostOcrBackend {
   readonly descriptor: OcrEngineDescriptor
-  availability(sessionId: string, signal: AbortSignal): Promise<OcrAvailability>
-  recognize(request: HostOcrRequest): Promise<OcrOutput>
+  availability(sessionId: string, signal: AbortSignal, config?: EngineConfiguration): Promise<OcrAvailability>
+  recognize(request: HostOcrRequest, config?: EngineConfiguration): Promise<OcrOutput>
 }
 
 export interface HostOcrResult extends OcrOutput {
@@ -45,13 +48,13 @@ function checkOutputLimits(output: OcrOutput): void {
 
 /** The selected backend is application configuration; session identity stays per call. */
 export class HostOcrService {
-  private readonly backends = new Map<string, HostOcrBackend>()
+  private readonly backends = new EngineDirectory<HostOcrBackend>(backend => backend.descriptor)
   private readonly tasks = new Map<AbortController, HostOcrBackend>()
   private readonly staged = new Map<string, { request: HostOcrRequest; expiresAt: number }>()
   private readonly expiryTimer: NodeJS.Timeout
   private disposed = false
 
-  constructor(private readonly selectedBackend: () => string) {
+  constructor(private readonly selectedBackend: () => string | EngineBinding) {
     this.expiryTimer = setInterval(() => this.pruneStaged(), 60_000)
     this.expiryTimer.unref()
   }
@@ -60,22 +63,26 @@ export class HostOcrService {
     if (this.disposed) throw new OcrError('engine-unavailable', 'The OCR service is disposed.')
     const id = backend.descriptor.id
     if (!id || this.backends.has(id)) throw new Error(`OCR backend is missing or duplicated: ${id}`)
-    this.backends.set(id, backend)
-    return () => {
-      if (this.backends.get(id) !== backend) return
-      this.backends.delete(id)
+    return this.backends.register(backend, () => {
       for (const [controller, active] of this.tasks) {
         if (active === backend) controller.abort(new OcrError('engine-unavailable', 'The OCR backend was removed.'))
       }
-    }
+    })
   }
 
   list(): OcrEngineDescriptor[] {
     return [...this.backends.values()].map(backend => structuredClone(backend.descriptor))
   }
 
-  selectedDescriptor(): OcrEngineDescriptor | undefined {
-    const descriptor = this.backends.get(this.selectedBackend())?.descriptor
+  subscribe(listener: () => void): () => void { return this.backends.subscribe(listener) }
+
+  private selection(binding?: EngineBinding): EngineBinding {
+    const selected = binding ?? this.selectedBackend()
+    return structuredClone(typeof selected === 'string' ? { engineId: selected, config: {} } : selected)
+  }
+
+  selectedDescriptor(binding?: EngineBinding): OcrEngineDescriptor | undefined {
+    const descriptor = this.backends.get(this.selection(binding).engineId)?.descriptor
     return descriptor ? structuredClone(descriptor) : undefined
   }
 
@@ -101,7 +108,8 @@ export class HostOcrService {
     }
     const handle = `ocrimg_${randomUUID()}`
     this.staged.set(handle, { request: { ...request, image: bytes, languages: [...request.languages],
-      options: request.options ? structuredClone(request.options) : undefined },
+      options: request.options ? structuredClone(request.options) : undefined,
+      binding: request.binding ? structuredClone(request.binding) : undefined },
       expiresAt: Date.now() + 5 * 60_000 })
     return handle
   }
@@ -121,11 +129,25 @@ export class HostOcrService {
     for (const [handle, item] of this.staged) if (item.expiresAt <= now) this.staged.delete(handle)
   }
 
-  async availability(sessionId: string, signal: AbortSignal = new AbortController().signal): Promise<OcrAvailability> {
-    const backend = this.backends.get(this.selectedBackend())
+  async availability(sessionId: string, signal: AbortSignal = new AbortController().signal, binding?: EngineBinding): Promise<OcrAvailability> {
+    const selected = this.selection(binding)
+    const backend = this.backends.get(selected.engineId)
     if (!backend || this.disposed) return { status: 'unavailable', reason: 'The selected OCR backend is not installed.' }
     if (!sessionId?.trim()) return { status: 'not-configured', reason: 'OCR requires a session.' }
-    return backend.availability(sessionId, signal)
+    try {
+      const config = validateEngineConfiguration(backend.descriptor, selected.config)
+      const result = await engineProbe(this.tasks, backend, signal, {
+        cancelled: () => new OcrError('cancelled', 'OCR availability was cancelled.'),
+        timeout: () => new OcrError('timeout', 'OCR availability timed out.'),
+      }, probe => backend.availability(sessionId, probe, config))
+      signal.throwIfAborted()
+      return this.backends.get(selected.engineId) === backend && !this.disposed ? result
+        : { status: 'unavailable', reason: 'The OCR backend was removed.' }
+    } catch (error) {
+      signal.throwIfAborted()
+      return { status: error instanceof OcrError ? 'unavailable' : 'not-configured',
+        reason: error instanceof OcrError ? error.message : 'The selected OCR configuration or backend is unavailable.' }
+    }
   }
 
   async recognize(request: HostOcrRequest): Promise<HostOcrResult> {
@@ -137,8 +159,12 @@ export class HostOcrService {
       throw new OcrError('invalid-request', 'OCR requires a supported encoded image type.')
     }
     checkImageLimits(request)
-    const backend = this.backends.get(this.selectedBackend())
+    const selected = this.selection(request.binding)
+    const backend = this.backends.get(selected.engineId)
     if (!backend || this.disposed) throw new OcrError('engine-unavailable', 'The selected OCR backend is not installed.')
+    let config: EngineConfiguration
+    try { config = validateEngineConfiguration(backend.descriptor, selected.config) }
+    catch (cause) { throw new OcrError('not-configured', 'The selected OCR configuration is invalid.', { cause }) }
     const maxPixels = backend.descriptor.maxPixels
     if (maxPixels && request.width * request.height > maxPixels) {
       throw new OcrError('limit-exceeded', 'The image exceeds the selected OCR backend’s pixel limit.')
@@ -160,13 +186,14 @@ export class HostOcrService {
       controller.signal.throwIfAborted()
       const snapshot: HostOcrRequest = {
         ...request, image: request.image instanceof Uint8Array ? request.image.slice() : request.image,
-        languages: [...request.languages], signal: controller.signal,
+        languages: [...request.languages], options: request.options ? structuredClone(request.options) : undefined,
+        binding: selected, signal: controller.signal,
       }
-      const result = await Promise.race([backend.recognize(snapshot), cancellation])
+      const result = await Promise.race([backend.recognize(snapshot, config), cancellation])
       controller.signal.throwIfAborted()
       checkOutputLimits(result)
       return { ...validateOcrOutput(result, snapshot),
-        source: { backendId: backend.descriptor.id, backendVersion: backend.descriptor.version } }
+        source: { backendId: selected.engineId, backendVersion: this.backends.descriptor(selected.engineId)!.version } }
     } catch (error) {
       if (controller.signal.aborted) throw controller.signal.reason
       if (error instanceof OcrError) throw error
@@ -184,7 +211,7 @@ export class HostOcrService {
     this.disposed = true
     clearInterval(this.expiryTimer)
     for (const controller of this.tasks.keys()) controller.abort(new OcrError('cancelled', 'The OCR service was disposed.'))
-    this.backends.clear()
+    this.backends.dispose()
     this.staged.clear()
   }
 }

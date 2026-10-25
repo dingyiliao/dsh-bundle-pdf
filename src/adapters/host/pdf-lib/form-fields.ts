@@ -1,11 +1,10 @@
 import {
-  PDFCheckBox, PDFDict, PDFDocument, PDFDropdown, PDFHexString, PDFOptionList, PDFRadioGroup, PDFTextField, StandardFonts,
+  PDFCheckBox, PDFDict, PDFDocument, PDFDropdown, PDFHexString, PDFName, PDFOptionList, PDFRadioGroup, PDFString, PDFTextField, StandardFonts,
   type PDFField,
 } from 'pdf-lib'
 import fontkit from '@pdf-lib/fontkit'
 import type { PdfFormField, PdfFormWidget, PdfRect } from '../../../core/pdf-types.js'
-import { PdfDocumentError } from '../../../core/pdf-types.js'
-import { resolveFormField, type FormFieldTarget } from '../../../modules/forms/index.js'
+import { resolveFormField, validateFormChanges, FormValidationError, type FormFieldTarget } from '../../../modules/forms/index.js'
 
 export type PdfFormChange = FormFieldTarget & { value: string | boolean | string[] }
 
@@ -22,14 +21,13 @@ export async function applyFormChanges(document: PDFDocument, changes: readonly 
   if (!changes.length) return
   const form = document.getForm()
   const fields = canonicalFields(document).map(field => ({ id: fieldIdentity(field), name: field.getName(), field }))
+  // History can touch one field repeatedly. Validate every value before any
+  // canonical mutation, using the same rules as the Reader and model tools.
+  const issues = validateFormChanges(inspectFormFields(document), changes, { allowRepeated: true })
+  if (issues.length) throw new FormValidationError(issues)
   for (const change of changes) {
-    const { field, name } = resolveFormField(fields, change), { value } = change
-    if (field.isReadOnly()) throw new PdfDocumentError('read-only', `Form field is read only: ${name}`)
+    const { field } = resolveFormField(fields, change), { value } = change
     if (field instanceof PDFTextField && typeof value === 'string') {
-      const maxLength = field.getMaxLength()
-      if (maxLength !== undefined && [...value].length > maxLength) {
-        throw new PdfDocumentError('invalid-operation', `Form field exceeds its maximum length: ${name}`)
-      }
       field.setText(value)
       // pdf-lib removes /V for the empty string. If the field has /DV, readers
       // can then resurrect that default after reopening instead of preserving
@@ -38,26 +36,30 @@ export async function applyFormChanges(document: PDFDocument, changes: readonly 
     } else if (field instanceof PDFCheckBox && typeof value === 'boolean') {
       if (value) field.check(); else field.uncheck()
     } else if (field instanceof PDFRadioGroup && typeof value === 'string') {
-      if (!field.getOptions().includes(value)) throw new PdfDocumentError('invalid-operation', `Invalid radio option: ${name}`)
-      field.select(value)
+      if (value === '') field.clear(); else field.select(value)
     } else if (field instanceof PDFDropdown && typeof value === 'string') {
-      if (!field.getOptions().includes(value)) throw new PdfDocumentError('invalid-operation', `Invalid dropdown option: ${name}`)
-      field.select(value)
+      if (value === '') {
+        field.clear()
+        // As for text, an explicit empty /V must not fall back to an inherited/default value.
+        field.acroField.dict.set(PDFName.of('V'), document.context.obj([]))
+      } else field.select(value)
     } else if (field instanceof PDFOptionList && Array.isArray(value) && value.every(item => typeof item === 'string')) {
-      if (!field.isMultiselect() && value.length > 1) throw new PdfDocumentError('invalid-operation', `List does not allow multiple selections: ${name}`)
-      if (value.some(item => !field.getOptions().includes(item))) {
-        throw new PdfDocumentError('invalid-operation', `Invalid list option: ${name}`)
-      }
       field.select(value)
-    } else throw new PdfDocumentError('invalid-operation', `Unsupported value or form field type: ${name}`)
+      if (!value.length) field.acroField.dict.set(PDFName.of('V'), document.context.obj([]))
+    }
   }
-  // fontkit's CFF subsetter can throw an out-of-bounds RangeError when asked
-  // to subset the bundled OpenType CJK font with no glyphs (for example, a
-  // clear-only edit or checkbox-only change). A standard font is sufficient
-  // for empty appearances; embed the CJK font only when a non-empty value is
-  // being painted.
-  const hasText = changes.some(({ value }) => typeof value === 'string' ? value.length > 0
-    : Array.isArray(value) && value.some(item => item.length > 0))
+  // Font choice belongs to the final appearance, not the edit history. Radio
+  // export values are not painted text; option lists paint ALL options even
+  // when cleared. An unused CJK font triggers fontkit's fatal empty-CFF bug.
+  const hasText = fields.some(({ field }) => {
+    if (!field.acroField.getWidgets().length || !field.needsAppearancesUpdate()) return false
+    const text = field instanceof PDFTextField ? field.getText() ?? ''
+      : field instanceof PDFDropdown ? field.getSelected()[0] ?? ''
+        : field instanceof PDFOptionList ? field.getOptions().join('\n') : ''
+    // Layout removes these controls or splits them into empty lines; retain
+    // ordinary/Unicode spaces because they can still require font encoding.
+    return /[^\b\n\f\r\v]/u.test(text)
+  })
   const font = hasText
     ? (document.registerFontkit(fontkit), await document.embedFont(fontBytes, { subset: true }))
     : await document.embedFont(StandardFonts.Helvetica)
@@ -86,8 +88,10 @@ export function inspectFormFields(document: PDFDocument, documentReadOnly = fals
       if (!rect.every(Number.isFinite) || width <= 0 || height <= 0) return []
       return [{ page, rect, ...(field instanceof PDFRadioGroup ? { option: field.getOptions()[index] } : {}) }]
     })
+    const hint = document.context.lookup(field.acroField.getInheritableAttribute(PDFName.of('TU')))
+    const description = hint instanceof PDFString || hint instanceof PDFHexString ? hint.decodeText().slice(0, 256) : undefined
     const base = { id: fieldIdentity(field), name: field.getName(), widgets, readOnly: documentReadOnly || field.isReadOnly(),
-      required: field.isRequired() }
+      required: field.isRequired(), ...(description ? { description } : {}) }
     if (field instanceof PDFTextField) return { ...base, type: 'text', value: field.getText() ?? '',
       maxLength: field.getMaxLength(), multiline: field.isMultiline() } satisfies PdfFormField
     if (field instanceof PDFCheckBox) return { ...base, type: 'checkbox', value: field.isChecked() } satisfies PdfFormField

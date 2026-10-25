@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentPageReadPort } from '../evidence/index.js'
+import { evidenceSha256, type FreshSourceRead, type TextReferenceResolverPort } from '../evidence/index.js'
 import type { PdfAnnotationOperation, PdfColor, PdfRect } from '../../core/pdf-types.js'
 import type { HostWorkspaceSnapshot } from '../working-copy/index.js'
 import type { ModelAnnotationInput } from './index.js'
-import { locateTextRange } from './text-target.js'
+import { locateTextRange } from '../../shared/geometry/text-target.js'
 
 type AddOperation = Extract<PdfAnnotationOperation, { type: 'add' }>
-export type CoveredPage = { page: number; startUtf16: number; endUtf16: number; text: string }
+export type CoveredPage = { page: number; startUtf16: number; endUtf16: number; text: string; refId?: string }
 export type AnnotationPlan = { operation: AddOperation; covered?: CoveredPage }
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
@@ -27,11 +28,26 @@ function textGeometryPages(pages: AgentPageReadPort | undefined): AgentPageReadP
 }
 
 async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
-  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<AnnotationPlan> {
+  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal,
+  references?: TextReferenceResolverPort, readSource?: FreshSourceRead): Promise<AnnotationPlan> {
   if (input.subtype === 'Text' && !input.comment?.trim()) fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
   if (input.target.kind === 'reference') {
-    // References have approximate glyph-origin boxes, not verified PDF geometry.
-    return fail('pdf/approximate-target', 'This text reference does not have verified PDF geometry; select an explicit region')
+    if (input.subtype === 'Text') fail('pdf/invalid-target', 'A standalone note requires a PDF position, not a text reference')
+    if (!references) fail('pdf/reference-unavailable', 'PDF text reference verification is unavailable')
+    const resolved = await references.resolve(sessionId, snapshot.id, input.target.refId, signal, readSource)
+    signal.throwIfAborted()
+    if (resolved.documentId !== snapshot.id || resolved.revision !== snapshot.revision
+      || resolved.contentVersion !== snapshot.contentVersion || resolved.sourceDigest !== evidenceSha256(snapshot.bytes)) {
+      fail('pdf/stale-revision', 'The PDF changed while locating the referenced text; read its status again')
+    }
+    assertPageRect(snapshot, resolved.page, resolved.rectPdf)
+    return { operation: { type: 'add', annotation: {
+      id: `ai_${randomUUID()}`, page: resolved.page, subtype: input.subtype,
+      rect: [...resolved.rectPdf] as PdfRect, quadPoints: [...resolved.quadPoints],
+      ...(input.color ? { color: [...input.color] as PdfColor } : {}),
+      ...(input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
+    } }, covered: { page: resolved.page, startUtf16: resolved.startUtf16, endUtf16: resolved.endUtf16,
+      text: resolved.text, refId: resolved.refId } }
   }
   if (input.target.kind === 'pdf-text-range') fail('pdf/invalid-target', 'A text range must use the range annotation path')
   const { page } = input.target
@@ -50,7 +66,7 @@ async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnn
     if (read.snapshot.contentVersion !== snapshot.contentVersion || read.snapshot.revision !== snapshot.revision) {
       fail('pdf/stale-revision', 'The PDF changed while locating the quoted text; read its status again')
     }
-    const geometry = locateTextRange(read.content, input.target.quote, input.target.quote)
+    const geometry = locateTextRange(read.content, input.target.quote, input.target.quote, true)
     rectPdf = geometry.rect
     quadPoints = geometry.quadPoints
     covered = { page, startUtf16: geometry.startUtf16, endUtf16: geometry.endUtf16, text: geometry.text }
@@ -101,8 +117,9 @@ async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnn
 
 /** Turn a model target into verified page operations before the working-copy transaction. */
 export async function buildAnnotationPlans(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
-  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<AnnotationPlan[]> {
+  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal,
+  references?: TextReferenceResolverPort, readSource?: FreshSourceRead): Promise<AnnotationPlan[]> {
   return input.target.kind === 'pdf-text-range'
     ? rangeAnnotations(snapshot, input, sessionId, pages, signal)
-    : [await singleAnnotation(snapshot, input, sessionId, pages, signal)]
+    : [await singleAnnotation(snapshot, input, sessionId, pages, signal, references, readSource)]
 }

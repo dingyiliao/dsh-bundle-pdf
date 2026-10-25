@@ -7,6 +7,7 @@ import { createImageEvidenceRegistry, evidenceSha256,
 import { ImageUnderstandingError, MAX_IMAGE_BYTES, MAX_QUESTION_CHARACTERS,
   type HostImageUnderstandingService, type ImageUnderstandingImage } from '../../../modules/image-understanding/index.js'
 import type { WorkingCopyReadPort } from '../../../modules/working-copy/index.js'
+import type { EngineBinding } from '../../../modules/engines/index.js'
 
 export const MAX_IMAGE_BASE64_CHARACTERS = Math.ceil(MAX_IMAGE_BYTES / 3) * 4
 export const MAX_IMAGE_REQUEST_BYTES = MAX_IMAGE_BASE64_CHARACTERS + 16_384
@@ -96,7 +97,7 @@ function referencedImage(source: Awaited<ReturnType<PdfImageEvidenceResolver['re
 
 /** Connection authenticates the RPC before this dispatch verifies its Session identity. */
 export function createImageUnderstandingDispatch(service: HostImageUnderstandingService,
-  references?: PdfImageEvidenceResolver): PdfDispatch {
+  references?: PdfImageEvidenceResolver, readBindings?: () => { binding: EngineBinding; ocrBinding: EngineBinding } | undefined): PdfDispatch {
   return async (sessionId, input, agent, signal) => {
     const parsed = request.safeParse(input)
     if (!parsed.success) throw new ImageUnderstandingError('pdf/image-invalid-request', 'Invalid image request.')
@@ -105,13 +106,14 @@ export function createImageUnderstandingDispatch(service: HostImageUnderstanding
       throw new ImageUnderstandingError('pdf/session-mismatch', 'Session identity mismatch.')
     }
     signal.throwIfAborted()
-    if (args.action === 'availability') return service.availability(sessionId, signal)
+    const bindings = readBindings ? structuredClone(readBindings()) : undefined
+    if (args.action === 'availability') return service.availability(sessionId, signal, bindings?.binding, bindings?.ocrBinding)
     if (args.action === 'prepare-reference') {
       if (!references) throw new ImageUnderstandingError('pdf/reference-unavailable', 'PDF image references are not mounted.')
       const source = await references.resolve(sessionId, args.documentId, args.refId, signal)
       signal.throwIfAborted()
       const image = referencedImage(source, args.documentId, source.evidence.refId)
-      const prepared = await service.prepare({ sessionId, image, question: args.question, signal })
+      const prepared = await service.prepare({ sessionId, image, question: args.question, signal, ...bindings })
       signal.throwIfAborted()
       // Preparation may call OCR or a remote model. Recheck the source and
       // attachment after that asynchronous work before delivering its result.
@@ -141,6 +143,6 @@ export function createImageUnderstandingDispatch(service: HostImageUnderstanding
       throw new ImageUnderstandingError('pdf/image-invalid-request', 'Image data exceeds the limit or is not canonical Base64.')
     }
     return service.prepare({ sessionId, image: { mediaType, data: bytes, width, height },
-      question: args.question, signal })
+      question: args.question, signal, ...bindings })
   }
 }

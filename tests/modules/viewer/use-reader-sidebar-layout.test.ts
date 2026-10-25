@@ -41,10 +41,22 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
   try {
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: firstFile })))
     assert.equal(state?.expanded, true)
-    await act(async () => { width = 700; resize() })
+    await act(async () => { width = 759; resize() })
     assert.equal(state?.expanded, false)
+    await act(async () => { width = 760; resize() })
+    assert.equal(state?.expanded, false, 'restoring enough width does not reopen the sidebar')
+    await act(async () => { width = 900; resize() })
+    assert.equal(state?.expanded, false, 'further widening leaves the sidebar collapsed')
+    await act(async () => { state?.changeExpanded(true) })
+    assert.equal(state?.expanded, true, 'the user can explicitly reopen the sidebar')
+    await act(async () => { width = 759; resize() })
+    assert.equal(state?.expanded, false, 'entering a narrow layout still auto-collapses')
+    await act(async () => { state?.show('pages') })
+    assert.equal(state?.expanded, true, 'selecting a section opens it even in a narrow layout')
+    await act(async () => { width = 700; resize() })
+    assert.equal(state?.expanded, true, 'resizing within the narrow layout preserves explicit expansion')
     await act(async () => { width = 800; resize() })
-    assert.equal(state?.expanded, true)
+    assert.equal(state?.expanded, true, 'widening does not undo explicit expansion either')
     await act(async () => { state?.changeExpanded(false) })
     await act(async () => { width = 700; resize() })
     await act(async () => { width = 800; resize() })
@@ -70,7 +82,7 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     assert.equal(state?.section, 'pages')
     assert.equal(state?.expanded, false, 'auto-collapsed sidebar stays collapsed across file switches')
     await act(async () => { width = 800; resize() })
-    assert.equal(state?.expanded, true, 'only auto-collapsed sidebar reopens when space returns')
+    assert.equal(state?.expanded, false, 'auto-collapsed sidebar stays collapsed when space returns')
 
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: secondFile, visible: false })))
     dom.sessionStorage.setItem(`dsh-pdf:sidebar-layout:v2:${secondFile}`, JSON.stringify({
@@ -86,6 +98,17 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: secondFile })))
     assert.equal(state?.section, 'search')
     assert.equal(state?.expanded, false)
+
+    const legacyFile = 'dsh-resource://file/session/shared-session/legacy.pdf'
+    dom.sessionStorage.setItem(`dsh-pdf:sidebar-layout:v2:${legacyFile}`, JSON.stringify({
+      section: 'pages', expanded: false, autoCollapsed: true, narrow: true,
+    }))
+    await act(async () => root.render(null))
+    await act(async () => root.render(React.createElement(Harness, { resourceAddress: legacyFile })))
+    assert.equal(state?.section, 'pages', 'the previous sidebar format retains the selected section')
+    assert.equal(state?.expanded, false, 'a saved auto-collapse flag cannot reopen the sidebar on a wide pane')
+    assert.equal('autoCollapsed' in JSON.parse(dom.sessionStorage.getItem(`dsh-pdf:sidebar-layout:v2:${legacyFile}`)!),
+      false, 'the obsolete auto-restore flag is no longer persisted')
 
     const malformedFile = 'dsh-resource://file/session/shared-session/malformed.pdf'
     dom.sessionStorage.setItem(`dsh-pdf:sidebar-layout:v2:${malformedFile}`, '{')

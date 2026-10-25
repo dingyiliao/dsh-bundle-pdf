@@ -14,8 +14,9 @@ function chunk(type: string, data: Uint8Array): Buffer {
   output.writeUInt32BE((crc ^ 0xffffffff) >>> 0, output.length - 4)
   return output
 }
-export async function encodePng(rgba: Uint8Array, width: number, height: number): Promise<Buffer> {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 1026 || height > 1026
+export async function encodePng(rgba: Uint8Array, width: number, height: number, maxEdge = 1026): Promise<Buffer> {
+  if (!Number.isInteger(maxEdge) || maxEdge < 1 || maxEdge > 2048
+    || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > maxEdge || height > maxEdge
     || rgba.length !== width * height * 4) throw new RangeError('Invalid native raster')
   const scanlines = Buffer.alloc((width * 4 + 1) * height)
   for (let y = 0; y < height; y++) scanlines.set(rgba.subarray(y * width * 4, (y + 1) * width * 4), y * (width * 4 + 1) + 1)

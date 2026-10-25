@@ -43,7 +43,7 @@ test('image understanding plugin provides one service, three backends, and an au
   assert.ok(provided)
   const service = provided
   try {
-    assert.deepEqual(service.list(), [
+    assert.deepEqual(service.list().map(({ id, kind }) => ({ id, kind })), [
       { id: 'session-vision', kind: 'direct-image' },
       { id: 'ocr-text', kind: 'derived-text' },
       { id: 'auxiliary-vision', kind: 'derived-text' },

@@ -1,4 +1,4 @@
-import type { FormControlMarker } from '../../../modules/forms/index.js'
+import type { FormPageInspection } from '../../../modules/forms/index.js'
 
 // Tiny fixed glyphs keep the native raster overlay platform/font independent.
 const glyphs: Record<string, string[]> = {
@@ -15,34 +15,47 @@ const glyphs: Record<string, string[]> = {
   '9': ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
 }
 
-/** Decorate only the detached native raster; never add annotations to the PDF. */
+/** Paint small, background-free IDs inside controls on a detached base-page raster. */
 export function paintFormLabels(rgba: Uint8Array, width: number, height: number,
-  markers: readonly FormControlMarker[]): void {
-  if (rgba.length !== width * height * 4) throw new RangeError('Invalid form raster')
-  const blue = [24, 83, 201], white = [255, 255, 255]
-  function fill(left: number, top: number, right: number, bottom: number, color: number[]) {
-    for (let y = Math.max(0, Math.floor(top)); y < Math.min(height, Math.ceil(bottom)); y++) {
-      for (let x = Math.max(0, Math.floor(left)); x < Math.min(width, Math.ceil(right)); x++) {
-        const offset = (y * width + x) * 4
-        rgba[offset] = color[0]; rgba[offset + 1] = color[1]; rgba[offset + 2] = color[2]; rgba[offset + 3] = 255
-      }
-    }
-  }
-  for (const marker of markers) {
-    const [left, top, right, bottom] = marker.rectImage
-    fill(left, top, right, top + 2, blue); fill(left, bottom - 2, right, bottom, blue)
-    fill(left, top, left + 2, bottom, blue); fill(right - 2, top, right, bottom, blue)
-  }
+  inspection: FormPageInspection): Uint8Array {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
+    || rgba.length !== width * height * 4 || inspection.width !== width || inspection.height !== height
+    || !inspection.pageRect.every((value, index) => value === [0, 0, width, height][index])
+    || width > 2048 || height > 2048) throw new RangeError('Invalid form raster')
+  const output = rgba.slice()
+  const markers = inspection.fields.flatMap(field => field.controls)
+  const blue = [24, 83, 201]
   for (const marker of markers) {
     const [left, top, right, bottom] = marker.labelRect
-    fill(left, top, right, bottom, blue)
+    const [l, t, r, b] = marker.rectImage
+    if (![...marker.labelRect, ...marker.rectImage].every(Number.isFinite)
+      || left < Math.max(0, l) || top < Math.max(0, t) || right > Math.min(width, r) || bottom > Math.min(height, b)
+      || right <= left || bottom <= top || !/^F\d{2,3}$/.test(marker.label)) throw new RangeError('Invalid form label')
+    const scale = (right - left) / (marker.label.length * 6 - 1)
+    const x0 = Math.floor(left), y0 = Math.floor(top), span = Math.ceil(right) - x0
+    const coverage = new Float32Array(span * (Math.ceil(bottom) - y0))
     for (const [position, character] of [...marker.label].entries()) {
-      glyphs[character]?.forEach((row, y) => {
+      glyphs[character].forEach((row, y) => {
         for (let x = 0; x < row.length; x++) {
-          if (row[x] === '1') fill(left + 4 + position * 12 + x * 2, top + 3 + y * 2,
-            left + 6 + position * 12 + x * 2, top + 5 + y * 2, white)
+          if (row[x] !== '1') continue
+          const gx = left + (position * 6 + x) * scale, gy = top + y * scale
+          for (let py = Math.floor(gy); py < Math.ceil(gy + scale); py++) {
+            for (let px = Math.floor(gx); px < Math.ceil(gx + scale); px++) {
+              coverage[(py - y0) * span + px - x0] += Math.max(0, Math.min(px + 1, gx + scale) - Math.max(px, gx))
+                * Math.max(0, Math.min(py + 1, gy + scale) - Math.max(py, gy))
+            }
+          }
         }
       })
     }
+    for (let index = 0; index < coverage.length; index++) {
+      const offset = ((y0 + Math.floor(index / span)) * width + x0 + index % span) * 4
+      const opacity = .8 * Math.min(1, coverage[index])
+      // Multiply preserves printed ink even if a document prints text inside a widget.
+      for (let channel = 0; channel < 3; channel++) {
+        output[offset + channel] = Math.round(output[offset + channel] * (1 - opacity + opacity * blue[channel] / 255))
+      }
+    }
   }
+  return output
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentNavigationRequestSchema } from '../../../contracts/navigation.js'
 import { PDF_ENDPOINT, readingPositionSchema, responseSchema, wireSnapshotSchema } from '../../../contracts/rpc/index.ts'
 import type { PdfReadingPosition, PdfClientApi, PdfStoredReadingPosition, WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import { sessionFile } from '../../../shared/address.ts'
@@ -40,9 +41,10 @@ export function createPdfAgentNavigationApi(connection: PdfConnection, lifetime:
   }
   return {
     async wait(context, signal) {
-      return z.object({ requestId: z.string().uuid(), page: z.number().int().positive(),
-        documentId: z.string(), contentVersion: z.string() }).nullable()
-        .parse(await call({ action: 'wait', ...context }, signal))
+      return agentNavigationRequestSchema.nullable().parse(await call({ action: 'wait', ...context }, signal))
+    },
+    async watchRequest(context, signal) {
+      return z.object({ active: z.boolean() }).strict().parse(await call({ action: 'watch-request', ...context }, signal))
     },
     async complete(context, signal) {
       z.object({ accepted: z.boolean() }).parse(await call({ action: 'complete', ...context }, signal))
@@ -55,7 +57,9 @@ const readingPositionStale = z.enum(['none', 'content-changed', 'page-missing'])
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
   const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
   const latest = new Map<string, WorkspaceSnapshot>()
-  const sourceAddresses = new Map<string, { sessionId: string; address: string }>()
+  const sourceAddresses = new Map<string, { sessionId: string; address: string; references: Set<string> }>()
+  const closedReferences = new Set<string>()
+  const referenceKey = (sessionId: string, referenceId: string) => JSON.stringify([sessionId, referenceId])
   const watches = new Map<string, AbortController>()
   lifetime.addEventListener('abort', () => {
     for (const watch of watches.values()) watch.abort()
@@ -66,6 +70,32 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       signal ? AbortSignal.any([signal, lifetime]) : lifetime)))
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
     return result.value
+  }
+  const releaseCall = async (payload: object, signal?: AbortSignal): Promise<void> => {
+    signal?.throwIfAborted()
+    // Client-only HMR aborts ordinary requests, but must still release Host
+    // references. Never let an unavailable or noncompliant carrier stall exit.
+    const controller = new AbortController()
+    const abort = () => controller.abort(signal?.reason)
+    const timer = setTimeout(() => controller.abort(new DOMException('PDF reference cleanup timed out', 'TimeoutError')), 5000)
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    let stop!: () => void
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      stop = () => reject(controller.signal.reason)
+      if (controller.signal.aborted) stop()
+      else controller.signal.addEventListener('abort', stop, { once: true })
+    })
+    try {
+      const result = responseSchema.parse(await Promise.race([
+        Promise.resolve().then(() => connection.rpc.call('/api', PDF_ENDPOINT, payload, controller.signal)), cancelled,
+      ]))
+      if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      controller.signal.removeEventListener('abort', stop)
+    }
   }
   const snapshot = async (payload: object, signal?: AbortSignal): Promise<WorkspaceSnapshot> => {
     const requestedId = 'id' in payload && typeof payload.id === 'string' ? payload.id : undefined
@@ -104,7 +134,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     return value
   }
   const watch = (id: string) => {
-    if (watches.has(id) || !sourceAddresses.has(id) || lifetime.aborted) return
+    if (watches.get(id)?.signal.aborted === false || !sourceAddresses.has(id) || lifetime.aborted) return
     const controller = new AbortController()
     watches.set(id, controller)
     void (async () => {
@@ -119,7 +149,9 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
           }, controller.signal, 'pdf.watch'))
           if (controller.signal.aborted || lifetime.aborted) break
           if (update.revision !== latest.get(id)?.revision) {
-            await snapshot({ action: 'open', sessionId: address.sessionId, address: address.address }, controller.signal)
+            // A watch refresh reads the existing draft. It must not acquire a
+            // new UI reference after the last tab has begun releasing its view.
+            await snapshot({ action: 'refresh', sessionId: address.sessionId, id }, controller.signal)
           } else if (Date.now() - started < 250) {
             // Protect against a misconfigured endpoint returning immediately.
             await new Promise<void>(resolve => setTimeout(resolve, 250))
@@ -169,12 +201,31 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
   }
   return {
     native, positions,
-    async open(sessionId, address, signal) {
+    async open(sessionId, address, signal, referenceId) {
       const addressed = sessionFile(address)
       if (addressed.sessionId !== sessionId) throw new Error('The PDF address belongs to another session')
-      const value = await snapshot({ action: 'open', sessionId, address }, signal)
-      sourceAddresses.set(value.id, { sessionId, address })
+      if (referenceId && closedReferences.has(referenceKey(sessionId, referenceId))) throw new DOMException('PDF view reference has closed', 'AbortError')
+      const value = await snapshot({ action: 'open', sessionId, address, ...(referenceId ? { referenceId } : {}) }, signal)
+      if (referenceId && closedReferences.has(referenceKey(sessionId, referenceId))) {
+        if (!sourceAddresses.has(value.id)) latest.delete(value.id)
+        throw new DOMException('PDF view reference has closed', 'AbortError')
+      }
+      const source = sourceAddresses.get(value.id) ?? { sessionId, address, references: new Set<string>() }
+      source.references.add(referenceId ?? 'legacy')
+      sourceAddresses.set(value.id, source)
       return value
+    },
+    async release(sessionId, id, referenceId, signal) {
+      if (id === undefined) closedReferences.add(referenceKey(sessionId, referenceId))
+      for (const [documentId, source] of sourceAddresses) {
+        if (source.sessionId !== sessionId || id !== undefined && documentId !== id) continue
+        source.references.delete(referenceId)
+        if (!source.references.size) {
+          watches.get(documentId)?.abort()
+          sourceAddresses.delete(documentId); latest.delete(documentId); listeners.delete(documentId)
+        }
+      }
+      await releaseCall({ action: 'release', sessionId, ...(id === undefined ? {} : { id }), referenceId }, signal)
     },
     change: (sessionId, id, revision, operations, signal) => snapshot({ action: 'change', sessionId, id, revision, operations }, signal),
     undo: (sessionId, id, revision, signal) => snapshot({ action: 'undo', sessionId, id, revision }, signal),
@@ -198,7 +249,11 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       watch(id)
       return () => {
         set.delete(callback)
-        if (!set.size) { watches.get(id)?.abort(); listeners.delete(id); latest.delete(id); sourceAddresses.delete(id) }
+        if (!set.size && listeners.get(id) === set) {
+          watches.get(id)?.abort(); listeners.delete(id); latest.delete(id)
+          // A hidden React body is not a closed tab occurrence. Keep the
+          // reference inventory until lifecycle.release() ends that view.
+        }
       }
     },
   }

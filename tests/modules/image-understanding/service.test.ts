@@ -36,7 +36,7 @@ test('backend IDs are constrained, duplicate IDs rejected, and a disposer never 
     first()
     const second = service.register(backend())
     first()
-    assert.deepEqual(service.list(), [{ id: 'test-backend', kind: 'derived-text' }])
+    assert.deepEqual(service.list().map(({ id, kind }) => ({ id, kind })), [{ id: 'test-backend', kind: 'derived-text' }])
     second()
     assert.deepEqual(service.list(), [])
     service.dispose()
@@ -98,6 +98,41 @@ test('preparation rejects malformed request metadata and mismatched backend resu
     await assert.rejects(service.prepare({ ...request(), image: { ...request().image, width: 2 } }),
       hasCode('pdf/image-invalid-request'))
     await assert.rejects(service.prepare(request()), hasCode('pdf/image-invalid-result'))
+  } finally { service.dispose() }
+})
+
+test('third-party output provenance is validated and arbitrary engine failures stay private', async () => {
+  for (const value of [null, { kind: 'direct-image', mode: 'invalid' },
+    { kind: 'derived-text', text: 'Fixture', mode: 'invalid' },
+    { kind: 'derived-text', text: 'Fixture', mode: 'image-description', model: 42 },
+    { kind: 'derived-text', text: 'Fixture', mode: 'image-description', limitations: 42 }]) {
+    const service = new HostImageUnderstandingService(() => 'test-backend')
+    service.register(backend({ kind: value?.kind === 'direct-image' ? 'direct-image' : 'derived-text',
+      async prepare() { return value as never } }))
+    try { await assert.rejects(service.prepare(request()), hasCode('pdf/image-invalid-result')) }
+    finally { service.dispose() }
+  }
+  const service = new HostImageUnderstandingService(() => 'test-backend')
+  service.register(backend({ async prepare() { throw new Error('private provider details') } }))
+  try {
+    await assert.rejects(service.prepare(request()), error => error instanceof ImageUnderstandingError
+      && error.code === 'pdf/image-failed' && !error.message.includes('private'))
+  } finally { service.dispose() }
+})
+
+test('image preparation validates contributor configuration and availability checks immutable registration identity', async () => {
+  const service = new HostImageUnderstandingService(() => 'test-backend')
+  let id = 'test-backend'
+  service.register({ get id() { return id }, kind: 'derived-text',
+    descriptor: { id, name: 'Fixture image', version: '1', execution: 'local',
+      configurationFields: [{ key: 'style', label: 'Style', type: 'string', required: true }] },
+    async availability() { id = 'changed-backend'; return { available: true } },
+    async prepare() { return { kind: 'derived-text', text: 'Fixture', mode: 'image-description' } },
+  })
+  try {
+    await assert.rejects(service.prepare(request()), hasCode('pdf/image-not-configured'))
+    const result = await service.availability('session-1', request().signal, { engineId: 'test-backend', config: { style: 'short' } })
+    assert.deepEqual(result, { status: 'unavailable', reason: 'The selected image backend was removed.' })
   } finally { service.dispose() }
 })
 

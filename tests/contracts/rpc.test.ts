@@ -39,6 +39,16 @@ test('workspace wire contract accepts full snapshots and ordered annotation delt
   assert.equal(wireSnapshotSchema.safeParse({ ...status, reader: { ...status.reader, bytesHash: 'bad' } }).success, false)
 })
 
+test('bounded author field hints survive the shared workspace wire contract', () => {
+  const field = { id: 'field', name: 'Text1', description: 'Author-provided hint', type: 'text',
+    value: '', widgets: [], readOnly: false, required: false }
+  const input = { ...status, document: { pageCount: 1, signed: false, encrypted: false, readOnly: false,
+    pages: [], annotations: [], formFields: [field] } }
+  assert.equal(wireSnapshotSchema.parse(input).document!.formFields![0].description, field.description)
+  assert.equal(wireSnapshotSchema.safeParse({ ...input, document: { ...input.document,
+    formFields: [{ ...field, description: 'x'.repeat(257) }] } }).success, false)
+})
+
 test('annotation reply links survive snapshots and change-request validation', () => {
   const reply = { ...annotation, id: 'reply-1', subtype: 'Text', replyToId: annotation.id, replyType: 'R' }
   assert.equal(wireAnnotationSchema.parse(reply).replyToId, annotation.id)

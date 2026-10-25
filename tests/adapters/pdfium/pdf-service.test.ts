@@ -5,10 +5,12 @@ import { resolve } from 'node:path'
 import test from 'node:test'
 import { PDFDocument, PDFHexString, PDFName } from 'pdf-lib'
 import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
+import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
 import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
+import { acroformFixture } from '../../fixtures/acroform.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
@@ -56,6 +58,81 @@ test('native reads, tile cache, and explicit release share the same live PDF han
     await service.releaseDocument(opened.id)
     assert.equal((await service.readPageText(sessionId, opened.id, 1, signal)).content.items.length, 1)
     assert.equal(service.diagnostics().documents, 1)
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('form inspection rejects revision and content races before and after native rendering', { skip }, async () => {
+  const state = memoryWorkspace(await acroformFixture())
+  let mismatch: 'revision' | 'content' = 'revision', reads = 0, changedAt = 2
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      if (++reads !== changedAt) return snapshot
+      return mismatch === 'revision' ? { ...snapshot, revision: snapshot.revision + 1 }
+        : { ...snapshot, contentVersion: 'another-content' }
+    },
+  }
+  const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'form-preview-fence'
+  try {
+    const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
+    assert.ok('bytes' in opened)
+    for (const at of [2, 3]) for (const kind of ['revision', 'content'] as const) {
+      mismatch = kind; changedAt = at; reads = 0
+      await assert.rejects(service.renderFormPage(sessionId, opened.id, 1, 2048, false, signal), { code: 'pdf/stale-reader' })
+      assert.ok(service.diagnostics().documents <= 1)
+    }
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('tiled inspection reads base ink and draft metadata without materializing PDFs or leaking handles', { skip }, async () => {
+  const state = memoryWorkspace(await acroformFixture()), sessionId = 'form-preview-reader-lease'
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  try {
+    const opened = await open(service, sessionId)
+    const before = await service.renderFormPage(sessionId, opened.id, 1, 2048, true, signal)
+    const current = state.workspaces.readSnapshot(sessionId, opened.id)
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id, revision: current.revision,
+      operations: [{ type: 'set-field', fieldId: current.document.formFields![0].id!, value: 'New' }] }, agent(sessionId), signal)
+    const [after, reading] = await Promise.all([service.renderFormPage(sessionId, opened.id, 1, 2048, true, signal),
+      service.readPageText(sessionId, opened.id, 1, signal)])
+    assert.equal(after.height, 2048, 'Native tiles stay bounded while the final image is high resolution')
+    assert.equal(after.formInspection.fields[0].value, 'New')
+    assert.deepEqual(after.png, before.png, 'Draft values do not enter the base-page raster')
+    assert.equal(service.diagnostics().documents, 1); assert.ok(reading.content.items.length > 0)
+    assert.equal(state.writes(), 0)
+    await service.dispose()
+    await assert.rejects(service.renderFormPage(sessionId, opened.id, 1, 2048, true, signal), { code: 'pdf/unavailable' })
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('inspection never publishes a malformed native tile or a page canceled between tiles', { skip }, async t => {
+  const state = memoryWorkspace(await acroformFixture()), sessionId = 'form-tile-boundaries'
+  const request = NativeWorker.prototype.request
+  let mode: 'dimensions' | 'bytes' | 'cancel' = 'dimensions', abort = new AbortController(), renders = 0
+  t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker,
+    ...args: Parameters<NativeWorker['request']>) {
+    const reply = await request.apply(this, args)
+    if ((args[0] as { command: string }).command !== 'render') return reply
+    renders++
+    const value = reply.value as { width: number; height: number; format: 'rgba' }
+    if (mode === 'dimensions') return { ...reply, value: { ...value, width: value.width - 1 } }
+    if (mode === 'bytes') return { ...reply, bytes: reply.bytes.subarray(4) }
+    abort.abort(new Error('Canceled between inspection tiles'))
+    return reply
+  })
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  try {
+    const opened = await open(service, sessionId)
+    for (const fault of ['dimensions', 'bytes', 'cancel'] as const) {
+      mode = fault; abort = new AbortController(); renders = 0
+      await assert.rejects(service.renderFormPage(sessionId, opened.id, 1, 2048, false, abort.signal),
+        fault === 'cancel' ? /Canceled between/ : { code: 'pdf/native-protocol' })
+      assert.equal(renders, 1, 'A bad or canceled tile must stop the remaining tiles')
+      assert.equal(service.diagnostics().documents, 1)
+    }
+    assert.equal(state.writes(), 0)
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 
@@ -281,21 +358,24 @@ test('native handles and wire histories evict oldest documents without losing wo
 
 test('a changed workspace revision invalidates in-flight native page and OCR renders', { skip }, async () => {
   const state = memoryWorkspace(await nativeFixture())
-  let staleOnSecondRead = false
-  let reads = 0
+  let invalidateRead = 0, reads = 0
   const workspaces = { ...state.workspaces,
     readSnapshot(sessionId: string, id: string) {
       const snapshot = state.workspaces.readSnapshot(sessionId, id)
-      return staleOnSecondRead && ++reads === 2 ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot
+      return invalidateRead && ++reads === invalidateRead ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot
     },
   }
   const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-service-render-race'
   try {
     const opened = await open(service, sessionId)
-    staleOnSecondRead = true
-    await assert.rejects(service.renderPage(sessionId, opened.id, 1, 512, signal), { code: 'pdf/stale-reader' })
-    reads = 0
+    // A page read fences both admission (second snapshot) and completed
+    // rasterization (third snapshot); neither race may deliver stale pixels.
+    for (const phase of [2, 3]) {
+      invalidateRead = phase; reads = 0
+      await assert.rejects(service.renderPage(sessionId, opened.id, 1, 512, signal), { code: 'pdf/stale-reader' })
+    }
+    invalidateRead = 2; reads = 0
     await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/stale-reader' })
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })

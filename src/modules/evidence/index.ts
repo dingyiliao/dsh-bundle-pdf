@@ -1,8 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
 import { findExactInPage, findNormalizedInPage } from '../search/index.js'
 import { joinPageText } from '../../shared/page-text.js'
-import { approximateTextRects } from './geometry.js'
+import { createTextEvidence } from './text-evidence.js'
 import { evidenceSha256 } from './provenance.js'
 import { textWindow } from './text-window.js'
 import { rankRelatedText } from './related-text.js'
@@ -11,8 +10,11 @@ import { createMemoryEvidenceReferenceStore,
 import type { NativeTextContent } from '../../shared/native.js'
 
 export { evidenceSha256, imageEvidenceSource } from './provenance.js'
+export { createTextEvidence, rememberTextEvidence } from './text-evidence.js'
 export { assertFreshSource } from './source-freshness.js'
 export type { FreshSourceRead } from './source-freshness.js'
+export { createTextReferenceResolver } from './text-target.js'
+export type { TextReferenceResolverPort, ResolvedTextReference } from './text-target.js'
 export type { ImageEvidenceSource } from './provenance.js'
 export { savedReferenceSchema, savedTextReferenceSchema, savedImageReferenceSchema,
   textEvidenceSchema, imageEvidenceSchema, createMemoryEvidenceReferenceStore } from './reference-store.js'
@@ -25,6 +27,7 @@ export type { ImageEvidenceCapture, ImageAttachmentVerifier } from './image-refe
 export { captureRenderedPageEvidence, captureOcrPageEvidence } from './image-capture.js'
 export type { OcrPageEvidenceValue } from './image-capture.js'
 export { windowPageText } from './text-window.js'
+export { assertToolCursorIdentity, decodeToolCursor, encodeToolCursor } from './tool-cursor.js'
 export { rankRelatedText } from './related-text.js'
 export { evidenceNavigationRequestSchema, revalidateEvidenceNavigation } from './navigation-check.js'
 export type { EvidenceNavigationRequest } from './navigation-check.js'
@@ -95,19 +98,7 @@ export function createEvidenceReader(workspaces: WorkingCopyReadPort, pages: Pag
 
   function createEvidence(snapshot: HostWorkspaceSnapshot, page: number,
     text: string, startUtf16: number, endUtf16: number, content?: NativeTextContent): PdfTextEvidence {
-    const excerpt = text.slice(startUtf16, endUtf16)
-    const rects = content && approximateTextRects(content, snapshot.document.pages?.[page - 1], startUtf16, endUtf16)
-    const evidence: PdfTextEvidence = { refId: `pdfref_${randomUUID()}`, documentId: snapshot.id,
-      sourcePath: snapshot.path, sourceDigest: digestOf(snapshot.bytes), sourceVersion: snapshot.sourceVersion,
-      contentVersion: snapshot.contentVersion, revision: snapshot.revision, page, source: 'pdf-text',
-      pageTextDigest: hash(text),
-      snapshot: { text: excerpt, sha256: hash(excerpt) },
-      locator: { kind: 'text-window', startUtf16, endUtf16, ...(rects ? { rectsPdf: rects } : {}) },
-      precision: rects ? 'approximate-geometry' : 'exact-text',
-      limitations: rects
-        ? ['PDF-space boxes approximate selection bounds from glyph origins; they are not exact painted outlines.']
-        : ['Text offsets refer to joined page text; visual PDF coordinates are not verified.'] }
-    return evidence
+    return createTextEvidence(snapshot, page, text, startUtf16, endUtf16, content, digestOf(snapshot.bytes))
   }
 
   async function remember(sessionId: string, snapshot: HostWorkspaceSnapshot, page: number,

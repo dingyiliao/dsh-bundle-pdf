@@ -10,6 +10,7 @@ import { readingSafeTop } from '../rendering/page-layout.js'
 import { waitForReaderState } from './wait-for-reader-state.js'
 import { applyIfNoNewerNavigation } from './reading-resume.js'
 import { captureReaderPosition, readerPageScale, resolvePdfDestination, type ReaderViewportState } from './navigation-position.js'
+import type { ReaderNavigationGuard } from './agent-text-navigation.js'
 
 export interface ReaderNavigationOptions {
   api: PdfClientApi
@@ -63,7 +64,8 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
   const capture = useCallback((): NavigationPosition => captureReaderPosition(state.current, views.current,
     latest.current.t('reader.notReady')), [state, views])
 
-  const applyPosition = useCallback(async (position: NavigationPosition, signal: AbortSignal) => {
+  const applyPosition = useCallback(async (position: NavigationPosition, signal: AbortSignal, validate?: () => void) => {
+    validate?.()
     const current = state.current
     if (!pdf || !current.snapshot || position.documentVersion !== current.snapshot.contentVersion
       || !current.snapshot.document.pages[position.page - 1]) throw new Error(latest.current.t('reader.invalidDestination'))
@@ -80,16 +82,20 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
       latest.current.setFit(position.fit)
       await nextFrame(); await nextFrame()
       operationSignal.throwIfAborted()
+      validate?.()
       const root = state.current.scrollRoot
       if (!root) throw new Error(latest.current.t('reader.invalidDestination'))
       const geometry = originDocument.document.pages[position.page - 1]!
       const deadline = performance.now() + navigationTimeoutMs
       const remaining = () => Math.max(0, deadline - performance.now())
       const numericPage = await waitForReaderState(root, 'pdflayoutchange', () => {
+        validate?.()
         const page = windowLayout(root)?.[position.page - 1]
         return page?.page === position.page && Math.abs(page.scale - pageScale(geometry, position.fit, position.scale)) < 0.001
           ? page : undefined
       }, operationSignal, remaining())
+      operationSignal.throwIfAborted()
+      validate?.()
       // Reveal a distant narrow page before waiting for its windowed PageView.
       const targetLeft = (root.scrollWidth - numericPage.width) / 2
       if (targetLeft + numericPage.width <= root.scrollLeft || targetLeft >= root.scrollLeft + root.clientWidth) {
@@ -97,12 +103,14 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
       }
       root.scrollTop = numericPage.top
       const view = await waitForReaderState(root, 'pdfviewchange', () => {
+        validate?.()
         const candidate = views.current.get(position.page)
         const expected = pageScale(geometry, position.fit, position.scale)
         return candidate && Math.abs(candidate.viewport.scale - expected) < 0.001
           && candidate.viewport.rotation === ((geometry.rotation % 360) + 360) % 360 ? candidate : undefined
       }, operationSignal, remaining())
       operationSignal.throwIfAborted()
+      validate?.()
       const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
       const bounds = root.getBoundingClientRect(), pageBounds = view.element.getBoundingClientRect()
       root.scrollLeft += pageBounds.left + x - bounds.left - (position.viewportAnchor?.x ?? 0) * bounds.width
@@ -110,6 +118,8 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
       latest.current.setCurrentPage(position.page)
       latest.current.setPageInput(String(position.page))
       await nextFrame()
+      operationSignal.throwIfAborted()
+      validate?.()
       return { ...position, scale: view.viewport.scale }
     } catch (failure) {
       // A superseded request cannot restore the scroll of a newer document.
@@ -122,6 +132,8 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
         if (canRestore() && state.current.scrollRoot) {
           state.current.scrollRoot.scrollLeft = origin.left
           state.current.scrollRoot.scrollTop = origin.top
+          latest.current.setCurrentPage(origin.page)
+          latest.current.setPageInput(String(origin.page))
         }
       }
       operationSignal.throwIfAborted()
@@ -148,7 +160,12 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
     writePosition(position, tabSignal)
   }, [capture, writePosition, state, tabSignal])
 
-  const jump = useCallback(async (page: number, jumpOptions: Partial<NavigationPosition> = {}, remember = true): Promise<boolean> => {
+  const jump = useCallback(async (page: number, jumpOptions: Partial<NavigationPosition> = {}, remember = true,
+    guard?: ReaderNavigationGuard): Promise<boolean> => {
+    if (guard?.signal.aborted) return false
+    // A model request must not enqueue a delayed, unvalidated jump or cancel
+    // an in-progress user navigation. It can retry against the settled view.
+    if (navigationLock.current && guard) return false
     navigationIntent.current++
     if (navigationLock.current) {
       pendingJump.current = { page, options: jumpOptions, remember }
@@ -161,18 +178,20 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
     setNavigating(true)
     let completed = false
     try {
+      guard?.validate()
       const current = state.current
       const geometry = current.snapshot?.document.pages[page - 1]
       if (!geometry) throw new Error(latest.current.t('reader.invalidDestination'))
       const safeTop = current.scrollRoot ? readingSafeTop(current.scrollRoot.clientHeight) : 0
       const target: NavigationPosition = { ...capture(), page, x: geometry.cropBox[0], y: geometry.cropBox[3],
         viewportAnchor: { x: 0, y: current.scrollRoot ? safeTop / current.scrollRoot.clientHeight : 0 }, ...jumpOptions }
-      const signal = AbortSignal.any([tabSignal, controller.signal])
+      const signal = AbortSignal.any([tabSignal, controller.signal, ...(guard ? [guard.signal] : [])])
+      const apply = (position: NavigationPosition, operationSignal: AbortSignal) => applyPosition(position, operationSignal, guard?.validate)
       if (remember) {
-        const result = await history.current.jump(target, { capture, apply: applyPosition }, signal)
+        const result = await history.current.jump(target, { capture, apply }, signal)
         completed = (result.status === 'changed' || result.status === 'noop') && !signal.aborted
       } else {
-        await applyPosition(target, signal)
+        await apply(target, signal)
         completed = !signal.aborted
       }
       if (completed) { navigationCompleted.current++; setHistoryRevision(n => n + 1) }

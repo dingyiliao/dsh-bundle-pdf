@@ -5,6 +5,7 @@ import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { PdfEvidenceEntry } from '../../../src/client/toolview/pdf-evidence-model.ts'
 import { createPdfEvidenceNavigation, type EvidenceRevalidationRequest, type RevalidateEvidence,
   type VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
+import type { TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`
 const pageText = 'prefix: relevant passage: suffix'
@@ -259,4 +260,30 @@ test('failed or late path hashing cannot activate a Reader lease', async () => {
   await nextTurn()
   assert.equal(delayed.getRevision(), afterRegister + 1)
   assert.equal(delayed.canNavigate('session-1', evidence), false)
+})
+
+test('a historical tool card uses Host-revalidated exact geometry and never falls back to a page-only jump', async () => {
+  const f = fixture()
+  const target: TextNavigationTarget = { kind: 'text', refId: 'revalidated-ref', revision: f.snapshot.revision,
+    sourceDigest: f.snapshot.reader.bytesHash, pageTextDigest: hash(pageText), startUtf16: offset,
+    endUtf16: offset + excerpt.length, textSha256: hash(excerpt), rectPdf: [20, 300, 200, 310],
+    quadPoints: [20, 310, 200, 310, 20, 300, 200, 300] }
+  let exact = 0
+  const navigation = createPdfEvidenceNavigation(async (...args) => ({ ...await approve(f.snapshot)(...args), target }), hashText)
+  f.reader.navigateTarget = async (page, received, signal) => {
+    assert.equal(page, f.evidence.page)
+    assert.deepEqual(received, target)
+    assert.equal(signal.aborted, false)
+    exact++; return 'opened'
+  }
+  navigation.register(f.reader)
+  await nextTurn()
+  assert.equal(await navigation.navigate('session-1', f.evidence, new AbortController().signal), 'opened')
+  assert.equal(exact, 1)
+  assert.deepEqual(f.jumps, [])
+  f.reader.navigateTarget = async () => 'stale'
+  assert.equal(await navigation.navigate('session-1', f.evidence, new AbortController().signal), 'stale')
+  delete f.reader.navigateTarget
+  assert.equal(await navigation.navigate('session-1', f.evidence, new AbortController().signal), 'unavailable')
+  assert.deepEqual(f.jumps, [], 'unavailable exact positioning must not silently degrade to the wrong location')
 })

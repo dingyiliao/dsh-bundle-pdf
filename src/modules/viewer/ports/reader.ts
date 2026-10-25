@@ -1,5 +1,6 @@
 import type { PromptContentPart } from '../../explanation/index.js'
 import type { PdfRect } from '../../../core/pdf-types.js'
+import type { AgentNavigationRequest } from '../../../contracts/navigation.js'
 
 /** The DSH document slot provides this lease; Viewer needs no Slot runtime. */
 export interface ReaderContentLease {
@@ -17,11 +18,12 @@ export type PdfReadingContextUpdate =
 export type ReaderContextReporter = (update: PdfReadingContextUpdate) => Promise<void>
 export interface PdfAgentNavigationApi {
   wait(context: { sessionId: string; tabId: string; leaseId: string; documentId: string;
-    contentVersion: string }, signal: AbortSignal): Promise<{
-    requestId: string; page: number; documentId: string; contentVersion: string
-  } | null>
+    contentVersion: string }, signal: AbortSignal): Promise<AgentNavigationRequest | null>
+  watchRequest(context: { sessionId: string; tabId: string; leaseId: string; documentId: string;
+    contentVersion: string; requestId: string }, signal: AbortSignal): Promise<{ active: boolean }>
   complete(context: { sessionId: string; tabId: string; leaseId: string; documentId: string;
-    contentVersion: string; requestId: string; status: 'opened' | 'stale' | 'unavailable' },
+    contentVersion: string; requestId: string; status: 'opened' | 'stale' | 'unavailable';
+    targetRevision?: number; sourceDigest?: string },
   signal: AbortSignal): Promise<void>
 }
 export type ReaderPromptExplanation = (content: string | readonly PromptContentPart[], signal: AbortSignal) => Promise<void>

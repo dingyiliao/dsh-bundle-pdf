@@ -3,14 +3,9 @@ import { requestEnvelopeSchema } from '../../../contracts/rpc/index.js'
 class InfoRequestTooLarge extends Error {}
 
 /** The settings bootstrap is connection-authenticated, but has no resource session. */
-export function createPdfInfoRoute(read: () => {
-  namespace: string
-  settingsNamespace: string
-  settings: unknown
-  translationEngines: unknown
-}) {
+export function createPdfInfoRoute(read: (payload: unknown, signal: AbortSignal) => unknown | Promise<unknown>, method = 'pdf.info') {
   return {
-    path: '/api/pdf.info', methods: ['POST'] as const, requestBody: 'streaming' as const,
+    path: `/api/${method}`, methods: ['POST'] as const, requestBody: 'streaming' as const,
     async fetch(request: Request): Promise<Response> {
       const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
       const type = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
@@ -23,12 +18,18 @@ export function createPdfInfoRoute(read: () => {
       }
       // The V1 bootstrap request intentionally has no payload, unlike resource RPCs.
       const parsed = requestEnvelopeSchema.partial({ payload: true }).safeParse(input)
-      if (!parsed.success || parsed.data.method !== 'pdf.info') {
+      if (!parsed.success || parsed.data.method !== method) {
         return new Response('Invalid RPC', { status: 400, headers })
       }
-      return Response.json({ type: 'server-response', rpcId: parsed.data.rpcId,
-        result: { ok: true, value: read() },
-      }, { headers })
+      try {
+        return Response.json({ type: 'server-response', rpcId: parsed.data.rpcId,
+          result: { ok: true, value: await read(parsed.data.payload, request.signal) },
+        }, { headers })
+      } catch {
+        return Response.json({ type: 'server-response', rpcId: parsed.data.rpcId,
+          result: { ok: false, error: { code: 'pdf/catalog-unavailable', message: 'Engine catalog request failed.' } },
+        }, { headers, status: request.signal.aborted ? 499 : 200 })
+      }
     },
   }
 }

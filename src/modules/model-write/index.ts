@@ -1,12 +1,12 @@
 import { z } from 'zod'
 import { evidenceSha256 } from '../evidence/index.js'
-import type { AgentPageReadPort } from '../evidence/index.js'
+import type { AgentPageReadPort, TextReferenceResolverPort } from '../evidence/index.js'
 import { annotationOverlaps } from './annotation-overlap.js'
 import { buildAnnotationPlans } from './annotation-plan.js'
 import { buildSaveReview } from './save-review.js'
 import { outlineOperationSchema } from '../../contracts/rpc/requests.js'
 import { projectOutlineOperations } from '../outlines/index.js'
-import { formFieldId } from '../forms/index.js'
+import { formFieldId, formConditionSchema, checkFormConditions, formChoiceGroupSchema, checkFormChoiceGroups } from '../forms/index.js'
 import type { PdfAnnotation, PdfColor, PdfOutlineOperation, PdfWorkingCopyOperation } from '../../core/pdf-types.js'
 import { projectFormOperations, type HostWorkspaceSnapshot, type WorkingCopyAgent } from '../working-copy/index.js'
 
@@ -46,6 +46,8 @@ export const modelOutlineEditSchema = z.object({ documentId, expectedRevision: r
 }).strict()
 export type ModelOutlineEditInput = z.infer<typeof modelOutlineEditSchema>
 export const modelFillFormSchema = z.object({ documentId, expectedRevision: revision,
+  conditions: z.array(formConditionSchema).max(100).optional(),
+  choiceGroups: z.array(formChoiceGroupSchema).max(50).optional(),
   fields: z.array(z.object({ fieldId: z.string().min(1).max(2048),
     value: z.union([z.string().max(8000), z.boolean(), z.array(z.string().max(2048)).max(1000)]),
   }).strict()).min(1).max(100),
@@ -87,7 +89,8 @@ function editableAnnotation(snapshot: HostWorkspaceSnapshot, id: string): PdfAnn
 }
 
 /** Model edits join the same durable, undoable working copy used by the Reader. */
-export function createModelWriteService(workspaces: ModelWritePort, pages?: AgentPageReadPort) {
+export function createModelWriteService(workspaces: ModelWritePort, pages?: AgentPageReadPort,
+  references?: TextReferenceResolverPort) {
   let disposed = false
   const assertOpen = () => { if (disposed) fail('pdf/write-unavailable', 'PDF model-write service has been disposed') }
 
@@ -119,7 +122,11 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     const input = modelAnnotationSchema.parse(raw)
     const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
     checkRevision(snapshot, input.expectedRevision)
-    const plans = await buildAnnotationPlans(snapshot, input, sessionId, pages, signal)
+    const plans = await buildAnnotationPlans(snapshot, input, sessionId, pages, signal, references,
+      async (owner, source, sourceSignal) => ({ path: source.path,
+        digest: await currentSource(owner, source, agent, sourceSignal) }))
+    assertOpen()
+    signal.throwIfAborted()
     const resolved = plans.map(plan => {
       const overlaps = annotationOverlaps(plan.operation.annotation, snapshot.document.annotations)
       const partial = overlaps.filter(item => item.kind === 'partial')
@@ -158,12 +165,13 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       annotationIds: resolved.map(item => item.annotationId),
       resolvedTarget: { page: first.operation.annotation.page, rectPdf: first.operation.annotation.rect,
         ...(input.target.kind === 'pdf-text' ? { quote: input.target.quote } : {}),
+        ...(input.target.kind === 'reference' ? { refId: input.target.refId } : {}),
         ...(input.target.kind === 'pdf-text-range' ? { start: input.target.start, end: input.target.end } : {}) },
       coverage: { complete: true as const, totalChars: resolved.reduce((sum, item) => sum + (item.covered?.text.length ?? 0), 0),
         pages: resolved.map(item => ({ page: item.operation.annotation.page,
           annotationId: item.annotationId, action: item.action, rectPdf: item.operation.annotation.rect,
           ...(item.covered ? { startUtf16: item.covered.startUtf16, endUtf16: item.covered.endUtf16,
-            text: item.covered.text } : {}) })) },
+            text: item.covered.text, ...(item.covered.refId ? { refId: item.covered.refId } : {}) } : {}) })) },
       revision: value.revision, dirty: value.dirty, canUndo: value.canUndo, savedToFile: false as const }
   }
 
@@ -227,15 +235,34 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
     checkRevision(snapshot, input.expectedRevision)
     const operations = input.fields.map(({ fieldId, value }) => ({ type: 'set-field' as const, fieldId, value }))
-    // The same pure validation and transaction are used by Reader widgets.
-    // A bad field rejects the whole batch, with no partial edits or file writes.
-    projectFormOperations(snapshot.document, operations)
+    const projected = projectFormOperations(snapshot.document, operations, { requireVisible: true })
+    const conditionReview = input.conditions?.length ? checkFormConditions(snapshot.document, projected,
+      new Set(input.fields.map(field => field.fieldId)), input.conditions) : undefined
+    const choiceReview = input.choiceGroups?.length ? checkFormChoiceGroups(projected, input.choiceGroups) : undefined
     const fields = new Map(snapshot.document.formFields!.map(field => [formFieldId(field), field]))
-    if (input.fields.some(field => !fields.get(field.fieldId)!.widgets.length)) {
-      fail('pdf/form-field-not-visible', 'A requested field has no visible controls; inspect its page before filling')
+    const nextFields = new Map(projected.formFields!.map(field => [formFieldId(field), field]))
+    const changed = operations.filter(operation => JSON.stringify(fields.get(operation.fieldId)!.value)
+      !== JSON.stringify(nextFields.get(operation.fieldId)!.value))
+    let value = snapshot
+    if (changed.length) value = await applyDraft(sessionId, snapshot, input.expectedRevision, changed, agent, signal)
+    else {
+      await currentSource(sessionId, snapshot, agent, signal)
+      const latest = workspaces.readSnapshot(sessionId, input.documentId)
+      if (latest.revision !== snapshot.revision || latest.contentVersion !== snapshot.contentVersion) {
+        fail('pdf/stale-revision', 'The PDF changed while checking unchanged fields; read its status again')
+      }
     }
-    const value = await applyDraft(sessionId, snapshot, input.expectedRevision, operations, agent, signal)
-    return { status: 'updated' as const, documentId: value.id, revision: value.revision,
+    const updatedFieldIds = changed.map(operation => operation.fieldId)
+    const reviewIds = new Set([...input.fields.map(field => field.fieldId),
+      ...(input.conditions?.flatMap(rule => [...rule.fieldIds, rule.when.fieldId]) ?? []),
+      ...(input.choiceGroups?.flatMap(group => group.fieldIds) ?? [])])
+    const verificationPages = [...new Set(snapshot.document.formFields!.filter(field => reviewIds.has(formFieldId(field)))
+      .flatMap(field => field.widgets.map(widget => widget.page)))].sort((a, b) => a - b)
+    return { status: changed.length ? 'updated' as const : 'no_changes' as const,
+      documentId: value.id, revision: value.revision, appliedCount: changed.length, updatedFieldIds,
+      ...(conditionReview ? { conditionReview } : {}),
+      ...(choiceReview ? { choiceReview } : {}), verificationPages,
+      unchangedFieldIds: input.fields.filter(field => !updatedFieldIds.includes(field.fieldId)).map(field => field.fieldId),
       fieldIds: input.fields.map(field => field.fieldId), dirty: value.dirty, canUndo: value.canUndo,
       savedToFile: false as const }
   }

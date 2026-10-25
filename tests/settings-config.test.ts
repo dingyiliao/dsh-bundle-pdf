@@ -8,6 +8,24 @@ import z from '@deepseek-ai/schemastery'
 
 const validate = Config as unknown as (value: Record<string, unknown>) => Record<string, { get(): unknown }>
 
+test('Host settings discard only removed form-engine configuration and preserve active engine values', () => {
+  const active = {
+    ocr: { 'fixture.ocr': { language: 'auto', enabled: true } },
+    image: { 'fixture.vision': { model: 'fixture-model' } },
+    translation: { 'fixture.translation': { timeout: 30000 } },
+  }
+  const saved = { ...active, form: { 'fixture.forms': { model: 'retired-model' } } }
+  const configured = validate({ engineConfigurations: saved })
+  assert.deepEqual(readConfig(configured as unknown as HostConfig).engineConfigurations, active)
+  assert.deepEqual(configured.engineConfigurations.get(), saved, 'reading does not mutate the stored configuration')
+  assert.throws(() => readConfig(validate({ engineConfigurations: {
+    ...saved, unknown: { 'fixture.engine': {} },
+  } }) as unknown as HostConfig), /Unrecognized key/)
+  assert.throws(() => readConfig(validate({ engineConfigurations: {
+    ...saved, ocr: { 'fixture.ocr': { language: 'x'.repeat(8193) } },
+  } }) as unknown as HostConfig), /8192/)
+})
+
 test('PDF settings expose only the supported translation targets and no source/default-color fields', () => {
   const defaults = validate({})
   assert.equal(defaults.translationEngine.get(), 'dsh-model')

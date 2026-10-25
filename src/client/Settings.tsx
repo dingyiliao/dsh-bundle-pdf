@@ -3,6 +3,9 @@ import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSn
 import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
 import { defaultExplanationPromptTemplate, explanationTemplateIssue,
   MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.js'
+import { engineBinding, validateEngineConfiguration, type EngineCatalogSnapshot, type EngineConfigurations,
+  type EngineKind, type EngineDescriptor, type EngineJson } from '../modules/engines/index.js'
+import { EngineConfigurationFields } from './EngineConfigurationFields.js'
 
 // `mode` was removed from DSH's snapshot. Keep only the stable public fields so
 // the editor works with both older and newer Host connections.
@@ -16,38 +19,45 @@ export interface SettingsProps {
   form: ConfigForm
   t: (key: string) => string
   translationEngines: readonly { id: string; label: string }[]
+  engineCatalog?: EngineCatalogSnapshot
 }
 
 export const settingsLocales = {
   zh: {
     'settings.title': 'PDF',
-    'settings.description': '配置选中文字翻译、解释模式和阅读跳转。修改后手动保存。',
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
     'settings.readOnly': '当前设置为只读。',
-    'settings.ocr': 'OCR',
-    'settings.ocrUnavailable': '阅读器会向 Host 查询当前会话模型和 OCR 后端的能力，并据此启用识别入口。',
-    'settings.translation': '翻译',
+    'settings.engines': 'AI 引擎',
+    'settings.enginesHelp': '按需调用所选引擎；模型或远程引擎会接收待处理的文字或图片。',
+    'settings.ocrEngine': 'OCR 引擎',
+    'settings.imageEngine': '图像理解引擎',
+    'settings.imageHelp': '理解图片内容；解释模式的最终回答仍由当前会话模型完成。',
+    'settings.engineConfigurations': '引擎配置',
+    'settings.engineConfigInvalid': '请检查所选引擎的配置。',
+    'settings.engineReference': '填写此引擎插件管理的凭据引用，不要输入 API key 或其他密钥。',
+    'settings.engineLocal': '本地',
+    'settings.engineRemote': '模型 / 远程',
+    'settings.engineMissing': '引擎未加载，已保留选择，不会自动切换。',
+    'settings.invalidEngine': '请选择已安装的引擎。',
+    'settings.ocrHelp': '从图片或扫描页提取文字。',
     'settings.navigation': '阅读与跳转',
     'settings.unknownEngine': '当前引擎未加载',
     'settings.translationEngine': '翻译引擎',
     'settings.translationDshModel': 'DSH 模型 · 文字翻译',
-    'settings.translationHelp': '仅在点击翻译时，将选中文字提交给所选引擎。翻译请求和结果不会加入会话历史。',
+    'settings.translationHelp': '翻译选中文字，不加入会话历史。',
     'settings.translationTimeoutMs': '翻译超时（毫秒）',
-    'settings.translationTimeoutHelp': '单次翻译请求的最长等待时间，1000–600000 毫秒。',
+    'settings.translationTimeoutHelp': '最长等待时间：1000–600000 毫秒。',
     'settings.historyCapacity': '跳转历史容量',
     'settings.historyHelp': '每个 PDF 标签最多保留多少个可返回的位置。',
     'settings.explanationPrompts': '解释模式提示词',
-    'settings.explanationPromptsHelp': '只填写想调整的部分；留空使用内置提示。选段、问题、图片与来源信息由插件自动组织，无需写占位符。',
+    'settings.explanationPromptsHelp': '留空使用默认提示词。选段、问题和来源会自动附上，无需占位符。',
     'settings.explanationGeneralInstruction': '总体要求',
-    'settings.explanationGeneralHelp': '说明希望模型如何解释这一组材料；留空使用内置的解释要求。',
-    'settings.explanationGeneralDefault': '默认：解释概念、上下文与选段关系，逐一回答问题；缺少信息时先查证。',
+    'settings.explanationGeneralDefault': '例如：先解释概念，再逐项回答问题。',
     'settings.explanationTextInstruction': '文字选段',
-    'settings.explanationTextHelp': '对每段选中文字额外提出要求；留空时直接根据选段与问题作答。',
-    'settings.explanationTextDefault': '可选：例如解释公式推导，并指出前提条件。',
+    'settings.explanationTextDefault': '例如：解释公式推导，并指出前提条件。',
     'settings.explanationImageInstruction': '图片区域',
-    'settings.explanationImageHelp': '对每块框选图像额外提出要求；留空时直接根据区域与问题作答。',
-    'settings.explanationImageDefault': '可选：例如先描述图表元素，再解释它们之间的关系。',
+    'settings.explanationImageDefault': '例如：先描述图表元素，再解释它们的关系。',
     'settings.explanationPromptTemplate': '旧版完整模板',
     'settings.legacyPromptNotice': '旧版完整模板仍在生效。可以保留它；切换后将使用下方分项提示词，空白项采用默认行为。',
     'settings.useSplitPrompts': '改用分项提示词',
@@ -75,33 +85,39 @@ export const settingsLocales = {
   },
   en: {
     'settings.title': 'PDF',
-    'settings.description': 'Configure selected-text translation, explanation mode and reading navigation. Save changes manually.',
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
     'settings.readOnly': 'These settings are read-only.',
-    'settings.ocr': 'OCR',
-    'settings.ocrUnavailable': 'The reader asks the Host whether this session’s model and OCR backend can recognize text, then enables the action accordingly.',
-    'settings.translation': 'Translation',
+    'settings.engines': 'AI engines',
+    'settings.enginesHelp': 'Engines run on demand. Model or remote engines receive the text or images being processed.',
+    'settings.ocrEngine': 'OCR engine',
+    'settings.imageEngine': 'Image understanding engine',
+    'settings.imageHelp': 'Interprets images. The current chat model still provides the final explanation.',
+    'settings.engineConfigurations': 'Engine configuration',
+    'settings.engineConfigInvalid': 'Check the selected engine configuration.',
+    'settings.engineReference': 'Enter a credential reference managed by this engine plugin, not an API key or another secret.',
+    'settings.engineLocal': 'Local',
+    'settings.engineRemote': 'Model / remote',
+    'settings.engineMissing': 'Engine not loaded. Your choice is retained; no automatic fallback occurs.',
+    'settings.invalidEngine': 'Choose an installed engine.',
+    'settings.ocrHelp': 'Extracts text from images or scanned pages.',
     'settings.navigation': 'Reading and navigation',
     'settings.unknownEngine': 'Current engine is not loaded',
     'settings.translationEngine': 'Translation engine',
     'settings.translationDshModel': 'DSH model · Text translation',
-    'settings.translationHelp': 'Selected text is sent to the chosen engine only when you click Translate. Requests and results are not added to conversation history.',
+    'settings.translationHelp': 'Translates selected text without adding it to conversation history.',
     'settings.translationTimeoutMs': 'Translation timeout (milliseconds)',
-    'settings.translationTimeoutHelp': 'Maximum waiting time for one translation request, from 1000 to 600000 milliseconds.',
+    'settings.translationTimeoutHelp': 'Maximum wait: 1000–600000 milliseconds.',
     'settings.historyCapacity': 'Navigation history capacity',
     'settings.historyHelp': 'Maximum number of return locations retained for each PDF tab.',
     'settings.explanationPrompts': 'Explanation prompts',
-    'settings.explanationPromptsHelp': 'Edit only what you need; blank fields use the built-in behavior. The plugin assembles excerpts, questions, images and sources automatically—no placeholders needed.',
+    'settings.explanationPromptsHelp': 'Leave blank to use defaults. Excerpts, questions and sources are attached automatically—no placeholders needed.',
     'settings.explanationGeneralInstruction': 'Overall guidance',
-    'settings.explanationGeneralHelp': 'How the model should explain this set of material. Leave blank for the built-in guidance.',
-    'settings.explanationGeneralDefault': 'Default: explain concepts, context and relationships; answer each question and verify missing context.',
+    'settings.explanationGeneralDefault': 'For example: explain the concepts, then answer each question.',
     'settings.explanationTextInstruction': 'Text passages',
-    'settings.explanationTextHelp': 'Optional guidance for each selected passage. Blank uses its passage and question directly.',
-    'settings.explanationTextDefault': 'Optional: for example, walk through a derivation and name its assumptions.',
+    'settings.explanationTextDefault': 'For example: walk through a derivation and name its assumptions.',
     'settings.explanationImageInstruction': 'Image regions',
-    'settings.explanationImageHelp': 'Optional guidance for each selected image region. Blank uses its region and question directly.',
-    'settings.explanationImageDefault': 'Optional: for example, describe the chart elements before interpreting them.',
+    'settings.explanationImageDefault': 'For example: describe the chart elements before interpreting them.',
     'settings.explanationPromptTemplate': 'Legacy full template',
     'settings.legacyPromptNotice': 'A legacy full template is still active. Keep it, or switch to the fields below; blank fields use built-in behavior.',
     'settings.useSplitPrompts': 'Use separate prompts',
@@ -130,15 +146,20 @@ export const settingsLocales = {
 } as const
 
 const promptFields = ['explanationGeneralInstruction', 'explanationTextInstruction', 'explanationImageInstruction'] as const
-const fields = ['translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
+const fields = ['ocrEngine', 'imageEngine', 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
   'explanationPromptTemplate'] as const
 type Field = typeof fields[number]
+const fieldHints: Partial<Record<Field, keyof typeof settingsLocales.zh>> = {
+  ocrEngine: 'settings.ocrHelp', imageEngine: 'settings.imageHelp', translationEngine: 'settings.translationHelp',
+  translationTimeoutMs: 'settings.translationTimeoutHelp', historyCapacity: 'settings.historyHelp',
+}
 type Draft = Record<Field, string>
 interface Editor { source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[] }
 function toDraft(settings: PdfSettings): Draft {
   const complete = { ...defaultSettings, ...settings }
   complete.translationEngine = effectiveTranslationEngine(complete.translationEngine)
-  return Object.fromEntries(fields.map(field => [field, String(complete[field])])) as Draft
+  return Object.fromEntries(fields.map(field => [field, field === 'engineConfigurations'
+    ? JSON.stringify(complete.engineConfigurations ?? {}) : String(complete[field])])) as Draft
 }
 function isDirty(editor: Editor | null): boolean {
   return editor !== null && (editor.unsets.length > 0 || fields.some(field => editor.source[field] !== editor.draft[field]))
@@ -150,7 +171,7 @@ function acceptedEditor(snapshot: ConfigFormSnapshot): Editor | null {
 }
 
 /** Settings card with an explicit save boundary and revision-fenced local edits. */
-export function Settings({ form, t, translationEngines }: SettingsProps) {
+export function Settings({ form, t, translationEngines, engineCatalog }: SettingsProps) {
   const tr = useCallback((key: keyof typeof settingsLocales.zh): string => {
     const value = t(key)
     return value && value !== key ? value : settingsLocales.zh[key]
@@ -193,11 +214,14 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
   }, [dirty])
 
   const disabled = saving || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
-  const availableTranslations = translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
-      id: engine.id, label: engine.id === 'dsh-model' ? tr('settings.translationDshModel') : engine.label,
-    })).filter((engine, index, all) => all.findIndex(other => other.id === engine.id) === index)
   const validation: Partial<Record<Field, string>> = {}
+  const configurations: EngineConfigurations = editor ? JSON.parse(editor.draft.engineConfigurations) : {}
+  const descriptors = (kind: EngineKind): readonly EngineDescriptor[] => engineCatalog?.engines[kind]
+    ?? (kind === 'translation' ? translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
+      id: engine.id, name: engine.label, version: '1', execution: 'remote' as const,
+    })) : [])
   if (editor) {
+    const sourceConfigurations: EngineConfigurations = JSON.parse(editor.source.engineConfigurations)
     for (const field of ['translationTimeoutMs', 'historyCapacity'] as const) {
       const value = Number(editor.draft[field])
       if (!/^\d+$/.test(editor.draft[field]) || !Number.isSafeInteger(value) || value < 1) validation[field] = tr('settings.invalidNumber')
@@ -205,7 +229,17 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
         validation[field] = tr('settings.invalidTimeout')
       }
     }
-    if (!availableTranslations.some(engine => engine.id === editor.draft.translationEngine)) validation.translationEngine = tr('settings.invalidTranslationEngine')
+    for (const [kind, field] of [['ocr', 'ocrEngine'], ['image', 'imageEngine'], ['translation', 'translationEngine']] as const) {
+      const touched = editor.draft[field] !== editor.source[field]
+        || JSON.stringify(configurations[kind]?.[editor.draft[field]])
+          !== JSON.stringify(sourceConfigurations[kind]?.[editor.source[field]])
+      const descriptor = descriptors(kind).find(engine => engine.id === editor.draft[field])
+      if (!descriptor && touched) validation[field] = tr('settings.invalidEngine')
+      if (descriptor && touched) {
+        try { validateEngineConfiguration(descriptor, engineBinding(kind, descriptor.id, configurations).config) }
+        catch { validation.engineConfigurations = tr('settings.engineConfigInvalid') }
+      }
+    }
     for (const field of promptFields) {
       if (editor.draft[field].length > MAX_EXPLANATION_INSTRUCTION_LENGTH) {
         validation[field] = tr('settings.invalidInstruction')
@@ -268,7 +302,8 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
       editor.unsets.includes(field) ? { op: 'unset' as const, path: [field] } : {
         op: 'set' as const, path: [field],
         value: field === 'translationTimeoutMs' || field === 'historyCapacity'
-          ? Number(editor.draft[field]) : editor.draft[field].trim(),
+          ? Number(editor.draft[field]) : field === 'engineConfigurations'
+            ? JSON.parse(editor.draft[field]) : editor.draft[field].trim(),
       })
     const owner = form
     setSaving(true); setError(''); setNotice('')
@@ -289,23 +324,50 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
     }
   }
 
-  const fieldRow = (field: Field, hint: keyof typeof settingsLocales.zh, control: React.ReactNode) => <div key={field} className="dsh-pdf-settings-field">
-    <label htmlFor={`${id}-${field}`} className="dsh-pdf-settings-label">{tr(`settings.${field}`)}</label>
+  const fieldRow = (field: Field, control: React.ReactNode, status?: React.ReactNode) => <div key={field} className="dsh-pdf-settings-field">
+    <div className="dsh-pdf-settings-field-heading">
+      <label htmlFor={`${id}-${field}`} className="dsh-pdf-settings-label">{tr(`settings.${field}`)}</label>
+      {status}
+    </div>
     {control}
-    <small id={`${id}-${field}-hint`} className="dsh-pdf-settings-hint">{tr(hint)}</small>
+    {fieldHints[field] && <small id={`${id}-${field}-hint`} className="dsh-pdf-settings-hint">{tr(fieldHints[field])}</small>}
     {submitted && validation[field] && <small id={`${id}-${field}-error`} className="dsh-pdf-settings-error" role="alert">{validation[field]}</small>}
   </div>
   const attributes = (field: Field) => ({
     id: `${id}-${field}`, disabled,
     'aria-invalid': submitted && Boolean(validation[field]),
-    'aria-describedby': `${id}-${field}-hint${submitted && validation[field] ? ` ${id}-${field}-error` : ''}`,
+    'aria-describedby': `${id}-${fieldHints[field] ? `${field}-hint` : 'prompts-hint'}${submitted && validation[field] ? ` ${id}-${field}-error` : ''}`,
     className: 'dsh-pdf-settings-control',
   })
+
+  const engineFields = (kind: EngineKind, field: 'ocrEngine' | 'imageEngine' | 'translationEngine') => {
+    if (!editor) return null
+    const engines = descriptors(kind).filter(engine => engine.execution !== 'disabled')
+    const selected = engines.find(engine => engine.id === editor.draft[field])
+    return <div className="dsh-pdf-settings-engine">
+      {fieldRow(field, <select {...attributes(field)} value={editor.draft[field]}
+        onChange={event => edit(field, event.target.value)}>
+        {!selected && <option value={editor.draft[field]} disabled>{tr('settings.unknownEngine')}: {editor.draft[field]}</option>}
+        {engines.map(engine => <option key={engine.id} value={engine.id}>{engine.id === 'dsh-model'
+          ? tr('settings.translationDshModel') : engine.name}</option>)}
+      </select>, selected && <small className="dsh-pdf-settings-engine-kind">{tr(selected.execution === 'local' ? 'settings.engineLocal' : 'settings.engineRemote')}</small>)}
+      {!selected ? <p className="dsh-pdf-settings-hint" role="status">{tr('settings.engineMissing')}</p>
+        : <div className="dsh-pdf-settings-engine-options">
+          <EngineConfigurationFields descriptor={selected} config={configurations[kind]?.[selected.id] ?? {}}
+            prefix={`${id}-${kind}`} disabled={disabled} referenceHint={tr('settings.engineReference')}
+            change={(key: string, value: EngineJson | undefined) => {
+              const next = structuredClone(configurations), config = { ...next[kind]?.[selected.id] }
+              if (value === undefined) delete config[key]; else config[key] = value
+              next[kind] = { ...next[kind], [selected.id]: config }
+              edit('engineConfigurations', JSON.stringify(next))
+            }} />
+        </div>}
+    </div>
+  }
 
   return <section aria-labelledby={`${id}-title`} className="dsh-pdf-settings">
     <header className="dsh-pdf-settings-header">
       <h2 id={`${id}-title`}>{tr('settings.title')}</h2>
-      <p>{tr('settings.description')}</p>
     </header>
     {snapshot.status === 'loading' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.loading')}</p>}
     {snapshot.status === 'unavailable' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.unavailable')}</p>}
@@ -319,32 +381,28 @@ export function Settings({ form, t, translationEngines }: SettingsProps) {
         <div className="dsh-pdf-settings-notice-actions"><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={keepChanges}>{tr('settings.keep')}</button></div>
         <small className="dsh-pdf-settings-hint">{tr('settings.keepHint')}</small>
       </div>}
-      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-ocr-title`}>
-        <h3 id={`${id}-ocr-title`}>{tr('settings.ocr')}</h3>
-        <p className="dsh-pdf-settings-hint">{tr('settings.ocrUnavailable')}</p>
-      </section>
-      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-translation-title`}>
-        <h3 id={`${id}-translation-title`}>{tr('settings.translation')}</h3>
-        {fieldRow('translationEngine', 'settings.translationHelp', <select {...attributes('translationEngine')} value={editor.draft.translationEngine} onChange={event => edit('translationEngine', event.target.value)}>
-          {!availableTranslations.some(engine => engine.id === editor.draft.translationEngine) && <option value={editor.draft.translationEngine} disabled>{tr('settings.unknownEngine')}: {editor.draft.translationEngine}</option>}
-          {availableTranslations.map(engine => <option key={engine.id} value={engine.id}>{engine.label}</option>)}
-        </select>)}
-        {fieldRow('translationTimeoutMs', 'settings.translationTimeoutHelp', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
+      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-engines-title`}>
+        <h3 id={`${id}-engines-title`}>{tr('settings.engines')}</h3>
+        <p className="dsh-pdf-settings-hint">{tr('settings.enginesHelp')}</p>
+        {engineFields('ocr', 'ocrEngine')}
+        {engineFields('image', 'imageEngine')}
+        {engineFields('translation', 'translationEngine')}
+        {submitted && validation.engineConfigurations && <p role="alert" className="dsh-pdf-settings-error">{validation.engineConfigurations}</p>}
+        {fieldRow('translationTimeoutMs', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
       </section>
       <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-navigation-title`}>
         <h3 id={`${id}-navigation-title`}>{tr('settings.navigation')}</h3>
-        {fieldRow('historyCapacity', 'settings.historyHelp', <input {...attributes('historyCapacity')} type="number" min={1} step={1} value={editor.draft.historyCapacity} onChange={event => edit('historyCapacity', event.target.value)} />)}
+        {fieldRow('historyCapacity', <input {...attributes('historyCapacity')} type="number" min={1} step={1} value={editor.draft.historyCapacity} onChange={event => edit('historyCapacity', event.target.value)} />)}
       </section>
       <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-prompts-title`}>
         <h3 id={`${id}-prompts-title`}>{tr('settings.explanationPrompts')}</h3>
-        <p className="dsh-pdf-settings-hint">{tr('settings.explanationPromptsHelp')}</p>
+        <p id={`${id}-prompts-hint`} className="dsh-pdf-settings-hint">{tr('settings.explanationPromptsHelp')}</p>
         {legacyPromptActive && <div className="dsh-pdf-settings-notice" role="status">
           <p>{tr('settings.legacyPromptNotice')}</p>
           <button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={useSplitPrompts}>{tr('settings.useSplitPrompts')}</button>
         </div>}
         {promptFields.map((field, index) => fieldRow(field,
-          (['settings.explanationGeneralHelp', 'settings.explanationTextHelp', 'settings.explanationImageHelp'] as const)[index],
-          <textarea {...attributes(field)} rows={index === 0 ? 4 : 3}
+          <textarea {...attributes(field)} rows={index === 0 ? 3 : 2}
             maxLength={MAX_EXPLANATION_INSTRUCTION_LENGTH}
             placeholder={tr((['settings.explanationGeneralDefault', 'settings.explanationTextDefault',
               'settings.explanationImageDefault'] as const)[index])}

@@ -12,14 +12,13 @@ export interface ReaderSidebarLayoutOptions {
 interface SidebarLayout {
   section: ReadingSidebarSection
   expanded: boolean
-  autoCollapsed: boolean
   narrow: boolean | null
 }
 
 const storageKey = (resourceAddress: string) => `dsh-pdf:sidebar-layout:v2:${resourceAddress}`
 
 function readLayout(resourceAddress: string): SidebarLayout {
-  const fallback: SidebarLayout = { section: 'annotations', expanded: true, autoCollapsed: false, narrow: null }
+  const fallback: SidebarLayout = { section: 'annotations', expanded: true, narrow: null }
   try {
     const raw = window.sessionStorage.getItem(storageKey(resourceAddress))
     if (!raw) return fallback
@@ -27,25 +26,25 @@ function readLayout(resourceAddress: string): SidebarLayout {
     if (!value || typeof value !== 'object') return fallback
     const layout = value as Partial<SidebarLayout>
     if (!readingSidebarSections.includes(layout.section as ReadingSidebarSection) || typeof layout.expanded !== 'boolean'
-      || typeof layout.autoCollapsed !== 'boolean'
       || (layout.narrow !== null && typeof layout.narrow !== 'boolean')) return fallback
-    return layout as SidebarLayout
+    // Retain each document's choice without carrying forward obsolete auto-restore flags.
+    return { section: layout.section as ReadingSidebarSection, expanded: layout.expanded, narrow: layout.narrow }
   } catch {
     return fallback
   }
 }
 
-/** Auto-collapse is a layout response, separate from the user's explicit sidebar choice. */
+/** A narrow pane may collapse the sidebar; only an explicit action opens it again. */
 export function useReaderSidebarLayout(options: ReaderSidebarLayoutOptions) {
   const { bodyRef, navigationLock, navigating, resourceAddress, visible } = options
   const [layout, setLayout] = useState(() => readLayout(resourceAddress))
   const layoutResource = useRef(resourceAddress)
 
   const changeExpanded = useCallback((next: boolean) => {
-    setLayout(current => ({ ...current, expanded: next, autoCollapsed: false }))
+    setLayout(current => ({ ...current, expanded: next }))
   }, [])
   const show = useCallback((next: ReadingSidebarSection) => {
-    setLayout(current => ({ ...current, section: next, expanded: true, autoCollapsed: false }))
+    setLayout(current => ({ ...current, section: next, expanded: true }))
   }, [])
 
   useEffect(() => {
@@ -74,8 +73,7 @@ export function useReaderSidebarLayout(options: ReaderSidebarLayoutOptions) {
       if (isNarrow && (body.querySelector('.dsh-pdf-sidebar-page-nav input:focus') || navigationLock.current)) return
       setLayout(current => {
         if (current.narrow === isNarrow) return current
-        if (isNarrow && current.expanded) return { ...current, narrow: true, expanded: false, autoCollapsed: true }
-        if (!isNarrow && current.autoCollapsed) return { ...current, narrow: false, expanded: true, autoCollapsed: false }
+        if (isNarrow && current.expanded) return { ...current, narrow: true, expanded: false }
         return { ...current, narrow: isNarrow }
       })
     }

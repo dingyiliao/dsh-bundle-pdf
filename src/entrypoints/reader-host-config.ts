@@ -2,8 +2,12 @@ import z from '@deepseek-ai/schemastery'
 import { defaultSettings, effectiveTranslationEngine, translationTargetLanguages, type PdfSettings } from '../shared/contracts.ts'
 import { explanationTemplatePattern, MAX_EXPLANATION_PROMPT_TEMPLATE_LENGTH,
   MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.ts'
+import { engineConfigurationsSchema } from '../modules/engines/index.js'
 
 export const Config = z.object({
+  ocrEngine: z.string().pattern(/\S/).default('session-llm').volatile(),
+  imageEngine: z.string().pattern(/\S/).default('session-vision').volatile(),
+  engineConfigurations: z.dict(z.dict(z.dict(z.union([z.string(), z.number(), z.boolean()])))).default({}).volatile(),
   ocrTimeoutMs: z.natural().min(1000).max(600000).default(defaultSettings.ocrTimeoutMs).volatile(),
   translationEngine: z.string().pattern(/\S/).default(defaultSettings.translationEngine).volatile(),
   translationTargetLanguage: z.string().pattern(new RegExp(`^(?:${translationTargetLanguages.join('|')})$`))
@@ -20,7 +24,14 @@ export const Config = z.object({
 export type HostConfig = ReturnType<typeof Config>
 
 export function readConfig(config: HostConfig): PdfSettings {
+  // Drop only the removed form-engine selection; all active engine kinds still
+  // pass the strict configuration schema and retain their saved values.
+  const engineConfigurations = { ...(config.engineConfigurations?.get() ?? {}) }
+  delete engineConfigurations.form
   return {
+    ocrEngine: config.ocrEngine?.get() ?? defaultSettings.ocrEngine,
+    imageEngine: config.imageEngine?.get() ?? defaultSettings.imageEngine,
+    engineConfigurations: engineConfigurationsSchema.parse(engineConfigurations),
     ocrTimeoutMs: config.ocrTimeoutMs.get(),
     translationEngine: effectiveTranslationEngine(config.translationEngine.get()),
     translationTargetLanguage: config.translationTargetLanguage.get(), translationTimeoutMs: config.translationTimeoutMs.get(),

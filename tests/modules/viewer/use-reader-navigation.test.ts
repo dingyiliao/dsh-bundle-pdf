@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NavigationHistory, type NavigationPosition } from '../../../src/navigation/index.ts'
 import type { PdfClientApi } from '../../../src/shared/contracts.ts'
 import { useReaderNavigation, type ReaderNavigationOptions } from '../../../src/modules/viewer/index.ts'
+import { navigateAgentRequest } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
+import { NativeViewport, setWindowLayout, buildPageLayout } from '../../../src/modules/viewer/index.ts'
+import type { NativeDocument, PageView } from '../../../src/modules/viewer/index.ts'
+import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
+import type { AgentNavigationRequest } from '../../../src/contracts/navigation.ts'
 
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
@@ -51,6 +57,118 @@ test('history return reports a failed page restore without popping the destinati
     tab.abort()
     await act(async () => root.unmount())
     dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
+})
+
+test('exact evidence jumps use the Reader history for cross-page and same-page Back and history-menu restores', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const root = createRoot(dom.document.getElementById('root')!)
+  const tab = new AbortController(), scroll = dom.document.createElement('div')
+  const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
+  const text = 'quote at the top; quote at the bottom'
+  const snapshot = { id: 'doc', revision: 4, contentVersion: 'v1', reader: { bytesHash: hash('bytes') },
+    document: { pageCount: 3, pages: [1, 2, 3].map(page => ({ page, cropBox: [10, 20, 410, 620], userUnit: 1, rotation: 0 })) } } as WorkspaceSnapshot
+  const document = { snapshot, text: async () => ({ items: [{ str: text }] }) } as unknown as NativeDocument
+  const state: ReaderNavigationOptions['state'] = { current: { snapshot, scrollRoot: scroll,
+    zoom: 1.5, fit: 'custom', size: { width: 500, height: 400 }, currentPage: 1 } }
+  Object.defineProperties(scroll, { clientWidth: { value: 500 }, clientHeight: { value: 400 },
+    scrollWidth: { get: () => Math.max(500, 400 * state.current.zoom) } })
+  scroll.getBoundingClientRect = () => ({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 } as DOMRect)
+  const views: ReaderNavigationOptions['views'] = { current: new Map() }
+  const layout = () => {
+    const pages = buildPageLayout(snapshot.document.pages, () => state.current.zoom, 0, 72)
+    setWindowLayout(scroll, pages)
+    views.current.clear()
+    for (const page of pages) {
+      const viewport = new NativeViewport(snapshot.document.pages[page.page - 1], page.scale)
+      const element = dom.document.createElement('div')
+      element.getBoundingClientRect = () => {
+        const left = (scroll.scrollWidth - page.width) / 2 - scroll.scrollLeft, top = page.top - scroll.scrollTop
+        return { left, top, right: left + page.width, bottom: top + page.height, width: page.width, height: page.height } as DOMRect
+      }
+      views.current.set(page.page, { element, viewport } as unknown as PageView)
+    }
+  }
+  layout(); scroll.scrollTop = 180; scroll.scrollLeft = 35
+  const history = new NavigationHistory({ capacity: 10 }), errors: unknown[] = []
+  let failAfterMove = false
+  const options: ReaderNavigationOptions = {
+    api: { positions: { async get() { return null }, async set() {} } } as unknown as PdfClientApi,
+    sessionId: 'session', tabSignal: tab.signal, contentRevision: 1, pdf: document, snapshot,
+    scrollRoot: scroll, currentPage: 1, historyCapacity: 10, lifetime: { history, ocrPages: new Map() }, state, views,
+    setCurrentPage: page => { state.current.currentPage = page; if (failAfterMove) state.current.snapshot = { ...snapshot, revision: 5 } },
+    setPageInput() {}, setZoom: zoom => { state.current.zoom = zoom; layout() }, setFit: fit => { state.current.fit = fit },
+    setPositionNotice() {}, onError: failure => errors.push(failure), t: key => key,
+  }
+  let navigation!: ReturnType<typeof useReaderNavigation>
+  const Harness = () => { navigation = useReaderNavigation(options); return null }
+  const request = (page: number, y: number, second = false): AgentNavigationRequest => ({
+    requestId: crypto.randomUUID(), documentId: 'doc', contentVersion: 'v1', page,
+    target: { kind: 'text', refId: 'ref', revision: 4, sourceDigest: hash('bytes'), pageTextDigest: hash(text),
+      startUtf16: second ? text.lastIndexOf('quote') : 0, endUtf16: (second ? text.lastIndexOf('quote') : 0) + 5,
+      textSha256: hash('quote'), rectPdf: [40, y - 10, 90, y], quadPoints: [40, y, 90, y, 40, y - 10, 90, y - 10] } })
+  const navigate = async (value: AgentNavigationRequest) => {
+    let result: unknown
+    await act(async () => { result = await navigateAgentRequest(value, tab.signal, {
+      current: () => ({ snapshot: state.current.snapshot, document, visible: true, ready: true, viewportHeight: 400 }),
+      subscribe: () => () => {}, jump: (...args) => navigation.jump(...args),
+    }) })
+    assert.equal(result, 'opened')
+  }
+  const back = async (depth?: number) => {
+    await act(async () => {
+      navigation.navigateHistory(depth, depth === undefined ? undefined : navigation.historySnapshot.revision)
+      while (navigation.navigationLock.current) await new Promise(resolve => setImmediate(resolve))
+    })
+  }
+  const samePosition = (actual: NavigationPosition, expected: NavigationPosition) => {
+    for (const key of ['page', 'fit', 'documentVersion'] as const) assert.equal(actual[key], expected[key])
+    for (const key of ['x', 'y', 'scale'] as const) assert.ok(Math.abs(actual[key] - expected[key]) < 0.001, key)
+  }
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await new Promise(resolve => setImmediate(resolve)) })
+    const original = navigation.capture()
+    await navigate(request(2, 500))
+    assert.equal(history.size, 1)
+    state.current.zoom = 1.8; layout()
+    const secondOrigin = navigation.capture()
+    await navigate(request(2, 220, true))
+    assert.equal(history.size, 2, 'different evidence positions on the same page must not collapse to a no-op')
+    await back()
+    samePosition(navigation.capture(), secondOrigin)
+    assert.equal(state.current.zoom, 1.8)
+    await back()
+    samePosition(navigation.capture(), original)
+    assert.equal(state.current.zoom, 1.5)
+    assert.equal(history.size, 0)
+    await navigate(request(2, 500))
+    await navigate(request(3, 220, true))
+    await back(1)
+    samePosition(navigation.capture(), original)
+    assert.equal(history.size, 0, 'history menu removes the selected destination and all newer entries only after arrival')
+    assert.deepEqual(errors, [])
+    const beforeFailure = navigation.capture()
+    failAfterMove = true
+    let failed: unknown
+    await act(async () => { failed = await navigateAgentRequest(request(2, 300), tab.signal, {
+      current: () => ({ snapshot: state.current.snapshot, document, visible: true, ready: true, viewportHeight: 400 }),
+      subscribe: () => () => {}, jump: (...args) => navigation.jump(...args),
+    }) })
+    assert.notEqual(failed, 'opened')
+    samePosition(navigation.capture(), beforeFailure)
+    assert.equal(history.size, 0, 'a failed post-layout revision check must roll back without adding a return entry')
+  } finally {
+    tab.abort(); await act(async () => root.unmount()); dom.close()
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)
       else Reflect.deleteProperty(globalThis, key)
