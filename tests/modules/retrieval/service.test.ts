@@ -46,6 +46,19 @@ function embedding() {
   return { provider, calls }
 }
 
+test('invalid embedding provider metadata fails before reading or indexing PDF content', async () => {
+  for (const invalid of [{ dimensions: 0 }, { dimensions: 1.5 }, { maxBatchSize: 0 }, { maxInputCharacters: 63 }]) {
+    const e = embedding()
+    const f = fixture({ provider: { ...e.provider, ...invalid } })
+    try {
+      await assert.rejects(f.service.search('session', baseInput), { code: 'pdf/retrieval-invalid-provider' })
+      assert.deepEqual(f.reads, [])
+      assert.deepEqual(e.calls, [])
+      assert.equal(f.stored.size, 0)
+    } finally { await f.service.dispose() }
+  }
+})
+
 test('incremental indexing publishes global scope ranking only when every page is indexed', async () => {
   const { service, reads } = fixture({ limits: { pagesPerStep: 1 } })
   const first = await service.search('session', baseInput)

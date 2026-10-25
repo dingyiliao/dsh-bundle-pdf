@@ -12,6 +12,36 @@ function metadata(overrides = {}) {
 function reply(values: object) { return new Response(JSON.stringify({ model_revision: LOCAL_QWEN3_REVISION, ...values }), { headers: { 'content-type': 'application/json' } }) }
 const code = (expected: string) => (error: unknown) => error instanceof EmbeddingError && error.code === expected
 
+test('endpoint configuration and direct engine inputs reject invalid limits before network access', async () => {
+  let calls = 0
+  const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async () => { calls++; throw new Error('unexpected request') }) as typeof fetch })
+  const invalidConfigurations: Parameters<typeof engine.describe>[0][] = [
+    { dimensions: 0 }, { maxBatchSize: 17 }, { maxInputCharacters: 1.5 }, { endpoint: 'not a URL' },
+  ]
+  for (const config of invalidConfigurations) {
+    assert.throws(() => engine.describe(config), code('invalid-request'))
+  }
+  for (const texts of [[], [' '], ['abc'], ['a', 'b']]) {
+    await assert.rejects(async () => engine.embed({ texts, purpose: 'document', signal: new AbortController().signal, timeoutMs: 1000 },
+      { dimensions: 2, maxBatchSize: 1, maxInputCharacters: 2 }), code('limit-exceeded'))
+  }
+  assert.equal(calls, 0)
+})
+
+test('availability verifies server metadata without transmitting document inputs', async () => {
+  const requests: string[] = []
+  const registry = new EmbeddingRegistry()
+  registry.register(createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {
+    requests.push(String(url))
+    assert.equal(init?.body, undefined)
+    return reply(metadata())
+  }) as typeof fetch }))
+  try {
+    assert.deepEqual(await registry.availability(binding), { status: 'available' })
+    assert.deepEqual(requests, ['http://127.0.0.1:8001/v1/models'])
+  } finally { registry.dispose() }
+})
+
 test('metadata-verified embeddings preserve API indices and distinguish query/document encoding', async () => {
   const requests: string[][] = []
   const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {

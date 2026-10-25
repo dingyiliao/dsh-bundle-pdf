@@ -395,7 +395,9 @@ it('shows a real selected-word translation and handles screenshot preview copy a
   let response: string = JSON.stringify({ recognized: true, pronunciation: '/ˈkʌvərɪdʒ/', meanings: [
     { partOfSpeech: 'noun', meaning: 'scope', example: 'Coverage is broad.', exampleTranslation: '覆盖范围很广。' },
   ] })
-  let responseDelayMs = 0
+  let responseGate: Promise<void> | undefined
+  let releaseResponse = () => {}
+  let pendingResponseSignal: AbortSignal | undefined
   try {
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
     const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-panel-translation-e2e')
@@ -406,8 +408,12 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await scaffold.ctx.sessionController.selectModel({ sessionId, provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' })
     const llm = scaffold.ctx.get('llm') as DshTranslationLlm | undefined
     if (!llm) throw new Error('The Web profile has no model runtime')
-    llm.stream = async function* () {
-      if (responseDelayMs) await new Promise(resolve => setTimeout(resolve, responseDelayMs))
+    llm.stream = async function* (options) {
+      if (responseGate) {
+        pendingResponseSignal = options.signal
+        await responseGate
+        options.signal.throwIfAborted()
+      }
       yield { type: 'text-delta', index: 0, text: response }
       yield { type: 'finish', reason: { kind: 'stop' } }
     }
@@ -458,13 +464,18 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
     await expect.poll(() => panel.locator('.dsh-pdf-translation-copy-error').innerText()).toContain('unavailable')
     response = JSON.stringify({ recognized: false })
-    responseDelayMs = 250
+    // Keep the request pending until Cancel is clicked, including under V8
+    // coverage where browser actionability checks can exceed a short timer.
+    responseGate = new Promise<void>(resolve => { releaseResponse = resolve })
     const language = panel.locator('.dsh-pdf-translation-language-trigger')
     await language.click()
     await panel.locator('.dsh-pdf-translation-language-menu').getByRole('button', { name: 'French' }).click()
+    await expect.poll(() => pendingResponseSignal !== undefined).toBe(true)
     await panel.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expect.poll(() => panel.locator('.dsh-pdf-translation-status').innerText()).toContain('cancelled')
-    responseDelayMs = 0
+    await expect.poll(() => pendingResponseSignal?.aborted).toBe(true)
+    releaseResponse()
+    responseGate = undefined
     await panel.getByRole('button', { name: 'Retry', exact: true }).click()
     await expect.poll(() => panel.getByRole('alert').allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining('clearer')]))
     await panel.locator('.dsh-pdf-translation-language-trigger').focus()
@@ -509,6 +520,7 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await expect.poll(() => reader.locator('.dsh-pdf-ocr-transcript').textContent()).toContain('Panel OCR completed.')
     expect(tripwire.pageErrors).toEqual([])
   } finally {
+    releaseResponse()
     await opened?.close()
     await scaffold.close()
   }

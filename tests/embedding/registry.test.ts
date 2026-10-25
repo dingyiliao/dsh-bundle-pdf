@@ -11,6 +11,40 @@ function engine(embed: EmbeddingEngine['embed'] = async request => request.texts
 }
 const code = (expected: string) => (error: unknown) => error instanceof EmbeddingError && error.code === expected
 
+test('invalid provider model descriptions and availability states cannot enter the usable catalog', async () => {
+  const registry = new EmbeddingRegistry()
+  const base = engine()
+  const remove = registry.register({ ...base, describe: config => ({ ...base.describe(config), dimensions: 0 }) })
+  assert.throws(() => registry.describe(binding), code('invalid-result'))
+  remove()
+  registry.register({ ...base, availability: async () => ({ status: 'unexpected' as never }) })
+  await assert.rejects(registry.availability(binding), code('invalid-result'))
+  registry.dispose()
+})
+
+test('a provider changing its model during inference cannot return mislabeled vectors', async () => {
+  const registry = new EmbeddingRegistry()
+  const base = engine()
+  let fingerprint = 'original-model'
+  registry.register({ ...base,
+    describe: config => ({ ...base.describe(config), fingerprint }),
+    embed: async () => { fingerprint = 'replacement-model'; return [[3, 4]] },
+  })
+  await assert.rejects(registry.embed({ texts: ['a'], purpose: 'query' }, binding), code('invalid-result'))
+  registry.dispose()
+})
+
+test('invalid deadlines fail before invoking an embedding provider', async () => {
+  const registry = new EmbeddingRegistry()
+  let calls = 0
+  registry.register(engine(async () => { calls++; return [[3, 4]] }))
+  for (const timeoutMs of [0, -1, 1.5, NaN, Infinity]) {
+    await assert.rejects(registry.embed({ texts: ['a'], purpose: 'query', timeoutMs }, binding), code('invalid-request'))
+  }
+  assert.equal(calls, 0)
+  registry.dispose()
+})
+
 test('registry captures inputs, normalizes vectors, and separates registration leases from encoding identity', async () => {
   const registry = new EmbeddingRegistry()
   const remove = registry.register(engine())

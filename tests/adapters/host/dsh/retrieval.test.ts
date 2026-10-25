@@ -8,7 +8,8 @@ import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { createMemoryEvidenceReferenceStore, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
 import { createAgentNavigation, createReaderContexts } from '../../../../src/modules/navigation/index.ts'
-import { EmbeddingRegistry, type EmbeddingEngine } from '../../../../src/embedding/index.ts'
+import { EmbeddingError, EmbeddingRegistry, type EmbeddingEngine } from '../../../../src/embedding/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
 import { defaultSettings } from '../../../../src/shared/contracts.ts'
 import type { AgentNavigationRequest } from '../../../../src/contracts/navigation.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
@@ -29,6 +30,136 @@ function testEngine(): EmbeddingEngine {
       dimensions: 2, maxBatchSize: 8, maxInputCharacters: 16000, encoding: 'fixture', fingerprint: 'fixture-v1' }),
     async embed(request) { return request.texts.map(text => /atomic|rollback|all.or.nothing/i.test(text) ? [1, 0] : [0, 1]) } }
 }
+
+function adapterFixture(options: NonNullable<Parameters<typeof createPdfRetrieval>[3]> = {}) {
+  const snapshot: HostWorkspaceSnapshot = { id: 'document', path: '/synthetic.pdf', bytes: new Uint8Array([1, 2, 3]),
+    sourceVersion: 'source-1', contentVersion: 'content-1', revision: 0,
+    dirty: false, conflict: false, canUndo: false, canRedo: false,
+    document: { pageCount: 1, pages: [], annotations: [], signed: false, encrypted: false, readOnly: false } }
+  const state = { snapshot, text: 'Atomic operations roll back all changes.', reads: 0, savedReferences: 0,
+    onRead: undefined as ((read: number) => void) | undefined }
+  const references = createMemoryEvidenceReferenceStore()
+  const put = references.put.bind(references)
+  references.put = async (...args) => { state.savedReferences++; await put(...args) }
+  const retrieval = createPdfRetrieval({ readSnapshot: () => state.snapshot }, {
+    async readPageText() {
+      state.onRead?.(++state.reads)
+      return { snapshot: state.snapshot, content: { items: [{ str: state.text, transform: [1, 0, 0, 1, 0, 0],
+        width: 100, height: 10, dir: 'ltr', fontName: 'Helvetica', hasEOL: false }], styles: {}, lang: null } }
+    },
+  }, references, options)
+  return { state, retrieval }
+}
+
+const fixtureSettings = () => ({ ...defaultSettings, embeddingEngine: 'fixture' })
+
+test('unavailable embedding probes preserve lexical retrieval without advertising semantic search', async () => {
+  for (const code of ['engine-unavailable', 'not-configured', 'timeout'] as const) {
+    const registry = new EmbeddingRegistry()
+    registry.register({ ...testEngine(), async availability() { throw new EmbeddingError(code, 'Fixture unavailable') } })
+    const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings })
+    try {
+      const availability = await retrieval.availability(sessionId, signal)
+      assert.equal(availability.status, 'unavailable')
+      assert.match(availability.reason!, /lexical retrieval remains available/)
+      const result = await retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'auto' }, signal)
+      assert.equal(result.effectiveMode, 'lexical')
+      assert.equal(result.candidates.length, 1)
+      await assert.rejects(retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'semantic' }, signal),
+        { code: 'pdf/retrieval-engine-unavailable' })
+    } finally { await retrieval.dispose(); registry.dispose() }
+  }
+})
+
+test('embedding probe contract errors and caller cancellation are not disguised as unavailable engines', async () => {
+  const registry = new EmbeddingRegistry()
+  const controller = new AbortController()
+  const cancellation = new Error('Stop capability probe')
+  let cancel = false
+  registry.register({ ...testEngine(), async availability() {
+    if (cancel) controller.abort(cancellation)
+    throw new EmbeddingError('invalid-result', 'Invalid fixture metadata')
+  } })
+  const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings })
+  try {
+    await assert.rejects(retrieval.availability(sessionId, signal), { code: 'invalid-result' })
+    cancel = true
+    await assert.rejects(retrieval.availability(sessionId, controller.signal), error => error === cancellation)
+  } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('changing the selected engine during an availability probe invalidates its answer', async () => {
+  const registry = new EmbeddingRegistry()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let started = false
+  let selected = 'fixture'
+  registry.register({ ...testEngine(), async availability() {
+    started = true
+    await gate
+    return { status: 'available' }
+  } })
+  const { retrieval } = adapterFixture({ embeddings: registry,
+    settings: () => ({ ...defaultSettings, embeddingEngine: selected }) })
+  try {
+    const pending = retrieval.availability(sessionId, signal)
+    assert.equal(started, true)
+    selected = 'none'
+    release()
+    const result = await pending
+    assert.equal(result.status, 'unavailable')
+    assert.match(result.reason!, /engine changed during the availability check/)
+  } finally { release(); await retrieval.dispose(); registry.dispose() }
+})
+
+test('a mismatched embedding result identity cannot produce retrieval evidence', async () => {
+  const registry = new EmbeddingRegistry()
+  registry.register(testEngine())
+  const embed = registry.embed.bind(registry)
+  registry.embed = async (...args) => {
+    const result = await embed(...args)
+    return { ...result, model: { ...result.model, fingerprint: 'unexpected-model' } }
+  }
+  const { retrieval, state } = adapterFixture({ embeddings: registry, settings: fixtureSettings })
+  try {
+    await assert.rejects(retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'hybrid' }, signal),
+      { code: 'pdf/stale-reader', message: 'Embedding model changed during retrieval' })
+    assert.equal(state.savedReferences, 0)
+  } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('changed page text cannot be signed as evidence for an earlier retrieval index', async () => {
+  const { retrieval, state } = adapterFixture()
+  state.onRead = read => { if (read === 2) state.text = 'The extractor now reports different original text.' }
+  try {
+    await assert.rejects(retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'lexical' }, signal),
+      { code: 'pdf/stale-reader', message: 'Indexed PDF text changed; rebuild the search' })
+    assert.equal(state.reads, 2, 'candidates must be checked against re-read page text')
+    assert.equal(state.savedReferences, 0)
+  } finally { await retrieval.dispose() }
+})
+
+test('a provider callback cannot change the working copy between result validation and evidence capture', async () => {
+  const registry = new EmbeddingRegistry()
+  const engine = testEngine()
+  let invalidate: (() => void) | undefined
+  registry.register({ ...engine, describe(config) {
+    invalidate?.()
+    return engine.describe(config)
+  } })
+  const { retrieval, state } = adapterFixture({ embeddings: registry, settings: fixtureSettings })
+  state.onRead = read => {
+    if (read === 2) invalidate = () => {
+      invalidate = undefined
+      state.snapshot = { ...state.snapshot, contentVersion: 'changed-during-provider-callback' }
+    }
+  }
+  try {
+    await assert.rejects(retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'hybrid' }, signal),
+      { code: 'pdf/stale-reader', message: 'PDF changed while resolving retrieval results' })
+    assert.equal(state.savedReferences, 0)
+  } finally { await retrieval.dispose(); registry.dispose() }
+})
 
 test('hybrid tools reuse original evidence for shared-draft annotation and acknowledged exact navigation', native, async () => {
   const document = await PDFDocument.create(), font = await document.embedFont(StandardFonts.Helvetica)

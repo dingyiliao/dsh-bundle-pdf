@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentNavigation, createReaderContexts } from '../../../src/modules/navigation/index.ts'
+import { evidenceSha256 } from '../../../src/modules/evidence/index.ts'
+import type { TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 
 const signal = new AbortController().signal
 const sessionId = 'session-a', documentId = 'document-a', contentVersion = 'version-a'
@@ -70,6 +72,35 @@ test('navigation rejects invalid pages and serializes jumps to one Reader', asyn
     assert.deepEqual(await service.dispatch(sessionId, { action: 'complete', ...lease,
       requestId: request.requestId, status: 'stale' }, signal), { accepted: true })
     assert.equal((await replacement).status, 'stale')
+  } finally { service.dispose(); contexts.dispose() }
+})
+
+test('an outdated exact target is rejected before delivery and does not block a fresh jump', async () => {
+  const bytes = new Uint8Array([1, 2, 3])
+  const current = { ...workspaces, readSnapshot(caller: string, id: string) {
+    return { ...workspaces.readSnapshot(caller, id), revision: 2, bytes }
+  } }
+  const contexts = createReaderContexts(current as never)
+  const service = createAgentNavigation(current as never, contexts)
+  const lease = { sessionId, tabId: 'tab-a', leaseId: 'lease-a', documentId, contentVersion }
+  contexts.update(sessionId, { action: 'set', ...lease, sequence: 1, page: 2 })
+  const target: TextNavigationTarget = { kind: 'text', refId: 'exact-target', revision: 1,
+    sourceDigest: evidenceSha256(bytes), pageTextDigest: evidenceSha256('quote'),
+    textSha256: evidenceSha256('quote'), startUtf16: 0, endUtf16: 5,
+    rectPdf: [10, 10, 50, 20], quadPoints: [10, 20, 50, 20, 10, 10, 50, 10] }
+  try {
+    await assert.rejects(service.navigate(sessionId, { documentId, contentVersion, page: 3, target }, signal),
+      { code: 'pdf/stale-reader', message: 'PDF changed after resolving the evidence; locate it again' })
+    const freshTarget = { ...target, revision: 2 }
+    const navigation = service.navigate(sessionId, { documentId, contentVersion, page: 3, target: freshTarget }, signal)
+    const delivered = await service.dispatch(sessionId, { action: 'wait', ...lease }, signal) as {
+      requestId: string; target: TextNavigationTarget
+    }
+    assert.deepEqual(delivered.target, freshTarget)
+    assert.deepEqual(await service.dispatch(sessionId, { action: 'complete', ...lease,
+      requestId: delivered.requestId, targetRevision: 2, sourceDigest: target.sourceDigest, status: 'opened' }, signal),
+    { accepted: true })
+    assert.equal((await navigation).status, 'opened')
   } finally { service.dispose(); contexts.dispose() }
 })
 

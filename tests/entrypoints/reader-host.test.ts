@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test, { type TestContext } from 'node:test'
+import { PDFDocument } from 'pdf-lib'
 import { apply, inject, name } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
 import { defaultSettings } from '../../src/shared/contracts.ts'
 import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
 import { nativeTestSubprocess } from '../native-test-subprocess.ts'
+import type { PdfImageEvidenceResolver } from '../../src/adapters/host/dsh/index.ts'
+import type { SavedImageReference } from '../../src/modules/evidence/index.ts'
 
 type Route = Parameters<Parameters<typeof apply>[0]['connection']['fetch']['register']>[0]
 type HostContext = Parameters<typeof apply>[0]
+type RegisteredTool = { name: string; execute(input: unknown, execution: {
+  agent: { session: { id: string; header: {} } }; signal: AbortSignal
+}): Promise<unknown> }
 
 async function assetFixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'pdf-plugin-lifecycle-'))
@@ -36,6 +42,8 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
   const opened: string[] = []
   const closed: string[] = []
   const tools: string[] = []
+  const registeredTools = new Map<string, RegisteredTool>()
+  const domainValues = new Map<string, Map<string, unknown>>()
   const provided: string[] = []
   const services = new Map<string, unknown>()
   const injections: string[][] = []
@@ -54,6 +62,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
       if (opened.length + 1 === options.failOpenAt) throw new Error('Domain open failed')
       opened.push(definition.name)
       const values = new Map<string, unknown>()
+      domainValues.set(definition.name, values)
       return {
         table() { return {
           get: (key: string) => values.get(key),
@@ -78,7 +87,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
         if (route.path === options.failDisposal) throw new Error('Route disposal failed')
       }
     } } },
-    tools: { register(tool: { name: string }) { tools.push(tool.name) } },
+    tools: { register(tool: RegisteredTool) { tools.push(tool.name); registeredTools.set(tool.name, tool) } },
     reflect: { provide(key: string, value: unknown) {
       if (key === options.failProvideKey) throw new Error('Service provision failed')
       provided.push(key)
@@ -96,7 +105,39 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
     for (const effect of [...effects].reverse()) await effect.dispose?.()
   }
   return { ctx: ctx as unknown as HostContext, config, routes, registrations, releases, opened, closed,
-    tools, provided, services, injections, effects, disposeEffects }
+    tools, registeredTools, domainValues, provided, services, injections, effects, disposeEffects }
+}
+
+async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string) {
+  const root = await realpath(assetRoot), path = join(root, 'evidence.pdf')
+  const pdf = await PDFDocument.create()
+  pdf.addPage([200, 200])
+  const bytes = await pdf.save()
+  await writeFile(path, bytes)
+  runtime.ctx.fs = {
+    async resolve(input, options) {
+      const absolute = resolve(options?.cwd ?? root, input)
+      assert.equal(absolute, path)
+      return { targetKey: absolute, displayPath: absolute }
+    },
+    processPath: target => String(target.targetKey),
+    processPathFromHostPath: input => input,
+    contains: (parent, child) => parent.targetKey === child.targetKey,
+    async stat(target) {
+      const content = await readFile(String(target.targetKey))
+      return { type: 'file', version: evidenceSha256(content), size: content.length }
+    },
+    async readBytes(target, signal, maxBytes) {
+      const content = await readFile(String(target.targetKey), { signal })
+      assert.ok(content.length <= maxBytes)
+      return content
+    },
+  }
+  runtime.ctx.sandboxPolicy = { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) }
+  const opened = await runtime.registeredTools.get('pdf_open')!.execute({ path }, {
+    agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal,
+  }) as { documentId: string; contentVersion: string; revision: number }
+  return { ...opened, path, bytes }
 }
 
 function infoRequest(payload: unknown, init: RequestInit = {}) {
@@ -348,6 +389,93 @@ test('Host routes retain one Session identity for reader hints and translation r
       'content-type': 'application/json', 'content-length': String(64 * 1024 + 1),
     } }))
     assert.equal(tooLarge.status, 413, 'the enlarged route still enforces a finite request budget')
+  } finally { await runtime.disposeEffects() }
+})
+
+test('Host image evidence resolves persisted attachments and drains an admitted resolution before closing storage', async t => {
+  const assets = await assetFixture(t), sessionId = 'image-evidence-session'
+  const data = new Uint8Array([137, 80, 78, 71])
+  let hold: (() => Promise<void>) | undefined, attachmentSignal: AbortSignal | undefined
+  const runtime = host({ agentSessionId: sessionId, attachments: {
+    async readImage(ref: { attachmentId: string; mediaType: 'image/png'; bytes: number; width: number; height: number },
+      signal: AbortSignal) {
+      attachmentSignal = signal
+      await hold?.()
+      signal.throwIfAborted()
+      return { ref, data }
+    },
+  } })
+  await apply(runtime.ctx, runtime.config, assets)
+  let resume: (() => void) | undefined
+  try {
+    const document = await openSyntheticDocument(runtime, assets, sessionId)
+    const refId = 'pdfref_00000000-0000-4000-8000-000000000001'
+    const saved: SavedImageReference = { sessionId, createdAt: Date.now(), evidence: {
+      refId, documentId: document.documentId, sourcePath: document.path,
+      sourceDigest: evidenceSha256(document.bytes), sourceVersion: evidenceSha256(document.bytes),
+      contentVersion: document.contentVersion, revision: document.revision, page: 1,
+      source: 'direct-image', renderedImageSha256: evidenceSha256(data),
+      locator: { kind: 'page-only' }, precision: 'page-only', limitations: [],
+      snapshot: { kind: 'attachment', attachmentId: evidenceSha256(data), mediaType: 'image/png',
+        bytes: data.length, width: 1, height: 1, storedImageSha256: evidenceSha256(data) },
+    } }
+    const evidenceDomain = runtime.opened.find(domain => domain.startsWith('pdf_evidence_'))!
+    runtime.domainValues.get(evidenceDomain)!.set(refId, saved)
+    const resolver = runtime.services.get('pdfImageEvidence') as PdfImageEvidenceResolver
+    const resolved = await resolver.resolve(sessionId, document.documentId, refId, new AbortController().signal)
+    assert.deepEqual(resolved.image, { mediaType: 'image/png', data, width: 1, height: 1 })
+    assert.deepEqual(resolved.evidence, saved.evidence)
+
+    let entered!: () => void
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    const blocked = new Promise<void>(resolve => { resume = resolve })
+    hold = () => { entered(); return blocked }
+    const pending = resolver.resolve(sessionId, document.documentId, refId, new AbortController().signal)
+    const cancelled = assert.rejects(pending, { name: 'AbortError' })
+    await reading
+    const routeEffect = runtime.effects.find(effect => effect.label.startsWith('pdf: routes'))!
+    let closed = false
+    const closing = Promise.resolve(routeEffect.dispose!()).then(() => { closed = true })
+    assert.equal(attachmentSignal!.aborted, true, 'unloading must cancel the admitted attachment read')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(closed, false, 'teardown must wait for the admitted resolver to settle')
+    assert.equal(runtime.closed.length, 0, 'evidence storage must remain open while its resolver is active')
+    resume!()
+    await cancelled
+    await closing
+    assert.deepEqual(runtime.closed, [...runtime.opened].reverse())
+    await assert.rejects(resolver.resolve(sessionId, document.documentId, refId, new AbortController().signal),
+      { name: 'AbortError' })
+  } finally { resume?.(); await runtime.disposeEffects() }
+})
+
+test('Host evidence navigation rechecks the authorized source path and current file before trusting a replayed card', async t => {
+  const assets = await assetFixture(t), sessionId = 'evidence-card-session'
+  const runtime = host({ agentSessionId: sessionId })
+  await apply(runtime.ctx, runtime.config, assets)
+  try {
+    const document = await openSyntheticDocument(runtime, assets, sessionId)
+    const excerpt = 'Historical card excerpt'
+    const payload = { action: 'revalidate', sessionId, documentId: document.documentId,
+      sourcePathDigest: evidenceSha256(document.path), page: 1, pageTextDigest: evidenceSha256(excerpt),
+      startUtf16: 0, endUtf16: excerpt.length, excerpt, excerptSha256: evidenceSha256(excerpt) }
+    const revalidate = async (input: typeof payload) => {
+      const response = await runtime.routes.get('/api/pdf.evidence')!.fetch(infoRequest({
+        type: 'client-request', method: 'pdf.evidence', rpcId: 'replayed-card', payload: input,
+      }))
+      assert.equal(response.status, 200)
+      return (await response.json() as { result: { ok: boolean; error: { code: string; message: string } } }).result
+    }
+    const wrongPath = await revalidate({ ...payload, sourcePathDigest: evidenceSha256('/another.pdf') })
+    assert.equal(wrongPath.ok, false)
+    assert.equal(wrongPath.error.code, 'pdf/stale-reader')
+    assert.match(wrongPath.error.message, /source path/)
+
+    await writeFile(document.path, new Uint8Array([...document.bytes, 10]))
+    const replacedSource = await revalidate(payload)
+    assert.equal(replacedSource.ok, false)
+    assert.equal(replacedSource.error.code, 'pdf/stale-reader')
+    assert.match(replacedSource.error.message, /changed outside this working copy/)
   } finally { await runtime.disposeEffects() }
 })
 

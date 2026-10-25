@@ -301,6 +301,30 @@ test('replacement navigation failure retains the previously adopted document', a
   await f.lifecycle.dispose()
 })
 
+test('failed old-document retirement reports the error and retries without releasing the adopted document', async () => {
+  const f = fixture()
+  const tab = occurrence()
+  f.setOpen(async (_sessionId, requestedAddress) => snapshot(requestedAddress.endsWith('b.pdf') ? 'document-b' : 'document-a'))
+  await f.lifecycle.open(tab.owner, 'container-a', tab.owner.resourceAddress)
+  const failure = new Error('temporary reference release failure')
+  let attempts = 0
+  f.setRelease(async (_sessionId, id) => { if (id === 'document-a' && ++attempts === 1) throw failure })
+  const next = { ...tab.owner, resourceAddress: address('container-a', 'b.pdf') }
+  f.lifecycle.register(next)
+  assert.equal((await f.lifecycle.open(next, 'container-a', next.resourceAddress)).id, 'document-b')
+  await tick()
+  assert.deepEqual(f.errors, [failure])
+  assert.deepEqual(f.released.map(release => release.id), ['document-a'])
+
+  assert.equal((await f.lifecycle.open(next, 'container-a', next.resourceAddress)).id, 'document-b')
+  await tick()
+  assert.equal(attempts, 2)
+  assert.deepEqual(f.released[0], f.released[1], 'retry the retained identity using the same reference')
+  assert.deepEqual(f.errors, [failure], 'successful retry must not report another failure')
+  await f.lifecycle.dispose()
+  assert.deepEqual(f.released.map(release => release.id), ['document-a', 'document-a', undefined])
+})
+
 test('resource authorization, caller cancellation and plugin lifetime gate acquisition', async () => {
   const f = fixture()
   const tab = occurrence()

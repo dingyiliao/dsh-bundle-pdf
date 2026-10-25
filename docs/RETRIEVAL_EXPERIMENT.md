@@ -46,6 +46,13 @@ The short-ID update was verified separately on 2026-10-25:
   `searchId` and reaches `complete`. This is a real-model continuation check,
   not a new large-document performance or retrieval-quality claim.
 
+Publication follow-up adds regression tests for document-retirement failures,
+stale navigation, Host teardown, and invalid or changing embedding providers.
+The translation-cancellation fixture now waits on an explicit response gate
+instead of racing a short timer. The updated tree passes 1,300 Node cases
+(the browser OCR Worker case was verified separately using local Chrome) and
+all 37 browser cases; these changes do not alter production behavior.
+
 ## Runtime decision
 
 The supplied `mlx-lm-local-demo` has a cached

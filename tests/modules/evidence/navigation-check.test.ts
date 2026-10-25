@@ -147,3 +147,28 @@ test('production historical-card navigation never falls back to approximate boxe
   await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal,
     h.readSource, createMemoryEvidenceReferenceStore()), { code: 'pdf/text-geometry-unavailable' })
 })
+
+test('historical-card navigation retries if the draft changes while its new reference is persisted', async () => {
+  const state = snapshot([9, 8, 7], 4)
+  state.document.pages = [{ page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }]
+  const pageText = { ...content, items: [{ ...content.items[0]!, transform: [10, 0, 0, 10, 20, 200],
+    glyphs: Array.from(text, (_, index) => [20 + index * 5, 200, 5]) }] }
+  const h = harness(state, pageText)
+  const references = createMemoryEvidenceReferenceStore()
+  const put = references.put
+  let edited = false
+  references.put = async (id, value) => {
+    await put(id, value)
+    if (!edited) {
+      edited = true
+      h.set({ ...state, revision: 5 })
+    }
+  }
+  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal,
+    h.readSource, references), { code: 'pdf/stale-reader', message: 'PDF changed while preparing the reference; retry' })
+  const retried = await revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal,
+    h.readSource, references)
+  assert.equal(retried.status, 'valid')
+  assert.equal(retried.revision, 5)
+  assert.equal(retried.target?.revision, 5, 'a retry must pair the target with the current draft revision')
+})

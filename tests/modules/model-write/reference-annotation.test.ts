@@ -97,6 +97,23 @@ test('a UI edit after reference resolution wins the CAS; the model does not add 
   } finally { writes.dispose(); await f.state.workspaces.dispose() }
 })
 
+test('reference metadata must match the draft before an annotation is planned', async () => {
+  const f = await fixture()
+  try {
+    const resolved = await f.resolver.resolve(sessionId, f.opened.id, f.reference.refId, signal)
+    for (const mismatch of [{ documentId: 'other-document' }, { revision: resolved.revision + 1 },
+      { contentVersion: 'other-version' }, { sourceDigest: 'other-source' }]) {
+      const writes = createModelWriteService(f.state.workspaces, f.pages,
+        { resolve: async () => ({ ...resolved, ...mismatch }) })
+      try {
+        await assert.rejects(writes.annotate(sessionId, f.input, agent, signal), { code: 'pdf/stale-revision' })
+        assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
+        assert.equal(f.state.writes(), 0)
+      } finally { writes.dispose() }
+    }
+  } finally { await f.state.workspaces.dispose() }
+})
+
 test('context and related references spanning line-interleaved columns reject markup without a partial draft', async () => {
   const f = await fixture()
   const run = (str: string, x: number, y: number) => ({ ...line(y), str,

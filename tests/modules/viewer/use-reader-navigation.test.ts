@@ -64,6 +64,66 @@ test('history return reports a failed page restore without popping the destinati
   }
 })
 
+for (const resumePage of [1, 2]) test(resumePage === 1
+  ? 'a successful in-memory resume restores and persists the saved location'
+  : 'a failed in-memory resume cannot overwrite the saved position until a later jump succeeds', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const root = createRoot(dom.document.getElementById('root')!), tab = new AbortController()
+  const scroll = dom.document.createElement('div'), element = dom.document.createElement('div')
+  const page = { page: 1, cropBox: [0, 0, 400, 600] as [number, number, number, number], rotation: 0, userUnit: 1 }
+  const snapshot = { id: 'doc', contentVersion: 'v1', document: { pageCount: 1, pages: [page] } } as WorkspaceSnapshot
+  const document = { snapshot } as NativeDocument
+  const bounds = (top: number) => ({ left: 0, top, right: 400, bottom: top + 600, width: 400, height: 600 } as DOMRect)
+  Object.defineProperties(scroll, { clientWidth: { value: 400 }, clientHeight: { value: 600 }, scrollWidth: { value: 400 } })
+  scroll.getBoundingClientRect = () => bounds(0)
+  element.getBoundingClientRect = () => bounds(72 - scroll.scrollTop)
+  setWindowLayout(scroll, buildPageLayout([page], () => 1, 0, 72))
+  const state: ReaderNavigationOptions['state'] = { current: { snapshot, scrollRoot: scroll,
+    fit: 'custom', zoom: 1, size: { width: 400, height: 600 }, currentPage: 1 } }
+  const position: NavigationPosition = { documentVersion: 'v1', page: resumePage, x: 0, y: 300, fit: 'custom', scale: 1 }
+  const writes: Array<{ page: number }> = [], errors: unknown[] = []
+  let storedReads = 0
+  const options: ReaderNavigationOptions = {
+    api: { positions: { async get() { storedReads++; return null },
+      async set(_session: string, _id: string, value: { page: number }) { writes.push(value) } } } as unknown as PdfClientApi,
+    sessionId: 'session', tabSignal: tab.signal, contentRevision: 1, pdf: document, snapshot,
+    scrollRoot: scroll, currentPage: 1, historyCapacity: 10,
+    lifetime: { history: new NavigationHistory({ capacity: 10 }), position, ocrPages: new Map() }, state,
+    views: { current: new Map([[1, { element, viewport: new NativeViewport(page, 1) } as unknown as PageView]]) },
+    setCurrentPage: value => { state.current.currentPage = value }, setPageInput() {},
+    setZoom: value => { state.current.zoom = value }, setFit: value => { state.current.fit = value },
+    setPositionNotice() {}, onError: failure => errors.push(failure), t: key => key,
+  }
+  let navigation!: ReturnType<typeof useReaderNavigation>
+  const Harness = () => { navigation = useReaderNavigation(options); return null }
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await new Promise(resolve => setImmediate(resolve)) })
+    await act(async () => { while (navigation.navigationLock.current) await new Promise(resolve => setImmediate(resolve)) })
+    assert.deepEqual(errors.map(error => (error as Error).message), resumePage === 2 ? ['reader.invalidDestination'] : [])
+    assert.equal(navigation.navigating, false)
+    assert.equal(storedReads, 0, 'the in-memory resume takes precedence over stored positions')
+    assert.equal(writes.length, resumePage === 2 ? 0 : 1, 'only a successful restore may persist its destination')
+    if (resumePage === 1) assert.ok(Math.abs(navigation.capture().y - position.y) < 0.001)
+    let completed = false
+    await act(async () => { completed = await navigation.jump(1, { y: 200 }) })
+    assert.equal(completed, true)
+    assert.equal(writes.length, resumePage === 2 ? 1 : 2)
+    assert.equal(writes[0]?.page, 1, 'a successful user jump resumes normal position persistence')
+  } finally {
+    tab.abort(); await act(async () => root.unmount()); dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
+})
+
 test('exact evidence jumps use the Reader history for cross-page and same-page Back and history-menu restores', async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
   const saved = new Map<string, PropertyDescriptor | undefined>()
