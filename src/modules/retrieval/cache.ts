@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { RETRIEVAL_TEXT_VERSION } from './text.js'
+import { MAX_RETRIEVAL_PARAGRAPH_BREAKS, RETRIEVAL_TEXT_VERSION, validParagraphBreaks } from './text.js'
 import type { RetrievalCache } from './types.js'
 
 export const RETRIEVAL_EXTRACTION_VERSION = 'joined-page-text-v1'
@@ -10,7 +10,8 @@ export const retrievalCacheKey = (...values: unknown[]): string => `retrieval:${
 const pageSchema = z.object({
   version: z.literal(1), text: z.string().max(500_000),
   source: z.enum(['pdf-text', 'ocr']), warnings: z.array(z.string().max(500)).max(20).optional(),
-}).strict()
+  paragraphBreaks: z.array(z.number().int().positive()).max(MAX_RETRIEVAL_PARAGRAPH_BREAKS).optional(),
+}).strict().refine(page => validParagraphBreaks(page.text, page.paragraphBreaks), 'Invalid paragraph offsets')
 export type CachedRetrievalPage = z.infer<typeof pageSchema>
 
 export function pageCacheKey(path: string, sourceDigest: string, page: number): string {

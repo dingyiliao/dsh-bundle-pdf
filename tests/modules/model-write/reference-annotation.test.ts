@@ -77,6 +77,63 @@ test('retrieval reference marks the right duplicate in the shared undoable draft
   } finally { writes.dispose(); await f.state.workspaces.dispose() }
 })
 
+test('a reference subquote marks only the requested text in its attested repeated occurrence', async () => {
+  const f = await fixture(), writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
+  const selected = 'evidence'
+  try {
+    const result = await writes.annotate(sessionId, { ...f.input,
+      target: { ...f.input.target, quote: selected } }, agent, signal)
+    assert.equal(result.status, 'updated')
+    assert.equal(result.resolvedTarget.refId, f.reference.refId)
+    assert.equal(result.resolvedTarget.quote, selected)
+    assert.equal(result.coverage.totalChars, selected.length)
+    assert.equal(result.coverage.pages[0]!.text, selected)
+    assert.equal(result.coverage.pages[0]!.startUtf16, quote.length + 1 + 'Repeated '.length)
+    const draft = f.state.workspaces.readSnapshot(sessionId, f.opened.id)
+    const mark = draft.document.annotations.find(item => item.id === result.annotationId)!
+    assert.deepEqual(mark.rect, [114, 177.6, 162, 189.6])
+    const jump = await f.resolver.resolve(sessionId, f.opened.id, result.resolvedTarget.refId!, signal,
+      undefined, result.resolvedTarget.quote)
+    assert.deepEqual(jump.rectPdf, mark.rect)
+    assert.equal(jump.text, selected)
+    const original = await f.resolver.resolve(sessionId, f.opened.id, f.reference.refId, signal)
+    assert.equal(original.text, quote, 'narrowing must not mutate the parent reference')
+    const repeated = await writes.annotate(sessionId, { ...f.input, expectedRevision: result.revision,
+      target: { ...f.input.target, quote: selected } }, agent, signal)
+    assert.equal(repeated.status, 'already_annotated')
+    assert.equal(repeated.annotationId, result.annotationId)
+    assert.equal(f.state.writes(), 0)
+    const undone = await f.state.workspaces.execute(sessionId, { action: 'undo', sessionId,
+      id: f.opened.id, revision: result.revision }, agent, signal)
+    assert.ok('bytes' in undone)
+    assert.equal(undone.document.annotations.some(item => item.id === result.annotationId), false)
+  } finally { writes.dispose(); await f.state.workspaces.dispose() }
+})
+
+test('a whole-context reference stays broad when requested, while invalid subquotes write nothing', async () => {
+  const f = await fixture(), writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
+  const reader = createEvidenceReader(f.state.workspaces, f.pages, f.references)
+  try {
+    const context = await reader.context(sessionId, { documentId: f.opened.id,
+      focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
+    const reference = context.chunks[0]!.evidence
+    for (const [refId, selected, code] of [
+      [reference.refId, 'evidence', 'pdf/ambiguous-text-target'],
+      [f.reference.refId, 'evidence\nRepeated', 'pdf/text-not-found'],
+    ]) {
+      await assert.rejects(writes.annotate(sessionId, { ...f.input,
+        target: { kind: 'reference', refId: refId!, quote: selected } }, agent, signal), { code })
+      assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
+    }
+    const broad = await writes.annotate(sessionId, { ...f.input,
+      target: { kind: 'reference', refId: reference.refId } }, agent, signal)
+    assert.equal(broad.coverage.pages[0]!.text, `${quote}\n${quote}`)
+    assert.equal(broad.coverage.totalChars, quote.length * 2 + 1)
+    assert.equal('quote' in broad.resolvedTarget, false)
+    assert.equal(f.state.writes(), 0)
+  } finally { writes.dispose(); await f.state.workspaces.dispose() }
+})
+
 test('a UI edit after reference resolution wins the CAS; the model does not add a stale mark', async () => {
   const f = await fixture()
   const racing: TextReferenceResolverPort = { async resolve(...args) {
@@ -137,6 +194,10 @@ test('context and related references spanning line-interleaved columns reject ma
     const refs = [context.chunks[0]!.evidence.refId, related.candidates[0]!.evidence.refId]
     for (const refId of refs) await assert.rejects(writes.annotate(sessionId, {
       ...f.input, target: { kind: 'reference', refId } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
+    const preciseReference = await createTextReferenceResolver(f.state.workspaces, pages, references)
+      .resolve(sessionId, f.opened.id, context.chunks[0]!.evidence.refId, signal, undefined, 'Left start')
+    assert.equal(preciseReference.text, 'Left start', 'a safe subpassage need not validate the broad parent geometry')
+    assert.equal(preciseReference.endUtf16, 'Left start'.length)
     await assert.rejects(writes.annotate(sessionId, { ...f.input, target: { kind: 'pdf-text', page: 1,
       quote: context.chunks[0]!.evidence.snapshot.text } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
     assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)

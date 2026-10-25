@@ -191,6 +191,9 @@ test('pdf_navigate forwards only a validated same-session target to the visible-
       documentId: 'doc-1', page: 0, contentVersion: 'version-1',
     }, 'session-1'))
     await assert.rejects(readTool(definitions, 'pdf_navigate', {
+      documentId: 'doc-1', page: 3, contentVersion: 'version-1', quote: 'Not a reference target',
+    }, 'session-1'))
+    await assert.rejects(readTool(definitions, 'pdf_navigate', {
       documentId: 'doc-1', page: 3, contentVersion: 'version-1',
     }), /session/i)
     assert.equal(forwarded.length, 1)

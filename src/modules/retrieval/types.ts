@@ -31,6 +31,8 @@ export interface RetrievalPorts {
   }
   pages: { read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
     text: string; source: 'pdf-text' | 'ocr'; warnings?: string[]
+    /** Source UTF-16 offsets of conservatively identified paragraph starts. */
+    paragraphBreaks?: number[]
   }> }
   cache?: RetrievalCache
   embedding?: { select(sessionId: string): RetrievalEmbedding | undefined }

@@ -76,6 +76,34 @@ test('saved offsets resolve the exact repeated occurrence, ignoring stored appro
   assert.equal(second.quadPoints.length, 8)
 })
 
+test('subquotes resolve only inside their reference and retain the original occurrence and parent snapshot', async () => {
+  const f = await fixture()
+  const second = await f.resolver.resolve('alice', 'doc-1', f.second, signal, f.readSource, 'evidence')
+  assert.equal(second.startUtf16, quote.length + 1 + 'Repeated '.length)
+  assert.equal(second.endUtf16, quote.length * 2 + 1)
+  assert.equal(second.text, 'evidence')
+  assert.equal(second.textSha256, evidenceSha256('evidence'))
+  assert.deepEqual(second.rectPdf, [114, 97.6, 162, 109.6])
+  const parent = await f.resolver.resolve('alice', 'doc-1', f.second, signal)
+  assert.equal(parent.text, quote)
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.second, signal, undefined,
+    'evidence\nRepeated'), { code: 'pdf/text-not-found' })
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.second, signal, undefined, ' \n'),
+    { code: 'pdf/invalid-text-range' })
+})
+
+test('reference subquotes reject ambiguous occurrences and still validate the full original page', async () => {
+  const f = await fixture()
+  const context = await f.reader.context('alice', { documentId: 'doc-1',
+    focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
+  const refId = context.chunks[0]!.evidence.refId
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, undefined, 'evidence'),
+    { code: 'pdf/ambiguous-text-target' })
+  f.setContent({ ...f.content(), items: [line('Changed elsewhere on the page', 200), line(quote, 100, false)] })
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.second, signal, f.readSource, 'evidence'),
+    { code: 'pdf/stale-reader' })
+})
+
 test('annotation-only revisions and saves revalidate the whole page rather than invalidating a correct quote', async () => {
   const f = await fixture()
   const updated = Buffer.from('source with annotation-only changes')
@@ -145,6 +173,16 @@ test('surrogate halves and cross-column offset ranges cannot produce a false pre
   record.evidence.snapshot = { text: '\ud835', sha256: evidenceSha256('\ud835') }
   record.evidence.locator = { kind: 'text-window', startUtf16: 1, endUtf16: 2 }
   await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal), { code: 'pdf/invalid-text-range' })
+  record.evidence.snapshot = { text: 'A𝑅B', sha256: evidenceSha256('A𝑅B') }
+  record.evidence.locator = { kind: 'text-window', startUtf16: 0, endUtf16: 4 }
+  for (const partial of ['A𝑅B'.slice(0, 2), 'A𝑅B'.slice(2)]) {
+    await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal, undefined, partial),
+      { code: 'pdf/invalid-text-range' })
+  }
+  const scalar = await f.resolver.resolve('alice', 'doc-1', f.first, signal, undefined, '𝑅')
+  assert.equal(scalar.startUtf16, 1)
+  assert.equal(scalar.endUtf16, 3)
+  assert.equal(scalar.text, '𝑅')
   const columns: NativeTextContent = { ...content, items: [line('Start', 300), line('Column one', 100),
     { ...line('Column two', 300), transform: [12, 0, 0, 12, 300, 300] }] }
   f.setContent(columns)

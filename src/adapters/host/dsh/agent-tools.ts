@@ -65,6 +65,7 @@ const navigateArgs = z.union([
   z.object({ documentId, page, contentVersion: z.string().min(1).max(512),
     tabId: z.string().min(1).max(512).optional() }).strict(),
   z.object({ documentId, refId: z.string().min(1).max(128),
+    quote: z.string().min(2).max(8000).optional(),
     tabId: z.string().min(1).max(512).optional() }).strict(),
 ])
 const locateArgs = z.object({ documentId, quote: z.string().min(2).max(512),
@@ -265,9 +266,10 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
 
   if (agentNavigation) toolContext.tools.register(defineTool({
     name: 'pdf_navigate',
-    description: 'Take the user to verified evidence in an already visible PDF Reader and preserve its multi-step back history, including same-page positions. Prefer {documentId,refId} using evidence from pdf_search, pdf_find_related, pdf_locate or pdf_context; Host revalidates the whole page text, exact stored range and native glyphs, then Client checks its current snapshot and positions the exact passage. Do not copy approximate evidence boxes or guess coordinates. A previous draft annotation does not invalidate a reference if its original page text and source are verified unchanged. For page-only navigation use page plus current contentVersion instead; never mix these with refId. Use only when the user asks to see a location. If several tabs show this document, pass tabId from pdf_current. This does not open a tab or close the sidebar.',
+    description: 'Take the user to verified evidence in an already visible PDF Reader and preserve its multi-step back history, including same-page positions. Prefer {documentId,refId} using evidence from pdf_search, pdf_find_related, pdf_locate or pdf_context; this targets the ENTIRE reference snapshot. For a subpassage use {documentId,refId,quote:"exact unique text inside the snapshot"}, retaining the same quote used by a narrowed reference annotation. Host revalidates the whole page text, exact stored range and native glyphs, then Client checks its current snapshot and positions the exact passage. Do not copy approximate evidence boxes or guess coordinates. A previous draft annotation does not invalidate a reference if its original page text and source are verified unchanged. For page-only navigation use page plus current contentVersion instead; never mix these with refId or quote. Use only when the user asks to see a location. If several tabs show this document, pass tabId from pdf_current. This does not open a tab or close the sidebar.',
     parameters: { documentId: DOCUMENT_INPUT,
       refId: { type: 'string', description: 'Reusable evidence refId for exact text navigation. Omit page and contentVersion when supplied.' },
+      quote: { type: 'string', description: 'Optional exact subpassage, unique inside the reference snapshot. Requires refId; omit for page-only navigation. Use the same quote returned in a narrowed annotation resolvedTarget.' },
       page: { type: 'integer', description: 'Physical 1-based page for page-only navigation. Required with contentVersion if refId is omitted.' },
       contentVersion: { type: 'string', description: 'Current contentVersion for page-only navigation. Omit with refId.' },
       tabId: { type: 'string', description: 'Tab identity from pdf_current if more than one Reader matches.' } },
@@ -278,7 +280,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
       if (!('refId' in args)) return agentNavigation.navigate(sessionId, args, exec.signal)
       if (!sourceFiles) throw Object.assign(new Error('Precise PDF navigation requires a fresh-source adapter'), { code: 'pdf/source-unavailable' })
       const resolved = await textTargets.resolve(sessionId, args.documentId, args.refId, exec.signal,
-        freshSourceReader(sourceFiles, exec.agent!))
+        freshSourceReader(sourceFiles, exec.agent!), args.quote)
       const { documentId: _documentId, contentVersion: _contentVersion, sourceVersion: _sourceVersion,
         page: _page, text: _text, ...geometry } = resolved
       const target = textNavigationTargetSchema.parse({ kind: 'text', ...geometry })
@@ -325,7 +327,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
 
   toolContext.tools.register(defineTool({
     name: 'pdf_find_related',
-    description: 'Find evidence for a concept or question in an opened PDF, including unread pages. Start with documentId and query; the default scope is the whole document, restricted only by optional fromPage/maxPages. Indexing is bounded and incremental. When hasMore is true, call this same tool with ONLY {searchId}; Host preserves the original query, terms, mode and scope. Do not repeat or change other parameters, invent an ID, or pass a pdf_search ID. Unknown/expired IDs require a new search with documentId and query. building/incomplete returns coverage, not globally ranked candidates; only complete ranks the whole requested scope. auto uses hybrid BM25 + embeddings when the configured engine is available, otherwise reports lexical fallback; explicit semantic/hybrid never silently fall back. Results are original quoted leads with reusable evidence.refId, not verified answers. Read context before answering or annotating; inspect complex pages. Image-only content is not indexed. No navigation or editing occurs.',
+    description: 'Find evidence for a concept or question in an opened PDF, including unread pages. Start with documentId and query; the default scope is the whole document, restricted only by optional fromPage/maxPages. Indexing is bounded and incremental. When hasMore is true, call this same tool with ONLY {searchId}; Host preserves the original query, terms, mode and scope. Do not repeat or change other parameters, invent an ID, or pass a pdf_search ID. Unknown/expired IDs require a new search with documentId and query. building/incomplete returns coverage, not globally ranked candidates; only complete ranks the whole requested scope. auto uses hybrid BM25 + embeddings when the configured engine is available, otherwise reports lexical fallback; explicit semantic/hybrid never silently fall back. Results are original quoted leads with reusable evidence.refId, not verified answers. Each reference covers its ENTIRE snapshot, not an inferred answer span; pass an exact unique quote with refId to annotate or navigate only a selected subpassage. Read context before answering or annotating; inspect complex pages. Image-only content is not indexed. No navigation or editing occurs.',
     parameters: { documentId: { type: 'string', description: 'Required to start a search. Omit when continuing with searchId.' },
       query: { type: 'string', description: 'Required to start: the user question or concept, 4-512 characters. Omit with searchId.' },
       terms: { type: 'json', description: 'Optional array of up to 12 concrete alternate terms, synonyms or translations to improve recall.' },

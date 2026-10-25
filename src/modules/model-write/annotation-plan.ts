@@ -34,7 +34,7 @@ async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnn
   if (input.target.kind === 'reference') {
     if (input.subtype === 'Text') fail('pdf/invalid-target', 'A standalone note requires a PDF position, not a text reference')
     if (!references) fail('pdf/reference-unavailable', 'PDF text reference verification is unavailable')
-    const resolved = await references.resolve(sessionId, snapshot.id, input.target.refId, signal, readSource)
+    const resolved = await references.resolve(sessionId, snapshot.id, input.target.refId, signal, readSource, input.target.quote)
     signal.throwIfAborted()
     if (resolved.documentId !== snapshot.id || resolved.revision !== snapshot.revision
       || resolved.contentVersion !== snapshot.contentVersion || resolved.sourceDigest !== evidenceSha256(snapshot.bytes)) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
+import { pageCacheKey, retrievalCacheKey } from '../../../src/modules/retrieval/cache.ts'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalResult } from '../../../src/modules/retrieval/types.ts'
 
 const document = (): RetrievalDocument => ({ id: 'doc', path: '/synthetic.pdf', sourceDigest: 'source-1', contentVersion: 'content-1', pageCount: 3 })
@@ -169,6 +170,73 @@ test('derived page cache survives service disposal, ignores invalid entries and 
   assert.equal(f.reads.length, 6)
   f.ports.documents.snapshot = () => { throw Object.assign(new Error('Denied'), { code: 'pdf/access-denied' }) }
   await assert.rejects(createRetrievalService(f.ports).search('forbidden', baseInput), { code: 'pdf/access-denied' })
+})
+
+test('positioned paragraphs rank and persist independently without widening their exact evidence ranges', async () => {
+  const e = embedding(), body = 'A cat learns useful patterns.\nIt should not memorize the examples.'
+  const text = `Heading\n${body}\nFooter`
+  const paragraphBreaks = ['Heading\n'.length, 'Heading\n'.length + body.length + 1]
+  const f = fixture({ provider: e.provider, text: [text] })
+  let reads = 0
+  f.ports.pages.read = async () => { reads++; return { text, source: 'pdf-text', paragraphBreaks } }
+  try {
+    const input = { documentId: 'doc', query: 'feline', mode: 'semantic' as const, topK: 1 }
+    const result = await finish(f.service, input)
+    assert.equal(result.coverage.totalChunks, 3)
+    assert.equal(result.coverage.embeddedChunks, 3)
+    assert.equal(result.chunks[0]!.text, body)
+    assert.equal(result.chunks[0]!.startUtf16, paragraphBreaks[0])
+    assert.equal(result.chunks[0]!.endUtf16, paragraphBreaks[1]! - 1)
+    assert.ok(e.calls.filter(call => call.purpose === 'document').flatMap(call => call.texts).includes(body))
+    assert.ok([...f.stored.values()].some(value => value && typeof value === 'object'
+      && 'paragraphBreaks' in value && JSON.stringify(value.paragraphBreaks) === JSON.stringify(paragraphBreaks)))
+    await f.service.dispose()
+    const restored = createRetrievalService(f.ports)
+    try {
+      const next = await finish(restored, input)
+      assert.equal(next.chunks[0]!.text, body)
+      assert.equal(reads, 1, 'the validated derived page cache must retain its paragraph boundaries')
+    } finally { await restored.dispose() }
+  } finally { await f.service.dispose() }
+})
+
+test('older chunking caches and malformed paragraph offsets are rebuilt from authorized page text', async () => {
+  const f = fixture({ text: ['cat\nnext paragraph'] })
+  const source = f.state.document
+  const oldKey = retrievalCacheKey('page', 'joined-page-text-v1', 'page-text-v1', source.path, source.sourceDigest, 1)
+  const freshKey = pageCacheKey(source.path, source.sourceDigest, 1)
+  assert.notEqual(oldKey, freshKey)
+  f.stored.set(oldKey, { version: 1, source: 'pdf-text', text: 'An obsolete whole-page cache.' })
+  f.ports.pages.read = async () => {
+    f.reads.push(1)
+    return { text: 'cat\nnext paragraph', source: 'pdf-text', paragraphBreaks: [4] }
+  }
+  try {
+    assert.equal((await finish(f.service)).chunks[0]!.text, 'cat')
+    assert.equal(f.reads.length, 1)
+    await f.service.dispose()
+    for (const paragraphBreaks of [[0], [100], [4, 2], [4, 4], [1.5], [2]]) {
+      // Offset 2 splits a Unicode surrogate in this cached source.
+      f.stored.set(freshKey, { version: 1, source: 'pdf-text', text: 'A😀 cached cat', paragraphBreaks })
+      const rebuilt = createRetrievalService(f.ports)
+      try { assert.equal((await finish(rebuilt)).chunks[0]!.text, 'cat') }
+      finally { await rebuilt.dispose() }
+    }
+    assert.equal(f.reads.length, 7)
+  } finally { await f.service.dispose() }
+})
+
+test('invalid extraction paragraph metadata is reported without caching or signing partial ranges', async () => {
+  const f = fixture({ text: ['cat'] })
+  f.ports.pages.read = async () => ({ text: 'cat', source: 'pdf-text', paragraphBreaks: [1, 1] })
+  try {
+    const result = await f.service.search('session', baseInput)
+    assert.equal(result.status, 'incomplete')
+    assert.equal(result.coverage.indexedPages, 0)
+    assert.equal(result.coverage.failedPages[0]!.code, 'pdf/retrieval-extraction-failed')
+    assert.deepEqual(result.chunks, [])
+    assert.equal(f.stored.size, 0)
+  } finally { await f.service.dispose() }
 })
 
 test('source changes during extraction reject results before publishing old-source pages', async () => {

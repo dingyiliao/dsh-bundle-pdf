@@ -27,7 +27,7 @@ export interface ResolvedTextReference {
 
 export interface TextReferenceResolverPort {
   resolve(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
-    readSource?: FreshSourceRead): Promise<ResolvedTextReference>
+    readSource?: FreshSourceRead, quote?: string): Promise<ResolvedTextReference>
 }
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
@@ -38,11 +38,30 @@ function identity(snapshot: HostWorkspaceSnapshot) {
     sourceDigest: evidenceSha256(snapshot.bytes) }
 }
 
+function splitsScalar(text: string, offset: number): boolean {
+  const before = text.charCodeAt(offset - 1), after = text.charCodeAt(offset)
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+}
+
+/** A subquote is scoped to the attested occurrence, never searched across the page. */
+function quotedRange(text: string, start: number, end: number, quote?: string): [number, number] {
+  if (quote === undefined) return [start, end]
+  if (!quote.trim()) fail('pdf/invalid-text-range', 'A reference subquote must contain text')
+  const excerpt = text.slice(start, end), offset = excerpt.indexOf(quote)
+  if (offset < 0) {
+    fail('pdf/text-not-found', 'The exact quote is outside this reference; copy a passage from its snapshot or locate another reference')
+  }
+  if (excerpt.indexOf(quote, offset + 1) >= 0) {
+    fail('pdf/ambiguous-text-target', 'The quote occurs more than once inside this reference; provide a longer unique quote')
+  }
+  return [start + offset, start + offset + quote.length]
+}
+
 /** A ref is evidence, not a file-access grant. Reauthorize the live document and all text before use. */
 export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
   references: EvidenceReferenceStore): TextReferenceResolverPort {
   return {
-    async resolve(sessionId, documentId, refId, signal, readSource) {
+    async resolve(sessionId, documentId, refId, signal, readSource, quote) {
       signal.throwIfAborted()
       const parsed = savedTextReferenceSchema.safeParse(references.get(refId))
       if (!parsed.success || parsed.data.sessionId !== sessionId || parsed.data.evidence.refId !== refId) {
@@ -83,7 +102,13 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
         || text.slice(startUtf16, endUtf16) !== evidence.snapshot.text) {
         fail('pdf/stale-reader', 'Referenced page text changed; locate the quote again')
       }
-      const geometry = locateTextOffsetRange(read.content, startUtf16, endUtf16)
+      if (endUtf16 > text.length || splitsScalar(text, startUtf16) || splitsScalar(text, endUtf16)) {
+        fail('pdf/invalid-text-range', 'The stored reference range must span whole Unicode characters inside the page')
+      }
+      const [start, end] = quotedRange(text, startUtf16, endUtf16, quote)
+      // Validate geometry only for the requested passage. A broad context window
+      // can cross columns even when its selected subquote is unambiguous.
+      const geometry = locateTextOffsetRange(read.content, start, end)
       const bounds = before.document.pages[evidence.page - 1]?.cropBox
       if (!bounds || geometry.rect[0] < bounds[0] || geometry.rect[1] < bounds[1]
         || geometry.rect[2] > bounds[2] || geometry.rect[3] > bounds[3]) {
@@ -96,9 +121,9 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
       assertCurrent(workspaces.readSnapshot(sessionId, documentId))
       return { documentId, contentVersion: initial.contentVersion, revision: initial.revision,
         sourceVersion: initial.sourceVersion, sourceDigest: initial.sourceDigest,
-        pageTextDigest: saved.pageTextDigest, page: evidence.page, refId, startUtf16, endUtf16,
+        pageTextDigest: saved.pageTextDigest, page: evidence.page, refId, startUtf16: start, endUtf16: end,
         rectPdf: geometry.rect, quadPoints: geometry.quadPoints,
-        textSha256: evidence.snapshot.sha256, text: geometry.text }
+        textSha256: evidenceSha256(geometry.text), text: geometry.text }
     },
   }
 }

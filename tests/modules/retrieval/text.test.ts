@@ -31,10 +31,45 @@ test('boundaries prefer paragraphs and lines without changing their extraction o
   // the exact input, including its potentially interleaved column text.
   const columns = 'left heading    right heading\nleft text    right text'
   assert.equal(chunkPage(1, columns)[0]!.text, columns)
-  for (let index = 1; index < chunks.length; index++) {
+  assert.equal(chunks[1]!.startUtf16, first.length + 2,
+    'overlap must not absorb a previous paragraph')
+  for (let index = 2; index < chunks.length; index++) {
     assert.ok(chunks[index]!.startUtf16 < chunks[index - 1]!.endUtf16)
     assert.ok(chunks[index]!.endUtf16 > chunks[index - 1]!.endUtf16)
   }
+})
+
+test('short paragraphs are separate exact evidence units even when their whole page fits one size window', () => {
+  const paragraphs = ['Heading', 'A wrapped explanation starts here\nand finishes on this line.', 'Another topic.', 'Footer']
+  const text = paragraphs.join('\n\n')
+  const chunks = chunkPage(1, text)
+  assert.deepEqual(chunks.map(chunk => chunk.text), paragraphs)
+  for (const chunk of chunks) assert.equal(text.slice(chunk.startUtf16, chunk.endUtf16), chunk.text)
+  assert.equal(new Set(chunks.map(chunk => chunk.pageTextDigest)).size, 1)
+})
+
+test('positioned paragraph starts split single-newline page text without overlapping adjacent paragraphs', () => {
+  const first = '  😀 Exact first paragraph.\nIts wrapped second line.'
+  const second = '第二段保持原来的字形范围。'
+  const text = `${first}\n${second}\nFooter`
+  const breaks = [first.length + 1, first.length + second.length + 2]
+  const chunks = chunkPage(4, text, 'pdf-text', { paragraphBreaks: breaks })
+  assert.deepEqual(chunks.map(chunk => chunk.text), [first.trim(), second, 'Footer'])
+  assert.deepEqual(chunks.map(chunk => chunk.startUtf16), [2, ...breaks])
+  for (const chunk of chunks) assert.equal(chunk.text, text.slice(chunk.startUtf16, chunk.endUtf16))
+  const long = `${'Long body text. '.repeat(100)}\n\nA separate ending.`
+  const bounded = chunkPage(1, long, 'pdf-text', { maxCharacters: 128 })
+  assert.equal(bounded.at(-1)!.text, 'A separate ending.')
+  assert.ok(bounded.slice(0, -1).every(chunk => !chunk.text.includes('separate ending')))
+})
+
+test('malformed or excessive paragraph boundaries cannot enter retrieval evidence', () => {
+  const text = 'A😀B\nAnother line.'
+  for (const paragraphBreaks of [[0], [text.length], [-1], [2], [4, 3], [1, 1], [1.5], [NaN], [Infinity],
+    Array.from({ length: 10_001 }, (_, index) => index + 1)]) {
+    assert.throws(() => chunkPage(1, text, 'pdf-text', { paragraphBreaks }), /paragraph breaks/)
+  }
+  assert.throws(() => chunkPage(1, 'A\n\n'.repeat(10_002)), { code: 'pdf/retrieval-budget' })
 })
 
 test('chunking handles long unbroken Unicode text without splitting surrogate pairs or losing characters', () => {

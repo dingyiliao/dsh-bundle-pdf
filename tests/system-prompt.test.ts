@@ -172,6 +172,15 @@ test('evidence guidance closes retrieval, exact annotation and navigation withou
   assert.doesNotMatch(PDF_INTENT_PROMPT, /references? (?:cannot|must not) (?:be used|be passed)/i)
 })
 
+test('annotation guidance distinguishes a full evidence snapshot from the intended subpassage', () => {
+  for (const fragment of ['ENTIRE snapshot.text', 'extra context',
+    'only when every part of that snapshot is intended', '{kind:"reference",refId,quote:',
+    'do not include headings, footers or other context unless requested',
+    'unique within that reference', 'retain the same quote as {documentId,refId,quote}']) {
+    assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+  }
+})
+
 test('search tools continue with only a session-scoped search ID and preserve retrieval coverage limits', () => {
   for (const [pattern, purpose] of [
     [/Start pdf_find_related or pdf_search with documentId, query and any initial query options/, 'Initial calls carry the search request'],

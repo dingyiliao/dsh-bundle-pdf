@@ -149,11 +149,23 @@ Changing a query, scope or option also starts a new search. IDs do not grant fil
 access, and source/version validation still prevents mixed-version results.
 
 Each chunk retains its one-based physical page, original UTF-16 start/end and
-whole-page text digest. Normalization is confined to scoring. Boundaries prefer
-paragraphs/lines, remain on one page and do not split Unicode surrogate pairs;
-the default maximum is 1,200 UTF-16 units with a modest overlap. Smaller provider
-input limits reduce chunk size. Text extraction order is preserved, including
-its limitations on complex layouts.
+whole-page text digest. Normalization is confined to scoring. Explicit paragraph
+separators and conservative native layout boundaries keep short paragraphs
+independent, even when the entire page is below the chunk-size limit. Wrapped
+visual lines stay together; only oversized paragraphs use overlapping windows
+bounded by 1,200 UTF-16 units or the smaller provider input limit. Boundaries
+never split Unicode surrogate pairs or reorder extraction. Ambiguous layouts
+can still produce broad candidates. Chunking changes invalidate derived page
+and index caches; matching text/model fingerprints can still reuse vectors.
+
+A reference denotes its entire stored quote, not an implicitly selected answer.
+Check that scope before marking it. A reference annotation target may include
+an exact `quote` to select a unique substring inside that parent reference;
+`pdf_navigate` accepts the same `refId` and `quote` to preserve the selected range.
+The shared resolver revalidates the source and full page before deriving native
+geometry for that subrange. Missing or ambiguous quotes fail without a draft
+edit. Omitting `quote` deliberately keeps the full parent range; annotation does
+not silently shorten an explicit whole-page reference.
 
 Only returned candidates receive existing evidence references after their page
 text has been re-read and compared. `annotationStatus: requires-geometry-check`

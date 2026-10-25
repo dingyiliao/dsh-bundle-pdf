@@ -1,4 +1,4 @@
-import { createRetrievalService, type RetrievalCache, type RetrievalInput,
+import { createRetrievalService, retrievalPageText, type RetrievalCache, type RetrievalInput,
   type RetrievalEmbedding } from '../../../modules/retrieval/index.js'
 import { evidenceSha256, rememberTextEvidence, type AgentPageReadPort,
   type EvidenceReferenceStore } from '../../../modules/evidence/index.js'
@@ -60,7 +60,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     embedding: { select }, pages: { async read(sessionId, id, page, signal) {
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
       const { content } = await pages.readPageText(sessionId, id, page, signal, { recover: false })
-      return { text: joinPageText(content.items), source: content.extraction === 'local-ocr' ? 'ocr' : 'pdf-text',
+      return { ...retrievalPageText(content.items), source: content.extraction === 'local-ocr' ? 'ocr' : 'pdf-text',
         warnings: [...(content.warnings ?? []), ...(content.quality?.unmappedCharacters
           ? ['Some native characters could not be decoded; OCR or visual inspection is needed.'] : [])] }
     } } })

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { cacheDerived, digest, pageCacheKey, readCachedPage, readCachedVector, retrievalCacheKey, validVector } from './cache.js'
-import { chunkPage, RETRIEVAL_TEXT_VERSION, tokenizeRetrievalText, type RetrievalChunk } from './text.js'
+import { chunkPage, RETRIEVAL_TEXT_VERSION, tokenizeRetrievalText, validParagraphBreaks, type RetrievalChunk } from './text.js'
 import { createBm25IndexCooperatively, hybridCandidates, rankVectorsCooperatively,
   searchBm25Cooperatively, type Bm25Index, type RankedChunk } from './ranking.js'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalResult, RetrievalService } from './types.js'
@@ -98,19 +98,24 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const result = await ports.pages.read(index.sessionId, index.document.id, page, signal)
       guard(index, signal)
       if (result.text.length > 500_000) throw fail('pdf/retrieval-budget', 'PDF page text exceeds the indexing budget')
+      if (!validParagraphBreaks(result.text, result.paragraphBreaks)) {
+        throw fail('pdf/retrieval-extraction-failed', 'PDF extraction returned invalid paragraph offsets')
+      }
       cached = { version: 1, text: result.text, source: result.source,
+        ...(result.paragraphBreaks ? { paragraphBreaks: [...result.paragraphBreaks] } : {}),
         ...(result.warnings?.length ? { warnings: result.warnings.slice(0, 20).map(value => value.slice(0, 500)) } : {}) }
       await cacheDerived(ports.cache, key, cached)
       guard(index, signal)
     }
     const chunks = chunkPage(page, cached.text, cached.source,
-      { maxCharacters: Math.min(1200, index.provider?.maxInputCharacters ?? 1200) })
+      { maxCharacters: Math.min(1200, index.provider?.maxInputCharacters ?? 1200), paragraphBreaks: cached.paragraphBreaks })
     if (index.chunks.length + chunks.length > limits.maxChunks) {
       throw fail('pdf/retrieval-budget', 'PDF contains too many text chunks; search a smaller page range')
     }
     // Account for estimated lexical postings too, not only retained strings. The
     // hard chunk limit supplements this estimate because JS object sizes vary.
-    reserve(index, 128 + (cached.warnings ?? []).reduce((sum, warning) => sum + warning.length * 2 + 32, 0)
+    reserve(index, 128 + (cached.paragraphBreaks?.length ?? 0) * 8
+      + (cached.warnings ?? []).reduce((sum, warning) => sum + warning.length * 2 + 32, 0)
       + chunks.reduce((sum, chunk) => sum + chunk.text.length * 2 + 320
         + tokenizeRetrievalText(chunk.text).length * 96, 0))
     index.chunks.push(...chunks)
