@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { archiveFile, nativePackageName, npmCli, readPackage, releasePackage, sha256, targets } from './package-utils.mjs'
+import { archiveCommand, archiveFile, nativePackageName, npmCli, readPackage, releasePackage, sha256, targets } from './package-utils.mjs'
 
 const registry = 'https://registry.npmjs.org'
 const execute = promisify(execFile)
@@ -31,7 +31,7 @@ function checkPublicMetadata(metadata) {
 }
 
 function inspectMembers(archive) {
-  const paths = execFileSync('tar', ['-tf', archive], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+  const paths = archiveCommand(archive, '-tf').toString('utf8')
     .trim().split(/\r?\n/).filter(Boolean)
   for (const path of paths) {
     const parts = path.replace(/\/$/, '').split('/')
@@ -39,7 +39,7 @@ function inspectMembers(archive) {
       throw new Error(`Unsafe archive path in ${basename(archive)}`)
     }
   }
-  const verbose = execFileSync('tar', ['-tvf', archive], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+  const verbose = archiveCommand(archive, '-tvf').toString('utf8')
     .trim().split(/\r?\n/).filter(Boolean)
   if (verbose.some(line => !/^[-d]/.test(line))) throw new Error(`Archive contains links or special files: ${basename(archive)}`)
   const files = paths.filter(path => !path.endsWith('/'))

@@ -107,6 +107,18 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - run: npm ci
       - run: npm run native:build
+      - name: Check standalone Windows runtime dependencies
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          foreach ($binary in @('dist/native/dsh-pdf-native.exe', 'dist/native/pdfium.dll')) {
+            $dependencies = (& dumpbin /DEPENDENTS $binary | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $binary" }
+            Write-Output $dependencies
+            if ($dependencies -match '(?im)^\s+(?:VCRUNTIME|MSVCP)\S*\.dll\s*$') {
+              throw "$binary depends on an external Visual C++ runtime"
+            }
+          }
       - run: npm run check
         env:
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'

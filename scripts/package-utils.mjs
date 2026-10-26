@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
-import { delimiter, dirname, join, relative, resolve } from 'node:path'
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
 export const targets = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64']
@@ -72,13 +72,21 @@ export async function npmCli() {
   throw new Error('Cannot locate npm-cli.js; run packaging from an npm script or install npm alongside Node')
 }
 
+// GNU tar treats a Windows drive prefix as a remote host. Keep archive arguments
+// explicitly relative, with the directory passed through the process API instead.
+export function archiveCommand(archive, operation, members = []) {
+  return execFileSync('tar', [operation, `./${basename(archive)}`, ...members], {
+    cwd: dirname(resolve(archive)), maxBuffer: 64 * 1024 * 1024,
+  })
+}
+
 export function archiveContents(archive) {
-  return execFileSync('tar', ['-tf', archive], { maxBuffer: 16 * 1024 * 1024 })
+  return archiveCommand(archive, '-tf')
     .toString('utf8').trim().split(/\r?\n/).filter(path => !path.endsWith('/'))
 }
 
 export function archiveFile(archive, path) {
-  return execFileSync('tar', ['-xOf', archive, path], { maxBuffer: 64 * 1024 * 1024 })
+  return archiveCommand(archive, '-xOf', [path])
 }
 
 /** Pack an isolated allowlisted stage and verify every shipped byte against it. */
@@ -107,7 +115,7 @@ export async function packVerified(root, metadata, prepare, suffix) {
     }
     const extracted = join(temporary, 'extracted')
     await mkdir(extracted)
-    execFileSync('tar', ['-xf', archive, '-C', extracted], { maxBuffer: 1024 * 1024 })
+    archiveCommand(archive, '-xf', ['-C', 'extracted'])
     const unpacked = join(extracted, 'package')
     await filesIn(unpacked)
     for (const path of expected) {

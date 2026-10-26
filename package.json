@@ -60,6 +60,7 @@
     "docs/ARCHITECTURE_V2.md",
     "docs/ENGINE_EXTENSIONS.md",
     "docs/RETRIEVAL_EXPERIMENT.md",
+    "docs/screenshots",
     "scripts/local-embedding-server.py",
     "PERFORMANCE.md",
     "NATIVE_V1.md",
