@@ -145,13 +145,9 @@ Host 插件可注册 OCR、图像理解、翻译和 embedding 引擎，设置列
 
 从源码运行时，依次执行 `npm ci`、`npm run native:build`、`npm run build`，再通过 `dsh plugin --profile web add .` 安装本地目录。直接用 Git URL 安装不会得到预构建的原生 worker。类型与 Node 测试使用 `npm run check`，浏览器交互测试使用 `npm run test:web`，项目级覆盖率使用 `npm run test:coverage:project`。
 
-使用实验性语义检索时，可复用已有的 Apple Silicon MLX 环境和已缓存的 Qwen3 embedding 模型：
+语义检索使用你自行配置的 **embedding 模型**，与当前会话模型独立。在 PDF 设置中选择可用的语义检索引擎，并按引擎要求配置服务地址、模型名称等参数。内置的 **Local Qwen3 embedding** 是本地接入示例；其他模型或服务可通过[引擎扩展](docs/ENGINE_EXTENSIONS.md)接入。
 
-```sh
-/absolute/path/to/mlx-lm-local-demo/.venv/bin/python scripts/local-embedding-server.py --port 8001
-```
-
-随后在 PDF 设置中选择 **Local Qwen3 embedding**。启动器只启动 embedding 服务，不下载模型，作为独立进程手动管理；所需缓存模型与依赖见[实验配置及实测记录](docs/RETRIEVAL_EXPERIMENT.md)。`npm run bench:retrieval` 可运行无需模型的基线，文档也提供真实模型测试命令。语义检索属于实验功能，默认关闭；具体可用性以安装的构建或发布版本为准。图片、图表和公式版面不在文字索引的覆盖范围内。
+MLX/Qwen3 的启动示例、所需依赖及基准测试命令见[实验配置及实测记录](docs/RETRIEVAL_EXPERIMENT.md)。语义检索属于实验功能，默认关闭；具体可用性以安装的构建或发布版本为准。图片、图表和公式版面不在文字索引的覆盖范围内。
 
 普通 AcroForm 字段可由用户或模型填写。检查工具将小编号放在填写框内，页图不绘制控件外观和批注；当前草稿值通过 `includeValues:true` 元数据读取，不能从空白图判断字段状态。填写只传单个检查 ID 和编号／值，Host 恢复页号，原子更新该页的共享可撤销草稿。可先批量检查多页，再分别填写独立页；共享字段或声明的依赖冲突时仍需重新检查。模型可显式提供条件和互斥选项检查；Host 校验这些传入规则及字段类型，不推断业务含义。检查页图要求视觉模型，模型覆盖保存仍需单独批准。不会执行 PDF 脚本或动作。签名 PDF 仍只读预览，且不验证签名真伪；XFA 与加密 PDF 不支持。文字搜索不会自动索引扫描页，Host 后台调用 `pdf_open` 也不会打开阅读器标签。其他边界见 [SPEC.md](SPEC.md)。
 
