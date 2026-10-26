@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -99,6 +99,17 @@ test('release preflight validates all platform packages and orders the main pack
     const checked = await verifyReleaseArtifacts(data.root, data.artifacts) as ReleasePackage[]
     assert.deepEqual(checked.map(item => item.name), plan().map(item => item.name))
     assert.ok(checked.every(item => item.version === version && /^sha512-[A-Za-z0-9+/]+=*$/.test(item.integrity)))
+  } finally { await data.dispose() }
+})
+
+test('release preflight compares the generated publishing manifest with a native-free source bootstrap', async () => {
+  const data = await fixture()
+  try {
+    const metadata = JSON.parse(await readFile(join(data.root, 'package.json'), 'utf8'))
+    delete metadata.optionalDependencies
+    await writeFile(join(data.root, 'package.json'), JSON.stringify(metadata))
+    const checked = await verifyReleaseArtifacts(data.root, data.artifacts) as ReleasePackage[]
+    assert.deepEqual(checked.map(item => item.name), plan().map(item => item.name))
   } finally { await data.dispose() }
 })
 

@@ -104,6 +104,19 @@ test('main npm package retains its SDK and exact platform dependencies without s
   } finally { await data.dispose() }
 })
 
+test('a source checkout can bootstrap without unpublished packages while its packed main pins every native dependency', async () => {
+  const data = await fixture()
+  try {
+    const { optionalDependencies, ...source } = data.manifest
+    await data.write('package.json', JSON.stringify(source))
+    data.pack('main')
+    const packed = JSON.parse(member(await data.archive(), 'package.json').toString('utf8'))
+    assert.deepEqual(packed.optionalDependencies, optionalDependencies)
+    assert.equal(JSON.parse(await readFile(join(data.root, 'package.json'), 'utf8')).optionalDependencies, undefined,
+      'packing must not make source installs depend on their own unpublished native output')
+  } finally { await data.dispose() }
+})
+
 test('native npm package carries the matching worker, library, integrity manifest and all licenses only', async () => {
   const data = await fixture()
   try {

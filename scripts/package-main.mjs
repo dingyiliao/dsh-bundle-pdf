@@ -1,16 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { copyTree, filesIn, nativePackageName, packVerified, readPackage, targets } from './package-utils.mjs'
+import { copyTree, filesIn, packVerified, readPackage, releasePackage } from './package-utils.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const pkg = await readPackage(root)
+const pkg = releasePackage(await readPackage(root))
 if (pkg.private === true) throw new Error('The main package is private; configure the public release manifest first')
-for (const target of targets) {
-  if (pkg.optionalDependencies?.[nativePackageName(pkg.name, target)] !== pkg.version) {
-    throw new Error(`The main package must pin ${nativePackageName(pkg.name, target)} to ${pkg.version}`)
-  }
-}
 if (!Array.isArray(pkg.files) || pkg.files.length === 0) throw new Error('The main package requires an explicit files allowlist')
 const safePath = path => typeof path === 'string' && path !== '' && !path.includes('\\')
   && !path.split('/').some(segment => !segment || segment === '..' || segment.startsWith('.') || segment === 'node_modules')

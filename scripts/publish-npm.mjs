@@ -4,7 +4,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { archiveFile, nativePackageName, npmCli, readPackage, sha256, targets } from './package-utils.mjs'
+import { archiveFile, nativePackageName, npmCli, readPackage, releasePackage, sha256, targets } from './package-utils.mjs'
 
 const registry = 'https://registry.npmjs.org'
 const execute = promisify(execFile)
@@ -105,7 +105,7 @@ function verifyMain(archive, metadata, main) {
 
 /** Validate the entire release before any registry write can take place. */
 export async function verifyReleaseArtifacts(root, directory = join(root, 'artifacts')) {
-  const main = await readPackage(root)
+  const main = releasePackage(await readPackage(root))
   if (main.private === true) throw new Error('The release manifest is private')
   checkDependencies(main, main)
   const lock = JSON.parse(await readFile(join(root, 'native/dependencies.json'), 'utf8'))

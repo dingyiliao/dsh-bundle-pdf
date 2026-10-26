@@ -8,8 +8,10 @@ Installation runs no build or download hooks.
 
 ## Build and verify
 
-1. Update the root version and all five `optionalDependencies` together. Update
-   the lockfile without changing unrelated dependencies.
+1. Update the root version and lockfile without changing unrelated dependencies.
+   Native package versions and the published main package's five exact optional
+   dependencies are generated from this version. The source checkout deliberately
+   does not require unpublished native packages, so its locked bootstrap remains usable.
 2. Run the complete project checks. Push a review branch matching `feat/npm-*`
    or use a pull request to run the five-platform installation matrix and Web /
    project coverage checks.

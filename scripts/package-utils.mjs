@@ -9,6 +9,17 @@ export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 export const packageStem = name => name.replace(/^@/, '').replaceAll('/', '-')
 export const nativePackageName = (name, target) => `${name}-native-${target}`
 
+/** Native dependencies belong to the published package, not the source-build bootstrap. */
+export function releasePackage(pkg) {
+  const dependencies = Object.fromEntries(targets.map(target => [nativePackageName(pkg.name, target), pkg.version]))
+  for (const [name, version] of Object.entries(dependencies)) {
+    if (pkg.optionalDependencies?.[name] !== undefined && pkg.optionalDependencies[name] !== version) {
+      throw new Error(`The main package must pin ${name} to ${version}`)
+    }
+  }
+  return { ...pkg, optionalDependencies: { ...pkg.optionalDependencies, ...dependencies } }
+}
+
 export async function readPackage(root) {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
   if (typeof pkg.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/.test(pkg.name)

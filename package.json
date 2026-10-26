@@ -185,12 +185,5 @@
   },
   "engines": {
     "node": ">=22"
-  },
-  "optionalDependencies": {
-    "@dylanl1/dsh-plugin-pdf-native-linux-x64": "0.1.2",
-    "@dylanl1/dsh-plugin-pdf-native-linux-arm64": "0.1.2",
-    "@dylanl1/dsh-plugin-pdf-native-darwin-x64": "0.1.2",
-    "@dylanl1/dsh-plugin-pdf-native-darwin-arm64": "0.1.2",
-    "@dylanl1/dsh-plugin-pdf-native-win32-x64": "0.1.2"
   }
 }
