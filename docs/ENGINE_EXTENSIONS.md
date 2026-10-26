@@ -2,26 +2,68 @@
 
 OCR, image understanding, translation and embedding are Host services, not Reader components. Contributors inject the service they extend and own the registration disposer through `ctx.effect()`. They do not need a Client entry or changes to PDF settings. Plugin code is trusted executable code, not a sandbox boundary. Embedding is experimental and disabled by default.
 
-| Service | Public types | Execution contract |
-| --- | --- | --- |
-| `ocr` | `@local/dsh-pdf/ocr-host` | `recognize(request, configuration)` returns validated OCR text and optional image-pixel geometry |
-| `imageUnderstanding` | `@local/dsh-pdf/image-host` | `prepare(request, configuration)` returns a direct-image route or derived text with provenance |
-| `pdfTranslation` | `@local/dsh-pdf/translation` | `translate(request, configuration)` returns a translation and optional lexical details |
-| `pdfEmbedding` | `@local/dsh-pdf/embedding` | `describe(configuration)` identifies the encoding; `embed(request, configuration)` returns one finite nonzero vector per input |
+## Independent plugin package
 
-Common descriptors, bindings and configuration types are exported from `@local/dsh-pdf/engines`. Use stable, namespaced IDs such as `example.local-ocr`. A descriptor includes `id`, `name`, `version`, `execution` and optional `configurationFields`. Image backends also declare `id` and `kind`; their descriptor must use the same ID. Legacy image backends without descriptors receive an ID-based display name.
+Write an extension as its own package, for example `@example/dsh-pdf-engines`.
+The `@dylanl1/dsh-plugin-pdf/...` imports below refer to the PDF bundle's public
+SDK. These are subpaths of the main npm package, not a separate SDK package or
+local-source aliases. Import the contracts from that package and keep your
+backend implementation in your own package. Do not import another checkout's
+`src/` or `dist/types/` files.
+
+The extension's manifest declares the host-provided packages as peers:
+
+```json
+{
+  "name": "@example/dsh-pdf-engines",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./dist/index.js" },
+  "files": ["dist"],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@dylanl1/dsh-plugin-pdf": "^0.1.2"
+  }
+}
+```
+
+For development, also install these peers as dev dependencies so TypeScript can
+resolve the SDK:
+
+```sh
+npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.2 @deepseek-ai/cordis@4.0.5
+```
+
+The main PDF package obtains the matching prebuilt native dependency for its
+platform; extension authors do not need to build PDFium. A type-only development
+environment can use npm's `--omit=optional` option to skip those native files,
+but the running PDF bundle still needs its platform native package.
+
+Build your Host entry to `dist/index.js` and load the extension in the same Host
+profile as the PDF bundle. `peerDependencies` describes package compatibility;
+the entry's `inject` declaration controls when Cordis starts it. Register with the
+existing service rather than creating or bundling a second service instance.
+The `import type` declarations below are erased from JavaScript and do not mount
+the PDF bundle's plugins. `./backend.js` is your extension's own implementation.
+
+| Service | Import contracts from the PDF SDK | Execution contract |
+| --- | --- | --- |
+| `ocr` | `@dylanl1/dsh-plugin-pdf/ocr-host` | `recognize(request, configuration)` returns validated OCR text and optional image-pixel geometry |
+| `imageUnderstanding` | `@dylanl1/dsh-plugin-pdf/image-host` | `prepare(request, configuration)` returns a direct-image route or derived text with provenance |
+| `pdfTranslation` | `@dylanl1/dsh-plugin-pdf/translation` | `translate(request, configuration)` returns a translation and optional lexical details |
+| `pdfEmbedding` | `@dylanl1/dsh-plugin-pdf/embedding` | `describe(configuration)` identifies the encoding; `embed(request, configuration)` returns one finite nonzero vector per input |
+
+Common descriptors, bindings and configuration types are exported from `@dylanl1/dsh-plugin-pdf/engines`. Use stable, namespaced IDs such as `example.local-ocr`. A descriptor includes `id`, `name`, `version`, `execution` and optional `configurationFields`. Image backends also declare `id` and `kind`; their descriptor must use the same ID. Legacy image backends without descriptors receive an ID-based display name.
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
-import type { HostOcrBackend } from '@local/dsh-pdf/ocr-host'
+import type { HostOcrBackend } from '@dylanl1/dsh-plugin-pdf/ocr-host'
+import { backend } from './backend.js'
 
 export const inject = ['ocr']
 
-// Implement this contract using a local engine or a remote service.
-declare const backend: HostOcrBackend
-
 export function apply(ctx: Context) {
-  ctx.effect(() => ctx.ocr.register(backend))
+  ctx.effect(() => ctx.ocr.register(backend satisfies HostOcrBackend))
 }
 ```
 
@@ -52,13 +94,13 @@ engines use the same registry and settings catalog:
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
-import type { EmbeddingEngine } from '@local/dsh-pdf/embedding'
+import type { EmbeddingEngine } from '@dylanl1/dsh-plugin-pdf/embedding'
+import { engine } from './backend.js'
 
 export const inject = ['pdfEmbedding']
-declare const engine: EmbeddingEngine
 
 export function apply(ctx: Context) {
-  ctx.effect(() => ctx.pdfEmbedding.register(engine))
+  ctx.effect(() => ctx.pdfEmbedding.register(engine satisfies EmbeddingEngine))
 }
 ```
 

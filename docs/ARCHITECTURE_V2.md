@@ -59,7 +59,7 @@ Host 的 `pdfEmbedding` 使用与其他引擎相同的注册／注销和动态�
 
 ## 能力探测与提供者
 
-Host 的 `pdfCapabilities` 是进程内能力目录：稳定的操作 ID 描述需求，Cordis 插件按 Fiber 生命周期注册/注销提供者，目录在请求时结合会话和取消信号判断是否可用。其他 Host 插件可从 `@local/dsh-pdf/capabilities` 引入能力 ID 与提供者类型，再注入 `pdfCapabilities` 注册自己的实现。提供者保留自己的有类型实现接口；目录不以一个无类型 `execute()` 替代 PDF、OCR、识图各自的输入输出契约。OCR 与识图可以在 Reader 之前或之后加载，它们的后端选择和可用性仍由各自服务决定。
+Host 的 `pdfCapabilities` 是进程内能力目录：稳定的操作 ID 描述需求，Cordis 插件按 Fiber 生命周期注册/注销提供者，目录在请求时结合会话和取消信号判断是否可用。其他 Host 插件可从 `@dylanl1/dsh-plugin-pdf/capabilities` 引入能力 ID 与提供者类型，再注入 `pdfCapabilities` 注册自己的实现。提供者保留自己的有类型实现接口；目录不以一个无类型 `execute()` 替代 PDF、OCR、识图各自的输入输出契约。OCR 与识图可以在 Reader 之前或之后加载，它们的后端选择和可用性仍由各自服务决定。
 
 AI 引擎扩展由 `modules/engines` 提供描述、配置校验、类型化目录的共用记账、可取消探测和只读聚合目录。`ocr`、`imageUnderstanding`、`pdfTranslation` 各自拥有唯一实现目录；默认与第三方引擎同样注册并随 Fiber 注销。Reader 配置中的 OCR/图像/翻译选择及各引擎配置通过 Host 绑定到单次请求，人和模型工具复用同一绑定适配器；翻译用请求级实例，不通过修改全局选择路由并发请求。`pdf.engines` 通过认证连接传递有修订的目录快照与长轮询通知，Client 不再只在启动时缓存翻译列表。卸载取消任务，未知选择保留且不自动回退；断线保留上次目录，重新连接后刷新。真实会话模型/凭据可用性仍由 Host 在使用时检查。声明式设置仅接受普通标量及凭据引用，不接收第三方实现函数。详见 [ENGINE_EXTENSIONS.md](./ENGINE_EXTENSIONS.md)。
 
@@ -258,7 +258,15 @@ Reader 玻璃材质由 `client/glass.css` 统一组合主题底色、透明度�
 - 类型、class、schema 类型：`PascalCase`；函数/变量：`camelCase`；常量：`UPPER_SNAKE_CASE` 仅用于真正固定的运行时常量。避免 `service`、`manager`、`utils` 这类没有所属能力的顶层模块名。
 - 模型工具继续 `pdf_*`，RPC 路由继续 `pdf.*`。已有对外错误码（如 `pdf/invalid-page`、`pdf/stale-revision`）保持兼容；新错误可采用 `pdf/<area>/<reason>`，旧码若要改名必须经过协议版本升级和迁移。普通 OCR/翻译错误不硬编码成 PDF 错误。字段名称遵守上一节的身份、页码和坐标约定。
 - 每个模块只公开 `index.ts` 所声明的 API/端口；Cordis 服务由相应 Host 入口提供，Client 只使用可序列化契约。相同逻辑不得同时存在于 Host Tool、Remote Controller 和 React 组件中。
-- 构建产物和发布名暂保持：`@local/dsh-pdf`、`./native`、`./ocr-host`、`./image-host`、`./client`、`./ocr`、`./translation`；Cordis patch 中的 `pdf-*` 行 ID 保持稳定。源目录可变，但 `scripts/build.mjs`、声明生成、打包文件列表和 CI 必须在同一变更中同步。
+- npm 主包为 `@dylanl1/dsh-plugin-pdf`，公开入口继续使用 `./native`、`./ocr-host`、`./image-host`、`./client`、`./ocr`、`./translation`、`./capabilities`、`./engines` 和 `./embedding`，不另拆 SDK 包。Cordis patch 中的 `pdf-*` 行 ID 保持稳定。源目录可变，但 `scripts/build.mjs`、声明生成、打包文件列表和 CI 必须在同一变更中同步。
+
+### npm 分发边界
+
+主包包含 Host、Client 和公开 SDK，通过精确版本的 `optionalDependencies` 引用五个 `@dylanl1/dsh-plugin-pdf-native-<target>` 原生包。原生包以 `os`、`cpu` 限定目标，Linux 构建限定 glibc；支持目标为 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 和 `win32-x64`。原生包的 `bin/` 将 helper、PDFium 动态库、manifest 和第三方许可作为一组分发，Host 解析对应包并继续校验版本、平台、摘要及执行权限。主包不附带各平台二进制，也不通过安装脚本下载或编译原生文件。
+
+源码开发仍用 `npm run native:build` 生成 `dist/native/`。npm 安装时由包管理器选择平台依赖；缺失依赖须明确报错，不能改用其他 PDF 引擎。CI 必须在原生构建、打包审核、安装验证及项目检查通过后，先发布原生包，再发布引用它们的主包。
+
+旧的 `@local/dsh-pdf` 与正式包是不同的安装身份，不能同时启用。切换前先保存 PDF 草稿并备份旧插件存储；行 ID 稳定不代表旧设置、草稿和阅读位置会自动迁移，仍须核对实际 Loader namespace 与持久化域。
 
 ### 公开接口兼容清单
 
@@ -269,7 +277,7 @@ Reader 玻璃材质由 `client/glass.css` 统一组合主题底色、透明度�
 | 安装与 Cordis | `package.json` 的 exports、类型声明路径及构建产物；`cordis.patch.yml` 的 `pdf-native`、`pdf-ocr`、`pdf-image-understanding`、`pdf-reader` 行 ID、依赖顺序及插件配置 |
 | 提供给其他插件的服务 | `pdfNative`、`pdf`、`pdfCapabilities`、`pdfImageEvidence`、`ocr`、`imageUnderstanding`、`pdfTranslation` 的名称、注入/注册与 Fiber 卸载行为；OCR/图像/翻译后端的注册与注销不依赖 Reader UI |
 | RPC 与 UI 扩展 | `pdf.dispatch.v2`、`pdf.native`、`pdf.position`、`pdf.translation`、`pdf.ocr`、`pdf.region`、`pdf.selection`、`pdf.evidence`、`pdf.readercontext`、`pdf.image`、`pdf.info` 的 schema、限额及鉴权；文档预览注册、`sidebar.right.tab.document` 和 `settings.section` 槽位 |
-| 模型与数据 | 保留的 `pdf_*` 工具及 `ocr_recognize`、新增表单/目录工具契约与对外错误码；草稿和阅读位置两个 V1 Storage Domain 的名称、键和记录格式，以及独立证据域；已移除的个人书签 RPC/工具不再属于当前契约；原生 worker 协议与五个平台的预构建归档布局 |
+| 模型与数据 | 保留的 `pdf_*` 工具及 `ocr_recognize`、新增表单/目录工具契约与对外错误码；草稿和阅读位置两个 V1 Storage Domain 的名称、键和记录格式，以及独立证据域；已移除的个人书签 RPC/工具不再属于当前契约；原生 worker 协议与五个平台原生子包的布局 |
 
 公开服务若有新增扩展后端，须继续以有身份的 `register`/dispose 生命周期和类型化能力查询暴露，不在模块内部维护跨 profile 全局单例。只有确认第二个消费者或不同发布周期时才考虑拆 npm 包；重用能力不能以复制一份实现来证明。兼容快照同时覆盖“客户端能调用”和“卸载后注册已释放”，不能仅比较文件名。
 

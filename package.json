@@ -1,7 +1,6 @@
 {
-  "name": "@local/dsh-pdf",
-  "version": "0.1.1",
-  "private": true,
+  "name": "@dylanl1/dsh-plugin-pdf",
+  "version": "0.1.2",
   "type": "module",
   "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
   "license": "MIT",
@@ -86,7 +85,11 @@
     "test:coverage:project": "node scripts/coverage-project.mjs",
     "test:coverage": "npm run test:coverage:project",
     "test:web": "npm run build && vitest run --config vitest.web.config.ts",
-    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test"
+    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test",
+    "package:native": "node scripts/package-native.mjs",
+    "package:main": "node scripts/package-main.mjs",
+    "package:smoke": "node scripts/smoke-package-install.mjs",
+    "release:publish": "node scripts/publish-npm.mjs"
   },
   "dsh": {
     "bundle": {
@@ -175,5 +178,19 @@
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "optionalDependencies": {
+    "@dylanl1/dsh-plugin-pdf-native-linux-x64": "0.1.2",
+    "@dylanl1/dsh-plugin-pdf-native-linux-arm64": "0.1.2",
+    "@dylanl1/dsh-plugin-pdf-native-darwin-x64": "0.1.2",
+    "@dylanl1/dsh-plugin-pdf-native-darwin-arm64": "0.1.2",
+    "@dylanl1/dsh-plugin-pdf-native-win32-x64": "0.1.2"
   }
 }

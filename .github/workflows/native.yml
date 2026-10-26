@@ -2,8 +2,13 @@ name: PDF native packages and compatibility checks
 on:
   pull_request:
   push:
-    branches: [main, 'feat/native-pdf-*', feat/pdf-hybrid-retrieval]
+    branches: [main, 'feat/native-pdf-*', feat/pdf-hybrid-retrieval, 'feat/npm-*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified npm packages (requires configured npm trusted publishing)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -105,15 +110,18 @@ jobs:
       - run: npm run check
         env:
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
-      - name: Pack complete platform-specific npm package without build scripts
-        run: npm pack --ignore-scripts
-      - name: Verify and name installable npm package
+      - name: Pack and verify platform native dependency
         run: node scripts/package-native.mjs ${{ matrix.target }}
-      - name: Upload installable npm package
+      - name: Pack and verify universal plugin
+        run: node scripts/package-main.mjs
+      - name: Install packed packages in a clean directory and run native and SDK smoke
+        shell: bash
+        run: node scripts/smoke-package-install.mjs --main artifacts/*-main.tgz --native artifacts/*-${{ matrix.target }}-native.tgz
+      - name: Upload platform native package
         uses: actions/upload-artifact@v4
         with:
-          name: dsh-pdf-npm-package-${{ matrix.target }}
-          path: artifacts/*-${{ matrix.target }}-npm-package.tgz
+          name: dsh-pdf-native-${{ matrix.target }}
+          path: artifacts/*-${{ matrix.target }}-native.tgz
           if-no-files-found: error
       - name: Reader smoke
         if: matrix.target == 'linux-x64'
@@ -126,3 +134,47 @@ jobs:
         with:
           name: native-reader-smoke
           path: bench-results/ci-native
+  package-main:
+    needs: [native, web-and-project-coverage]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/package-main.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-pdf-main
+          path: artifacts/*-main.tgz
+          if-no-files-found: error
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: [native, web-and-project-coverage, package-main]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: npm-pdf-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11.21.1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dsh-pdf-native-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dsh-pdf-main
+          path: artifacts
+      - name: Publish matching native packages, then the plugin
+        run: node scripts/publish-npm.mjs --artifacts artifacts

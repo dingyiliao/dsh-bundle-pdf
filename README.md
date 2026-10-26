@@ -65,22 +65,17 @@ See also [bookmarks and outline](docs/screenshots/02-bookmarks-and-outline.png) 
 
 Validated with DSH `0.2.1-rc.3`. Supported runtime versions are declared in [package.json](package.json); the test SDK and browser-test host are pinned to the validated release.
 
-This plugin is not published to npm. Download the `dsh-pdf-npm-package-<target>` artifact for your OS and CPU from a successful [GitHub Actions run](https://github.com/dingyiliao/dsh-bundle-pdf/actions) on `main`. Unzip it and install the `.tgz` inside. Available targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, and `win32-x64`. Check [package.json](package.json) for compatible DSH versions.
+In DSH's plugin manager, add **`@dylanl1/dsh-plugin-pdf`**, then install and enable it. The main package automatically selects the prebuilt native package for your OS and CPU; no compiler or install-time build script is needed. Supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64` and `win32-x64`; Linux builds require glibc.
 
-For an existing Web profile:
-
-```sh
-dsh plugin --profile web add /absolute/path/to/package.tgz
-dsh web
-```
-
-For Desktop, first launch the app to create its `desktop` profile, then quit it completely. Install the app's own CLI using **Manage dsh Command…** in the Desktop menu, and run:
+You can also use the CLI. Replace `<profile>` with the profile you actually use:
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/package.tgz
+dsh plugin --profile <profile> add @dylanl1/dsh-plugin-pdf
 ```
 
-Reopen Desktop afterward. A separately installed npm `dsh` command does not manage the Desktop profile.
+For Desktop, use its own CLI installed through **Manage dsh Command…** in the app menu. A separately installed npm `dsh` command does not manage the Desktop profile. Reopen or reload DSH after installing if the plugin is not activated immediately.
+
+If you previously installed `@local/dsh-pdf`, save pending PDF changes and back up the old plugin storage before switching. Disable the old bundle before enabling the new package; do not run both together. Settings, drafts and reading positions from the old package need separate migration checks, even though the `pdf-*` patch row IDs remain unchanged.
 
 Open an accessible local PDF from DSH's file sidebar to start reading. The plugin uses your configured DSH models and credentials; it does not provide a free model. Image understanding and OCR depend on the selected model or a separately configured backend.
 
@@ -143,7 +138,7 @@ Form inspection returns a numbered page image and the writable controls on that 
 
 ## Development
 
-For a source checkout, run `npm ci`, `npm run native:build`, and `npm run build`, then install the directory with `dsh plugin --profile web add .`. A Git URL installation does not include a prebuilt native worker. Run `npm run check` for type and Node tests, `npm run test:web` for browser interactions, and `npm run test:coverage:project` for project coverage.
+For a source checkout, run `npm ci`, `npm run native:build`, and `npm run build`, then install the directory with `dsh plugin --profile <profile> add .` using your actual profile. Source development stages the worker in `dist/native/`; installing the published package obtains a matching native dependency automatically. Run `npm run check` for type and Node tests, `npm run test:web` for browser interactions, and `npm run test:coverage:project` for project coverage.
 
 Semantic retrieval uses an **embedding model you configure**, independently of the current conversation model. In PDF settings, select an available semantic search engine and configure its service URL, model name and other required parameters. The built-in **Local Qwen3 embedding** engine is a local integration example; other models or services can be added through [engine extensions](docs/ENGINE_EXTENSIONS.md).
 
@@ -155,4 +150,4 @@ Draft storage still uses `format: 1`, but older binaries do not understand the n
 
 ## License
 
-[MIT](LICENSE). Bundled third-party licenses are listed in `dist/THIRD_PARTY_NOTICES.md` and `dist/native/`.
+[MIT](LICENSE). The main package includes `dist/THIRD_PARTY_NOTICES.md`; each platform native package includes its third-party licenses beside the native binaries.

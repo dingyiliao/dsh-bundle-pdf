@@ -65,22 +65,17 @@
 
 已验证 DSH `0.2.1-rc.3`。支持的运行时版本在 [package.json](package.json) 中声明，测试 SDK 与浏览器测试宿主固定到已验证版本。
 
-插件暂未发布到 npm。请从 `main` 分支构建成功的 [GitHub Actions](https://github.com/dingyiliao/dsh-bundle-pdf/actions) 运行中，下载与你的系统及 CPU 对应的 `dsh-pdf-npm-package-<target>` 产物，解压 ZIP 后安装其中的 `.tgz`。支持 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 和 `win32-x64`。兼容的 DSH 版本见 [package.json](package.json)。
+在 DSH 插件管理器中添加 **`@dylanl1/dsh-plugin-pdf`**，安装并启用即可。主包会自动选择对应系统和 CPU 的预构建原生包，无需编译器或安装时构建脚本。支持 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 和 `win32-x64`；Linux 构建要求 glibc。
 
-已有 Web profile 可运行：
-
-```sh
-dsh plugin --profile web add /absolute/path/to/package.tgz
-dsh web
-```
-
-Desktop 用户先启动一次应用以创建 `desktop` profile，再完全退出。通过应用菜单中的**管理 dsh 命令…**安装桌面版自带的 CLI，然后运行：
+也可以使用 CLI，将 `<profile>` 替换为你实际使用的 profile：
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/package.tgz
+dsh plugin --profile <profile> add @dylanl1/dsh-plugin-pdf
 ```
 
-之后重新打开 Desktop。单独通过 npm 安装的 `dsh` 命令不能管理 Desktop profile。
+Desktop 用户应通过应用菜单中的**管理 dsh 命令…**使用桌面版自带的 CLI。单独通过 npm 安装的 `dsh` 命令不能管理 Desktop profile；安装后若未立即激活，可重新打开或重载 DSH。
+
+如果此前安装过 `@local/dsh-pdf`，切换前先把未保存修改写入 PDF，并备份旧插件存储。启用新包前停用旧 bundle，不要同时启用两者。即使 `pdf-*` patch 行 ID 保持不变，旧包的设置、草稿和阅读位置仍需单独核对迁移情况。
 
 在 DSH 文件栏打开有权访问的本地 PDF，即可开始阅读。插件使用你在 DSH 中配置的模型和凭据，不提供免费模型；图像理解与 OCR 是否可用取决于所选模型或另行配置的后端。
 
@@ -143,7 +138,7 @@ Host 插件可注册 OCR、图像理解、翻译和 embedding 引擎，设置列
 
 ## 开发
 
-从源码运行时，依次执行 `npm ci`、`npm run native:build`、`npm run build`，再通过 `dsh plugin --profile web add .` 安装本地目录。直接用 Git URL 安装不会得到预构建的原生 worker。类型与 Node 测试使用 `npm run check`，浏览器交互测试使用 `npm run test:web`，项目级覆盖率使用 `npm run test:coverage:project`。
+从源码运行时，依次执行 `npm ci`、`npm run native:build`、`npm run build`，再通过 `dsh plugin --profile <profile> add .` 安装本地目录，使用你实际的 profile。源码开发将 worker 暂存到 `dist/native/`；安装发布包时则自动取得匹配的原生依赖。类型与 Node 测试使用 `npm run check`，浏览器交互测试使用 `npm run test:web`，项目级覆盖率使用 `npm run test:coverage:project`。
 
 语义检索使用你自行配置的 **embedding 模型**，与当前会话模型独立。在 PDF 设置中选择可用的语义检索引擎，并按引擎要求配置服务地址、模型名称等参数。内置的 **Local Qwen3 embedding** 是本地接入示例；其他模型或服务可通过[引擎扩展](docs/ENGINE_EXTENSIONS.md)接入。
 
@@ -155,4 +150,4 @@ MLX/Qwen3 的启动示例、所需依赖及基准测试命令见[实验配置及
 
 ## 许可证
 
-[MIT](LICENSE)。打包的第三方许可文本见 `dist/THIRD_PARTY_NOTICES.md` 和 `dist/native/`。
+[MIT](LICENSE)。主包包含 `dist/THIRD_PARTY_NOTICES.md`，各平台原生包在二进制文件旁附带对应的第三方许可文本。

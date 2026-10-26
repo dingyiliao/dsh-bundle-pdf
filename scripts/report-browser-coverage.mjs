@@ -6,6 +6,8 @@ import { decode } from '@jridgewell/sourcemap-codec'
 import ts from 'typescript'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+const packageId = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name
+const relocatedSourcePrefix = `/plugins/${packageId.slice(0, packageId.indexOf('/') + 1)}src/`
 const artifactDirectory = process.env.DSH_PDF_BROWSER_COVERAGE_DIR
 const output = process.env.DSH_PDF_BROWSER_COVERAGE_OUTPUT
 if (!artifactDirectory || !output) {
@@ -15,9 +17,9 @@ if (!isAbsolute(artifactDirectory) || !isAbsolute(output)) {
   throw new Error('PDF browser coverage paths must be absolute.')
 }
 
-/** A map segment's source path is relocated by DSH from ../src to /plugins/@local/src. */
+/** DSH relocates ../src under the package scope; derive it from the actual package identity. */
 function localSource(source) {
-  const prefix = '/plugins/@local/src/'
+  const prefix = relocatedSourcePrefix
   if (!source.startsWith(prefix)) return undefined
   const path = resolve(root, 'src', source.slice(prefix.length))
   const sourceRoot = resolve(root, 'src')
@@ -63,7 +65,7 @@ if (!artifacts.length) throw new Error(`No PDF browser coverage artifacts found 
 let processed = 0
 for (const artifact of artifacts) {
   const parsed = JSON.parse(await readFile(join(artifactDirectory, artifact), 'utf8'))
-  if (parsed.version !== 1 || parsed.packageId !== '@local/dsh-pdf' || !Array.isArray(parsed.entries)) {
+  if (parsed.version !== 1 || parsed.packageId !== packageId || !Array.isArray(parsed.entries)) {
     throw new Error(`Malformed browser coverage artifact: ${artifact}`)
   }
   for (const entry of parsed.entries) {

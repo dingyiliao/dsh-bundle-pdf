@@ -14,6 +14,7 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     rpcMethods: string[]
     storage: { domains: Array<{ name: string }>; keyExpressions: { bookmark?: string } }
     providedServices: string[]
+    patch: Array<{ id: string; name: string }>
     package: { exports: Record<string, unknown>; dsh: { client: { inject: string[] } } }
     clientExtensions: { slots: string[] }
   }
@@ -24,6 +25,9 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     'pdf_context', 'pdf_find_related', 'pdf_image_context', 'pdf_locate', 'pdf_navigate', 'pdf_outline_edit', 'pdf_save', 'pdf_status',
     'pdf_form_inspect_page', 'pdf_fill_form']
   assert.deepEqual(current, { ...expected,
+    // The npm release changes package identity, while preserving every plugin row ID.
+    patch: expected.patch.map(row => ({ ...row,
+      name: row.name.replace('@local/dsh-pdf', '@dylanl1/dsh-plugin-pdf') })),
     // Personal bookmarks and their domain/RPC were intentionally removed.
     storage: { ...expected.storage,
       domains: expected.storage.domains.filter(domain => !domain.name.startsWith('pdf_bookmarks_')),
@@ -31,7 +35,7 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     toolNames: [...expected.toolNames, ...addedTools].sort(),
     rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.navigation', 'pdf.region', 'pdf.selection', 'pdf.watch'].sort(),
     providedServices: [...expected.providedServices, 'pdfAiSettings', 'pdfCapabilities', 'pdfImageEvidence', 'pdfEmbedding'].sort(),
-    package: { ...expected.package, exports: { ...expected.package.exports,
+    package: { ...expected.package, name: '@dylanl1/dsh-plugin-pdf', exports: { ...expected.package.exports,
       './capabilities': { types: './dist/types/modules/capabilities/index.d.ts', import: './dist/capabilities.js' },
       './engines': { types: './dist/types/modules/engines/index.d.ts', import: './dist/engines.js' },
       './embedding': { types: './dist/types/embedding/index.d.ts', import: './dist/embedding.js' },

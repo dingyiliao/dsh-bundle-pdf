@@ -77,7 +77,7 @@ const imageHostBuild = await build({
 // The Harness client loader supplies these shared platform modules. Bundle
 // pure DSH utilities such as workspace-path locally: they are not Client
 // module rows or entries in the shell's frozen shared-module table.
-const clientWrapperStart = 'window.__ModuleLoader__.load({\n  id: "@local/dsh-pdf",\n  factory(require) {\n    const module = { exports: {} };\n    const exports = module.exports;\n'
+const clientWrapperStart = 'window.__ModuleLoader__.load({\n  id: "@dylanl1/dsh-plugin-pdf",\n  factory(require) {\n    const module = { exports: {} };\n    const exports = module.exports;\n'
 const clientWrapperEnd = '\n    return module.exports;\n  }\n});\n'
 const browserCoverage = process.env.DSH_PDF_BROWSER_COVERAGE === '1'
 const clientBuild = await build({
@@ -195,4 +195,4 @@ for (const root of [...roots].sort()) {
   if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
-console.log(`Built @local/dsh-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/embedding/capability SDKs, and ${manifestFiles.length} local OCR resources.`)
+console.log(`Built @dylanl1/dsh-plugin-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/embedding/capability SDKs, and ${manifestFiles.length} local OCR resources.`)

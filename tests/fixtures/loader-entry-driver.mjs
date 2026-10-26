@@ -8,19 +8,19 @@ const ctx = await boot('pdf-built-entry-smoke', configPath)
 try {
   // Use Loader's module importer and the package's published export. A direct
   // source import would miss export-map and build failures.
-  const mod = await ctx.loader.import('@local/dsh-pdf')
+  const mod = await ctx.loader.import('@dylanl1/dsh-plugin-pdf')
   const plugin = ctx.loader.unwrapExports(mod)
-  const nativeMod = await ctx.loader.import('@local/dsh-pdf/native')
+  const nativeMod = await ctx.loader.import('@dylanl1/dsh-plugin-pdf/native')
   const nativePlugin = ctx.loader.unwrapExports(nativeMod)
-  const ocrMod = await ctx.loader.import('@local/dsh-pdf/ocr-host')
+  const ocrMod = await ctx.loader.import('@dylanl1/dsh-plugin-pdf/ocr-host')
   const ocrPlugin = ctx.loader.unwrapExports(ocrMod)
-  const imageMod = await ctx.loader.import('@local/dsh-pdf/image-host')
+  const imageMod = await ctx.loader.import('@dylanl1/dsh-plugin-pdf/image-host')
   const imagePlugin = ctx.loader.unwrapExports(imageMod)
   await writeFile('loader-entry-report.json', JSON.stringify({
-    resolvedEntry: import.meta.resolve('@local/dsh-pdf'),
-    nativeResolvedEntry: import.meta.resolve('@local/dsh-pdf/native'),
-    ocrResolvedEntry: import.meta.resolve('@local/dsh-pdf/ocr-host'),
-    imageResolvedEntry: import.meta.resolve('@local/dsh-pdf/image-host'),
+    resolvedEntry: import.meta.resolve('@dylanl1/dsh-plugin-pdf'),
+    nativeResolvedEntry: import.meta.resolve('@dylanl1/dsh-plugin-pdf/native'),
+    ocrResolvedEntry: import.meta.resolve('@dylanl1/dsh-plugin-pdf/ocr-host'),
+    imageResolvedEntry: import.meta.resolve('@dylanl1/dsh-plugin-pdf/image-host'),
     exportNames: Object.keys(mod).sort(),
     nativeExportNames: Object.keys(nativeMod).sort(),
     ocrExportNames: Object.keys(ocrMod).sort(),

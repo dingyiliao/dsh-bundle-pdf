@@ -17,12 +17,12 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
   const authored = await readFile(source, 'utf8')
   const data = {
     version: 1,
-    packageId: '@local/dsh-pdf',
+    packageId: '@dylanl1/dsh-plugin-pdf',
     entries: [{
-      url: 'http://127.0.0.1/plugins/??@local/dsh-pdf/client.js&rev=test',
+      url: 'http://127.0.0.1/plugins/??@dylanl1/dsh-plugin-pdf/client.js&rev=test',
       generatedSource: 'a();\nb();\n',
       sourceMap: {
-        version: 3, sources: ['/plugins/@local/src/client/Reader.tsx'], sourcesContent: [authored],
+        version: 3, sources: ['/plugins/@dylanl1/src/client/Reader.tsx'], sourcesContent: [authored],
         names: [], mappings: 'AAAA;AACA',
       },
       functions: [

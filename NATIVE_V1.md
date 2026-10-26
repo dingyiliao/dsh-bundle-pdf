@@ -2,7 +2,15 @@
 
 原生第一版以 `50733d8e95c97c828b2f7282e86c999f127ca966` 为开发基线，现已合入 `main`。阅读仅使用原生 PDFium 和 `WindowedPages` 数字布局与有界页面挂载；当前上层已扩展共享草稿中的标注、目录书签、AcroForm 填写及相应模型工具，图像理解与 OCR 由独立后端提供。本文保留原生阶段的设计及历史验收记录，当前工具契约以 [AI_READER_TOOLS.md](docs/AI_READER_TOOLS.md) 为准。常规宿主阅读交互已由用户确认通过；新增编辑的真实模型调用、外部阅读器互操作、特殊样本和发布级性能仍待验证，页面内容对象（文本、图像、矢量）编辑尚未实现。
 
-## 运行
+## npm 安装与原生分发
+
+普通用户在 DSH 插件管理器添加 `@dylanl1/dsh-plugin-pdf`，安装并启用即可；也可使用 `dsh plugin --profile <profile> add @dylanl1/dsh-plugin-pdf`，将 `<profile>` 替换为实际使用的 profile。主包通过精确版本的 optional dependencies 选择对应平台的预构建原生包，无需安装 C++ 工具或运行下载、构建脚本。
+
+五个平台包命名为 `@dylanl1/dsh-plugin-pdf-native-<target>`，目标为 `darwin-arm64`、`darwin-x64`、`linux-arm64`、`linux-x64` 和 `win32-x64`；Linux 构建要求 glibc。每包的 `bin/` 同时包含 helper、PDFium 动态库、manifest 及许可证，保持动态库的相对位置。Host 从平台包定位文件并校验版本、平台、摘要和执行权限，缺失或损坏时明确报错。
+
+从旧的 `@local/dsh-pdf` 切换前，先保存 PDF 草稿并备份旧插件存储，停用旧 bundle 后再启用新包。旧包设置、草稿与阅读位置的迁移需单独核对，不能仅凭 patch 行 ID 未变假定自动接管。
+
+## 源码构建
 
 ```sh
 npm ci

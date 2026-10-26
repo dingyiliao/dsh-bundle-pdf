@@ -2,6 +2,7 @@ export * from './types.js'
 export * from './registry.js'
 export * from './service.js'
 export { translationEn, translationZh } from './locales.js'
+export type {} from '../modules/engines/index.js'
 
 import { TranslationRegistry } from './registry.js'
 import type { TranslationLimits } from './types.js'

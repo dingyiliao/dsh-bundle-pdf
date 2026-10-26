@@ -50,7 +50,7 @@ async function documentBytes(): Promise<Uint8Array> {
 
 async function openReader(page: Page, url: string, title: string) {
   await page.goto(url, { waitUntil: 'load' })
-  await page.locator('style[data-dsh-plugin="@local/dsh-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+  await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
   await page.getByRole('treeitem').filter({ hasText: title }).click()
   const restoredReader = page.locator('.dsh-pdf-reader')
   if (await restoredReader.isVisible()) {

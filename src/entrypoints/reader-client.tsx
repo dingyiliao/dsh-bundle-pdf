@@ -35,7 +35,7 @@ import glassStyles from '../client/glass.css'
 export const name = 'pdf-reader-client'
 export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms', 'uiSession', 'sidebarRight']
 const NS = 'pdfReader'
-const ID = '@local/dsh-pdf'
+const ID = '@dylanl1/dsh-plugin-pdf'
 const desktopSavePicker = (globalThis as typeof globalThis & {
   __DSH_SAVE_FILE_PICKER__?: { pick(defaultPath: string): Promise<string | null> }
 }).__DSH_SAVE_FILE_PICKER__
