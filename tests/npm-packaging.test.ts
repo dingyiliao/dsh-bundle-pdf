@@ -5,6 +5,7 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeF
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 const repository = new URL('../', import.meta.url)
 const target = `${process.platform}-${process.arch}`
@@ -13,8 +14,8 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const executable = `dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`
 const library = process.platform === 'win32' ? 'pdfium.dll' : process.platform === 'darwin' ? 'libpdfium.dylib' : 'libpdfium.so'
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-npm-package-test-'))
+async function fixture(parent = tmpdir()) {
+  const root = await mkdtemp(join(parent, 'dsh-npm-package-test-'))
   const manifest = {
     name: '@fixture/dsh-pdf', version: '9.8.7', type: 'module', license: 'MIT',
     exports: { '.': './dist/index.js', './native': './dist/native-provider.js',
@@ -114,6 +115,18 @@ test('a source checkout can bootstrap without unpublished packages while its pac
     assert.deepEqual(packed.optionalDependencies, optionalDependencies)
     assert.equal(JSON.parse(await readFile(join(data.root, 'package.json'), 'utf8')).optionalDependencies, undefined,
       'packing must not make source installs depend on their own unpublished native output')
+  } finally { await data.dispose() }
+})
+
+test('packaging can write archives into the checkout volume when system TEMP is elsewhere', async () => {
+  const parent = join(fileURLToPath(repository), '.test-output')
+  await mkdir(parent, { recursive: true })
+  const data = await fixture(parent)
+  try {
+    data.pack('native')
+    const archive = await data.archive()
+    assert.equal(member(archive, `bin/${executable}`).toString('utf8'), 'worker bytes')
+    assert.equal(member(archive, `bin/${library}`).toString('utf8'), 'PDFium bytes')
   } finally { await data.dispose() }
 })
 

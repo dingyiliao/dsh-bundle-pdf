@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -118,7 +118,9 @@ export async function packVerified(root, metadata, prepare, suffix) {
           && !((await lstat(join(unpacked, path))).mode & 0o111)) throw new Error(`npm archive lost executable permissions: ${path}`)
     }
     const destination = join(output, `${packageStem(metadata.name)}-${metadata.version}-${suffix}.tgz`)
-    await rename(archive, destination)
+    // Windows runners keep TEMP on C: and the checkout on D:. Copying also
+    // supports that layout; the temporary archive is removed by finally below.
+    await copyFile(archive, destination)
     console.log(`Verified publishable npm package: ${relative(root, destination)}`)
     return destination
   } finally {
