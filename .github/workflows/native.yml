@@ -12,6 +12,21 @@ on:
 permissions:
   contents: read
 jobs:
+  release-gate:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Decide whether this commit requests a stable npm release
+        id: release
+        run: node scripts/release-gate.mjs
   web-and-project-coverage:
     # The Node 24 matrix below proves platform packaging. This lane also
     # exercises the real DSH Web composition and all project-owned source.
@@ -163,8 +178,8 @@ jobs:
           path: artifacts/*-main.tgz
           if-no-files-found: error
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
-    needs: [native, web-and-project-coverage, package-main]
+    if: needs.release-gate.outputs.publish == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    needs: [release-gate, native, web-and-project-coverage, package-main]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -188,5 +203,9 @@ jobs:
         with:
           name: dsh-pdf-main
           path: artifacts
+      - name: Skip a superseded release while holding the publishing lock
+        id: current-release
+        run: node scripts/release-gate.mjs --current-main
       - name: Publish matching native packages, then the plugin
+        if: steps.current-release.outputs.publish == 'true'
         run: node scripts/publish-npm.mjs --artifacts artifacts
