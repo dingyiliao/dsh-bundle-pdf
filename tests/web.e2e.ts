@@ -3928,7 +3928,8 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await noteTool.hover()
     await expect.poll(() => noteTool.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(noteIdleBackground)
     await noteTool.click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
+    await expect.poll(() => noteTool.getAttribute('aria-pressed')).toBe('true')
+    await reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note').click({ position: { x: 120, y: 140 } })
     const notePanel = reader.locator('.dsh-pdf-comments')
     const commentCard = reader.locator('.dsh-pdf-page-comment-card')
     const noteEditor = commentCard.getByRole('textbox', { name: 'Note' })
@@ -4603,8 +4604,10 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 10_000 })
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
     const save = toolbar.getByRole('button', { name: 'Save', exact: true })
-    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
+    const note = toolbar.getByRole('button', { name: 'Note', exact: true })
+    await note.click()
+    await expect.poll(() => note.getAttribute('aria-pressed')).toBe('true')
+    await reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note').click({ position: { x: 120, y: 140 } })
     const commentCard = reader.locator('.dsh-pdf-page-comment-card')
     await commentCard.getByRole('textbox', { name: 'Note' }).fill(NOTE)
     await commentCard.getByRole('button', { name: 'Save note', exact: true }).click()
@@ -4619,16 +4622,26 @@ it('uses the desktop Save As picker and clears a single stale-save conflict afte
     await page.evaluate(path => {
       (window as typeof window & { __pdfPickerNextPath?: string | null }).__pdfPickerNextPath = path
     }, copyPath)
+    const sourceFrame = await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().elementHandle()
+    expect(sourceFrame).not.toBeNull()
     await clickToolbarAction('Save as')
     // Save As replaces the reader tab, so a transient status from the old
     // reader is not a stable way to identify the new resource.
     await expect.poll(() => savedNoteContents(copyPath)).toEqual([NOTE])
+    await column.getByRole('tab', { selected: true }).filter({ hasText: 'reader-save-as-e2e.pdf' }).waitFor({ state: 'visible' })
+    await expect.poll(() => column.locator('[data-textpreview-path]:visible').getAttribute('title')).toBe(copyPath)
+    // The path changes before the replacement Reader opens its native content.
+    // Its first complete frame retires the old resource's retained canvas.
+    await expect.poll(() => sourceFrame!.evaluate(canvas => canvas.isConnected)).toBe(false)
+    await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible' })
+    await expect.poll(() => save.getAttribute('data-save-state')).toMatch(/^saved(?:-success)?$/)
     const pickerDefaults = await page.evaluate(() =>
       (window as typeof window & { __pdfPickerDefaults?: string[] }).__pdfPickerDefaults)
     expect(pickerDefaults).toEqual([sourcePath.replace(/\.pdf$/i, '-annotated.pdf'), sourcePath.replace(/\.pdf$/i, '-annotated.pdf')])
 
-    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 180, y: 210 } })
+    await note.click()
+    await expect.poll(() => note.getAttribute('aria-pressed')).toBe('true')
+    await reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note').click({ position: { x: 180, y: 210 } })
     await commentCard.getByRole('textbox', { name: 'Note' }).fill('Unsaved after Save As')
     await commentCard.getByRole('button', { name: 'Save note', exact: true }).click()
     await expect.poll(() => save.isEnabled()).toBe(true)
@@ -4682,8 +4695,10 @@ it('checks a Web Save As target before overwrite and rejects a changed target ve
     await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first()
       .waitFor({ state: 'visible', timeout: 20_000 })
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
-    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 120, y: 140 } })
+    const note = toolbar.getByRole('button', { name: 'Note', exact: true })
+    await note.click()
+    await expect.poll(() => note.getAttribute('aria-pressed')).toBe('true')
+    await reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note').click({ position: { x: 120, y: 140 } })
     const commentCard = reader.locator('.dsh-pdf-page-comment-card')
     await commentCard.getByRole('textbox', { name: 'Note' }).fill(NOTE)
     await commentCard.getByRole('button', { name: 'Save note', exact: true }).click()
@@ -5618,8 +5633,10 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     expectUniformHighlight(await highlightPixels(page))
     const annotations = reader.locator('.dsh-pdf-comments')
     await expect.poll(() => annotations.locator('.dsh-pdf-comment-item').count()).toBe(1)
-    await toolbar.getByRole('button', { name: 'Note', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 185, y: 90 } })
+    const note = toolbar.getByRole('button', { name: 'Note', exact: true })
+    await note.click()
+    await expect.poll(() => note.getAttribute('aria-pressed')).toBe('true')
+    await reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note').click({ position: { x: 185, y: 90 } })
     const commentCard = reader.locator('.dsh-pdf-page-comment-card')
     await commentCard.getByRole('textbox', { name: 'Note' }).fill('Point-anchored note')
     await commentCard.getByRole('button', { name: 'Save note', exact: true }).click()
@@ -5978,14 +5995,32 @@ it('highlights from the split button, then edits and persists five quick colors'
         Math.abs(channel - [161 / 255, 178 / 255, 195 / 255][index]) < 1e-6))
     }).toBe(true)
 
-    // Placing a free note should open the annotation editor ready for typing.
+    // A disk write precedes the Client accepting its saved revision. Wait for
+    // that handoff before entering Note mode: accepting a revision resets modes.
+    await expect.poll(() => save.getAttribute('data-save-state')).toMatch(/^saved(?:-success)?$/)
     const mainToolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
-    await mainToolbar.getByRole('button', { name: 'Note', exact: true }).click()
-    await reader.locator('[data-pdf-page="1"]').click({ position: { x: 180, y: 90 } })
+    await expect.poll(() => mainToolbar.getAttribute('aria-busy')).not.toBe('true')
+    // Placing a free note should open the annotation editor ready for typing.
+    const note = mainToolbar.getByRole('button', { name: 'Note', exact: true })
+    await note.click()
+    await expect.poll(() => note.getAttribute('aria-pressed')).toBe('true')
+    const notePage = reader.locator('[data-pdf-page="1"].dsh-pdf-mode-note')
+    await notePage.waitFor({ state: 'visible' })
+    await notePage.scrollIntoViewIfNeeded()
+    const placement = { x: 180, y: 90 }
+    expect(await notePage.evaluate((element, point) => {
+      const box = element.getBoundingClientRect()
+      return document.elementFromPoint(box.left + point.x, box.top + point.y)?.closest('[data-pdf-page]') === element
+    }, placement), 'the placement point must hit the visible PDF page, not a toolbar or sidebar').toBe(true)
+    await notePage.click({ position: placement })
     const noteEditor = reader.locator('.dsh-pdf-page-comment-card').getByRole('textbox', { name: 'Note' })
     await expect.poll(() => noteEditor.evaluate(element => document.activeElement === element)).toBe(true)
     await page.keyboard.type('Free note starts here')
     await expect.poll(() => noteEditor.inputValue()).toBe('Free note starts here')
+    await reader.locator('.dsh-pdf-page-comment-card').getByRole('button', { name: 'Save note', exact: true }).click()
+    await expect.poll(() => save.getAttribute('data-save-state')).toBe('dirty')
+    await reader.locator('.dsh-pdf-page-comment-card').getByRole('button', { name: 'Close note', exact: true }).click()
+    await expect.poll(() => reader.locator('[data-pdf-page="1"] [data-pdf-note-id]').count()).toBe(1)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
