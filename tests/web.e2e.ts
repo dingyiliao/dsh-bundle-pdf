@@ -3157,8 +3157,15 @@ it('edits a highlight comment on the PDF page and reopens it from its saved mark
     const save = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
       .getByRole('button', { name: 'Save', exact: true })
     await expect.poll(() => save.isEnabled()).toBe(true)
+    const unsavedCommentFrame = await pdfPage.locator('canvas[data-pdf-raster-ready="true"]').first().elementHandle()
+    expect(unsavedCommentFrame).not.toBeNull()
     await save.click()
     await expect.poll(() => save.isDisabled()).toBe(true)
+    // Disabled also means saving. Wait for the accepted revision and the
+    // replacement native frame before reopening its rematerialized comment.
+    await expect.poll(() => save.getAttribute('data-save-state')).toMatch(/^saved(?:-success)?$/)
+    await expect.poll(() => unsavedCommentFrame!.evaluate(canvas => canvas.isConnected)).toBe(false)
+    await pdfPage.locator('canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible' })
     await marker.first().waitFor({ state: 'visible' })
 
     await pdfPage.click({ position: { x: 340, y: 300 } })
@@ -4127,9 +4134,16 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await noteEditField.fill('Edited standalone note')
     await commentCard.getByRole('button', { name: 'Save note', exact: true }).click()
     await expect.poll(() => save.isEnabled()).toBe(true)
+    const editedNoteFrame = await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().elementHandle()
+    expect(editedNoteFrame).not.toBeNull()
     await save.click()
     await expect.poll(() => save.isDisabled()).toBe(true)
     await expect.poll(() => savedNoteContents(path)).toEqual(['Edited standalone note'])
+    // The disk write can precede Client acceptance and native replacement.
+    // Entering a mode before that handoff would let the saved revision reset it.
+    await expect.poll(() => save.getAttribute('data-save-state')).toMatch(/^saved(?:-success)?$/)
+    await expect.poll(() => editedNoteFrame!.evaluate(canvas => canvas.isConnected)).toBe(false)
+    await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible' })
 
     // Exercise the same cropped native render path used to prepare OCR images.
     const cropRequests: unknown[] = []
