@@ -139,6 +139,8 @@ test('translation language menu positions above a clipped panel and supports Esc
     const panel = container.querySelector<HTMLElement>('.dsh-pdf-panel-scroll')!
     const menu = container.querySelector<HTMLElement>('.dsh-pdf-translation-language-menu')!
     const summary = details.querySelector('summary')!
+    assert.equal(summary.getAttribute('aria-label'), 'Target language: EN')
+    assert.equal(summary.title, 'EN', 'the full language name remains available when its visible label is truncated')
     panel.getBoundingClientRect = () => ({ left: 0, right: 200, top: 0, bottom: 130, width: 200, height: 130,
       x: 0, y: 0, toJSON() {} })
     details.getBoundingClientRect = () => ({ left: 20, right: 140, top: 85, bottom: 105, width: 120, height: 20,

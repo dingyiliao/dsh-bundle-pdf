@@ -328,18 +328,18 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-translation-preference.is-error { color: var(--dsw-alias-label-danger, var(--pdf-text)); }
 .dsh-pdf-translation-result { margin: 0; }
 .dsh-pdf-translation-result-header {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
   min-height: 38px; margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--pdf-border);
 }
 .dsh-pdf-translation-result-heading {
-  display: flex; flex: 1 1 0; flex-wrap: wrap; align-content: center; align-items: center;
+  display: flex; flex: 1 1 min-content; flex-wrap: wrap; align-content: center; align-items: center;
   gap: 3px 5px; min-width: 0;
 }
-.dsh-pdf-translation-result-header h4 { flex: none; margin: 0; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
-.dsh-pdf-reader .dsh-pdf-translation-result-header > button { flex: none; padding: 4px 7px; border-radius: 6px; background: transparent; font-size: var(--pdf-type-caption); }
+.dsh-pdf-translation-result-header h4 { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
+.dsh-pdf-reader .dsh-pdf-translation-result-header > button { flex: none; margin-inline-start: auto; padding: 4px 7px; border-radius: 6px; background: transparent; font-size: var(--pdf-type-caption); }
 .dsh-pdf-translation-language { position: relative; flex: 0 1 auto; min-width: 0; }
 .dsh-pdf-translation-language > summary {
-  display: inline-flex; align-items: center; gap: 3px; max-width: 110px; min-width: 0; min-height: 26px; padding: 2px 5px;
+  display: inline-flex; align-items: center; gap: 3px; max-width: min(110px, 100%); min-width: 0; min-height: 26px; padding: 2px 5px;
   border-radius: 6px; color: var(--pdf-muted); cursor: pointer; list-style: none; white-space: nowrap;
 }
 .dsh-pdf-translation-language > summary::-webkit-details-marker { display: none; }

@@ -462,12 +462,45 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
       configurable: true, value: { writeText: async () => { throw new Error('clipboard denied') } },
     }))
-    await expect.poll(() => panel.locator('.dsh-pdf-translation-result-header').evaluate(root => {
-      const language = root.querySelector<HTMLElement>('.dsh-pdf-translation-language-trigger')!
-      const button = root.querySelector<HTMLElement>(':scope > button')!
-      return language.getBoundingClientRect().right <= button.getBoundingClientRect().left
-        || language.getBoundingClientRect().bottom <= button.getBoundingClientRect().top
-    })).toBe(true)
+    const resultHeader = panel.locator('.dsh-pdf-translation-result-header')
+    const assertHeaderLayout = async () => {
+      await expect.poll(() => resultHeader.evaluate(root => {
+        const language = root.querySelector<HTMLElement>('.dsh-pdf-translation-language-trigger')!
+        const button = root.querySelector<HTMLElement>(':scope > button')!
+        return language.getBoundingClientRect().right <= button.getBoundingClientRect().left
+          || language.getBoundingClientRect().bottom <= button.getBoundingClientRect().top
+      })).toBe(true)
+      expect(await resultHeader.evaluate(root => {
+        const bounds = root.getBoundingClientRect()
+        const copy = root.querySelector<HTMLElement>(':scope > button')!.getBoundingClientRect()
+        if (Math.abs(copy.right - bounds.right) > 1) return false
+        return [...root.querySelectorAll<HTMLElement>('h4, summary, :scope > button')].every(control => {
+          const box = control.getBoundingClientRect()
+          return box.left >= bounds.left && box.right <= bounds.right
+        })
+      })).toBe(true)
+    }
+    await assertHeaderLayout()
+    // The longer copied label must coexist with a readable language selector
+    // at narrow widths, independently of the platform's default font metrics.
+    const headerStyle = await resultHeader.getAttribute('style')
+    try {
+      for (const fontFamily of ['Arial', 'monospace']) for (const width of [180, 210]) {
+        await resultHeader.evaluate((element, style) => {
+          element.style.width = `${style.width}px`
+          element.style.maxWidth = '100%'
+          element.style.fontFamily = style.fontFamily
+        }, { width, fontFamily })
+        await assertHeaderLayout()
+        expect(await resultHeader.locator('.dsh-pdf-translation-language-trigger > span')
+          .evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true)
+      }
+    } finally {
+      await resultHeader.evaluate((element, style) => {
+        if (style === null) element.removeAttribute('style')
+        else element.setAttribute('style', style)
+      }, headerStyle)
+    }
     await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
     await panel.locator('.dsh-pdf-translation-copy-error').waitFor({ state: 'visible' })
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} }))

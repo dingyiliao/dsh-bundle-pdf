@@ -49,7 +49,7 @@ export function TranslationLanguageMenu({ value, label, languageName, onChange }
     event.currentTarget.open = false
     trigger.current?.focus()
   }}>
-    <summary ref={trigger} className="dsh-pdf-translation-language-trigger" aria-label={`${label}: ${languageName(value)}`}>
+    <summary ref={trigger} className="dsh-pdf-translation-language-trigger" aria-label={`${label}: ${languageName(value)}`} title={languageName(value)}>
       <span>{languageName(value)}</span><ToolbarIcon name="chevronDown" />
     </summary>
     <div className="dsh-pdf-tools-menu dsh-pdf-translation-language-menu dsh-pdf-glass" role="group" aria-label={label}>
