@@ -4,6 +4,8 @@ import { OcrError } from '../ocr/types.js'
 import { createSessionLlmOcrBackend, registerOcrAgentTool, resolveOcrSessionModel,
   type OcrModelRouteContext, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
 import { HostOcrService } from '../modules/ocr/index.js'
+import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
+import { createLocalTesseractOcrBackend } from '../adapters/host/ocr/local-backend.js'
 import { pdfCapabilities } from '../modules/capabilities/index.js'
 
 export type { HostOcrBackend, HostOcrRequest, HostOcrResult, HostOcrService } from '../modules/ocr/index.js'
@@ -39,6 +41,9 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
   ctx.effect(() => unregister, 'ocr: current-session model backend')
+  const local = createLocalTextRecovery()
+  const unregisterLocal = service.register(createLocalTesseractOcrBackend(local))
+  ctx.effect(() => async () => { unregisterLocal(); await local.dispose() }, 'ocr: bundled local Tesseract backend')
   ctx.effect(() => {
     const fiber = ctx.inject(['pdfCapabilities'], scope => {
       scope.effect(() => scope.pdfCapabilities.register({ id: 'ocr.selected',
@@ -54,5 +59,5 @@ export function apply(ctx: Context, config: Config): void {
     })
     return () => fiber.dispose()
   }, 'ocr: optional capability catalog')
-  registerOcrAgentTool(ctx, service)
+  ctx.effect(() => registerOcrAgentTool(ctx, service), 'ocr: atomic image-consumer tools')
 }

@@ -75,3 +75,12 @@ test('commented mark keeps the page top and folded corner visible above its comm
   assert.ok(drawn.some(path => path.d.startsWith('M13 13h5a1.5 1.5')), 'the comment bubble is a distinct overlay')
   assert.ok(drawn.some(path => path.d === 'M8 16h3.5' && /stroke="#4b72e8"/.test(path.attributes)), 'the comment accent remains visible')
 })
+
+test('region capture uses crossing crop guides instead of fullscreen corners', () => {
+  const markup = render({ name: 'crop' })
+  const drawn = paths(markup)
+  assert.match(drawn[0]!.d, /^M7 3v12/)
+  assert.match(drawn[0]!.d, /M3 7h12/)
+  assert.ok(drawn.some(path => /stroke-dasharray=/.test(path.attributes)), 'the inside selection is distinct from the outer crop guides')
+  assert.doesNotMatch(markup, /M4 9V4h5m6 0h5v5/, 'four fullscreen-style corners are no longer used')
+})

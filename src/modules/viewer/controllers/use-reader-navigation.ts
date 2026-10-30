@@ -88,39 +88,54 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
       const geometry = originDocument.document.pages[position.page - 1]!
       const deadline = performance.now() + navigationTimeoutMs
       const remaining = () => Math.max(0, deadline - performance.now())
-      const numericPage = await waitForReaderState(root, 'pdflayoutchange', () => {
+      const currentLayout = () => {
         validate?.()
         const page = windowLayout(root)?.[position.page - 1]
-        return page?.page === position.page && Math.abs(page.scale - pageScale(geometry, position.fit, position.scale)) < 0.001
-          ? page : undefined
-      }, operationSignal, remaining())
-      operationSignal.throwIfAborted()
-      validate?.()
-      // Reveal a distant narrow page before waiting for its windowed PageView.
-      const targetLeft = (root.scrollWidth - numericPage.width) / 2
-      if (targetLeft + numericPage.width <= root.scrollLeft || targetLeft >= root.scrollLeft + root.clientWidth) {
-        root.scrollLeft = Math.max(0, (root.scrollWidth - root.clientWidth) / 2)
+        const size = state.current.size
+        // ResizeObserver reports fractional content-box sizes, clientWidth /
+        // clientHeight round to CSS pixels. A matching stale state/layout pair
+        // is not sufficient while a docked sidebar is still changing the pane.
+        const measured = position.fit === 'custom' || Math.abs(size.width - root.clientWidth) < 1
+          && Math.abs(size.height - root.clientHeight) < 1
+        return measured && page?.page === position.page
+          && Math.abs(page.scale - pageScale(geometry, position.fit, position.scale)) < 0.001 ? page : undefined
       }
-      root.scrollTop = numericPage.top
-      const view = await waitForReaderState(root, 'pdfviewchange', () => {
+      while (true) {
+        if (!remaining()) throw new DOMException('Reader layout did not settle', 'TimeoutError')
+        const numericPage = await waitForReaderState(root, 'pdflayoutchange', currentLayout, operationSignal, remaining())
+        operationSignal.throwIfAborted()
+        // Reveal a distant narrow page before waiting for its windowed PageView.
+        const targetLeft = (root.scrollWidth - numericPage.width) / 2
+        if (targetLeft + numericPage.width <= root.scrollLeft || targetLeft >= root.scrollLeft + root.clientWidth) {
+          root.scrollLeft = Math.max(0, (root.scrollWidth - root.clientWidth) / 2)
+        }
+        root.scrollTop = numericPage.top
+        const view = await waitForReaderState(root, 'pdfviewchange', () => {
+          const page = currentLayout()
+          const candidate = views.current.get(position.page)
+          return page && candidate && Math.abs(candidate.viewport.scale - page.scale) < 0.001
+            && candidate.viewport.rotation === ((geometry.rotation % 360) + 360) % 360 ? candidate : undefined
+        }, operationSignal, remaining())
+        operationSignal.throwIfAborted()
+        // Loading a PageView can span another layout commit. Apply the PDF
+        // point using that latest numeric layout, never a pre-resize DOM offset.
+        const positioned = currentLayout()
+        if (!positioned || Math.abs(view.viewport.scale - positioned.scale) >= 0.001) continue
+        const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
+        root.scrollLeft = (root.scrollWidth - positioned.width) / 2 + x
+          - (position.viewportAnchor?.x ?? 0) * root.clientWidth
+        root.scrollTop = positioned.top + y - (position.viewportAnchor?.y ?? 0) * root.clientHeight
+        await nextFrame()
+        operationSignal.throwIfAborted()
+        const settled = currentLayout()
+        // Continue the same pinned navigation only when its geometry changed;
+        // newer user/model navigation still aborts this owner normally.
+        if (!settled || settled.top !== positioned.top || settled.scale !== positioned.scale) continue
+        latest.current.setCurrentPage(position.page)
+        latest.current.setPageInput(String(position.page))
         validate?.()
-        const candidate = views.current.get(position.page)
-        const expected = pageScale(geometry, position.fit, position.scale)
-        return candidate && Math.abs(candidate.viewport.scale - expected) < 0.001
-          && candidate.viewport.rotation === ((geometry.rotation % 360) + 360) % 360 ? candidate : undefined
-      }, operationSignal, remaining())
-      operationSignal.throwIfAborted()
-      validate?.()
-      const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
-      const bounds = root.getBoundingClientRect(), pageBounds = view.element.getBoundingClientRect()
-      root.scrollLeft += pageBounds.left + x - bounds.left - (position.viewportAnchor?.x ?? 0) * bounds.width
-      root.scrollTop += pageBounds.top + y - bounds.top - (position.viewportAnchor?.y ?? 0) * bounds.height
-      latest.current.setCurrentPage(position.page)
-      latest.current.setPageInput(String(position.page))
-      await nextFrame()
-      operationSignal.throwIfAborted()
-      validate?.()
-      return { ...position, scale: view.viewport.scale }
+        return { ...position, scale: view.viewport.scale }
+      }
     } catch (failure) {
       // A superseded request cannot restore the scroll of a newer document.
       const canRestore = () => !tabSignal.aborted && !documentSignal.aborted

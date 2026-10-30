@@ -20,11 +20,29 @@ test('capabilities report writable documents and a matching visible Reader, not 
     image: { availability: async () => ({ status: 'available', kind: 'direct-image' }) },
   }, signal)
   assert.equal(result.readOnly, false)
-  assert.deepEqual(result.capabilities, { readText: true, searchText: true, findRelatedText: true, semanticSearch: false,
+  assert.deepEqual(result.capabilities, { readText: true, searchText: true, semanticSearch: false,
     writeAnnotations: true, fillForms: true, editBookmarks: true, navigateVisibleReader: true,
     ocr: false, imageUnderstanding: true })
   assert.deepEqual(result.capabilityDetails.ocr, { supported: true, available: false,
     reason: 'Selected OCR model has no image input' })
+})
+
+test('semantic availability reports selected-backend readiness and reasons without the removed related-text capability', async () => {
+  for (const reason of ['Semantic retrieval is disabled.', 'Selected embedding engine is not installed.',
+    'Selected embedding engine is not currently available.']) {
+    const result = await documentCapabilities(snapshot(), 'session', { navigation: false, visible: false,
+      retrieval: { availability: async () => ({ status: 'unavailable', reason }) },
+    }, signal)
+    assert.equal(result.capabilities.semanticSearch, false)
+    assert.deepEqual(result.capabilityDetails.semanticSearch, { supported: true, available: false, reason })
+    assert.equal('findRelatedText' in result.capabilities, false)
+  }
+  const available = await documentCapabilities(snapshot(), 'session', { navigation: false, visible: false,
+    retrieval: { availability: async () => ({ status: 'available' }) },
+  }, signal)
+  assert.equal(available.capabilities.semanticSearch, true)
+  assert.deepEqual(available.capabilityDetails.semanticSearch, { supported: true, available: true })
+  assert.equal('findRelatedText' in available.capabilities, false)
 })
 
 test('read-only, signed, encrypted and conflicting documents never advertise currently writable tools', async () => {

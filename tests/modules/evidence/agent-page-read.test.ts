@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { listPageAnnotations, readPageWindow, searchPageWindows,
+import { listPageAnnotations, readPageWindow, searchPageWindows, decodeToolCursor, encodeToolCursor,
   type AgentPageReadPort } from '../../../src/modules/evidence/index.ts'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/modules/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { createMemoryEvidenceReferenceStore, isSavedTextReference,
+import { createMemoryEvidenceReferenceStore,
   type EvidenceReferenceStore } from '../../../src/modules/evidence/reference-store.ts'
 
 const signal = new AbortController().signal
@@ -73,6 +73,26 @@ test('search continuation resumes within a dense page without duplicate or omitt
   assert.equal(third.nextCursor, null)
 })
 
+test('a validly encoded continuation cannot move outside its original single-page scope', async () => {
+  const snapshot = source(3), text = Array.from({ length: 41 }, () => 'Needle').join(' ')
+  const workspaces = { readSnapshot() { return snapshot } }
+  const visited: number[] = []
+  const pages: AgentPageReadPort = { async readPageText(_session, _document, page) {
+    visited.push(page)
+    return { snapshot, content: content(text) }
+  } }
+  const input = { query: 'Needle', page: 2 }
+  const first = await searchPageWindows(workspaces, pages, 'session-1', snapshot.id, input, signal)
+  const cursor = decodeToolCursor(first.nextCursor!)
+  if (cursor.kind !== 'search') assert.fail('Expected a search continuation')
+  for (const page of [1, 3]) {
+    const altered = encodeToolCursor({ ...cursor, page })
+    await assert.rejects(searchPageWindows(workspaces, pages, 'session-1', snapshot.id,
+      { ...input, cursor: altered }, signal), { code: 'pdf/invalid-page' })
+  }
+  assert.deepEqual(visited, [2], 'out-of-scope cursors fail before reading another page')
+})
+
 test('search cursors reject changed query, document, session, version or source bytes', async () => {
   const initial = source()
   let current = initial
@@ -104,7 +124,7 @@ test('search rejects malformed or mixed continuation locators and invalid first-
   const pages: AgentPageReadPort = { async readPageText() { return { snapshot, content: content('Needle') } } }
   const first = await searchPageWindows(workspaces, pages, 'session-1', snapshot.id, { query: 'Needle' }, signal)
   for (const input of [
-    { query: 'Needle', cursor: 'invalid' }, { query: 'Needle', cursor: first.nextCursor!, fromPage: 11 },
+    { query: 'Needle', cursor: 'invalid' },
     { query: 'Needle', cursor: first.nextCursor!, offset: 0 },
     { query: 'Needle', offset: 7 }, { query: 'Needle', offset: -1 },
   ]) {
@@ -178,7 +198,7 @@ test('search evidence captures exact repeated-query ranges rather than surroundi
     const evidence = match.evidence!
     const saved = references.get(evidence.refId)!
     assert.equal(saved.sessionId, 'session-1')
-    assert.ok(isSavedTextReference(saved))
+    if (saved.evidence.source !== 'pdf-text') assert.fail('Expected saved text evidence')
     assert.equal(saved.evidence.documentId, snapshot.id)
     assert.equal(saved.evidence.snapshot.text, 'Needle')
     assert.equal(saved.evidence.locator.endUtf16, match.offset + 'Needle'.length)

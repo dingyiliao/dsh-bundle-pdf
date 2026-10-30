@@ -1,27 +1,19 @@
 import { PdfDocumentError, type PdfFormField } from '../../core/pdf-types.js'
 import { formFieldId, matchingFormFields, type FormFieldTarget } from './identity.js'
 
-export type FormValueContract = {
-  valueType: 'string' | 'boolean' | 'string[]' | 'unsupported'
-  examples: PdfFormField['value'][]
-  hint: string
-}
+export type FormValueType = 'string' | 'boolean' | 'string[]' | 'unsupported'
 
-/** Machine-readable instructions, shared by inspection and validation. Never coerce guessed values. */
-export function formValueContract(field: PdfFormField): FormValueContract {
-  switch (field.type) {
-    case 'text': return { valueType: 'string', examples: ['', 'Example'.slice(0, field.maxLength ?? 7)],
-      hint: 'Use a string; an empty string clears the field. Respect maxLength (Unicode characters).' }
-    case 'checkbox': return { valueType: 'boolean', examples: [true, false],
-      hint: 'Use true to check or false to uncheck; never use a label, "Yes", "Off", or a quoted boolean.' }
-    case 'radio':
-    case 'dropdown': return { valueType: 'string', examples: field.options?.slice(0, 1) ?? [],
-      hint: 'Use one exact string from options, not its printed label or an index. An empty string clears the selection.' }
-    case 'option-list': return { valueType: 'string[]', examples: [[], field.options?.slice(0, 1) ?? []],
-      hint: 'Use an array of exact option strings; [] clears it. If multiple is false, select at most one.' }
-    case 'unsupported': return { valueType: 'unsupported', examples: [], hint: 'This field type cannot be edited.' }
-  }
-}
+const fieldContracts = {
+  text: { valueType: 'string', hint: 'Use a string; an empty string clears the field. Respect maxLength (Unicode characters).' },
+  checkbox: { valueType: 'boolean', hint: 'Use true to check or false to uncheck; never use a label, "Yes", "Off", or a quoted boolean.' },
+  radio: { valueType: 'string', hint: 'Use one exact string from options, not its printed label or an index. An empty string clears the selection.' },
+  dropdown: { valueType: 'string', hint: 'Use one exact string from options, not its printed label or an index. An empty string clears the selection.' },
+  'option-list': { valueType: 'string[]', hint: 'Use an array of exact option strings; [] clears it. If multiple is false, select at most one.' },
+  unsupported: { valueType: 'unsupported', hint: 'This field type cannot be edited.' },
+} satisfies Record<PdfFormField['type'], { valueType: FormValueType; hint: string }>
+
+/** The model receives only the input type; repair hints stay at the validation boundary. */
+export function formValueType(field: PdfFormField): FormValueType { return fieldContracts[field.type].valueType }
 
 export type FormIssueCode = 'unknown_field' | 'ambiguous_field' | 'duplicate_field' | 'read_only'
   | 'unsupported_field_type' | 'field_not_visible' | 'value_type_mismatch' | 'value_too_long'
@@ -35,7 +27,7 @@ export interface FormValidationIssue {
   fieldType?: PdfFormField['type']
   pages?: number[]
   code: FormIssueCode
-  expected?: FormValueContract['valueType']
+  expected?: FormValueType
   receivedType?: string
   maxLength?: number
   hint: string
@@ -65,7 +57,7 @@ export function validateFormChanges(fields: readonly PdfFormField[], changes: re
         hint: `${matches.length ? 'Ambiguous' : 'Unknown'} form field target. Inspect the page and use its exact fieldId, not an F01 label or a shared field name.` })
       return
     }
-    const field = matches[0]!, fieldId = formFieldId(field), contract = formValueContract(field)
+    const field = matches[0]!, fieldId = formFieldId(field), contract = fieldContracts[field.type]
     const issue = (code: FormIssueCode, hint: string, property: 'fieldId' | 'value' = 'value') => {
       issues.push({ index, property, fieldId, fieldName: field.name, fieldType: field.type,
         pages: [...new Set(field.widgets.map(widget => widget.page))], code,

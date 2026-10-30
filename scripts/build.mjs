@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, readdir, mkdir, rm, writeFile, copyFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, relative, resolve } from 'node:path'
+import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const project = fileURLToPath(new URL('../', import.meta.url))
@@ -20,25 +20,15 @@ await rm(join(dist, 'types'), { recursive: true, force: true })
 
 // The extension entries ship a public type surface without pulling Host/UI
 // development-only declarations into an external engine plugin.
-await new Promise((resolveBuild, rejectBuild) => {
-  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.ocr.json'], {
-    cwd: project, stdio: 'inherit', windowsHide: true,
+for (const config of ['tsconfig.ocr.json', 'tsconfig.image-host.json', 'tsconfig.capabilities.json']) {
+  await new Promise((resolveBuild, rejectBuild) => {
+    const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', config], {
+      cwd: project, stdio: 'inherit', windowsHide: true,
+    })
+    child.once('error', rejectBuild)
+    child.once('close', code => code === 0 ? resolveBuild() : rejectBuild(new Error(`${config} declaration build exited with status ${code}`)))
   })
-  child.once('error', rejectBuild)
-  child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`OCR declaration build exited with status ${code}`)))
-})
-await new Promise((resolveBuild, rejectBuild) => {
-  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.image-host.json'], {
-    cwd: project, stdio: 'inherit', windowsHide: true })
-  child.once('error', rejectBuild)
-  child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Image Host declaration build exited with status ${code}`)))
-})
-await new Promise((resolveBuild, rejectBuild) => {
-  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.capabilities.json'], {
-    cwd: project, stdio: 'inherit', windowsHide: true })
-  child.once('error', rejectBuild)
-  child.once('close', (code) => code === 0 ? resolveBuild() : rejectBuild(new Error(`Capability declaration build exited with status ${code}`)))
-})
+}
 
 const common = {
   absWorkingDir: project,
@@ -123,7 +113,7 @@ const capabilityBuild = await build({
   ...common, entryPoints: ['src/modules/capabilities/index.ts'], outfile: 'dist/capabilities.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
-await build({
+const enginesBuild = await build({
   ...browser, entryPoints: ['src/modules/engines/index.ts'], outfile: 'dist/engines.js', format: 'esm',
 })
 const bridgeBuild = await build({
@@ -162,16 +152,14 @@ await copyAsset(join(project, 'assets/fonts/OFL.txt'), 'forms/OFL.txt', false)
 const manifestFiles = await Promise.all(assetFiles.sort().map(async (path) => {
   const bytes = await readFile(join(dist, 'assets', ...path.split('/')))
   const contentType = extname(path) === '.js' ? 'text/javascript; charset=utf-8'
-    : extname(path) === '.wasm' ? 'application/wasm'
-      : extname(path) === '.otf' ? 'font/otf'
-        : extname(path) === '.txt' ? 'text/plain; charset=utf-8' : 'application/octet-stream'
+    : extname(path) === '.wasm' ? 'application/wasm' : 'application/octet-stream'
   return { path, bytes: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex'), contentType }
 }))
 await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version: 1, files: manifestFiles }, null, 2)}\n`, 'utf8')
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, bridgeBuild, recoveryBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, enginesBuild, bridgeBuild, recoveryBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)
@@ -183,16 +171,12 @@ for (const root of [...roots].sort()) {
   let metadata
   try { metadata = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) } catch { continue }
   notices.push(`## ${metadata.name} ${metadata.version}`, '', `License: ${typeof metadata.license === 'string' ? metadata.license : JSON.stringify(metadata.license ?? 'See dependency source')}`, '')
-  let included = false
-  for (const directory of ['']) {
-    const location = join(root, directory)
-    const files = (await readdir(location, { withFileTypes: true })).filter((file) => file.isFile() && /^(?:licen[cs]e|notice|copying)(?:$|[._-])/i.test(file.name)).sort((a, b) => a.name.localeCompare(b.name))
-    for (const file of files) {
-      notices.push(`### ${relative(root, join(location, file.name)).replaceAll('\\', '/')}`, '', await readFile(join(location, file.name), 'utf8'), '')
-      included = true
-    }
+  const files = (await readdir(root, { withFileTypes: true })).filter(file =>
+    file.isFile() && /^(?:licen[cs]e|notice|copying)(?:$|[._-])/i.test(file.name)).sort((a, b) => a.name.localeCompare(b.name))
+  for (const file of files) {
+    notices.push(`### ${file.name}`, '', await readFile(join(root, file.name), 'utf8'), '')
   }
-  if (!included && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
+  if (!files.length && metadata.repository) notices.push(`Source: ${typeof metadata.repository === 'string' ? metadata.repository : metadata.repository.url}`, '')
 }
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.md'), `${notices.join('\n')}\n`, 'utf8')
 console.log(`Built @dylanl1/dsh-plugin-pdf: Host, OCR/Image Host plugins, Harness Client, OCR/translation/embedding/capability SDKs, and ${manifestFiles.length} local OCR resources.`)

@@ -22,7 +22,8 @@ async function withPanel(run: (fixture: {
   const saved = new Map<string, PropertyDescriptor | undefined>()
   const globals = { window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement,
     Element: dom.Element, Node: dom.Node, Event: dom.Event, MutationObserver: dom.MutationObserver,
-    ResizeObserver: class { observe() {} disconnect() {} },
+    getComputedStyle: dom.getComputedStyle.bind(dom),
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     requestAnimationFrame: (fn: FrameRequestCallback) => setTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: clearTimeout, IS_REACT_ACT_ENVIRONMENT: true }
   for (const [name, value] of Object.entries(globals)) {

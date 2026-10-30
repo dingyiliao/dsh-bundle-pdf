@@ -2,7 +2,7 @@ import type { DocumentPreviewProps } from '@deepseek-ai/dsh-client-ui-sidebar-do
 import type { PdfClientApi, PdfSettings } from '../shared/contracts.ts'
 import type { TranslationRegistry } from '../translation/index.js'
 import type { HostOcrApi, ImageUnderstandingApi, PdfReadingContextUpdate, PdfAgentNavigationApi,
-  PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi } from '../modules/viewer/index.js'
+  PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi, PdfIndexingApi } from '../modules/viewer/index.js'
 import type { PromptContentPart } from '../modules/explanation/index.js'
 import type { PdfEvidenceNavigation } from './toolview/pdf-evidence-navigation.js'
 
@@ -16,6 +16,7 @@ export type ReaderProps = Pick<DocumentPreviewProps, 'resourceAddress' | 'scroll
   t: (key: string) => string
   api: PdfClientApi
   hostOcr: HostOcrApi
+  indexingApi?: PdfIndexingApi
   imageUnderstanding: ImageUnderstandingApi
   /** Host-owned, source-fenced image regions for explanation questions. */
   regionEvidence?: PdfRegionEvidenceApi

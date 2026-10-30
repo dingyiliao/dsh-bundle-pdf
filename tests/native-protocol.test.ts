@@ -50,28 +50,64 @@ test('PNG transport preserves every RGBA byte without a lossy encoding', async (
   assert.deepEqual(inflateSync(compressed), Buffer.from([0, ...rgba]))
 })
 
-async function fakeWorker() {
+async function fakeWorker(holdFirst = false) {
   const directory = await mkdtemp(join(tmpdir(), 'pdf-native-test-')), executable = join(directory, 'worker')
   await writeFile(executable, `#!/usr/bin/env node
-let input = Buffer.alloc(0)
+let input = Buffer.alloc(0), held
 process.stdin.on('data', chunk => { input = Buffer.concat([input, chunk]); drain() })
 function drain() { while (input.length >= 8) { const j=input.readUInt32LE(0),b=input.readUInt32LE(4);if(input.length<8+j+b)return;const q=JSON.parse(input.subarray(8,8+j));input=input.subarray(8+j+b);setTimeout(()=>reply(q),q.command==='hello'?0:40) } }
-function reply(q) { if(q.command==='hang')return;const value=q.command==='hello'?{protocolVersion:1,build:'156.0.8076.0'}:{command:q.command};const json=Buffer.from(JSON.stringify({requestId:q.requestId,ok:true,value})),prefix=Buffer.alloc(8);prefix.writeUInt32LE(json.length);process.stdout.write(Buffer.concat([prefix,json])) }
+function reply(q) {
+  if(q.command==='hang')return
+  if(${holdFirst} && q.command==='first') { held=q;process.stderr.write('first-received\\n');return }
+  if(q.command==='release-first') { const first=held;held=undefined;replyNow(first);return }
+  replyNow(q)
+}
+function replyNow(q) { const value=q.command==='hello'?{protocolVersion:1,build:'156.0.8076.0'}:{command:q.command};const json=Buffer.from(JSON.stringify({requestId:q.requestId,ok:true,value})),prefix=Buffer.alloc(8);prefix.writeUInt32LE(json.length);process.stdout.write(Buffer.concat([prefix,json])) }
 `)
   await chmod(executable, 0o755)
   return { executable, close: () => rm(directory, { recursive: true, force: true }) }
 }
-test('cancelling an in-flight request consumes its reply before the next request', { skip: process.platform === 'win32' }, async () => {
-  const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, nativeTestSubprocess, 3000)
+// Keep an OS-pipe integration proof in addition to the portable stream unit case.
+test('real helper pipes retain a cancelled request until its reply is drained', { skip: process.platform === 'win32' }, async () => {
+  let acknowledgeFirst!: () => void
+  const firstReceived = new Promise<void>(resolve => { acknowledgeFirst = resolve })
+  const sent: string[] = []
+  class GatedSubprocess extends NativeTestSubprocess {
+    private handle?: SubprocessHandle
+    override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
+      const handle = this.handle = super.spawn(spec)
+      const incoming = new FrameDecoder(frame => { sent.push((frame.metadata as { command: string }).command) })
+      const stdin = handle.stdin!
+      const write = stdin.write.bind(stdin)
+      stdin.write = ((chunk: Uint8Array) => { incoming.feed(chunk); return write(chunk) }) as typeof stdin.write
+      let diagnostics = ''
+      handle.stderr!.on('data', (chunk: Buffer) => {
+        diagnostics += chunk.toString()
+        if (diagnostics.includes('first-received\n')) acknowledgeFirst()
+      })
+      return handle
+    }
+    releaseFirst(): void {
+      this.handle!.stdin!.write(Buffer.concat(encodeFrame({ command: 'release-first' })))
+    }
+  }
+  const fake = await fakeWorker(true), subprocess = new GatedSubprocess()
+  const worker = new NativeWorker(fake.executable, subprocess, 3000)
   try {
     await worker.ready()
     const controller = new AbortController()
     const first = worker.request({ command: 'first' }, undefined, controller.signal)
-    await new Promise<void>(resolve => setImmediate(resolve))
+    // A parent-process tick cannot prove that the child received the command.
+    await Promise.race([firstReceived, first.then(() => { throw new Error('First request completed before its reply was released') })])
     const second = worker.request({ command: 'second' })
+    void second.catch(() => {})
     controller.abort()
     await assert.rejects(first, { name: 'AbortError' })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(sent, ['hello', 'first'], 'cancellation must retain the active slot until its reply')
+    subprocess.releaseFirst()
     assert.deepEqual((await second).value, { command: 'second' })
+    assert.deepEqual(sent, ['hello', 'first', 'release-first', 'second'])
   } finally { await worker.dispose(); await fake.close() }
 })
 test('timeout kills the helper and a later handshake starts a new generation', { skip: process.platform === 'win32' }, async () => {

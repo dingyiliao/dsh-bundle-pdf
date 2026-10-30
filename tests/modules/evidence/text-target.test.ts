@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createEvidenceReader, createTextReferenceResolver, evidenceSha256,
+import { readPageWindow, createTextReferenceResolver, evidenceSha256, searchPageWindows,
   type SavedReference, type EvidenceReferenceStore } from '../../../src/modules/evidence/index.ts'
 import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
@@ -39,8 +39,7 @@ async function fixture() {
   const references: EvidenceReferenceStore = { get: key => records.get(key),
     async put(key, value) { records.set(key, value) }, async delete(key) { records.delete(key) },
     async deleteSession() { records.clear() } }
-  const reader = createEvidenceReader(workspaces, pages, references)
-  const located = await reader.locate('alice', { documentId: current.id, quote }, signal)
+  const located = await searchPageWindows(workspaces, pages, 'alice', current.id, { query: quote }, signal, references)
   const resolver = createTextReferenceResolver(workspaces, pages, references)
   const readSource = async (sessionId: string, snapshot: HostWorkspaceSnapshot, inputSignal: AbortSignal) => {
     inputSignal.throwIfAborted()
@@ -49,8 +48,8 @@ async function fixture() {
     onSource?.()
     return { path: snapshot.path, digest }
   }
-  return { resolver, reader, workspaces, pages, references, records,
-    first: located.matches[0]!.evidence.refId, second: located.matches[1]!.evidence.refId,
+  return { resolver, workspaces, pages, references, records,
+    first: located.matches[0]!.evidence!.refId, second: located.matches[1]!.evidence!.refId,
     current: () => current, readSource,
     update(patch: Partial<HostWorkspaceSnapshot>) { current = { ...current, ...patch } },
     source(value: Uint8Array) { source = value },
@@ -94,9 +93,8 @@ test('subquotes resolve only inside their reference and retain the original occu
 
 test('reference subquotes reject ambiguous occurrences and still validate the full original page', async () => {
   const f = await fixture()
-  const context = await f.reader.context('alice', { documentId: 'doc-1',
-    focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
-  const refId = context.chunks[0]!.evidence.refId
+  const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 0, 8000, signal, f.references)
+  const refId = read.evidence!.refId
   await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, undefined, 'evidence'),
     { code: 'pdf/ambiguous-text-target' })
   f.setContent({ ...f.content(), items: [line('Changed elsewhere on the page', 200), line(quote, 100, false)] })
@@ -142,7 +140,7 @@ test('stored snapshot, offset and digest tampering is rejected before any geomet
     await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal), { code: 'pdf/invalid-evidence' })
   }
   const f = await fixture(), record = f.records.get(f.first)!
-  record.evidence.refId = f.second
+  record.evidence!.refId = f.second
   await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal), { code: 'pdf/reference-unavailable' })
 })
 

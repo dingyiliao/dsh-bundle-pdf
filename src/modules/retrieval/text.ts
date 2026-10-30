@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { RetrievalPage, RetrievalPageUnitKind, RetrievalPageUnitProducer, RetrievalPageUnitSpan } from './types.js'
 
 /** Changing boundaries or tokenization invalidates the derived lexical index. */
 export const RETRIEVAL_TEXT_VERSION = 'page-text-v2-paragraphs'
@@ -7,11 +8,25 @@ export const MAX_RETRIEVAL_PARAGRAPH_BREAKS = 10_000
 export interface RetrievalChunk {
   id: string
   page: number
+  /** Joined native-page offsets for pdf-text; representation-local offsets for generated content. */
   startUtf16: number
   endUtf16: number
   text: string
+  /** Native joined-page digest, or exact OCR/description unit text digest (unprefixed SHA-256). */
   pageTextDigest: string
-  source: 'pdf-text' | 'ocr'
+  source: 'pdf-text' | 'ocr' | 'image-description'
+  representation?: {
+    id: string
+    blockId: string
+    kind: RetrievalPageUnitKind
+    unitDigest: string
+    unitStartUtf16: number
+    unitEndUtf16: number
+    rectPdf?: [number, number, number, number]
+    spans?: RetrievalPageUnitSpan[]
+    producer?: RetrievalPageUnitProducer
+    inputDigest?: string
+  }
 }
 
 export interface ChunkPageOptions {
@@ -70,7 +85,7 @@ function chunkEnd(text: string, start: number, maximumLength: number, paragraphE
 /** Page-local exact substrings. UTF-16 offsets refer to the unmodified joined page text. */
 export function chunkPage(page: number, text: string, source: RetrievalChunk['source'] = 'pdf-text', options: ChunkPageOptions = {}): RetrievalChunk[] {
   if (!Number.isSafeInteger(page) || page < 1) throw new RangeError('Retrieval pages must be positive integers.')
-  if (source !== 'pdf-text' && source !== 'ocr') throw new TypeError('Invalid retrieval text source.')
+  if (source !== 'pdf-text' && source !== 'ocr' && source !== 'image-description') throw new TypeError('Invalid retrieval text source.')
   const maximumLength = options.maxCharacters ?? 1200
   const overlapLength = options.overlapCharacters ?? Math.min(120, Math.floor(maximumLength / 10))
   if (!Number.isSafeInteger(maximumLength) || maximumLength < 64 || maximumLength > 1200) {
@@ -120,4 +135,30 @@ export function chunkPage(page: number, text: string, source: RetrievalChunk['so
     paragraphStart = paragraphEnd
   }
   return chunks
+}
+
+/** Chunk the projected representations without losing their evidence coordinate
+ * system. Native ranges refer to joined page text; generated ranges are local. */
+export function chunkRetrievalPage(page: number, content: RetrievalPage, options: Pick<ChunkPageOptions, 'maxCharacters' | 'overlapCharacters'> = {}): RetrievalChunk[] {
+  if (content.units === undefined) return chunkPage(page, content.text, content.source,
+    { ...options, paragraphBreaks: content.paragraphBreaks })
+  const nativeDigest = createHash('sha256').update(content.text).digest('hex')
+  return content.units.flatMap(unit => {
+    const source = unit.kind === 'native-text' ? 'pdf-text' : unit.kind === 'ocr-text' ? 'ocr' : 'image-description'
+    return chunkPage(page, unit.text, source, { ...options, paragraphBreaks: unit.paragraphBreaks }).map(chunk => {
+      const unitStartUtf16 = chunk.startUtf16, unitEndUtf16 = chunk.endUtf16
+      const startUtf16 = unit.kind === 'native-text' ? unit.nativeRange!.startUtf16 + unitStartUtf16 : unitStartUtf16
+      const endUtf16 = unit.kind === 'native-text' ? unit.nativeRange!.startUtf16 + unitEndUtf16 : unitEndUtf16
+      const representation: NonNullable<RetrievalChunk['representation']> = { id: unit.id, blockId: unit.blockId,
+        kind: unit.kind, unitDigest: unit.digest, unitStartUtf16, unitEndUtf16,
+        ...(unit.rectPdf ? { rectPdf: [...unit.rectPdf] } : {}),
+        ...(unit.spans ? { spans: unit.spans.filter(span => span.startUtf16 < unitEndUtf16 && span.endUtf16 > unitStartUtf16)
+          .map(span => ({ ...span, rectPdf: [...span.rectPdf] as [number, number, number, number] })) } : {}),
+        ...(unit.producer ? { producer: { ...unit.producer } } : {}), ...(unit.inputDigest ? { inputDigest: unit.inputDigest } : {}) }
+      const id = createHash('sha256').update(JSON.stringify([RETRIEVAL_TEXT_VERSION, page, representation,
+        content.contentIdentity ?? '', startUtf16, endUtf16])).digest('hex')
+      return { ...chunk, id, startUtf16, endUtf16,
+        pageTextDigest: unit.kind === 'native-text' ? nativeDigest : unit.digest.slice('sha256:'.length), representation }
+    })
+  })
 }

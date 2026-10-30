@@ -40,7 +40,9 @@ test('PDF settings handles remote revisions, validation and failed saves without
     getSnapshot() { return snapshot },
     mutate(operations: unknown, revision: unknown) { return mutation(operations, revision) },
   } as ConfigForm
-  const props = { form, t: (key: string) => key, translationEngines: [{ id: 'dsh-model', label: 'DSH model' }] }
+  const props = { form, t: (key: string) => key, translationEngines: [{ id: 'dsh-model', label: 'DSH model' }],
+    engineCatalog: { revision: 'fixture', engines: { ocr: [], translation: [], image: [{ id: 'dsh-vision', name: 'Session vision',
+      version: '1', execution: 'remote' as const, capabilities: ['image-description' as const] }] } } }
   const button = (label: string) => {
     const control = [...container.querySelectorAll('button')].find(node => node.textContent === label)
     assert.ok(control, `button ${label} exists`)
@@ -80,6 +82,9 @@ test('PDF settings handles remote revisions, validation and failed saves without
   }
   try {
     await act(async () => { rootView.render(React.createElement(Settings, props)) })
+    assert.equal(input('indexScanPages').checked, true)
+    assert.equal(input('indexImageDescriptions').checked, false)
+    await act(async () => { input('indexScanPages').click(); input('indexImageDescriptions').click() })
     await fill('historyCapacity', '77')
     assert.equal(container.querySelector('textarea[id$="-explanationPromptTemplate"]'), null,
       'the old placeholder template is not shown as an editable field')
@@ -94,6 +99,8 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.match(container.textContent ?? '', /设置已在其他地方更新/)
     assert.equal(button('保存设置').disabled, true)
     await click('保留我的修改')
+    assert.equal(input('indexScanPages').checked, false)
+    assert.equal(input('indexImageDescriptions').checked, true)
     assert.equal(input('historyCapacity').value, '77')
     assert.match(container.querySelector('textarea')!.value, /最后总结/)
     assert.equal(input('translationTimeoutMs').value, '18000')
@@ -126,6 +133,11 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.match(JSON.stringify(calls[0]?.operations), /historyCapacity/)
     assert.match(JSON.stringify(calls[0]?.operations), /explanationGeneralInstruction/)
     assert.match(JSON.stringify(calls[0]?.operations), /explanationImageInstruction/)
+    const preprocessing = calls[0]!.operations as Array<{ op: string; path: string[]; value?: unknown }>
+    assert.deepEqual(preprocessing.find(operation => operation.path[0] === 'indexScanPages'),
+      { op: 'set', path: ['indexScanPages'], value: false })
+    assert.deepEqual(preprocessing.find(operation => operation.path[0] === 'indexImageDescriptions'),
+      { op: 'set', path: ['indexImageDescriptions'], value: true })
     assert.equal(input('historyCapacity').value, '77', 'a failed save retains the draft')
 
     mutation = async () => false
@@ -133,6 +145,8 @@ test('PDF settings handles remote revisions, validation and failed saves without
     assert.match(container.textContent ?? '', /设置未被接受/)
     await publish({ ...ready(3), value: { ...defaultSettings, translationTimeoutMs: 18_000 } })
     await click('载入最新设置')
+    assert.equal(input('indexScanPages').checked, true)
+    assert.equal(input('indexImageDescriptions').checked, false)
     assert.equal(input('historyCapacity').value, String(defaultSettings.historyCapacity))
     assert.equal(input('translationTimeoutMs').value, '18000')
 
@@ -157,6 +171,8 @@ test('PDF settings handles remote revisions, validation and failed saves without
     }, 'switching must override even a legacy template supplied by the profile base')
 
     await click('恢复默认')
+    assert.equal(input('indexScanPages').checked, true)
+    assert.equal(input('indexImageDescriptions').checked, false)
     assert.match(container.textContent ?? '', /默认值已填入/)
     mutation = async (operations, revision) => {
       calls.push({ operations, revision })
@@ -166,6 +182,10 @@ test('PDF settings handles remote revisions, validation and failed saves without
     }
     await click('保存设置')
     assert.match(JSON.stringify(calls.at(-1)?.operations), /"op":"unset"/)
+    for (const field of ['indexScanPages', 'indexImageDescriptions']) {
+      assert.deepEqual((calls.at(-1)!.operations as Array<{ op: string; path: string[] }>).find(operation => operation.path[0] === field),
+        { op: 'unset', path: [field] })
+    }
     assert.match(container.textContent ?? '', /设置已保存/)
 
     await fill('historyCapacity', '51')

@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FloatingStatusRail, type FloatingStatus } from '../../../src/modules/viewer/components/FloatingStatusRail.js'
 
-interface StatusInput { id: string; label: string; actionLabel?: string; durationMs?: number; occurrence?: number }
+interface StatusInput { id: string; label: string; actionLabel?: string; durationMs?: number; occurrence?: number; tone?: FloatingStatus['tone'] }
 let presses = 0
 let update: (items: StatusInput[]) => void = () => {}
 
@@ -10,7 +10,8 @@ function Fixture() {
   const [statuses, setStatuses] = useState<FloatingStatus[]>([])
   update = items => setStatuses(items.map(item => ({
     id: item.id, content: item.label, durationMs: item.durationMs, occurrence: item.occurrence,
-    activity: item.id === 'ocr' || item.id === 'screenshot' ? 'progress' : undefined,
+    tone: item.tone,
+    activity: item.id === 'ocr' || item.id === 'screenshot' ? 'progress' : item.tone ? 'dot' : undefined,
     actions: [{ label: item.actionLabel ?? `Cancel ${item.id}`, onClick: () => { presses++; setStatuses(current => current.filter(status => status.id !== item.id)) } }],
     onExpire: () => setStatuses(current => current.filter(status => status.id !== item.id)),
   })))

@@ -1,13 +1,12 @@
-import { EngineDirectory, engineProbe, validateEngineConfiguration, type EngineBinding, type EngineConfiguration,
+import { createHash } from 'node:crypto'
+import { EngineDirectory, engineProbe, engineCacheIdentity, validateEngineConfiguration,
+  type BackendCacheIdentity, type EngineCacheIdentity, type EngineBinding, type EngineConfiguration,
   type EngineDescriptor } from '../engines/index.js'
 
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 export const MAX_IMAGE_PIXELS = 24_000_000
-export const MAX_QUESTION_CHARACTERS = 4_096
+export const MAX_IMAGE_PROMPT_CHARACTERS = 4_096
 export const MAX_DERIVED_TEXT_CHARACTERS = 32_768
-
-export type ImageUnderstandingKind = 'direct-image' | 'derived-text'
-export type ImageUnderstandingMode = 'session-vision' | 'ocr-text' | 'image-description'
 
 export class ImageUnderstandingError extends Error {
   constructor(readonly code: string, message: string, options?: ErrorOptions) {
@@ -26,42 +25,42 @@ export interface ImageUnderstandingImage {
 export interface ImageUnderstandingRequest {
   sessionId: string
   image: ImageUnderstandingImage
-  question: string
+  prompt: string
   signal: AbortSignal
   binding?: EngineBinding
-  ocrBinding?: EngineBinding
 }
 
 export type ImageUnderstandingAvailability =
-  | { status: 'available'; kind: ImageUnderstandingKind; backendId: string; limitation?: string }
+  | { status: 'available'; backendId: string }
   | { status: 'unavailable'; reason: string }
 
-export type ImageUnderstandingPreparation =
-  | { kind: 'direct-image'; backendId: string;
-      provenance: { backendId: string; mode: 'session-vision' } }
-  | { kind: 'derived-text'; text: string;
-      provenance: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string };
-      limitations?: string }
+export interface ImageUnderstandingOutput {
+  text: string
+  model?: string
+  limitations?: string
+}
 
+export interface ImageUnderstandingResult {
+  text: string
+  source: { backendId: string; backendVersion: string; model?: string }
+  limitations?: string
+}
+
+/** One execution contract: an image and prompt produce a textual interpretation. */
 export interface ImageUnderstandingBackend {
-  readonly id: string
-  readonly kind: ImageUnderstandingKind
-  readonly descriptor?: EngineDescriptor
-  availability(sessionId: string, signal: AbortSignal, config?: EngineConfiguration, context?: { ocrBinding?: EngineBinding }): Promise<
-    { available: true; limitation?: string } | { available: false; reason: string }
+  readonly descriptor: EngineDescriptor
+  availability(sessionId: string, signal: AbortSignal, config?: EngineConfiguration): Promise<
+    { available: true } | { available: false; reason: string }
   >
-  prepare(request: ImageUnderstandingRequest, config?: EngineConfiguration): Promise<
-    | { kind: 'direct-image'; mode: 'session-vision' }
-    | { kind: 'derived-text'; text: string; mode: 'ocr-text' | 'image-description';
-        model?: string; limitations?: string }
-  >
+  cacheIdentity?(sessionId: string, signal: AbortSignal, config?: EngineConfiguration): Promise<BackendCacheIdentity>
+  understand(request: ImageUnderstandingRequest, config?: EngineConfiguration): Promise<ImageUnderstandingOutput>
 }
 
 /** Selected backend is profile configuration; the caller supplies only Session identity. */
 export class HostImageUnderstandingService {
-  private readonly backends = new EngineDirectory<ImageUnderstandingBackend>(backend => backend.descriptor ?? {
-    id: backend.id, name: backend.id, version: '1', execution: 'remote',
-  })
+  private readonly backends = new EngineDirectory<ImageUnderstandingBackend>(backend => ({
+    ...backend.descriptor, capabilities: ['image-description'],
+  }))
   private readonly tasks = new Map<AbortController, ImageUnderstandingBackend>()
   private disposed = false
 
@@ -70,11 +69,10 @@ export class HostImageUnderstandingService {
   /** Contributors own the returned disposer through their own Fiber's ctx.effect(). */
   register(backend: ImageUnderstandingBackend): () => void {
     if (this.disposed) throw new ImageUnderstandingError('pdf/image-unavailable', 'Image understanding is disposed.')
-    if (!backend.id || backend.id.length > 128 || !/^[a-z0-9][a-z0-9.-]*$/.test(backend.id)
-      || this.backends.has(backend.id)) {
+    const id = backend.descriptor?.id
+    if (!id || this.backends.has(id)) {
       throw new ImageUnderstandingError('pdf/image-invalid-backend', 'Image backend ID is invalid or already registered.')
     }
-    if (backend.descriptor && backend.descriptor.id !== backend.id) throw new ImageUnderstandingError('pdf/image-invalid-backend', 'Image backend identity differs from its descriptor.')
     return this.backends.register(backend, () => {
       for (const [controller, active] of this.tasks) {
         if (active === backend) controller.abort(new ImageUnderstandingError('pdf/image-unavailable', 'Image backend was removed.'))
@@ -82,9 +80,7 @@ export class HostImageUnderstandingService {
     })
   }
 
-  list(): (EngineDescriptor & { kind: ImageUnderstandingKind })[] {
-    return [...this.backends.values()].map(backend => ({ ...this.backends.descriptor(backend.id)!, kind: backend.kind }))
-  }
+  list(): EngineDescriptor[] { return this.backends.list() }
 
   subscribe(listener: () => void): () => void { return this.backends.subscribe(listener) }
 
@@ -93,29 +89,32 @@ export class HostImageUnderstandingService {
     return structuredClone(typeof selected === 'string' ? { engineId: selected, config: {} } : selected)
   }
 
-  async availability(sessionId: string, signal: AbortSignal, binding?: EngineBinding, ocrBinding?: EngineBinding): Promise<ImageUnderstandingAvailability> {
+  selectedDescriptor(binding?: EngineBinding): EngineDescriptor | undefined {
+    return this.disposed ? undefined : this.backends.descriptor(this.selection(binding).engineId)
+  }
+
+  async availability(sessionId: string, signal: AbortSignal, binding?: EngineBinding): Promise<ImageUnderstandingAvailability> {
     const selected = this.selection(binding)
     const backend = this.backends.get(selected.engineId)
     if (this.disposed || !backend) return { status: 'unavailable', reason: 'The selected image backend is not installed.' }
     if (!sessionId.trim() || sessionId.length > 512) return { status: 'unavailable', reason: 'A valid session is required.' }
     signal.throwIfAborted()
     try {
-      const config = validateEngineConfiguration(this.backends.descriptor(backend.id)!, selected.config)
+      const config = validateEngineConfiguration(this.backends.descriptor(backend.descriptor.id)!, selected.config)
       const result = await engineProbe(this.tasks, backend, signal, {
         cancelled: () => new ImageUnderstandingError('pdf/image-cancelled', 'Image availability was cancelled.'),
         timeout: () => new ImageUnderstandingError('pdf/image-timeout', 'Image availability timed out.'),
-      }, probe => backend.availability(sessionId, probe, config, { ocrBinding: ocrBinding ? structuredClone(ocrBinding) : undefined }))
+      }, probe => backend.availability(sessionId, probe, config))
       signal.throwIfAborted()
-      if (this.disposed || this.backends.get(backend.id) !== backend) {
+      if (this.disposed || this.backends.get(backend.descriptor.id) !== backend) {
         return { status: 'unavailable', reason: 'The selected image backend was removed.' }
       }
       return result.available
-        ? { status: 'available', kind: backend.kind, backendId: backend.id,
-            ...(result.limitation ? { limitation: result.limitation } : {}) }
+        ? { status: 'available', backendId: backend.descriptor.id }
         : { status: 'unavailable', reason: result.reason }
     } catch (error) {
       if (signal.aborted) throw signal.reason
-      if (this.disposed || this.backends.get(backend.id) !== backend) {
+      if (this.disposed || this.backends.get(backend.descriptor.id) !== backend) {
         return { status: 'unavailable', reason: 'The selected image backend was removed.' }
       }
       return { status: 'unavailable', reason: error instanceof ImageUnderstandingError
@@ -123,13 +122,40 @@ export class HostImageUnderstandingService {
     }
   }
 
-  async prepare(request: ImageUnderstandingRequest): Promise<ImageUnderstandingPreparation> {
+  /** Synchronous fence for consumers retaining an asynchronous identity snapshot. */
+  generation(binding?: EngineBinding): string | undefined {
+    return this.disposed ? undefined : this.backends.generation(this.selection(binding).engineId)
+  }
+
+  async cacheIdentity(sessionId: string, signal: AbortSignal, binding?: EngineBinding): Promise<EngineCacheIdentity> {
+    signal.throwIfAborted()
+    const selected = this.selection(binding)
+    const backend = this.backends.get(selected.engineId)
+    const generation = this.backends.generation(selected.engineId)
+    if (this.disposed || !backend || !generation) throw new ImageUnderstandingError('pdf/image-unavailable', 'The selected image backend is not installed.')
+    if (!sessionId?.trim() || sessionId.length > 512) throw new ImageUnderstandingError('pdf/image-invalid-request', 'A valid session is required.')
+    let config: EngineConfiguration
+    try { config = validateEngineConfiguration(this.backends.descriptor(backend.descriptor.id)!, selected.config) }
+    catch (cause) { throw new ImageUnderstandingError('pdf/image-not-configured', 'The selected image configuration is invalid.', { cause }) }
+    const identity = await engineProbe(this.tasks, backend, signal, {
+      cancelled: () => new ImageUnderstandingError('pdf/image-cancelled', 'Image identity resolution was cancelled.'),
+      timeout: () => new ImageUnderstandingError('pdf/image-timeout', 'Image identity resolution timed out.'),
+    }, probe => backend.cacheIdentity?.(sessionId, probe, config) ?? Promise.resolve(undefined))
+    signal.throwIfAborted()
+    if (this.disposed || this.backends.generation(selected.engineId) !== generation) {
+      throw new ImageUnderstandingError('pdf/image-unavailable', 'The selected image backend was removed.')
+    }
+    return engineCacheIdentity(this.backends.descriptor(selected.engineId)!, config, generation, sessionId, identity,
+      canonical => createHash('sha256').update(canonical).digest('hex'))
+  }
+
+  async understand(request: ImageUnderstandingRequest): Promise<ImageUnderstandingResult> {
     validateImageRequest(request)
     const selected = this.selection(request.binding)
     const backend = this.backends.get(selected.engineId)
     if (this.disposed || !backend) throw new ImageUnderstandingError('pdf/image-unavailable', 'The selected image backend is not installed.')
     let config: EngineConfiguration
-    try { config = validateEngineConfiguration(this.backends.descriptor(backend.id)!, selected.config) }
+    try { config = validateEngineConfiguration(this.backends.descriptor(backend.descriptor.id)!, selected.config) }
     catch (cause) { throw new ImageUnderstandingError('pdf/image-not-configured', 'The selected image configuration is invalid.', { cause }) }
     const controller = new AbortController()
     this.tasks.set(controller, backend)
@@ -137,7 +163,7 @@ export class HostImageUnderstandingService {
     request.signal.addEventListener('abort', cancel, { once: true })
     if (request.signal.aborted) cancel()
     const timer = setTimeout(() => controller.abort(new ImageUnderstandingError('pdf/image-timeout',
-      'Image preparation exceeded its time limit.')), 120_000)
+      'Image understanding exceeded its time limit.')), 120_000)
     let onAbort: (() => void) | undefined
     const cancellation = new Promise<never>((_, reject) => {
       onAbort = () => reject(controller.signal.reason)
@@ -146,44 +172,33 @@ export class HostImageUnderstandingService {
     })
     try {
       controller.signal.throwIfAborted()
-      const available = await Promise.race([backend.availability(request.sessionId, controller.signal, config,
-        { ocrBinding: request.ocrBinding }), cancellation])
+      const available = await Promise.race([backend.availability(request.sessionId, controller.signal, config), cancellation])
       controller.signal.throwIfAborted()
       if (!available.available) throw new ImageUnderstandingError('pdf/image-unavailable', available.reason)
       // A contributor sees immutable request metadata and a private copy of the image bytes.
-      const result = await Promise.race([backend.prepare({ ...request, image: {
+      const result = await Promise.race([backend.understand({ ...request, image: {
         ...request.image, data: request.image.data.slice(),
       }, signal: controller.signal }, config), cancellation])
       controller.signal.throwIfAborted()
-      if (this.disposed || this.backends.get(backend.id) !== backend) {
+      if (this.disposed || this.backends.get(backend.descriptor.id) !== backend) {
         throw new ImageUnderstandingError('pdf/image-unavailable', 'The selected image backend was removed.')
       }
-      if (!result || typeof result !== 'object' || result.kind !== backend.kind) {
-        throw new ImageUnderstandingError('pdf/image-invalid-result', 'The image backend returned a different result kind.')
-      }
-      if (result.kind === 'direct-image') {
-        if (result.mode !== 'session-vision') throw new ImageUnderstandingError('pdf/image-invalid-result', 'Invalid direct-image provenance.')
-        return {
-        kind: 'direct-image', backendId: backend.id,
-        provenance: { backendId: backend.id, mode: result.mode },
-        }
-      }
+      if (!result || typeof result !== 'object') throw new ImageUnderstandingError('pdf/image-invalid-result', 'The image backend returned no result.')
       if (typeof result.text !== 'string' || !result.text.trim()
         || result.text.length > MAX_DERIVED_TEXT_CHARACTERS
-        || !['ocr-text', 'image-description'].includes(result.mode)
         || result.model !== undefined && (typeof result.model !== 'string' || result.model.length > 256)
         || result.limitations !== undefined && (typeof result.limitations !== 'string' || result.limitations.length > 1024)) {
         throw new ImageUnderstandingError('pdf/image-invalid-result', 'The image backend returned invalid or empty text.')
       }
-      return { kind: 'derived-text', text: result.text,
-        provenance: { backendId: backend.id, mode: result.mode,
+      return { text: result.text,
+        source: { backendId: backend.descriptor.id, backendVersion: this.backends.descriptor(backend.descriptor.id)!.version,
           ...(result.model ? { model: result.model } : {}) },
         ...(result.limitations ? { limitations: result.limitations } : {}),
       }
     } catch (error) {
       if (controller.signal.aborted) throw controller.signal.reason
       if (error instanceof ImageUnderstandingError) throw error
-      throw new ImageUnderstandingError('pdf/image-failed', 'The selected image backend could not prepare this image.', { cause: error })
+      throw new ImageUnderstandingError('pdf/image-failed', 'The selected image backend could not understand this image.', { cause: error })
     } finally {
       clearTimeout(timer)
       request.signal.removeEventListener('abort', cancel)
@@ -203,7 +218,7 @@ export class HostImageUnderstandingService {
 
 function validateImageRequest(request: ImageUnderstandingRequest): void {
   if (!request.sessionId.trim() || request.sessionId.length > 512
-    || !request.question.trim() || request.question.length > MAX_QUESTION_CHARACTERS
+    || !request.prompt.trim() || request.prompt.length > MAX_IMAGE_PROMPT_CHARACTERS
     || request.image.mediaType !== 'image/png'
     || !Number.isSafeInteger(request.image.width) || !Number.isSafeInteger(request.image.height)
     || request.image.width < 1 || request.image.height < 1

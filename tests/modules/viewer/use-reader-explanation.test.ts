@@ -7,6 +7,7 @@ import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-selection.ts'
 import type { NativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
 import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/modules/viewer/index.ts'
+import { readerLocales } from '../../../src/modules/viewer/locales.ts'
 
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
@@ -43,7 +44,6 @@ async function withExplanation(run: (fixture: {
     promptExplanation: async value => { prompts.push(value) },
     promptTemplate: '{{instruction}}\n\n{{document}}\n\n{{items}}',
     imageUnderstanding: { async availability() { return { status: 'available', kind: 'direct-image', backendId: 'test' } },
-      async prepare() { throw new Error('legacy client-side image preparation should not be used') },
       async prepareReference() { throw new Error('no image reference in a text-only explanation') } },
     textSelectionEvidence: { async prepare(request) { return {
       text: request.quote, documentId: 'doc-1', sourcePath: '/lesson.pdf',
@@ -97,6 +97,29 @@ test('explanation draft is scoped to content identity and cleared on document sw
     assert.equal(state().active, null)
     assert.equal(state().editor, null)
     assert.equal(state().captureTask.current, null)
+  })
+})
+
+test('selection verification failures are localized and preserve the question without calling the model', async () => {
+  for (const [code, key] of [
+    ['pdf/selection-unverifiable', 'selectionUnverifiable'],
+    ['pdf/selection-ocr-unverifiable', 'selectionOcr'],
+    ['pdf/selection-mismatch', 'selectionMismatch'],
+    ['pdf/stale-reader', 'sourceChanged'],
+  ]) await withExplanation(async ({ state, options, render, prompts }) => {
+    const t = (key: string) => readerLocales.zh[key] ?? key
+    await render({ ...options, t, textSelectionEvidence: { async prepare() {
+      throw Object.assign(new Error('Internal Host geometry details'), { code })
+    } } })
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: '为什么？' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    assert.equal(state().error, t(`reader.explain.${key}`))
+    assert.doesNotMatch(state().error, /Internal Host/)
+    assert.equal(state().editor?.question, '为什么？')
+    assert.equal(state().active?.excerpts.length, 0)
+    assert.equal(state().saving, false)
+    assert.deepEqual(prompts, [])
   })
 })
 
@@ -158,6 +181,28 @@ test('a stale text selection cannot start or be saved as an explanation question
     await act(async () => { await state().saveQuestion() })
     assert.equal(state().active?.excerpts.length, 0)
     assert.equal(state().error, 'reader.explain.sourceChanged')
+  })
+})
+
+test('fresh explanation entry accepts a flushed revision while old selections and changed sources stay rejected', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let current = snapshot
+    await render({ ...options, currentSnapshot: () => current })
+    const delayedStart = state().start
+    current = { ...snapshot, revision: snapshot.revision + 1, dirty: true }
+    await act(async () => { delayedStart() })
+    assert.equal(state().active?.source.revision, current.revision)
+    assert.equal(state().error, '')
+    await act(async () => { state().cancel() })
+    await act(async () => { delayedStart(selection) })
+    assert.equal(state().active, null, 'flushing cannot refresh an old selected-text identity')
+    assert.equal(state().error, 'reader.explain.sourceChanged')
+    for (const changed of [{ id: 'doc-2' }, { contentVersion: 'content-2' }, { sourceVersion: 'fs-2' }]) {
+      current = { ...snapshot, ...changed }
+      await act(async () => { delayedStart() })
+      assert.equal(state().active, null, 'a delayed mode entry cannot transfer to another source')
+      assert.equal(state().error, 'reader.explain.sourceChanged')
+    }
   })
 })
 
@@ -248,7 +293,6 @@ test('a Host-rendered region carries its evidence reference into the submitted p
         sourceVersion: 'fs-1', contentVersion: 'content-1', revision: 7,
         mediaType: 'image/png', width: 20, height: 20, bytes } } },
       imageUnderstanding: { async availability() { return { status: 'available', kind: 'direct-image', backendId: 'test' } },
-        async prepare() { throw new Error('legacy preparation must not receive Client pixels') },
         async prepareReference(request: { sessionId: string; documentId: string; refId: string; question: string }) {
           assert.deepEqual(request, { sessionId: 'session-1', documentId: 'doc-1', refId: 'pdf-ref-1',
             question: 'What is this?' })

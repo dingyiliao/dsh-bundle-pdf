@@ -2,6 +2,8 @@ import { z } from 'zod'
 
 export const engineKinds = ['ocr', 'image', 'translation', 'embedding'] as const
 export type EngineKind = typeof engineKinds[number]
+export const engineCapabilities = ['ocr-text', 'image-description'] as const
+export type EngineCapability = typeof engineCapabilities[number]
 export type EngineJson = null | boolean | number | string | EngineJson[] | { [key: string]: EngineJson }
 export type EngineConfiguration = Readonly<Record<string, EngineJson>>
 export interface EngineBinding { engineId: string; config?: EngineConfiguration }
@@ -11,12 +13,18 @@ export const configurationFieldSchema = z.object({
   type: z.enum(['string', 'number', 'boolean', 'secret-reference']), required: z.boolean().optional(),
 }).strict()
 export type EngineConfigurationField = z.infer<typeof configurationFieldSchema>
+export const engineExecutionSchema = z.enum(['disabled', 'local', 'remote', 'service'])
 export const engineDescriptorSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9@][a-zA-Z0-9@/_.:-]{0,199}$/),
   name: z.string().min(1).max(200), version: z.string().min(1).max(128),
-  execution: z.enum(['disabled', 'local', 'remote']),
+  execution: engineExecutionSchema,
+  /** Omitted metadata makes no capability claim; consumers must opt in explicitly. */
+  capabilities: z.array(z.enum(engineCapabilities)).max(engineCapabilities.length).optional(),
   configurationFields: z.array(configurationFieldSchema).max(32).optional(),
 }).superRefine((descriptor, ctx) => {
+  if (descriptor.capabilities && new Set(descriptor.capabilities).size !== descriptor.capabilities.length) {
+    ctx.addIssue({ code: 'custom', message: 'Duplicate engine capability' })
+  }
   const fields = descriptor.configurationFields ?? []
   if (new Set(fields.map(field => field.key)).size !== fields.length) ctx.addIssue({ code: 'custom', message: 'Duplicate engine configuration field' })
 })
@@ -43,7 +51,7 @@ export function validateEngineConfiguration(descriptor: EngineDescriptor, input:
     }
     const type = field.type === 'secret-reference' ? 'string' : field.type
     if (typeof value !== type || type === 'number' && !Number.isFinite(value)) throw new Error(`Invalid engine configuration: ${field.label}`)
-    if (field.type === 'secret-reference' && !/^[a-zA-Z0-9][a-zA-Z0-9/_.:-]{0,199}$/.test(String(value))) {
+    if (field.type === 'secret-reference' && !/^[a-zA-Z0-9_][a-zA-Z0-9/_.:-]{0,199}$/.test(String(value))) {
       throw new Error('A credential reference, not a secret, is required')
     }
   }

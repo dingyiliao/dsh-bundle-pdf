@@ -1,12 +1,22 @@
 
 export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'edit' | 'comment' | 'commentedMark' | 'move' | 'close'
-  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send'
+  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send' | 'ocr' | 'file' | 'reload' | 'check' | 'lock' | 'warning'
 
 /** Compact reader controls use the same stroke weight as the sidebar rail. */
 export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: string }) {
   return <svg className="dsh-pdf-toolbar-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
     strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-icon={name}>
-    {name === 'back' ? <>
+    {name === 'check' ? <>
+      <path d="m5 12 4 4L19 6" />
+    </> : name === 'lock' ? <>
+      <rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />
+    </> : name === 'warning' ? <>
+      <path d="m12 3 10 18H2L12 3ZM12 9v5M12 17v.1" />
+    </> : name === 'ocr' ? <>
+      <path d="M4 8V4h4m8 0h4v4m0 8v4h-4M8 20H4v-4M8 8h8M12 8v8M9 16h6" />
+    </> : name === 'file' ? <>
+      <path d="M5 3h9l5 5v13H5V3Zm9 0v5h5" /><path d="M8 13h8M8 17h8" />
+    </> : name === 'back' ? <>
       <path d="M19 12H5m7-7-7 7 7 7" />
     </> : name === 'undo' ? <>
       <path d="m9 4-5 5 5 5" />
@@ -37,7 +47,10 @@ export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: 
     </> : name === 'note' ? <>
       <path d="M4 3h16v13l-5 5H4V3ZM15 21v-5h5M8 8h8M8 12h5" />
     </> : name === 'crop' ? <>
-      <path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5" />
+      <path d="M7 3v12a2 2 0 0 0 2 2h12M3 7h12a2 2 0 0 1 2 2v12" />
+      <path d="M10 10h4v4h-4z" strokeDasharray="1 2" />
+    </> : name === 'reload' ? <>
+      <path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17" />
     </> : name === 'chevronDown' ? <>
       <path d="m6 9 6 6 6-6" />
     </> : name === 'activity' ? <>

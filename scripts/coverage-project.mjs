@@ -45,9 +45,10 @@ async function filesBelow(directory) {
 
 /** Keep all runtime lanes and tests pinned to the same checked-out revision. */
 async function projectFingerprint() {
+  const configs = (await readdir(root)).filter(name => /^tsconfig(?:\..+)?\.json$/.test(name))
   const paths = [...await filesBelow('src'), ...await filesBelow('tests'), ...await filesBelow('scripts'),
-    'native/pdfium-worker.cpp', 'package.json', 'package-lock.json', 'tsconfig.json',
-    'tsconfig.test.json', 'tsconfig.ocr.json', 'tsconfig.image-host.json',
+    'native/pdfium-worker.cpp', 'native/form-callback-test.cpp', 'native/CMakeLists.txt', 'native/dependencies.json',
+    'package.json', 'package-lock.json', ...configs,
     'vitest.web.config.ts', 'cordis.patch.yml'].sort()
   const hash = createHash('sha256')
   for (const path of paths) {

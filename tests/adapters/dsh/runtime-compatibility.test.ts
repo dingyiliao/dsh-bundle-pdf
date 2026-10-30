@@ -12,7 +12,7 @@ import { registerPdfAgentTools } from '../../../src/adapters/host/dsh/agent-tool
 import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
 import { createReaderContexts } from '../../../src/modules/navigation/index.ts'
 import { draftSchema } from '../../../src/modules/working-copy/index.ts'
-import { createWorkspaces } from '../../../src/host/workspaces.ts'
+import { createWorkspaces } from '../../fixtures/working-copy-service.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 
 const sessionId = 'sdk-compatibility-session'
@@ -54,8 +54,8 @@ test('published DSH native tool pipeline dispatches PDF tools and removes their 
       documentId: opened.id, contentVersion: opened.contentVersion, page: 1 })
     const schemas = (await ctx.systemPrompt.assemble()).tools
     assert.ok(schemas.some(tool => tool.name === 'pdf_current'))
-    assert.ok(schemas.some(tool => tool.name === 'pdf_form_inspect_page'))
-    assert.ok(schemas.some(tool => tool.name === 'pdf_fill_form'))
+    assert.ok(schemas.some(tool => tool.name === 'pdf_form_inspect'))
+    assert.ok(schemas.some(tool => tool.name === 'pdf_form_fill'))
 
     // The real executor treats Agent as an opaque scope; this fixture supplies
     // only the session identity consumed by these PDF metadata tools.

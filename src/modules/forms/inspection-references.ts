@@ -179,7 +179,7 @@ export function modelFormInspectionFields(inspection: FormPageInspection, docume
     return {
       sharedFieldKey,
       type: field.type,
-      valueType: field.valueContract.valueType,
+      valueType: field.valueType,
       required: field.required,
       ...(field.options !== undefined ? { options: [...field.options] } : {}),
       ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),

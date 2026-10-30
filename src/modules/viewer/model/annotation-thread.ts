@@ -12,25 +12,6 @@ function parentOf(annotation: PdfAnnotation, byId: ReadonlyMap<string, PdfAnnota
   return parent?.page === annotation.page ? parent : undefined
 }
 
-/** Resolve nested replies without trusting malformed or cyclic external PDFs. */
-export function annotationRoot(annotation: PdfAnnotation, byId: ReadonlyMap<string, PdfAnnotation>): PdfAnnotation {
-  const visited = new Map<string, number>()
-  const path: PdfAnnotation[] = []
-  let current = annotation
-  while (true) {
-    const cycle = visited.get(current.id)
-    if (cycle !== undefined) {
-      // Malformed cycles must resolve consistently from every member.
-      return path.slice(cycle).sort((left, right) => left.id.localeCompare(right.id))[0]!
-    }
-    visited.set(current.id, path.length)
-    path.push(current)
-    const parent = parentOf(current, byId)
-    if (!parent) return current
-    current = parent
-  }
-}
-
 /** One indexed projection per annotation snapshot; roots are path-compressed. */
 export function createAnnotationThreadIndex(annotations: readonly PdfAnnotation[]) {
   const byId = new Map(annotations.map(annotation => [annotation.id, annotation]))
@@ -87,11 +68,6 @@ export function createAnnotationThreadIndex(annotations: readonly PdfAnnotation[
     return { root, comments }
   }
   return { byId, rootOf, thread }
-}
-
-/** Parent-first conversation order, independent of PDF /Annots array order. */
-export function annotationThread(root: PdfAnnotation, annotations: readonly PdfAnnotation[]): AnnotationThread {
-  return createAnnotationThreadIndex(annotations).thread(root)
 }
 
 export function isReply(annotation: PdfAnnotation): boolean {

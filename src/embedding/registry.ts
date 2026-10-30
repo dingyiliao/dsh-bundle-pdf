@@ -72,21 +72,36 @@ export class EmbeddingRegistry {
     return this.run(engine, request.signal, request.timeoutMs, async (signal, timeoutMs) => {
       const output = await engine.embed({ texts, purpose: request.purpose, signal, timeoutMs }, config)
       signal.throwIfAborted()
-      if (!Array.isArray(output) || output.length !== texts.length) {
+      let resultModel = model
+      let returned: unknown = output
+      const currentModel = this.model(engine, config)
+      if (output && typeof output === 'object' && 'vectors' in output && 'model' in output) {
+        const reported = output.model
+        const identity = ['engineId', 'engineVersion', 'model', 'modelRevision', 'dimensions', 'encoding', 'fingerprint'] as const
+        if (!reported || identity.some(key => reported[key] !== currentModel[key])) {
+          throw new EmbeddingError('invalid-result', 'The embedding response has an unverified model identity.')
+        }
+        returned = output.vectors
+        resultModel = currentModel
+      } else if (currentModel.fingerprint !== model.fingerprint) {
+        throw new EmbeddingError('invalid-result', 'The embedding model changed during the request.')
+      }
+      if (!Array.isArray(returned) || returned.length !== texts.length
+          || texts.length > resultModel.maxBatchSize || texts.some(text => text.length > resultModel.maxInputCharacters)) {
         throw new EmbeddingError('invalid-result', 'The embedding response has an incorrect vector count.')
       }
-      const vectors = output.map(vector => {
-        if (!Array.isArray(vector) || vector.length !== model.dimensions || vector.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+      const vectors = returned.map(vector => {
+        if (!Array.isArray(vector) || vector.length !== resultModel.dimensions || vector.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
           throw new EmbeddingError('invalid-result', 'The embedding response has invalid vector dimensions or values.')
         }
         const norm = Math.hypot(...vector)
         if (!Number.isFinite(norm) || norm < 1e-12) throw new EmbeddingError('invalid-result', 'The embedding response contains an empty vector.')
         return vector.map(value => value / norm)
       })
-      if (this.model(engine, config).fingerprint !== model.fingerprint) {
+      if (this.model(engine, config).fingerprint !== resultModel.fingerprint) {
         throw new EmbeddingError('invalid-result', 'The embedding model changed during the request.')
       }
-      return { vectors, model }
+      return { vectors, model: resultModel }
     })
   }
 

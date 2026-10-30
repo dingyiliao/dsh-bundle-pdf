@@ -114,7 +114,7 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
         onView={registerView} onDestination={pageDestination} onAction={pageAction}
         onAnnotation={selectAnnotation} onMoveNoteMarker={moveNoteMarker} onNote={pageNote} onRegion={pageRegion}
         onBackground={dismissContext} onError={notifyError} />} />
-  }, [PageComponent, pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, mode, t, scrollRoot,
+  }, [PageComponent, pdf, snapshot?.id, snapshot?.contentVersion, snapshot?.document.pages, snapshot?.document.formFields, mode, t, scrollRoot,
     annotationsByPage, renderedAnnotationsByPage, selectedAnnotation?.id, selectedAnnotation?.page,
     selection, activeExplanation, draftExplanationSelection, draggingPage, navigationTarget,
     ocrPages, zoom, fit, size, pageScale, registerView, pageDestination, pageAction, onFormChange,

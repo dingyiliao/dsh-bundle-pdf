@@ -2,7 +2,7 @@ import type { AgentNavigationRequest, TextNavigationTarget } from '../../../cont
 import type { NavigationPosition } from '../../../navigation/index.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { NativeDocument } from '../rendering/document.js'
-import { NativeViewport } from '../rendering/viewport.js'
+import { NativeViewport } from '../../../shared/geometry/native-viewport.js'
 import { readingSafeTop } from '../rendering/page-layout.js'
 import { joinPageText } from '../../../shared/page-text.js'
 

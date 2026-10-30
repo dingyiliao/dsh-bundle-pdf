@@ -2,15 +2,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { PdfRect } from '../core/pdf-types.js'
 import type { ReaderProps } from './contracts.js'
 import type { AgentNavigationRequest } from '../contracts/navigation.js'
+import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReaderExplanation, useReaderNavigation, useReaderOcr,
   useReaderAnnotations, useReaderScreenshot, useReaderSearch, useReaderSave, useReaderSidebarLayout, useReaderPages,
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
-  usePdfWheelZoom, usePdfViewportSize,
+  usePdfWheelZoom, usePdfViewportSize, useReaderIndexing, useReaderFormCommits, ReaderFormCommitProvider,
   clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition,
   readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels,
   navigateAgentRequest,
   } from '../modules/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
+
+const formCommitIdentity = (sessionId: string, snapshot: WorkspaceSnapshot | null) =>
+  JSON.stringify([sessionId, snapshot?.id, snapshot?.contentVersion, snapshot?.document.readOnly])
 
 export function Reader(props: ReaderProps) {
   const { api, t, settings, sessionId } = props
@@ -54,6 +58,8 @@ export function Reader(props: ReaderProps) {
       return explanation.captureTask.current
     } })
   const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, documentReady } = documentState
+  const indexing = useReaderIndexing({ api: props.indexingApi, sessionId, documentId: snapshot?.id,
+    signal: tab.signal, t, onError: notifyError })
   const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
     views, registerView, scrollRef, updateScrolledPage } = useReaderPageTracking({ snapshot,
     readerElement, scrollportRef: props.scrollportRef })
@@ -70,21 +76,54 @@ export function Reader(props: ReaderProps) {
     copyText, fragmentAnchor } = readerSelection
   const state = useRef({ snapshot, scrollRoot, zoom, fit, size, currentPage })
   state.current = { snapshot, scrollRoot, zoom, fit, size, currentPage }
+  const { busy, operationLock, act, change } = useReaderMutations({ api, sessionId,
+    tabSignal: tab.signal, ownerSequence, currentSnapshot: () => state.current.snapshot,
+    acceptSnapshot: next => { state.current.snapshot = next; setSnapshot(next) },
+    clearError: () => setError(''), onError: notifyError })
+  const formIdentity = formCommitIdentity(sessionId, snapshot)
+  const formCommits = useReaderFormCommits({ identity: formIdentity, onError: notifyError,
+    commit: async (fieldId, value) => {
+      const current = state.current.snapshot
+      if (!current || current.document.readOnly || tab.signal.aborted
+        || displayOwner?.token !== ownerSequence.current
+        || formCommitIdentity(callbacks.current.sessionId, current) !== formIdentity) return false
+      return !!await change([{ type: 'set-field', fieldId, value }])
+    } })
+  const runAfterFormFlush = useCallback(async <Result,>(operation: () => Result | Promise<Result>): Promise<Result | undefined> => {
+    const owner = ownerSequence.current
+    const ownsDocument = () => !tab.signal.aborted && owner === ownerSequence.current
+      && displayOwner?.token === owner && !!state.current.snapshot
+      && formCommitIdentity(callbacks.current.sessionId, state.current.snapshot) === formIdentity
+    // Commands suspended behind a field write still belong to the document
+    // that received them, even if another resource opens before it settles.
+    if (!ownsDocument() || !await formCommits.flush() || !ownsDocument()) return
+    return operation()
+  }, [formCommits.flush, formIdentity, displayOwner?.token, ownerSequence, tab.signal])
+  const actAfterFormFlush: typeof act = (operation, conflictOnStaleSave) =>
+    runAfterFormFlush(() => act(operation, conflictOnStaleSave))
   const navigation = useReaderNavigation({ api, sessionId, tabSignal: tab.signal,
     contentRevision: props.content.revision, pdf, snapshot, scrollRoot, currentPage,
     historyCapacity: settings.historyCapacity, lifetime, state, views, setCurrentPage,
     setPageInput, setZoom, setFit, setPositionNotice, onError: notifyError, t })
-  const { pageScale, jump, destination, navigateHistory, navigationLock,
+  const { pageScale, jump: jumpWithoutFormFlush, destination: destinationWithoutFormFlush,
+    navigateHistory: navigateHistoryWithoutFormFlush, navigationLock,
     navigationTarget, navigating, historySnapshot } = navigation
+  const jump = useCallback(async (...args: Parameters<typeof jumpWithoutFormFlush>) =>
+    !!await runAfterFormFlush(() => jumpWithoutFormFlush(...args)), [jumpWithoutFormFlush, runAfterFormFlush])
+  const destination = useCallback((value: unknown) =>
+    runAfterFormFlush(() => destinationWithoutFormFlush(value)), [destinationWithoutFormFlush, runAfterFormFlush])
+  const navigateHistory = (depth?: number, revision?: number) => {
+    void runAfterFormFlush(() => navigateHistoryWithoutFormFlush(depth, revision))
+  }
   const agentView = useRef({ pdf, visible: tab.visible, ready: documentReady })
   agentView.current = { pdf, visible: tab.visible, ready: documentReady }
-  const navigateEvidence = useCallback((request: AgentNavigationRequest, signal: AbortSignal) =>
-    navigateAgentRequest(request, signal, {
+  const navigateEvidence = useCallback(async (request: AgentNavigationRequest, signal: AbortSignal) =>
+    await runAfterFormFlush(() => navigateAgentRequest(request, signal, {
       current: () => ({ snapshot: state.current.snapshot, document: agentView.current.pdf,
         visible: agentView.current.visible && !tab.signal.aborted, ready: agentView.current.ready(),
         viewportHeight: state.current.scrollRoot?.clientHeight ?? 0 }),
       subscribe: (id, changed) => api.subscribe(id, changed), jump,
-    }), [api, jump, tab.signal])
+    })) ?? 'unavailable', [api, jump, tab.signal, runAfterFormFlush])
   useLayoutEffect(() => {
     if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !documentReady()) return
     return props.evidenceNavigation.register({ sessionId, snapshot,
@@ -135,18 +174,6 @@ export function Reader(props: ReaderProps) {
     screenshotCtl.reset()
     explanation.captureController.current?.abort()
   }, [snapshot?.revision, snapshot?.id])
-  useEffect(() => {
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && !toolsMenu.current?.contains(event.target) && toolsMenu.current) toolsMenu.current.open = false
-    }
-    document.addEventListener('pointerdown', close)
-    return () => document.removeEventListener('pointerdown', close)
-  }, [])
-
-  const { busy, operationLock, act, change } = useReaderMutations({ api, sessionId,
-    tabSignal: tab.signal, ownerSequence, currentSnapshot: () => state.current.snapshot,
-    acceptSnapshot: next => { state.current.snapshot = next; setSnapshot(next) },
-    clearError: () => setError(''), onError: notifyError })
   const changeFormField = useCallback(async (fieldId: string, value: string | boolean | string[]) => {
     await change([{ type: 'set-field', fieldId, value }])
   }, [change])
@@ -158,13 +185,14 @@ export function Reader(props: ReaderProps) {
     mark, beginNote, selectAnnotation, clearAnnotation, deleteAnnotation,
     updateColor: updateAnnotationColor, openCommentEditor, closeCommentEditor, applyComment, applyNote } = annotations
   const saveFlow = useReaderSave({ api, sessionId, resourceAddress: props.resourceAddress, tabSignal: tab.signal,
-    snapshot, ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, act,
+    snapshot, ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, act: actAfterFormFlush,
     pickSavePath: props.pickSavePath, openResource: address => tab.actions.openResource(address, { replaceTab: true }),
     addressForPath: props.addressForPath ?? (() => { throw new Error('PDF resource address adapter is unavailable') }),
     setError, onError: notifyError, t })
   const { feedback: saveFeedback, setFeedback: setSaveFeedback, showFeedback: showSaveFeedback,
     saveAsOpen, setSaveAsOpen, saveAsPicking, savePath, setSavePath, overwrite, setOverwrite,
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs } = saveFlow
+  const beginSaveAsAfterFormFlush = () => { void runAfterFormFlush(beginSaveAs) }
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
   const screenshotCtl = useReaderScreenshot({ pdf, snapshot,
     tabSignal: tab.signal, displayOwnerToken: displayOwner?.token ?? null, ownerSequence,
@@ -222,7 +250,7 @@ export function Reader(props: ReaderProps) {
   }, [dismissContext])
   const discardChanges = async () => {
     if (operationLock.current) return
-    const next = await act(current => api.discard(sessionId, current.id, current.revision, tab.signal))
+    const next = await actAfterFormFlush(current => api.discard(sessionId, current.id, current.revision, tab.signal))
     if (next) { showSaveFeedback(null); dismissContext(); annotations.clearPending(); setSaveAsOpen(false); setReloadConfirm(false); screenshotCtl.reset() }
   }
   const cancelScreenshot = screenshotCtl.cancel
@@ -312,19 +340,20 @@ export function Reader(props: ReaderProps) {
   usePdfWheelZoom({ root: scrollRoot, enabled: !!pdf && !busy && !navigating, views: views.current,
     getScale: wheelScale, onScale: applyWheelScale, ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}` })
   usePdfViewportSize({ root: scrollRoot, size, onSize: setSize,
-    preserveAnchor: !!pdf && fit !== 'custom' && !navigating,
     ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${fit}` })
   const sidebarPanels = readerSidebarPanels({ snapshot, pdf, annotations: annotationItems,
     selectedAnnotation, clearAnnotation, selectAnnotation,
     jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
-    translationEngine: settings.translationEngine, translationRegistry: props.translation, t })
+    translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control, t })
   const goBack = () => navigateHistory()
 
   const closeToolsMenu = () => { if (toolsMenu.current) toolsMenu.current.open = false }
   const toolbar = readerToolbarModel({
-    snapshot, sessionId, signal: tab.signal, api, act, busy, editable, colorPending,
-    saveAsPicking, hasUnappliedAnnotation,
+    snapshot, sessionId, signal: tab.signal, api, act: actAfterFormFlush, busy, editable, colorPending,
+    formPending: formCommits.pending, readOnly: !!snapshot?.document.readOnly,
+    runCommand: operation => { void runAfterFormFlush(operation) },
+    saveAsPicking, hasUnappliedAnnotation, saveFeedback,
     explanation: {
       allowed: !!props.promptExplanation && props.allowReadingContext !== false,
       active: !!activeExplanation, sending: explanationSending,
@@ -347,7 +376,7 @@ export function Reader(props: ReaderProps) {
     commands: {
       clearSelection, clearAnnotation, setMode, closeMenu: closeToolsMenu,
       confirmReload: () => setReloadConfirm(true),
-      beginSaveAs: () => { void beginSaveAs() },
+      beginSaveAs: beginSaveAsAfterFormFlush,
       discardChanges: () => { void discardChanges() },
       save: () => { void save() },
     },
@@ -358,7 +387,7 @@ export function Reader(props: ReaderProps) {
     onSaveExpired: (occurrence: number) => setSaveFeedback(current => current?.occurrence === occurrence ? null : current),
     onExitNote: () => setMode('text'), onCancelScreenshot: cancelScreenshot, onCancelOcr: cancelOcr,
   }
-  const floatingStatuses = readerFloatingStatuses(floatingOptions)
+  const floatingStatuses = [...readerFloatingStatuses(floatingOptions), ...indexing.statuses]
   const activeModeStatus = readerModeStatus(floatingOptions)
   const overlays = readerOverlayModel({
     explanation, annotations, viewport: scrollRoot, documentPath: snapshot?.path, mode, regionPurpose: regionPurpose.current,
@@ -368,11 +397,11 @@ export function Reader(props: ReaderProps) {
     applyComment: () => { void applyComment() }, closeComment: closeCommentEditor,
     applyNote: () => { void applyNote() }, t,
   })
-  return <ReaderView t={t} readerElement={readerElement} readerBody={readerBody} scrollRoot={scrollRoot}
+  return <ReaderFormCommitProvider value={formCommits.owner}><ReaderView t={t} readerElement={readerElement} readerBody={readerBody} scrollRoot={scrollRoot}
     menuRef={toolsMenu} editable={editable} selected={selected} onDismissContext={dismissContext}
     onCloseTranslation={closeTranslation} onCancelScreenshot={cancelScreenshot}
     onSave={() => { void save() }}
-    onUndoRedo={redo => { void act(current => redo
+    onUndoRedo={redo => { void actAfterFormFlush(current => redo
       ? api.redo(sessionId, current.id, current.revision, tab.signal)
       : api.undo(sessionId, current.id, current.revision, tab.signal)) }}
     onDeleteAnnotation={() => { void deleteAnnotation() }}
@@ -395,8 +424,8 @@ export function Reader(props: ReaderProps) {
       snapshot, error, positionNotice, editable, saveAsOpen, savePath, target, targetChecking,
       overwrite, busy, reloadConfirm, setError, setPositionNotice, setSavePath, setOverwrite,
       setSaveAsOpen, setReloadConfirm, save: path => { void save(path) },
-      beginSaveAs: () => { void beginSaveAs() },
-      reload: () => { void act(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
+      beginSaveAs: beginSaveAsAfterFormFlush,
+      reload: () => { void actAfterFormFlush(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
     }}
     floating={{ statuses: floatingStatuses, mode: activeModeStatus, explanation: overlays.explanationStatus }}
     question={overlays.question} comment={overlays.comment} note={overlays.note}
@@ -410,8 +439,10 @@ export function Reader(props: ReaderProps) {
       pdf, currentPage, pageInput, navigating, onPageInputChange: editPageInput,
       onPageInputSubmit: value => {
         const page = Number(value)
-        setPageInput(String(page))
-        if (page !== currentPage) void jump(page)
+        void runAfterFormFlush(() => {
+          setPageInput(String(page))
+          if (page !== state.current.currentPage) void jumpWithoutFormFlush(page)
+        })
       },
       onPageInputReset: () => setPageInput(String(currentPage)),
       onNavigatePage: page => { void jump(page) },
@@ -430,7 +461,7 @@ export function Reader(props: ReaderProps) {
       onOcr: ocrAvailability?.status === 'available' && !ocrProgress
         ? () => { void recognize({ page: screenshot.page, rect: screenshot.region }) } : undefined,
     } : undefined}
-  />
+  /></ReaderFormCommitProvider>
 }
 
 export default Reader

@@ -1,14 +1,13 @@
 /** Real Web/Chromium panel interactions, collected from the built PDF Client. */
-import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PDFDocument, PDFHexString, PDFName, StandardFonts } from 'pdf-lib'
-import { chromium, type Browser, type Page } from 'playwright'
+import type { Browser, Page } from 'playwright'
 import { expect, it } from 'vitest'
 import { launchWebScaffold, seedSession, watchConsole } from '../../deepseek-harness/apps/web/tests/scaffold.ts'
 import { newEnglishPage } from '../../deepseek-harness/apps/web/tests/support.ts'
-import { attachPdfBrowserCoverage } from './browser-coverage.ts'
+import { launchPdfBrowser as browser } from './browser/launch.ts'
 import type { DshTranslationLlm } from '../src/adapters/host/dsh/translation-model.ts'
 import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { recoverableOutlineFixture } from './fixtures/recoverable-outline.ts'
@@ -18,12 +17,6 @@ const DSH_ROOT = join(ROOT, '..', 'deepseek-harness')
 const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'session.v3.jsonl')
 const MODEL_FIXTURE = join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl')
 const FILE_NAME = 'panel-coverage.pdf'
-
-async function browser(): Promise<Browser> {
-  if (process.env.PDF_BENCH_CHROMIUM) return attachPdfBrowserCoverage(await chromium.launch({ executablePath: process.env.PDF_BENCH_CHROMIUM }))
-  if (existsSync(chromium.executablePath())) return attachPdfBrowserCoverage(await chromium.launch())
-  return attachPdfBrowserCoverage(await chromium.launch({ channel: 'chrome' }))
-}
 
 async function documentBytes(): Promise<Uint8Array> {
   const document = await PDFDocument.create()
@@ -171,7 +164,7 @@ it('edits embedded bookmark titles, targets and hierarchy through save and reope
     await reader.getByRole('menuitem', { name: 'Delete bookmark', exact: true }).click()
     await reader.getByRole('dialog', { name: 'Delete PDF bookmark', exact: true }).getByRole('button', { name: 'Delete?', exact: true }).click()
     await expect.poll(() => reader.locator('.dsh-pdf-bookmark-row').count()).toBe(0)
-    await reader.locator('.dsh-pdf-toolbar-undo').click()
+    await reader.locator('.dsh-pdf-tool-history .dsh-pdf-toolbar-undo').click()
     await reader.locator('.dsh-pdf-bookmark-link').filter({ hasText: 'Opening chapter' }).waitFor()
     expect(tripwire.pageErrors).toEqual([])
   } finally { await opened?.close(); await scaffold.close() }
@@ -309,12 +302,13 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
     const zoom = reader.locator('.dsh-pdf-toolbar-zoom')
     await zoom.locator('summary').click()
-    await zoom.locator('.dsh-pdf-zoom-menu').getByRole('button', { name: '100%' }).click()
+    await reader.locator('.dsh-pdf-zoom-menu').getByRole('button', { name: '100%' }).click()
     const scroller = reader.locator('.dsh-pdf-scroll')
     await expect.poll(() => scroller.evaluate(element => element.scrollWidth - element.clientWidth)).toBeGreaterThan(200)
     await expect.poll(() => scroller.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(200)
     const vertical = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Vertical scrollbar' })
     const horizontal = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Horizontal scrollbar' })
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
     const [bodyBounds, contentBounds, sidebarBounds, scrollBounds, verticalBounds] = await Promise.all([
       reader.locator('.dsh-pdf-body').boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
       sidebar.boundingBox(), scroller.boundingBox(), vertical.boundingBox(),
@@ -324,10 +318,22 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     expect(sidebarBounds).not.toBeNull()
     expect(scrollBounds).not.toBeNull()
     expect(verticalBounds).not.toBeNull()
-    expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('absolute')
-    expect(Math.abs(contentBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
-    expect(sidebarBounds!.x).toBeGreaterThan(contentBounds!.x)
-    expect(sidebarBounds!.x + sidebarBounds!.width).toBeLessThan(contentBounds!.x + contentBounds!.width)
+    expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('relative')
+    expect(Math.abs(contentBounds!.width + sidebarBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(contentBounds!.x + contentBounds!.width - sidebarBounds!.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(sidebarBounds!.x + sidebarBounds!.width - bodyBounds!.x - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(sidebarBounds!.y - contentBounds!.y)).toBeLessThanOrEqual(1)
+    expect(Math.abs(sidebarBounds!.height - contentBounds!.height)).toBeLessThanOrEqual(1)
+    const toggle = sidebar.locator('.dsh-pdf-sidebar-toggle')
+    await toggle.click()
+    await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(56)
+    const collapsedContent = (await reader.locator('.dsh-pdf-content').boundingBox())!
+    const collapsedSidebar = (await sidebar.boundingBox())!
+    expect(collapsedContent.width).toBeGreaterThan(contentBounds!.width + 100)
+    expect(Math.abs(collapsedContent.x + collapsedContent.width - collapsedSidebar.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(collapsedContent.width + collapsedSidebar.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    await toggle.click()
+    await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - sidebarBounds!.width)).toBeLessThanOrEqual(1)
     expect(Math.abs(verticalBounds!.x - scrollBounds!.x - 2)).toBeLessThanOrEqual(1)
     await vertical.focus()
     await page.keyboard.press('End')
@@ -392,7 +398,7 @@ it('shows a real selected-word translation and handles screenshot preview copy a
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] },
     replayFixture: MODEL_FIXTURE, replayProvidersOnly: true })
   let opened: Browser | undefined
-  let response: string = JSON.stringify({ recognized: true, pronunciation: '/ˈkʌvərɪdʒ/', meanings: [
+  let response: string = JSON.stringify({ kind: 'word', pronunciation: '/ˈkʌvərɪdʒ/', meanings: [
     { partOfSpeech: 'noun', meaning: 'scope', example: 'Coverage is broad.', exampleTranslation: '覆盖范围很广。' },
   ] })
   let responseGate: Promise<void> | undefined
@@ -463,7 +469,7 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {} }))
     await panel.locator('.dsh-pdf-translation-result-header > button').first().click()
     await expect.poll(() => panel.locator('.dsh-pdf-translation-copy-error').innerText()).toContain('unavailable')
-    response = JSON.stringify({ recognized: false })
+    response = JSON.stringify({ kind: 'sentence', translation: 'The model cannot determine a unique meaning from this fragment.' })
     // Keep the request pending until Cancel is clicked, including under V8
     // coverage where browser actionability checks can exceed a short timer.
     responseGate = new Promise<void>(resolve => { releaseResponse = resolve })
@@ -477,13 +483,14 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     releaseResponse()
     responseGate = undefined
     await panel.getByRole('button', { name: 'Retry', exact: true }).click()
-    await expect.poll(() => panel.getByRole('alert').allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining('clearer')]))
+    await expect.poll(() => panel.locator('.dsh-pdf-translation-text').innerText())
+      .toBe('The model cannot determine a unique meaning from this fragment.')
+    expect(await panel.getByRole('alert').count()).toBe(0)
     await panel.locator('.dsh-pdf-translation-language-trigger').focus()
     await page.keyboard.press('Escape')
     await panel.locator('.dsh-pdf-translation-content').waitFor({ state: 'detached' })
 
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
-    await toolbar.locator('.dsh-pdf-tools > summary').click()
     await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
     await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
     const box = (await reader.locator('[data-pdf-page="1"]').boundingBox())!

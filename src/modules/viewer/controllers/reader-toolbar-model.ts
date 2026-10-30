@@ -13,6 +13,10 @@ export interface ReaderToolbarModelOptions {
   act: Act
   busy: boolean
   editable: boolean
+  formPending?: boolean
+  readOnly?: boolean
+  saveFeedback?: ReaderToolbarState['saveFeedback']
+  runCommand?(operation: () => void): void
   colorPending: boolean
   saveAsPicking: boolean
   hasUnappliedAnnotation: boolean
@@ -66,11 +70,14 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
 } {
   const { snapshot, sessionId, signal, api, act, busy, editable, colorPending,
     saveAsPicking, hasUnappliedAnnotation, explanation, screenshot, ocr, navigation, commands } = options
+  const run = options.runCommand ?? ((operation: () => void) => operation())
   const state: ReaderToolbarState = {
     hasDocument: !!snapshot, canPromptExplanation: explanation.allowed,
     explanationActive: explanation.active, explanationSending: explanation.sending,
     screenshotActive: screenshot.active, screenshotPreparing: screenshot.preparing,
     busy, editable, ocrBusy: ocr.busy, ocrAvailability: ocr.availability,
+    readOnly: options.readOnly ?? !!snapshot?.document?.readOnly, formPending: options.formPending,
+    saveFeedback: options.saveFeedback,
     dirty: !!snapshot?.dirty, canUndo: !!snapshot?.canUndo, canRedo: !!snapshot?.canRedo,
     conflict: !!snapshot?.conflict, colorPending, saveAsPicking, hasUnappliedAnnotation,
     canGoBack: navigation.canGoBack, navigating: navigation.navigating,
@@ -78,16 +85,16 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
   }
   const actions: ReaderToolbarActions = {
     onOpenMenu: ocr.refresh,
-    onToggleExplanation: () => explanation.active ? explanation.cancel() : explanation.start(),
-    onScreenshot: screenshot.begin,
-    onNote: () => {
+    onToggleExplanation: () => run(() => explanation.active ? explanation.cancel() : explanation.start()),
+    onScreenshot: () => run(screenshot.begin),
+    onNote: () => run(() => {
       if (!screenshot.canPlaceNote()) return
       screenshot.clearRegionPurpose()
       commands.clearSelection(); commands.clearAnnotation(); commands.setMode('note'); commands.closeMenu()
-    },
-    onOcr: () => { commands.setMode('text'); ocr.recognize(); commands.closeMenu() },
+    }),
+    onOcr: () => run(() => { commands.setMode('text'); ocr.recognize(); commands.closeMenu() }),
     onReload: () => {
-      if (snapshot?.dirty || snapshot?.canRedo) commands.confirmReload()
+      if (snapshot?.dirty || snapshot?.canRedo || options.formPending) commands.confirmReload()
       else void act(current => api.reload(sessionId, current.id, current.revision, signal))
       commands.closeMenu()
     },
@@ -98,11 +105,11 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
     onSave: () => { commands.closeMenu(); commands.save() },
     onBack: () => { commands.closeMenu(); navigation.back() },
     onBackTo: (depth, revision) => navigation.back(depth, revision),
-    onZoom: value => {
+    onZoom: value => run(() => {
       if (!navigation.canZoom()) return
       if (typeof value === 'number') { navigation.setFit('custom'); navigation.setZoom(value) }
       else navigation.setFit(value)
-    },
+    }),
   }
   return { state, actions }
 }

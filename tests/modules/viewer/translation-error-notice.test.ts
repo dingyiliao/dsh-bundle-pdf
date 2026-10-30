@@ -11,7 +11,7 @@ function renderError(code: TranslationErrorCode, dictionary: Record<string, stri
   return renderToStaticMarkup(React.createElement(TranslationErrorNotice, { code, t }))
 }
 
-test('an invalid word explanation shows a localized reason without duplicating Retry', () => {
+test('an invalid model translation format shows a localized notice without duplicating Retry', () => {
   const english = renderError('invalid-model-output', translationEn)
   const chinese = renderError('invalid-model-output', translationZh)
 

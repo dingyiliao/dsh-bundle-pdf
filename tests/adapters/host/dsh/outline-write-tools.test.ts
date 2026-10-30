@@ -4,7 +4,7 @@ import { PDFDocument } from 'pdf-lib'
 import { registerPdfModelWriteTools, questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
 
-test('pdf_outline_edit is discoverable and writes only the session-owned, unsaved draft', async () => {
+test('pdf_bookmark_edit is discoverable and writes only the session-owned, unsaved draft', async () => {
   const pdf = await PDFDocument.create()
   pdf.addPage()
   const state = memoryWorkspace(new Uint8Array(await pdf.save()))
@@ -23,7 +23,7 @@ test('pdf_outline_edit is discoverable and writes only the session-owned, unsave
     const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
     assert.ok('bytes' in opened)
-    const tool = definitions.get('pdf_outline_edit')!
+    const tool = definitions.get('pdf_bookmark_edit')!
     assert.ok(tool)
     assert.match(tool.description, /outlineId/)
     const args = { documentId: opened.id, expectedRevision: opened.revision,

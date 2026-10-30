@@ -8,7 +8,7 @@ import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document
 import type { NewPdfAnnotation } from '../../../src/core/pdf-types.ts'
 import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
 import type { DraftRecord } from '../../../src/modules/working-copy/index.ts'
-import { createWorkspaces } from '../../../src/host/workspaces.ts'
+import { createWorkspaces } from '../../fixtures/working-copy-service.ts'
 
 const sessionId = 'workspace-test-session'
 const path = 'D:/fixtures/workspace.pdf'

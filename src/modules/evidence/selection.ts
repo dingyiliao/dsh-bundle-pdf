@@ -62,22 +62,50 @@ function checkGeometry(fragment: SelectionFragment, crop: PdfRect): PdfRect[] {
   return boxes
 }
 
+/** Exclude an unusable run only when its native bounds reliably put it outside every quad.
+ * Keep a full em of padding for glyph overhang; unknown bounds must still fail closed. */
+function outsideSelection(item: NativeTextContent['items'][number], boxes: readonly PdfRect[]): boolean {
+  const [a, b, c, d, x, y] = item.transform
+  const baseline = Math.hypot(a!, b!), vertical = Math.hypot(c!, d!)
+  if (![a, b, c, d, x, y, item.width, item.height].every(Number.isFinite)
+    || baseline <= 0 || vertical <= 0 || item.width <= 0 || item.height <= 0) return false
+  const ux = a! / baseline, uy = b! / baseline, vx = c! / vertical, vy = d! / vertical
+  const height = Math.max(item.height, vertical)
+  const points = [-height, item.width + height].flatMap(advance => [-height, height].map(rise =>
+    [x! + ux * advance + vx * rise, y! + uy * advance + vy * rise]))
+  const bounds = [Math.min(...points.map(point => point[0]!)), Math.min(...points.map(point => point[1]!)),
+    Math.max(...points.map(point => point[0]!)), Math.max(...points.map(point => point[1]!))]
+  // Include supplied glyph origins too: an inconsistent run envelope cannot hide
+  // a glyph that actually intersects the selection.
+  for (const [gx, gy, advance] of item.glyphs ?? []) {
+    if (!Number.isFinite(gx) || !Number.isFinite(gy)) return false
+    const radius = height + (Number.isFinite(advance) ? Math.abs(advance) : item.width)
+    bounds[0] = Math.min(bounds[0]!, gx - radius); bounds[1] = Math.min(bounds[1]!, gy - radius)
+    bounds[2] = Math.max(bounds[2]!, gx + radius); bounds[3] = Math.max(bounds[3]!, gy + radius)
+  }
+  return bounds.every(Number.isFinite) && boxes.every(box => bounds[2]! < box[0] - 1
+    || bounds[0]! > box[2] + 1 || bounds[3]! < box[1] - 1 || bounds[1]! > box[3] + 1)
+}
+
 function selectedGlyphText(content: NativeTextContent, fragment: SelectionFragment, crop: PdfRect) {
   const boxes = checkGeometry(fragment, crop)
+  if (content.extraction) fail('pdf/selection-ocr-unverifiable',
+    'OCR-recovered text has no verified native character positions; select an image region instead')
   const starts: number[] = []
   const pageText = joinPositionedText(content.items, starts)
   const selected: { start: number; end: number }[] = []
   for (const [index, item] of content.items.entries()) {
-    if (!item.str) continue
+    if (!item.str.trim()) continue
     const scalars = Array.from(item.str)
     if (item.glyphs?.length !== scalars.length || item.transform.length < 4
       || !Number.isFinite(item.height) || item.height <= 0) {
-      fail('pdf/selection-unverifiable', 'This PDF page does not expose verifiable glyph positions')
+      if (outsideSelection(item, boxes)) continue
+      fail('pdf/selection-unverifiable', 'The selected text does not expose verifiable glyph positions')
     }
     const [a, b, c, d] = item.transform
     const baseline = Math.hypot(a!, b!), vertical = Math.hypot(c!, d!)
     if (!Number.isFinite(baseline) || baseline <= 0 || !Number.isFinite(vertical) || vertical <= 0) {
-      fail('pdf/selection-unverifiable', 'This PDF page has unusable glyph axes')
+      fail('pdf/selection-unverifiable', 'The selected text has unusable glyph axes')
     }
     const ux = a! / baseline, uy = b! / baseline, vx = c! / vertical, vy = d! / vertical
     let offset = starts[index]!
@@ -85,7 +113,8 @@ function selectedGlyphText(content: NativeTextContent, fragment: SelectionFragme
       const end = offset + scalar.length
       const [x, y, advance] = item.glyphs[glyphIndex]!
       if (![x, y, advance].every(Number.isFinite) || advance <= 0) {
-        fail('pdf/selection-unverifiable', 'This PDF page has unusable glyph positions')
+        if (outsideSelection(item, boxes)) break
+        fail('pdf/selection-unverifiable', 'The selected text has unusable glyph positions')
       }
       // The point is within the glyph's approximate painted area, not merely
       // the text run. Browser text spans and native glyphs share these origins.

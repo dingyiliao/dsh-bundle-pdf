@@ -1,4 +1,5 @@
 import { EngineDirectory, validateEngineConfiguration } from '../modules/engines/index.js'
+import { interpretationSchema } from './schema.js'
 import {
   TranslationError, type TranslationAvailability, type TranslationEngine,
   type TranslationEngineDescriptor, type TranslationInstance, type TranslationLimits,
@@ -107,7 +108,7 @@ export class TranslationRegistry {
 
   async translate(request: TranslationRequest, selection?: TranslationInstance): Promise<TranslationResult> {
     this.assertLive()
-    if (!request.text.trim() || !request.targetLanguage.trim() || request.targetLanguage.length > 100
+    if (!request.text.length || !request.targetLanguage.trim() || request.targetLanguage.length > 100
         || (request.sourceLanguage !== undefined && (!request.sourceLanguage.trim() || request.sourceLanguage.length > 100))) {
       throw new TranslationError('invalid-request', 'Translation needs text and a target language.')
     }
@@ -163,11 +164,21 @@ export class TranslationRegistry {
       if (detail && output.status !== 'complete') {
         throw new TranslationError('translation-failed', 'The translation engine returned incomplete lexical details.')
       }
+      const parsed = interpretationSchema.optional().safeParse(output.interpretation)
+      if (!parsed.success || parsed.data && output.status !== 'complete') {
+        throw new TranslationError('translation-failed', 'The translation engine returned invalid source interpretation.')
+      }
+      const interpretation = parsed.data
+      if (interpretation && (interpretation.text.length > this.limits.maxInputCharacters
+        || output.text.length + interpretation.text.length + interpretation.explanation.length > this.limits.maxOutputCharacters)) {
+        throw new TranslationError('limit-exceeded', 'The interpreted source and translation exceed the output limit.')
+      }
       return {
         text: output.text,
         status: output.status, warnings: [...output.warnings],
         ...(output.detectedSourceLanguage === undefined ? {} : { detectedSourceLanguage: output.detectedSourceLanguage }),
         ...(detail === undefined ? {} : { detail }),
+        ...(interpretation === undefined ? {} : { interpretation }),
         source: { engineId: descriptor.id, engineVersion: descriptor.version,
           instanceId: instance.id, configurationRevision: instance.configurationRevision },
       }

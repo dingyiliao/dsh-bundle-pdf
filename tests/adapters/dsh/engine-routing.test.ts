@@ -6,7 +6,7 @@ import { HostOcrService } from '../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService } from '../../../src/modules/image-understanding/index.ts'
 import { defaultSettings, type PdfSettings } from '../../../src/shared/contracts.ts'
 
-test('PDF OCR and OCR-derived images resolve the same consumer binding without changing generic service defaults', async () => {
+test('PDF OCR and image availability use their independent consumer bindings without changing generic defaults', async () => {
   const ocr = new HostOcrService(() => 'missing-default')
   const image = new HostImageUnderstandingService(() => 'missing-default')
   let settings: PdfSettings = { ...defaultSettings, ocrEngine: 'fixture.ocr', imageEngine: 'fixture.image',
@@ -18,12 +18,10 @@ test('PDF OCR and OCR-derived images resolve the same consumer binding without c
       seen.push(config)
       return { text: 'Fixture OCR text', status: 'complete', blocks: [], lines: [], words: [], warnings: [], coverage: [], confidence: null }
     } })
-  image.register({ id: 'fixture.image', kind: 'derived-text',
-    descriptor: { id: 'fixture.image', name: 'Fixture image', version: '1', execution: 'local',
+  image.register({ descriptor: { id: 'fixture.image', name: 'Fixture image', version: '1', execution: 'local',
       configurationFields: [{ key: 'style', label: 'Style', type: 'string' }] },
-    async availability(_session, _signal, config, context) { seen.push({ config, context }); return { available: true } },
-    async prepare(input, config) { seen.push({ config, ocr: input.ocrBinding }); return {
-      kind: 'derived-text', text: 'Fixture image text', mode: 'image-description' } } })
+    async availability(_session, _signal, config) { seen.push({ config }); return { available: true } },
+    async understand() { throw new Error('Status routing must not execute image understanding') } })
   const routing = createPdfEngineRouting({ get(key: string) {
     return key === 'ocr' ? ocr : key === 'imageUnderstanding' ? image : key === 'pdfAiSettings' ? () => settings : undefined
   } } as never)
@@ -39,12 +37,14 @@ test('PDF OCR and OCR-derived images resolve the same consumer binding without c
     assert.deepEqual(seen[0], { language: 'eng' }, 'staged images capture their consumer binding')
     assert.equal((await routing.ocr()!.availability('fixture-session', signal)).status, 'unavailable')
     settings = { ...settings, ocrEngine: 'fixture.ocr' }
-    const png = new Uint8Array(24)
-    png.set([137, 80, 78, 71, 13, 10, 26, 10]); png.set([73, 72, 68, 82], 12)
-    new DataView(png.buffer).setUint32(16, 1); new DataView(png.buffer).setUint32(20, 1)
-    await routing.image()!.prepare({ sessionId: 'fixture-session', signal, question: 'Fixture question',
-      image: { data: png, mediaType: 'image/png', width: 1, height: 1 } })
-    assert.deepEqual(seen.at(-1), { config: { style: 'short' }, ocr: { engineId: 'fixture.ocr', config: { language: 'eng' } } })
+    assert.equal((await image.availability('fixture-session', signal)).status, 'unavailable')
+    assert.deepEqual(await routing.image()!.availability('fixture-session', signal),
+      { status: 'available', backendId: 'fixture.image' })
+    assert.deepEqual(seen.at(-1), { config: { style: 'short' } }, 'vision status never receives an OCR binding')
+    assert.equal('prepare' in routing.image()!, false, 'status-only routing exposes no unused image execution API')
+    settings = { ...settings, imageEngine: 'missing-image' }
+    assert.equal((await routing.image()!.availability('fixture-session', signal)).status, 'unavailable')
+    assert.deepEqual(image.selectedDescriptor(), undefined, 'consumer routing never changes the generic service default')
   } finally { ocr.dispose(); image.dispose() }
 })
 

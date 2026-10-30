@@ -9,7 +9,7 @@ import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilit
 
 type Route = Parameters<Parameters<typeof registerPdfTransport>[0]['connection']['fetch']['register']>[0]
 
-test('image understanding plugin provides one service, three backends, and an authenticated route', async () => {
+test('image understanding plugin provides one service, one executing image backend, and an authenticated route', async () => {
   const effects: { label: string; dispose: () => void | Promise<void> }[] = []
   const routes = new Map<string, Route>()
   const removed: string[] = []
@@ -22,7 +22,13 @@ test('image understanding plugin provides one service, three backends, and an au
     effect(callback: () => () => void | Promise<void>, label: string) {
       effects.push({ label, dispose: callback() })
     },
-    get() { return undefined },
+    get(key: string) {
+      if (key === 'sessionController') return { async resolveAgent() { return { agent: { session: {
+        requestHeader: () => ({ config: { provider: 'fixture', model: 'text-only' } }),
+      } } } } }
+      if (key === 'llm') return { async resolveModelInfo() { return { inputModalities: ['text'] } } }
+      return undefined
+    },
     inject() { return { dispose() {} } },
     connection: { fetch: { register(route: Route) {
       assert.equal(routes.has(route.path), false)
@@ -37,22 +43,16 @@ test('image understanding plugin provides one service, three backends, and an au
   assert.equal(name, 'image-understanding')
   assert.equal(provide, 'imageUnderstanding')
   assert.deepEqual(inject, ['connection', 'sessionController'])
-  apply(ctx, Config.parse({ backend: 'ocr-text', auxiliaryVision: {
-    provider: 'test-provider', model: 'test-model', maxOutputTokens: 100,
-  } }))
+  apply(ctx, Config.parse({}))
   assert.ok(provided)
   const service = provided
   try {
-    assert.deepEqual(service.list().map(({ id, kind }) => ({ id, kind })), [
-      { id: 'session-vision', kind: 'direct-image' },
-      { id: 'ocr-text', kind: 'derived-text' },
-      { id: 'auxiliary-vision', kind: 'derived-text' },
+    assert.deepEqual(service.list().map(({ id, capabilities }) => ({ id, capabilities })), [
+      { id: 'dsh-vision', capabilities: ['image-description'] },
     ])
     assert.deepEqual(effects.map(effect => effect.label), [
       'image-understanding: dispose requests',
-      'image-understanding: session vision backend',
-      'image-understanding: OCR text backend',
-      'image-understanding: optional auxiliary vision backend',
+      'image-understanding: DSH visual-model backend',
       'image-understanding: optional capability catalog',
       'image-understanding: authenticated PDF image route',
     ])
@@ -68,7 +68,7 @@ test('image understanding plugin provides one service, three backends, and an au
     assert.equal(response.status, 200)
     const envelope = await response.json() as { result: { ok: boolean; value?: { status: string; reason?: string } } }
     assert.equal(envelope.result.ok, true)
-    assert.deepEqual(envelope.result.value, { status: 'unavailable', reason: 'The OCR plugin is not installed.' })
+    assert.deepEqual(envelope.result.value, { status: 'unavailable', reason: 'The model or image attachment service is unavailable.' })
   } finally {
     for (const effect of effects.reverse()) await effect.dispose()
   }
@@ -95,12 +95,12 @@ test('image service and RPC route unload with their real Cordis Fiber', async ()
     await fiber
     const service = root.get('imageUnderstanding')
     assert.ok(service)
-    assert.equal(service.list().length, 3)
+    assert.equal(service.list().length, 1)
     assert.deepEqual(capabilities.list().filter(item => item.capabilities.includes(pdfCapabilities.understandImage))
       .map(item => item.id), ['image.selected'])
     assert.match((await capabilities.resolve(pdfCapabilities.understandImage)).reason ?? '', /requires a session/)
     assert.match((await capabilities.resolve(pdfCapabilities.understandImage, { sessionId: 'session-1' })).reason ?? '',
-      /session model is unavailable/)
+      /vision model is unavailable/)
     assert.ok(routes.has('/api/pdf.image'))
 
     await fiber.dispose()
@@ -119,12 +119,9 @@ test('image references are resolved per request, so the reader may load after im
     return async () => { routes.delete(route.path) }
   } } })
   root.reflect.provide('sessionController', { async resolveAgent(sessionId: string) {
-    return { agent: { session: { id: sessionId, header: {} } } }
+    return { agent: { session: { id: sessionId, requestHeader: () => ({ config: { provider: 'fixture', model: 'text-only' } }) } } }
   } })
-  root.reflect.provide('ocr', {
-    async availability() { return { status: 'available' as const, backendId: 'test-ocr' } },
-    async recognize() { return { status: 'ok' as const, text: 'Recognized from Host image' } },
-  })
+  root.reflect.provide('llm', { async resolveModelInfo() { return { inputModalities: ['text'] } } })
   const image = Uint8Array.from(Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'))
   const imageDigest = evidenceSha256(image)
@@ -141,9 +138,14 @@ test('image references are resolved per request, so the reader may load after im
   const resolver = { async resolve() { return {
     image: { mediaType: 'image/png' as const, data: image, width: 1, height: 1 }, evidence,
   } } }
-  const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({ backend: 'ocr-text' }))
+  const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({ backend: 'fixture.vision' }))
   try {
     await fiber
+    root.get('imageUnderstanding')!.register({
+      descriptor: { id: 'fixture.vision', name: 'Test vision', version: '1', execution: 'local' },
+      async availability() { return { available: true } },
+      async understand(input) { assert.deepEqual(input.image.data, image); return { text: 'Interpreted from Host image' } },
+    })
     const route = routes.get('/api/pdf.image')
     assert.ok(route)
     const prepare = () => route.fetch(new Request('https://example.test/api/pdf.image', {
@@ -164,7 +166,7 @@ test('image references are resolved per request, so the reader may load after im
     const providedBody = await provided.json() as { result: { ok: boolean; value?: { kind: string; text: string } } }
     assert.equal(providedBody.result.ok, true)
     assert.equal(providedBody.result.value?.kind, 'derived-text')
-    assert.equal(providedBody.result.value?.text, 'Recognized from Host image')
+    assert.equal(providedBody.result.value?.text, 'Interpreted from Host image')
     await release?.()
     const removed = await prepare()
     const removedBody = await removed.json() as { result: { error?: { code: string } } }

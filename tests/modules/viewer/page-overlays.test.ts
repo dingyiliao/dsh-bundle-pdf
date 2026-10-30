@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
-import { NativeViewport } from '../../../src/modules/viewer/rendering/viewport.ts'
+import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import { PageContextOverlays, PageMarkupOverlay } from '../../../src/modules/viewer/rendering/PageOverlays.tsx'
 import { annotationPolygons } from '../../../src/modules/viewer/model/reader-annotations.ts'
 

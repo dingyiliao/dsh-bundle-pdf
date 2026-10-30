@@ -97,10 +97,8 @@ test('Reader preserves explanation UI across native replacement and pending reso
   try {
     await act(async () => { root.render(React.createElement(Reader, props)); await Promise.resolve() })
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-    const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-    const explain = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === 'reader.explain.start')!
-    await act(async () => { tools.open = true; explain.click(); await Promise.resolve() })
+    const explain = container.querySelector<HTMLButtonElement>('.dsh-pdf-tool-explain')!
+    await act(async () => { explain.click(); await Promise.resolve() })
     const area = container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-area')!
     assert.equal(area.disabled, false)
     await act(async () => { area.click() })
@@ -137,7 +135,7 @@ test('Reader preserves explanation UI across native replacement and pending reso
       assert.equal(save.disabled, false)
       flushSync(() => save.click())
     })
-    assert.match(container.querySelector('.dsh-pdf-explanation-status-error')?.textContent ?? '', /reader.notReady/)
+    assert.match(container.querySelector('.dsh-pdf-mode-error-popover')?.textContent ?? '', /reader.notReady/)
     assert.ok(container.querySelector('.dsh-pdf-explanation-question-editor'), 'the question remains editable for retry')
     assert.equal(nativeTiles, tilesBeforeSave, 'the stale native document is not used for image capture')
 
@@ -161,7 +159,7 @@ test('Reader preserves explanation UI across native replacement and pending reso
     const pendingArea = container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-area')!
     assert.equal(pendingArea.disabled, false, 'the explanation draft survives a pending open')
     await act(async () => { pendingArea.click() })
-    assert.match(container.querySelector('.dsh-pdf-explanation-status-error')?.textContent ?? '', /reader.notReady/)
+    assert.match(container.querySelector('.dsh-pdf-mode-error-popover')?.textContent ?? '', /reader.notReady/)
     assert.equal(container.querySelector('.dsh-pdf-mode-region'), null, 'the incomplete resource cannot enter region mode')
     await act(async () => { finishOpen!(snapshot({ path: '/tmp/reader-race-copy.pdf' })); await Promise.resolve() })
   } finally {

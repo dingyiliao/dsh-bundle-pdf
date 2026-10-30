@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { PASSIVE_POLL_TIMEOUT_MS } from '../../shared/passive-poll.js'
 import { z } from 'zod'
 import type { WorkingCopyReadPort } from '../working-copy/index.js'
 import type { createReaderContexts } from './reader-contexts.js'
@@ -165,7 +166,7 @@ export function createAgentNavigation(workspaces: WorkingCopyReadPort, contexts:
         set?.delete(wake)
         if (!set?.size) listeners.delete(target)
       }
-      const timer = setTimeout(wake, 20_000)
+      const timer = setTimeout(wake, PASSIVE_POLL_TIMEOUT_MS)
       const set = listeners.get(target) ?? new Set<() => void>()
       set.add(wake)
       listeners.set(target, set)

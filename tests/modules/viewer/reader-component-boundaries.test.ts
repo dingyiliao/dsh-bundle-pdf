@@ -30,6 +30,42 @@ function fixtureSnapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceS
   }
 }
 
+async function waitForReader(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 1_000
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message)
+    // Each turn commits React's pending layout/PageView effects. Holding one
+    // act() open while sleeping prevents the very render navigation awaits.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+}
+
+function readerCommand(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tool-rail button,.dsh-pdf-tools-menu button')]
+    .find(button => button.getAttribute('aria-label') === label || button.textContent === label)
+  assert.ok(button, `Reader command ${label} is available in the tool rail or its file menu`)
+  return button
+}
+
+async function openReaderFileMenu(container: HTMLElement): Promise<HTMLDetailsElement> {
+  const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
+  await act(async () => {
+    if (!tools.open) tools.querySelector<HTMLElement>('summary')!.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+  assert.equal(tools.open, true)
+  const menu = [...container.querySelectorAll<HTMLElement>('.dsh-pdf-tools-menu')]
+    .find(menu => menu.getAttribute('aria-label') === tools.getAttribute('aria-label'))
+  assert.equal(menu?.closest<HTMLElement>('.dsh-pdf-disclosure-popover')?.hidden, false)
+  return tools
+}
+
+async function clickReaderCommand(container: HTMLElement, label: string): Promise<void> {
+  const button = readerCommand(container, label)
+  if (button.closest('.dsh-pdf-tools-menu')) await openReaderFileMenu(container)
+  await act(async () => { button.click(); await Promise.resolve() })
+}
+
 async function withReader(run: (fixture: {
   dom: Window & typeof globalThis
   container: HTMLElement
@@ -42,16 +78,45 @@ async function withReader(run: (fixture: {
 }) => Promise<void>) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
   // JSDOM has no raster backend; these tests exercise Reader chrome and
-  // controller actions, not painting. A zero-size DOM never requests a tile.
+  // controller actions, not painting. Page bounds stay zero unless a raster
+  // test explicitly supplies them, while the scrollport has measurable size.
   Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', { configurable: true, value: () => null })
+  const originalBounds = dom.HTMLElement.prototype.getBoundingClientRect
+  dom.HTMLElement.prototype.getBoundingClientRect = function () {
+    return this.classList.contains('dsh-pdf-scroll') ? new dom.DOMRect(0, 0, 600, 700) : originalBounds.call(this)
+  }
+  for (const [property, dimension, fallback] of [['clientWidth', 'width', 600], ['clientHeight', 'height', 700]] as const) {
+    Object.defineProperty(dom.HTMLElement.prototype, property, { configurable: true,
+      get(this: HTMLElement) {
+        const measured = this.getBoundingClientRect()[dimension]
+        return Math.round(measured || (this.classList.contains('dsh-pdf-scroll') ? fallback : 0))
+      } })
+  }
   const saved = new Map<string, PropertyDescriptor | undefined>()
   const values = {
     window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLInputElement: dom.HTMLInputElement, Element: dom.Element,
-    Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent,
+    Node: dom.Node, Event: dom.Event, CustomEvent: dom.CustomEvent, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent,
     PointerEvent: dom.PointerEvent ?? dom.MouseEvent, MutationObserver: dom.MutationObserver,
     DOMRect: dom.DOMRect, getComputedStyle: dom.getComputedStyle.bind(dom),
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    ResizeObserver: class {
+      private targets = new Set<Element>()
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        this.targets.add(target)
+        // Deliver the browser's initial observation from the same dimensions
+        // exposed through clientWidth/Height. Reader's fit layout must not see
+        // an old default size paired with a differently measured live pane.
+        queueMicrotask(() => {
+          if (!this.targets.has(target)) return
+          const element = target as HTMLElement
+          const contentRect = new dom.DOMRect(0, 0, element.clientWidth, element.clientHeight)
+          this.callback([{ target, contentRect } as ResizeObserverEntry], this as unknown as ResizeObserver)
+        })
+      }
+      unobserve(target: Element) { this.targets.delete(target) }
+      disconnect() { this.targets.clear() }
+    },
     IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
@@ -142,25 +207,21 @@ test('Reader dirty-document actions confirm reload, expose Save As, and route ke
     await render(props)
     await act(async () => { await Promise.resolve() })
 
-    const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-    const menuButton = (name: string) => [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === name)!
-    assert.ok(tools && menuButton('reader.reload'))
-    await act(async () => { tools.open = true; menuButton('reader.reload').click() })
+    await clickReaderCommand(container, 'reader.reload')
     assert.match(container.querySelector('.dsh-pdf-dialog')?.textContent ?? '', /reader.reloadConfirm/)
     assert.deepEqual(calls, [], 'reload must be confirmed while the PDF is dirty')
     await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-dialog button')]
       .find(button => button.textContent === 'reader.cancel')!.click() })
     assert.equal(container.querySelector('.dsh-pdf-dialog'), null)
-    await act(async () => { tools.open = true; menuButton('reader.reload').click() })
+    await clickReaderCommand(container, 'reader.reload')
     await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-dialog button')]
       .find(button => button.textContent === 'reader.reload')!.click(); await Promise.resolve() })
     assert.deepEqual(calls, ['reload'])
 
-    await act(async () => { tools.open = true; menuButton('reader.undo').click(); await Promise.resolve() })
-    await act(async () => { tools.open = true; menuButton('reader.redo').click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.undo')
+    await clickReaderCommand(container, 'reader.redo')
     assert.deepEqual(calls, ['reload', 'undo', 'redo'])
-    await act(async () => { tools.open = true; menuButton('reader.saveAs').click() })
+    await clickReaderCommand(container, 'reader.saveAs')
     const saveAs = container.querySelector<HTMLFormElement>('.dsh-pdf-dialog')!
     assert.equal(saveAs.querySelector('input')?.getAttribute('value'), '/tmp/reader-boundary-annotated.pdf')
     await act(async () => { [...saveAs.querySelectorAll<HTMLButtonElement>('button')]
@@ -191,19 +252,16 @@ test('Reader keeps encrypted documents readable while disabling edits and report
     await render(input)
     await act(async () => { await Promise.resolve() })
     assert.match(container.textContent ?? '', /reader.encryptedReadOnly/)
-    assert.match(container.textContent ?? '', /OCR backend is offline/)
+    assert.match(readerCommand(container, 'reader.ocrPage').title, /OCR backend is offline/)
     assert.equal(container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save')?.disabled, true)
-    assert.equal(container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save-as')?.disabled, true)
+    assert.equal(readerCommand(container, 'reader.saveAs').disabled, true)
 
-    const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-    const menuButton = (name: string) => [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === name)!
-    await act(async () => { tools.open = true; menuButton('reader.reload').click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.reload')
     assert.deepEqual(calls, ['reload'], 'clean read-only PDFs reload without a discard confirmation')
-    await act(async () => { tools.open = true; menuButton('reader.explain.start').click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.explain.start')
     assert.match(container.querySelector('.dsh-pdf-explanation-status-area')?.parentElement?.getAttribute('title') ?? '',
       /Vision backend is offline/)
-    await act(async () => { tools.open = true; menuButton('reader.explain.exit').click() })
+    await clickReaderCommand(container, 'reader.explain.exit')
     assert.equal(container.querySelector('.dsh-pdf-explanation-status'), null)
   })
 })
@@ -225,19 +283,17 @@ test('Reader rejects stale OCR output and explains a capability loss after the m
     } } as ReaderProps
     await render(input)
     await act(async () => { await Promise.resolve() })
-    const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-    const ocr = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === 'reader.ocrPage')!
+    const ocr = readerCommand(container, 'reader.ocrPage')
     assert.equal(ocr.disabled, false)
     available = false
-    await act(async () => { tools.open = true; ocr.click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.ocrPage')
     assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /Visual model disconnected/)
     assert.equal(recognizeCalls, 0, 'the Host preflight must prevent stale or unauthorized OCR work')
 
     available = true
     await act(async () => { dom.dispatchEvent(new dom.Event('focus')); await Promise.resolve() })
     assert.equal(ocr.disabled, false)
-    await act(async () => { tools.open = true; ocr.click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.ocrPage')
     assert.equal(recognizeCalls, 1)
     assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /reader.ocrStale/)
   })
@@ -251,22 +307,22 @@ test('Reader handles native Save As failure and exits screenshot mode with Escap
     api.discard = async () => { discarded = true; return fixtureSnapshot() }
     await render({ ...props, pickSavePath: async () => { throw new Error('The system save dialog failed') } })
     await act(async () => { await Promise.resolve() })
-    await act(async () => { container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save-as')!.click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.saveAs')
     assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /The system save dialog failed/)
 
-    const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-    const discard = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === 'reader.discard')!
-    await act(async () => { tools.open = true; discard.click(); await Promise.resolve() })
+    await clickReaderCommand(container, 'reader.discard')
     assert.equal(discarded, true)
     assert.equal(container.querySelector('[role="alert"]'), null, 'discard clears the failed save error')
-    const screenshot = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-      .find(button => button.textContent === 'reader.regionScreenshot')!
-    await act(async () => { tools.open = true; screenshot.click() })
+    await clickReaderCommand(container, 'reader.regionScreenshot')
     assert.match(container.textContent ?? '', /reader.screenshotHint/)
-    await act(async () => { tools.open = true; container.querySelector('.dsh-pdf-reader')!
-      .dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    const tools = await openReaderFileMenu(container)
+    await act(async () => { container.querySelector('.dsh-pdf-reader')!
+      .dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await new Promise(resolve => setTimeout(resolve, 0)) })
     assert.equal(tools.open, false)
+    assert.match(container.textContent ?? '', /reader.screenshotHint/, 'closing a menu preserves the active screenshot mode')
+    await act(async () => { container.querySelector('.dsh-pdf-reader')!
+      .dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     assert.doesNotMatch(container.textContent ?? '', /reader.screenshotHint/)
   })
 })
@@ -329,11 +385,9 @@ test('Reader reports failed position lookup, saves through its compact menu, and
       await render(props)
       await act(async () => { await Promise.resolve() })
       assert.match(String(warnings.at(-1)?.[0]), /Could not read the remembered reading position/)
-      const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-      const save = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-        .find(button => button.textContent === 'reader.save')!
+      const save = readerCommand(container, 'reader.save')
       assert.equal(save.disabled, false)
-      await act(async () => { tools.open = true; save.click(); await Promise.resolve() })
+      await clickReaderCommand(container, 'reader.save')
       assert.deepEqual(saves, ['save'])
       assert.ok(publish)
       await act(async () => { publish!({ ...clean, sourceVersion: 'source-2' }) })
@@ -467,10 +521,7 @@ test('Reader reports a Host raster failure after a user drags a screenshot regio
     try {
       await render(props)
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-      const screenshot = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-        .find(button => button.textContent === 'reader.regionScreenshot')!
-      await act(async () => { tools.open = true; screenshot.click() })
+      await clickReaderCommand(container, 'reader.regionScreenshot')
       const page = container.querySelector<HTMLElement>('.dsh-pdf-page')!
       assert.ok(page, 'the Reader rendered a visible PDF page')
       page.setPointerCapture = () => {}
@@ -501,7 +552,7 @@ test('Reader reports a Host raster failure after a user drags a screenshot regio
         signal.addEventListener('abort', () => reject(signal.reason), { once: true })
         })
       }
-      await act(async () => { tools.open = true; screenshot.click() })
+      await clickReaderCommand(container, 'reader.regionScreenshot')
       await pointer('pointerdown', 140, 180)
       await pointer('pointermove', 220, 280)
       await pointer('pointerup', 220, 280)
@@ -577,10 +628,7 @@ test('Reader preserves a region question when Host region preparation fails', as
     try {
       await render(input)
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      const tools = container.querySelector<HTMLDetailsElement>('.dsh-pdf-tools')!
-      const explain = [...tools.querySelectorAll<HTMLButtonElement>('.dsh-pdf-tools-menu button')]
-        .find(button => button.textContent === 'reader.explain.start')!
-      await act(async () => { tools.open = true; explain.click(); await Promise.resolve() })
+      await clickReaderCommand(container, 'reader.explain.start')
       const area = container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-area')!
       assert.equal(area.disabled, false)
       await act(async () => { area.click() })
@@ -607,7 +655,12 @@ test('Reader preserves a region question when Host region preparation fails', as
       assert.equal(save.disabled, false)
       failRaster = true
       await act(async () => { save.click(); await Promise.resolve() })
-      assert.match(container.querySelector('.dsh-pdf-explanation-status-error')?.textContent ?? '', /Host explanation raster failed/)
+      const failure = container.querySelector<HTMLElement>('.dsh-pdf-mode-error-popover[role="alert"]')!
+      assert.match(failure?.textContent ?? '', /Host explanation raster failed/)
+      const indicator = container.querySelector<HTMLButtonElement>('.dsh-pdf-mode-error-indicator')!
+      assert.match(indicator.getAttribute('aria-label') ?? '', /Host explanation raster failed/)
+      if (failure.hidden) await act(async () => { indicator.click() })
+      assert.equal(failure.hidden, false, 'the compact explanation control exposes its failure details')
       assert.ok(container.querySelector('.dsh-pdf-explanation-question-editor'), 'raster failure preserves the question for retry')
     } finally {
       dom.HTMLElement.prototype.getBoundingClientRect = oldBounds
@@ -652,10 +705,9 @@ test('Reader coalesces two quick page-step requests while the first jump is pend
     await act(async () => {
       next.click()
       next.click()
-      const deadline = Date.now() + 1_000
-      while (container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value !== '2'
-        && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
     })
+    await waitForReader(() => container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value === '2',
+      'the coalesced navigation settles on the requested page')
     assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value, '2',
       'the coalesced navigation settles on the requested page')
     tab.abort()
@@ -687,7 +739,8 @@ test('Reader lets an explicit page step supersede a retained-tab resume', async 
       Object.defineProperty(globalThis, 'requestAnimationFrame', originalFrame)
       await act(async () => { for (const callback of held) callback(Date.now()) })
     }
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)) })
+    await waitForReader(() => container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value === '2',
+      'the explicit page step supersedes the held resume')
     assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value, '2')
     tab.abort()
   })
@@ -724,7 +777,9 @@ test('Reader can return through history after both viewport capture and Host res
     await act(async () => { container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="reader.sidebar.pages"]')!.click() })
     const pageTwo = container.querySelector<HTMLButtonElement>('.dsh-pdf-thumbnail-tile[aria-label="reader.page 2 / 2"]')!
     assert.ok(pageTwo, 'the pages sidebar provides a history-recording jump')
-    await act(async () => { pageTwo.click(); await new Promise(resolve => setTimeout(resolve, 90)) })
+    await act(async () => { pageTwo.click() })
+    await waitForReader(() => container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value === '2',
+      'Page 2 navigation did not settle')
     assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value, '2',
       container.querySelector('[role="alert"]')?.textContent ?? 'Page 2 navigation did not settle')
     // History is published after the asynchronous destination settles; a busy
@@ -783,5 +838,178 @@ test('Reader registers only its visible, ready PDF for validated tool-card navig
     await render(null)
     assert.equal(lease, undefined)
     assert.equal(releases, 1)
+  })
+})
+
+function formSnapshot(id = 'document-1', value = 'source'): WorkspaceSnapshot {
+  const base = fixtureSnapshot({ id, contentVersion: `${id}-contents` })
+  const page = base.document.pages[0]!
+  return { ...base, document: { ...base.document, pageCount: 2, pages: [page, { ...page, page: 2 }],
+    formFields: [{ id: 'name', name: 'Name', type: 'text', value, readOnly: false, required: false,
+      widgets: [{ page: 1, rect: [20, 20, 100, 40] }] }] } }
+}
+
+function exposeFormPage(dom: Window & typeof globalThis) {
+  const previous = dom.HTMLElement.prototype.getBoundingClientRect
+  dom.HTMLElement.prototype.getBoundingClientRect = function () {
+    return this.classList.contains('dsh-pdf-page') || this.classList.contains('dsh-pdf-page-wrap')
+      || this.classList.contains('dsh-pdf-tile-surface') ? new dom.DOMRect(0, 0, 400, 600) : previous.call(this)
+  }
+}
+
+test('Reader flushes focused form drafts before keyboard save, button Save and Undo using the resulting revision', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    exposeFormPage(dom)
+    let current = formSnapshot()
+    const calls: string[] = []
+    let finishChange: (() => void) | undefined
+    api.open = async () => current
+    api.change = async (_session, id, revision, operations) => {
+      const operation = operations[0]!
+      assert.equal(operation.type, 'set-field')
+      calls.push(`change:${id}:${revision}:${operation.type === 'set-field' ? operation.value : ''}`)
+      await new Promise<void>(resolve => { finishChange = resolve })
+      current = { ...current, revision: revision + 1, dirty: true, canUndo: true }
+      return current
+    }
+    api.save = async (_session, id, revision) => { calls.push(`save:${id}:${revision}`); return current }
+    api.undo = async (_session, id, revision) => { calls.push(`undo:${id}:${revision}`); return current }
+    await render(props)
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-form-control'), 'form widget did not mount')
+    const input = container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')!
+    const save = container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save')!
+    assert.equal(save.disabled, true, 'a clean PDF starts with Save disabled')
+    await act(async () => {
+      input.focus(); input.value = 'keyboard draft'; input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    })
+    assert.equal(save.disabled, false, 'a staged form draft makes Save reachable before blur')
+    await act(async () => {
+      input.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true, cancelable: true }))
+    })
+    assert.deepEqual(calls, ['change:document-1:1:keyboard draft'], 'Save waits for the field RPC')
+    await act(async () => { finishChange!(); await Promise.resolve() })
+    await waitForReader(() => calls.includes('save:document-1:2'), 'Save did not use the field commit revision')
+    await act(async () => {
+      input.value = 'undo draft'; input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    })
+    const undo = readerCommand(container, 'reader.undo')
+    await act(async () => { undo.focus() })
+    assert.deepEqual(calls.slice(-1), ['save:document-1:2'], 'focus on a document command keeps the blur draft staged')
+    assert.equal(undo.disabled, false, 'blur cannot disable the command before its click')
+    await act(async () => { undo.click() })
+    assert.deepEqual(calls.slice(-1), ['change:document-1:2:undo draft'])
+    await act(async () => { finishChange!(); await Promise.resolve() })
+    await waitForReader(() => calls.includes('undo:document-1:3'), 'Undo did not wait for the focused field')
+    await act(async () => {
+      input.focus(); input.value = 'click draft'; input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    })
+    await act(async () => { save.focus() })
+    assert.deepEqual(calls.slice(-1), ['undo:document-1:3'], 'moving focus onto Save stages the blur without a premature write')
+    assert.equal(save.disabled, false, 'the Save click remains reachable after the field blurs')
+    await act(async () => { save.click() })
+    assert.deepEqual(calls.slice(-1), ['change:document-1:3:click draft'])
+    await act(async () => { finishChange!(); await Promise.resolve() })
+    await waitForReader(() => calls.includes('save:document-1:4'), 'the Save button did not flush its blur draft')
+  })
+})
+
+test('Reader keeps failed form drafts and blocks both Save and right-sidebar page navigation until retry succeeds', async () => {
+  await withReader(async ({ container, render, props, api, dom, tab }) => {
+    exposeFormPage(dom)
+    let current = formSnapshot(), changes = 0, saves = 0, fail = true
+    api.open = async () => current
+    api.change = async (_session, _id, revision) => {
+      changes++
+      if (fail) throw new Error('Form submission failed')
+      current = { ...current, revision: revision + 1, dirty: true }
+      return current
+    }
+    api.save = async () => { saves++; return current }
+    await render(props)
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-form-control'), 'form widget did not mount')
+    const input = container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')!
+    await act(async () => {
+      input.focus(); input.value = 'keep this draft'; input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    })
+    await act(async () => { container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save')!.click() })
+    assert.equal(saves, 0)
+    assert.equal(changes, 1)
+    assert.equal(input.value, 'keep this draft')
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.next"]')!.click() })
+    assert.equal(changes, 2, 'page navigation retries the same retained draft')
+    assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')!.value, '1')
+    assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /Form submission failed/)
+    fail = false
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.next"]')!.click() })
+    await waitForReader(() => container.querySelector<HTMLInputElement>('.dsh-pdf-page-input')?.value === '2',
+      'navigation did not proceed after a successful retry')
+    assert.equal(changes, 3)
+    tab.abort()
+  })
+})
+
+test('Reader rejects a late form result and its waiting Save after switching documents', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    exposeFormPage(dom)
+    const first = formSnapshot(), second = formSnapshot('document-2', 'second source')
+    const calls: string[] = []
+    let finishFirst: ((snapshot: WorkspaceSnapshot) => void) | undefined
+    api.open = async (_session, address) => address.includes('second') ? second : first
+    api.change = async (_session, id, revision) => {
+      calls.push(`change:${id}:${revision}`)
+      return id === first.id ? new Promise(resolve => { finishFirst = resolve })
+        : { ...second, revision: revision + 1, dirty: true }
+    }
+    api.save = async (_session, id, revision) => { calls.push(`save:${id}:${revision}`); return second }
+    await render(props)
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-form-control'), 'form widget did not mount')
+    const firstInput = container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')!
+    await act(async () => {
+      firstInput.focus(); firstInput.value = 'first draft'; firstInput.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      firstInput.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }))
+    })
+    assert.deepEqual(calls, ['change:document-1:1'])
+    await render({ ...props, resourceAddress: 'file:///tmp/second.pdf', content: { ...props.content, revision: 2 } })
+    await waitForReader(() => container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')?.value === 'second source',
+      'replacement document form did not mount')
+    await act(async () => { finishFirst!({ ...first, revision: 2, dirty: true }); await Promise.resolve() })
+    assert.deepEqual(calls, ['change:document-1:1'], 'the waiting Save cannot write the replacement document')
+    const secondInput = container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')!
+    await act(async () => {
+      secondInput.focus(); secondInput.value = 'second draft'; secondInput.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      secondInput.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }))
+    })
+    await waitForReader(() => calls.includes('save:document-2:2'), 'the replacement document did not save its own draft')
+    assert.deepEqual(calls, ['change:document-1:1', 'change:document-2:1', 'save:document-2:2'])
+  })
+})
+
+test('Reader confirms reload for an unsubmitted form and can enter explanation after flushing that same draft', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    exposeFormPage(dom)
+    let current = formSnapshot()
+    const calls: string[] = []
+    api.open = async () => current
+    api.reload = async () => { calls.push('reload'); return current }
+    api.change = async (_session, _id, revision) => {
+      calls.push(`change:${revision}`)
+      current = { ...current, revision: revision + 1, dirty: true }
+      return current
+    }
+    await render({ ...props, promptExplanation: async () => {} })
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-form-control'), 'form widget did not mount')
+    const input = container.querySelector<HTMLInputElement>('.dsh-pdf-form-control')!
+    await act(async () => {
+      input.focus(); input.value = 'pending form'; input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    })
+    await clickReaderCommand(container, 'reader.reload')
+    assert.match(container.querySelector('.dsh-pdf-dialog')?.textContent ?? '', /reader.reloadConfirm/)
+    assert.deepEqual(calls, [], 'the pending form cannot be flushed and discarded without reload confirmation')
+    await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-dialog button')]
+      .find(button => button.textContent === 'reader.cancel')!.click() })
+    await clickReaderCommand(container, 'reader.explain.start')
+    assert.deepEqual(calls, ['change:1'])
+    assert.ok(container.querySelector('.dsh-pdf-mode-explanation'), 'the deferred start callback accepts the newly committed revision')
+    assert.equal(readerCommand(container, 'reader.explain.exit').getAttribute('aria-pressed'), 'true')
   })
 })

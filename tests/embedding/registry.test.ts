@@ -34,6 +34,22 @@ test('a provider changing its model during inference cannot return mislabeled ve
   registry.dispose()
 })
 
+test('a model replacement discovered after vector validation still rejects delivery', async () => {
+  const registry = new EmbeddingRegistry()
+  const base = engine()
+  let descriptions = 0
+  registry.register({ ...base, describe: config => ({ ...base.describe(config),
+    // The request and its returned vectors initially attest the same revision.
+    // A later metadata read observes the provider's replacement before delivery.
+    fingerprint: ++descriptions < 3 ? 'request-revision' : 'replacement-revision',
+  }) })
+  try {
+    await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding),
+      { code: 'invalid-result', message: 'The embedding model changed during the request.' })
+    assert.equal(descriptions, 3, 'the final identity fence must run after the result was validated')
+  } finally { registry.dispose() }
+})
+
 test('invalid deadlines fail before invoking an embedding provider', async () => {
   const registry = new EmbeddingRegistry()
   let calls = 0
@@ -43,6 +59,31 @@ test('invalid deadlines fail before invoking an embedding provider', async () =>
   }
   assert.equal(calls, 0)
   registry.dispose()
+})
+
+test('providers can report the verified model identity used for their operation', async () => {
+  const registry = new EmbeddingRegistry()
+  const base = engine()
+  let fingerprint = 'before-discovery'
+  const describe = () => ({ ...base.describe({}), fingerprint })
+  registry.register({ ...base, describe,
+    async embed() { fingerprint = 'server-revision-A'; return { vectors: [[3, 4]], model: describe() } },
+  })
+  try {
+    const result = await registry.embed({ texts: ['document'], purpose: 'document' }, binding)
+    assert.equal(result.model.fingerprint, 'server-revision-A')
+    assert.deepEqual(result.vectors, [[0.6, 0.8]])
+  } finally { registry.dispose() }
+})
+
+test('a reported operation identity cannot label vectors with an unrelated current model', async () => {
+  const registry = new EmbeddingRegistry()
+  const base = engine()
+  registry.register({ ...base, async embed() {
+    return { vectors: [[3, 4]], model: { ...base.describe({}), fingerprint: 'unverified-weights' } }
+  } })
+  try { await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), code('invalid-result')) }
+  finally { registry.dispose() }
 })
 
 test('registry captures inputs, normalizes vectors, and separates registration leases from encoding identity', async () => {

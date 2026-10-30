@@ -76,6 +76,77 @@ test('Host re-extracts selected glyphs, mints per-page refs, and canonicalizes w
   }
 })
 
+test('unpositioned text outside the selection does not block verifiable selected glyphs', async () => {
+  const state = fixture(['Hello'])
+  const base = await state.reader.readPageText(owner, documentId, 1)
+  const outside = { ...textContent('X').items[0]!, transform: [1, 0, 0, 1, 140, 140],
+    width: 10, glyphs: undefined }
+  for (const item of [outside, { ...outside, str: 'Elsewhere', width: 50 },
+    { ...outside, glyphs: [[140, 140, 0] as [number, number, number]] }]) {
+    const reader = { async readPageText() { return { ...base,
+      content: { ...base.content, items: [item, ...base.content.items, { ...item, hasEOL: true }] } } } }
+    const result = await prepareTextSelectionEvidence(state.workspaces, reader, state.references,
+      state.input, signal, state.readSource)
+    assert.equal(result.text, 'Hello')
+    const saved = state.references.get(result.excerpts[0]!.refId)?.evidence
+    assert.ok(saved?.source === 'pdf-text')
+    assert.equal(saved.snapshot.text, 'Hello')
+  }
+})
+
+test('missing glyphs near or inside the selection still fail closed, including rotated runs', async () => {
+  const state = fixture(['Hello'])
+  const base = await state.reader.readPageText(owner, documentId, 1)
+  const missing = { ...textContent('X').items[0]!, glyphs: undefined }
+  for (const item of [missing, { ...missing, transform: [0, 1, -1, 0, 40, 35] },
+    { ...missing, transform: [0, 0, 0, 0, 140, 140] },
+    { ...missing, transform: [1, 0, 0, 1, Number.NaN, 140] },
+    { ...missing, str: 'XX', transform: [1, 0, 0, 1, 140, 140],
+      glyphs: [[10, 40, 10] as [number, number, number]] }]) {
+    const reader = { async readPageText() { return { ...base,
+      content: { ...base.content, items: [...base.content.items, item] } } } }
+    await assert.rejects(prepareTextSelectionEvidence(state.workspaces, reader, state.references,
+      state.input, signal, state.readSource), { code: 'pdf/selection-unverifiable' })
+  }
+})
+
+test('excluding an unrelated unpositioned run never bypasses contiguous-text verification', async () => {
+  const state = fixture(['Hello'])
+  const base = await state.reader.readPageText(owner, documentId, 1)
+  const hello = base.content.items[0]!
+  const content = { ...base.content, items: [
+    { ...hello, str: 'He', glyphs: hello.glyphs!.slice(0, 2), width: 20 },
+    { ...textContent('Unrelated').items[0]!, transform: [1, 0, 0, 1, 140, 140], glyphs: undefined },
+    { ...hello, str: 'llo', glyphs: hello.glyphs!.slice(2), transform: [1, 0, 0, 1, 30, 40], width: 30 },
+  ] }
+  await assert.rejects(prepareTextSelectionEvidence(state.workspaces,
+    { async readPageText() { return { ...base, content } } }, state.references,
+    state.input, signal, state.readSource), { code: 'pdf/selection-unverifiable' })
+})
+
+test('positioned single Unicode scalars can be selected without being mistaken for missing glyphs', async () => {
+  for (const text of ['X', '𝑅']) {
+    const state = fixture([text])
+    const base = await state.reader.readPageText(owner, documentId, 1)
+    const result = await prepareTextSelectionEvidence(state.workspaces, { async readPageText() { return base } },
+      state.references, state.input, signal, state.readSource)
+    assert.equal(result.text, text)
+    assert.equal(result.excerpts[0]!.endUtf16 - result.excerpts[0]!.startUtf16, text.length)
+  }
+})
+
+test('OCR-derived words cannot be certified as native glyph evidence', async () => {
+  const state = fixture(['Hello'])
+  const base = await state.reader.readPageText(owner, documentId, 1)
+  for (const glyphs of [undefined, base.content.items[0]!.glyphs]) {
+    const reader = { async readPageText() { return { ...base,
+      content: { ...base.content, extraction: 'local-ocr' as const,
+        items: [{ ...base.content.items[0]!, glyphs }] } } } }
+    await assert.rejects(prepareTextSelectionEvidence(state.workspaces, reader, state.references,
+      state.input, signal, state.readSource), { code: 'pdf/selection-ocr-unverifiable' })
+  }
+})
+
 test('Host rejects forged quote, unrelated geometry, missing glyph positions, and unordered pages', async () => {
   const state = fixture(['Hello', 'World'])
   await assert.rejects(prepareTextSelectionEvidence(state.workspaces, state.reader, state.references,

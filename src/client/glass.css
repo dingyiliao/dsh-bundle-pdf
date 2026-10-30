@@ -1,6 +1,11 @@
 /* One material for reader chrome. The supplied Apple layers inform the light
    catch and inset rim; the translucent base uses DSH's theme colors. */
 .dsh-pdf-reader {
+  --pdf-chrome-rail-width: 56px;
+  --pdf-chrome-pod-radius: 18px;
+  --pdf-chrome-control-radius: 6px;
+  --pdf-chrome-inset: 12px;
+  --pdf-chrome-gap: 6px;
   --pdf-glass-highlight: linear-gradient(180deg, rgb(255 255 255 / 28%), rgb(255 255 255 / 7%) 16px, transparent 32px);
   --pdf-glass-rim-shadow:
     inset 0 1px 0 var(--pdf-glass-sheen),
@@ -23,26 +28,6 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
   box-shadow: var(--pdf-glass-rim-shadow), var(--pdf-glass-elevation);
 }
 
-/* The toolbar has an independent backplate so a menu does not blur its parent. */
-.dsh-pdf-reader .dsh-pdf-main-toolbar.dsh-pdf-glass,
-.dsh-pdf-reader .dsh-pdf-sidebar.dsh-pdf-glass {
-  background: transparent;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-.dsh-pdf-reader .dsh-pdf-main-toolbar.dsh-pdf-glass {
-  box-shadow: var(--pdf-glass-elevation);
-}
-.dsh-pdf-reader .dsh-pdf-sidebar.dsh-pdf-glass {
-  box-shadow: none;
-}
-.dsh-pdf-main-toolbar.dsh-pdf-glass::before {
-  background: var(--pdf-glass-material);
-  -webkit-backdrop-filter: var(--pdf-glass-shell-filter);
-  backdrop-filter: var(--pdf-glass-shell-filter);
-  box-shadow: var(--pdf-glass-rim-shadow);
-}
-
 /* An activity card nested in the activity menu must not create double glass. */
 .dsh-pdf-reader .dsh-pdf-activity-popover .dsh-pdf-floating-status.dsh-pdf-glass {
   background: transparent;
@@ -52,22 +37,14 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  .dsh-pdf-reader .dsh-pdf-glass,
-  .dsh-pdf-main-toolbar.dsh-pdf-glass::before,
-  .dsh-pdf-sidebar.dsh-pdf-glass::after {
+  .dsh-pdf-reader .dsh-pdf-glass {
     background: var(--pdf-panel);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     box-shadow: none;
     border-color: var(--pdf-border);
   }
-  .dsh-pdf-reader .dsh-pdf-main-toolbar.dsh-pdf-glass,
-  .dsh-pdf-reader .dsh-pdf-sidebar.dsh-pdf-glass { background: transparent; box-shadow: none; }
 }
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .dsh-pdf-reader .dsh-pdf-glass,
-  .dsh-pdf-main-toolbar.dsh-pdf-glass::before,
-  .dsh-pdf-sidebar.dsh-pdf-glass::after { background: var(--pdf-panel); }
-  .dsh-pdf-reader .dsh-pdf-main-toolbar.dsh-pdf-glass,
-  .dsh-pdf-reader .dsh-pdf-sidebar.dsh-pdf-glass { background: transparent; }
+  .dsh-pdf-reader .dsh-pdf-glass { background: var(--pdf-panel); }
 }

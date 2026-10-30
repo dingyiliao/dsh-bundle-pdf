@@ -1,6 +1,7 @@
 export * from './types.js'
 export * from './service.js'
-export { chunkPage, tokenizeRetrievalText, RETRIEVAL_TEXT_VERSION } from './text.js'
+export { chunkPage, chunkRetrievalPage, tokenizeRetrievalText, RETRIEVAL_TEXT_VERSION } from './text.js'
 export { retrievalPageText } from './paragraphs.js'
 export type { RetrievalChunk } from './text.js'
 export { createBm25Index, searchBm25, rankVectors, reciprocalRankFusion, hybridCandidates } from './ranking.js'
+export { projectPageContent } from './page-content.js'

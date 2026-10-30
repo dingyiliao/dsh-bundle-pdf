@@ -19,7 +19,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
     effect(callback: () => () => void, label: string) {
       effects.push({ label, dispose: callback() })
     },
-    tools: { register(definition: { name: string }) { toolNames.push(definition.name) } },
+    tools: { register(definition: { name: string }) { toolNames.push(definition.name); return () => {} } },
     get(key: string) { return services.get(key) },
     inject() { return { dispose() {} } },
   } as unknown as Context
@@ -48,11 +48,11 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
   assert.ok(provided)
   const service = provided
   try {
-    assert.deepEqual(service.list().map(backend => backend.id), ['session-llm'])
-    assert.deepEqual(toolNames, ['ocr_recognize'])
+    assert.deepEqual(service.list().map(backend => backend.id), ['session-llm', 'local-tesseract'])
+    assert.deepEqual(toolNames, ['ocr_recognize', 'image_understand'])
     assert.deepEqual(effects.map(effect => effect.label), [
       'ocr: dispose in-flight recognition', 'ocr: current-session model backend',
-      'ocr: optional capability catalog',
+      'ocr: bundled local Tesseract backend', 'ocr: optional capability catalog', 'ocr: atomic image-consumer tools',
     ])
     const missingController = await service.availability('session-ocr-plugin')
     assert.equal(missingController.status, 'unavailable')
@@ -73,7 +73,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
     assert.equal(result.text, 'Visible text')
     assert.deepEqual(result.source, { backendId: 'session-llm', backendVersion: '1' })
   } finally {
-    for (const effect of effects.reverse()) effect.dispose()
+    for (const effect of effects.reverse()) await effect.dispose()
   }
   assert.deepEqual(service.list(), [])
   assert.equal((await service.availability('session-ocr-plugin')).status, 'unavailable')
@@ -89,7 +89,7 @@ test('OCR service is visible only while its real Cordis Fiber is active', async 
     await fiber
     const service = root.get('ocr')
     assert.ok(service)
-    assert.deepEqual(service.list().map(backend => backend.id), ['session-llm'])
+    assert.deepEqual(service.list().map(backend => backend.id), ['session-llm', 'local-tesseract'])
     assert.deepEqual(capabilities.list().filter(item => item.capabilities.includes(pdfCapabilities.recognizeImage))
       .map(item => item.id), ['ocr.selected'])
     assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage)).reason ?? '', /requires a session/)

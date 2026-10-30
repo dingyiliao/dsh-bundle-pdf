@@ -28,8 +28,7 @@ export const modelAnnotationSchema = z.object({
     z.object({ kind: z.literal('pdf-text'), page: z.number().int().min(1).max(100_000),
       quote: z.string().min(2).max(512) }).strict(),
     z.object({ kind: z.literal('pdf-text-range'), start: textAnchor, end: textAnchor }).strict(),
-    z.object({ kind: z.literal('reference'), refId: z.string().min(1).max(128),
-      quote: z.string().min(2).max(8000).optional() }).strict(),
+    z.object({ kind: z.literal('reference'), refId: z.string().min(1).max(128) }).strict(),
   ]),
   color: color.optional(), comment: z.string().max(2000).optional(),
 }).strict()
@@ -132,7 +131,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       const overlaps = annotationOverlaps(plan.operation.annotation, snapshot.document.annotations)
       const partial = overlaps.filter(item => item.kind === 'partial')
       if (partial.length) {
-        fail('pdf/annotation-overlap', `No annotations were added: page ${plan.operation.annotation.page} partially overlaps existing ${input.subtype} annotation(s) ${partial.map(item => item.annotationId).join(', ')}. Inspect them with pdf_page_annotations and adjust the requested range or edit an existing mark.`)
+        fail('pdf/annotation-overlap', `No annotations were added: page ${plan.operation.annotation.page} partially overlaps existing ${input.subtype} annotation(s) ${partial.map(item => item.annotationId).join(', ')}. Inspect them with pdf_annotation_list and adjust the requested range or edit an existing mark.`)
       }
       const existing = overlaps.find(item => item.kind === 'exact')
       if (existing) {
@@ -166,8 +165,7 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
       annotationIds: resolved.map(item => item.annotationId),
       resolvedTarget: { page: first.operation.annotation.page, rectPdf: first.operation.annotation.rect,
         ...(input.target.kind === 'pdf-text' ? { quote: input.target.quote } : {}),
-        ...(input.target.kind === 'reference' ? { refId: input.target.refId,
-          ...(input.target.quote !== undefined ? { quote: input.target.quote } : {}) } : {}),
+        ...(input.target.kind === 'reference' ? { refId: input.target.refId } : {}),
         ...(input.target.kind === 'pdf-text-range' ? { start: input.target.start, end: input.target.end } : {}) },
       coverage: { complete: true as const, totalChars: resolved.reduce((sum, item) => sum + (item.covered?.text.length ?? 0), 0),
         pages: resolved.map(item => ({ page: item.operation.annotation.page,

@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
+import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
 import { defaultExplanationPromptTemplate, explanationTemplateIssue,
   MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.js'
 import { engineBinding, validateEngineConfiguration, type EngineCatalogSnapshot, type EngineConfigurations,
   type EngineKind, type EngineDescriptor, type EngineJson } from '../modules/engines/index.js'
 import { EngineConfigurationFields } from './EngineConfigurationFields.js'
+import { DshVisionModelSettings, type VisionModelMode } from './DshVisionModelSettings.js'
+import type { ModelOptionsStore } from '../adapters/client/remote/model-options.js'
 
 // `mode` was removed from DSH's snapshot. Keep only the stable public fields so
 // the editor works with both older and newer Host connections.
@@ -20,6 +23,8 @@ export interface SettingsProps {
   t: (key: string) => string
   translationEngines: readonly { id: string; label: string }[]
   engineCatalog?: EngineCatalogSnapshot
+  modelOptions?: ModelOptionsStore
+  rebuildRetrievalIndex?: (signal: AbortSignal) => Promise<void>
 }
 
 export const settingsLocales = {
@@ -28,18 +33,44 @@ export const settingsLocales = {
     'settings.loading': '正在加载 PDF 设置…',
     'settings.unavailable': '当前连接无法读取或保存 PDF 设置。已编辑的内容会保留在这里。',
     'settings.readOnly': '当前设置为只读。',
-    'settings.engines': 'AI 引擎',
     'settings.enginesHelp': '按需调用所选引擎；模型或远程引擎会接收待处理的文字或图片。',
     'settings.ocrEngine': 'OCR 引擎',
     'settings.imageEngine': '图像理解引擎',
     'settings.embeddingEngine': '语义检索引擎',
-    'settings.embeddingHelp': '按需为文档文字建立语义索引。默认关闭，仍可关键词检索；远程引擎会接收检索范围内的文字。',
-    'settings.imageHelp': '理解图片内容；解释模式的最终回答仍由当前会话模型完成。',
+    'settings.embeddingHelp': '启用后，打开 PDF 会在后台建立文字索引；第三方服务会收到抽取的文字。关键词搜索不受影响。',
+    'settings.indexScanPages': '文字识别索引',
+    'settings.indexScanPagesHelp': '原生文字缺失或编码损坏时，使用上方 OCR 引擎识别文字并加入索引。可与视觉描述索引同时开启；启用语义检索后自动处理。',
+    'settings.indexImageDescriptions': '视觉描述索引',
+    'settings.indexImageDescriptionsHelp': '使用上方图像理解引擎生成整页视觉描述，再将描述文字加入索引，并非直接嵌入原始图片。可与文字识别索引同时开启；会增加模型调用、等待时间和费用，暂不单独检测图表区域。',
+    'settings.rebuildIndex': '重建索引',
+    'settings.rebuildingIndex': '正在清除索引缓存…',
+    'settings.rebuildIndexHelp': '清除当前 profile 的检索索引。启用语义检索时，已打开的文档会在后台重建；其他文档按需处理，不会修改 PDF 或草稿。请先保存或撤销设置。',
+    'settings.indexRebuilt': '索引缓存已清除，将在后台或下次检索时重建。',
+    'settings.rebuildIndexFailed': '无法重建索引：',
+    'settings.imageHelp': '用于图像理解和视觉描述索引。默认跟随当前会话，也可单独指定视觉模型；解释的最终回答仍由当前会话模型完成。',
+    'settings.visionModelSource': '模型来源',
+    'settings.visionFollow': '跟随当前会话',
+    'settings.visionSpecified': '指定模型',
+    'settings.visionModel': '视觉模型',
+    'settings.visionChooseModel': '请选择视觉模型',
+    'settings.visionUnavailableModel': '已保存的模型当前不可用',
+    'settings.visionEffort': '推理强度',
+    'settings.visionDefaultEffort': '模型默认值',
+    'settings.visionUnavailableEffort': '已保存的推理强度当前不可用',
+    'settings.visionLoading': '正在加载视觉模型…',
+    'settings.visionCatalogError': '无法加载视觉模型，请重试。',
+    'settings.visionPartialCatalog': '部分供应商暂时无法加载，可选择已加载的模型。',
+    'settings.visionEmptyCatalog': '当前没有已声明支持图像输入的模型，请先在 DSH 模型设置中配置。',
+    'settings.visionRefresh': '刷新模型',
+    'settings.visionFollowHelp': '使用当前会话选择的模型和推理强度；该模型需要支持图像输入。',
+    'settings.visionSelectionRequired': '请选择当前可用的视觉模型。',
+    'settings.visionEffortInvalid': '请选择该模型支持的推理强度。',
     'settings.engineConfigurations': '引擎配置',
     'settings.engineConfigInvalid': '请检查所选引擎的配置。',
     'settings.engineReference': '填写此引擎插件管理的凭据引用，不要输入 API key 或其他密钥。',
     'settings.engineLocal': '本地',
     'settings.engineRemote': '模型 / 远程',
+    'settings.engineService': '服务',
     'settings.engineMissing': '引擎未加载，已保留选择，不会自动切换。',
     'settings.invalidEngine': '请选择已安装的引擎。',
     'settings.ocrHelp': '从图片或扫描页提取文字。',
@@ -90,18 +121,44 @@ export const settingsLocales = {
     'settings.loading': 'Loading PDF settings…',
     'settings.unavailable': 'PDF settings are unavailable on this connection. Your edits are retained here.',
     'settings.readOnly': 'These settings are read-only.',
-    'settings.engines': 'AI engines',
     'settings.enginesHelp': 'Engines run on demand. Model or remote engines receive the text or images being processed.',
     'settings.ocrEngine': 'OCR engine',
     'settings.imageEngine': 'Image understanding engine',
     'settings.embeddingEngine': 'Semantic search engine',
-    'settings.embeddingHelp': 'Indexes document text on demand. Off by default; keyword search remains available. Remote engines receive text from the search scope.',
-    'settings.imageHelp': 'Interprets images. The current chat model still provides the final explanation.',
+    'settings.embeddingHelp': 'When enabled, opening a PDF builds its text index in the background. Third-party services receive extracted text. Keyword search remains available.',
+    'settings.indexScanPages': 'Text recognition indexing',
+    'settings.indexScanPagesHelp': 'Uses the OCR engine above when native text is missing or damaged, then indexes the recognized text. Can run alongside visual description indexing. Automatic preparation requires semantic search.',
+    'settings.indexImageDescriptions': 'Visual description indexing',
+    'settings.indexImageDescriptionsHelp': 'Generates whole-page visual descriptions with the image understanding engine above and indexes that text, rather than embedding raw images. Can run alongside text recognition indexing. Adds model calls, waiting time and cost. Individual chart regions are not detected yet.',
+    'settings.rebuildIndex': 'Rebuild index',
+    'settings.rebuildingIndex': 'Clearing index cache…',
+    'settings.rebuildIndexHelp': 'Clears this profile’s retrieval indexes. Open documents rebuild in the background when semantic search is enabled; others rebuild on demand. PDFs and drafts are unchanged. Save or discard settings first.',
+    'settings.indexRebuilt': 'Index cache cleared. Indexes rebuild in the background or when searched.',
+    'settings.rebuildIndexFailed': 'Could not rebuild the index: ',
+    'settings.imageHelp': 'Used for image understanding and visual description indexing. Follows the current session by default, or uses a specified visual model. The current chat model still provides the final explanation.',
+    'settings.visionModelSource': 'Model source',
+    'settings.visionFollow': 'Follow current session',
+    'settings.visionSpecified': 'Specify model',
+    'settings.visionModel': 'Visual model',
+    'settings.visionChooseModel': 'Choose a visual model',
+    'settings.visionUnavailableModel': 'Saved model is currently unavailable',
+    'settings.visionEffort': 'Reasoning effort',
+    'settings.visionDefaultEffort': 'Model default',
+    'settings.visionUnavailableEffort': 'Saved effort is currently unavailable',
+    'settings.visionLoading': 'Loading visual models…',
+    'settings.visionCatalogError': 'Visual models could not be loaded. Please retry.',
+    'settings.visionPartialCatalog': 'Some providers could not be loaded. Available models remain selectable.',
+    'settings.visionEmptyCatalog': 'No model currently declares image input. Configure one in DSH model settings first.',
+    'settings.visionRefresh': 'Refresh models',
+    'settings.visionFollowHelp': 'Uses the current session’s model and reasoning effort. That model must support image input.',
+    'settings.visionSelectionRequired': 'Choose a currently available visual model.',
+    'settings.visionEffortInvalid': 'Choose a reasoning effort supported by this model.',
     'settings.engineConfigurations': 'Engine configuration',
     'settings.engineConfigInvalid': 'Check the selected engine configuration.',
     'settings.engineReference': 'Enter a credential reference managed by this engine plugin, not an API key or another secret.',
     'settings.engineLocal': 'Local',
     'settings.engineRemote': 'Model / remote',
+    'settings.engineService': 'Service',
     'settings.engineMissing': 'Engine not loaded. Your choice is retained; no automatic fallback occurs.',
     'settings.invalidEngine': 'Choose an installed engine.',
     'settings.ocrHelp': 'Extracts text from images or scanned pages.',
@@ -150,33 +207,55 @@ export const settingsLocales = {
 } as const
 
 const promptFields = ['explanationGeneralInstruction', 'explanationTextInstruction', 'explanationImageInstruction'] as const
-const fields = ['ocrEngine', 'imageEngine', 'embeddingEngine', 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
+const booleanFields = ['indexScanPages', 'indexImageDescriptions'] as const
+type BooleanField = typeof booleanFields[number]
+const fields = ['ocrEngine', 'imageEngine', 'embeddingEngine', ...booleanFields, 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
   'explanationPromptTemplate'] as const
 type Field = typeof fields[number]
 const fieldHints: Partial<Record<Field, keyof typeof settingsLocales.zh>> = {
   ocrEngine: 'settings.ocrHelp', imageEngine: 'settings.imageHelp', translationEngine: 'settings.translationHelp',
   embeddingEngine: 'settings.embeddingHelp',
+  indexScanPages: 'settings.indexScanPagesHelp', indexImageDescriptions: 'settings.indexImageDescriptionsHelp',
   translationTimeoutMs: 'settings.translationTimeoutHelp', historyCapacity: 'settings.historyHelp',
 }
-type Draft = Record<Field, string>
-interface Editor { source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[] }
+type Draft = Record<Exclude<Field, BooleanField>, string> & Record<BooleanField, boolean>
+function isBooleanField(field: Field): field is BooleanField {
+  return booleanFields.some(option => option === field)
+}
+interface Editor {
+  source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[]
+  sourceVisionModelMode: VisionModelMode
+  visionModelMode: VisionModelMode
+}
+function visionModelMode(draft: Draft): VisionModelMode {
+  const config: EngineConfigurations = JSON.parse(draft.engineConfigurations)
+  const image = config.image?.['dsh-vision']
+  return [image?.provider, image?.model].some(value => typeof value === 'string' && value.trim()) ? 'specified' : 'follow'
+}
+const unavailableModelOptions: ReturnType<ModelOptionsStore['getSnapshot']> = { status: 'idle' }
+
 function toDraft(settings: PdfSettings): Draft {
   const complete = { ...defaultSettings, ...settings }
   complete.translationEngine = effectiveTranslationEngine(complete.translationEngine)
-  return Object.fromEntries(fields.map(field => [field, field === 'engineConfigurations'
-    ? JSON.stringify(complete.engineConfigurations ?? {}) : String(complete[field])])) as Draft
+  complete.indexScanPages = settings.indexScanPages ?? true
+  complete.indexImageDescriptions = settings.indexImageDescriptions ?? false
+  complete.imageEngine = migrateImageEngine(complete.imageEngine!, complete.engineConfigurations)
+  return Object.fromEntries(fields.map(field => [field, isBooleanField(field) ? complete[field] : field === 'engineConfigurations'
+    ? JSON.stringify(migrateEngineConfigurations(complete.engineConfigurations, settings.imageEngine)) : String(complete[field])])) as Draft
 }
 function isDirty(editor: Editor | null): boolean {
-  return editor !== null && (editor.unsets.length > 0 || fields.some(field => editor.source[field] !== editor.draft[field]))
+  return editor !== null && (editor.unsets.length > 0 || fields.some(field => editor.source[field] !== editor.draft[field])
+    || editor.draft.imageEngine === 'dsh-vision' && editor.visionModelMode !== editor.sourceVisionModelMode)
 }
 function acceptedEditor(snapshot: ConfigFormSnapshot): Editor | null {
   if (snapshot.value === undefined) return null
   const draft = toDraft(snapshot.value)
-  return { source: draft, draft: { ...draft }, revision: snapshot.revision, conflict: false, unsets: [] }
+  return { source: draft, draft: { ...draft }, revision: snapshot.revision, conflict: false, unsets: [],
+    sourceVisionModelMode: visionModelMode(draft), visionModelMode: visionModelMode(draft) }
 }
 
 /** Settings card with an explicit save boundary and revision-fenced local edits. */
-export function Settings({ form, t, translationEngines, engineCatalog }: SettingsProps) {
+export function Settings({ form, t, translationEngines, engineCatalog, modelOptions, rebuildRetrievalIndex }: SettingsProps) {
   const tr = useCallback((key: keyof typeof settingsLocales.zh): string => {
     const value = t(key)
     return value && value !== key ? value : settingsLocales.zh[key]
@@ -187,15 +266,30 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     useCallback(() => form.getSnapshot(), [form]),
   )
   const [editor, setEditor] = useState<Editor | null>(() => acceptedEditor(snapshot))
+  const activeModelOptions = editor?.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified'
+    ? modelOptions : undefined
+  const modelDirectory = useSyncExternalStore(
+    useCallback(listener => activeModelOptions?.subscribe(listener) ?? (() => {}), [activeModelOptions]),
+    useCallback(() => activeModelOptions?.getSnapshot() ?? unavailableModelOptions, [activeModelOptions]),
+    useCallback(() => activeModelOptions?.getSnapshot() ?? unavailableModelOptions, [activeModelOptions]),
+  )
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [rebuildingIndex, setRebuildingIndex] = useState(false)
+  const [indexNotice, setIndexNotice] = useState('')
+  const [indexError, setIndexError] = useState('')
+  const indexRequest = useRef<AbortController | undefined>(undefined)
   const formIdentity = useRef(form)
   const mounted = useRef(true)
   const id = useId()
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => {
+    setRebuildingIndex(false); setIndexNotice(''); setIndexError('')
+    return () => { indexRequest.current?.abort(); indexRequest.current = undefined }
+  }, [form, rebuildRetrievalIndex])
   useEffect(() => {
     if (formIdentity.current !== form) {
       formIdentity.current = form
@@ -218,9 +312,10 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [dirty])
 
-  const disabled = saving || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
+  const disabled = saving || rebuildingIndex || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
   const validation: Partial<Record<Field, string>> = {}
   const configurations: EngineConfigurations = editor ? JSON.parse(editor.draft.engineConfigurations) : {}
+  let visionModelError: string | undefined
   const descriptors = (kind: EngineKind): readonly EngineDescriptor[] => engineCatalog?.engines[kind]
     ?? (kind === 'translation' ? translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
       id: engine.id, name: engine.label, version: '1', execution: 'remote' as const,
@@ -245,6 +340,25 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
         catch { validation.engineConfigurations = tr('settings.engineConfigInvalid') }
       }
     }
+    if (editor.draft.indexImageDescriptions && !editor.source.indexImageDescriptions
+      && !descriptors('image').some(engine => engine.id === editor.draft.imageEngine && engine.execution !== 'disabled')) {
+      validation.imageEngine = tr('settings.invalidEngine')
+    }
+    if (editor.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified') {
+      const config = configurations.image?.['dsh-vision'] ?? {}
+      const source = sourceConfigurations.image?.['dsh-vision'] ?? {}
+      const touched = editor.visionModelMode !== editor.sourceVisionModelMode
+        || editor.draft.imageEngine !== editor.source.imageEngine
+        || ['provider', 'model', 'reasoningEffort'].some(key => config[key] !== source[key])
+      if (touched) {
+        const model = modelDirectory.catalog?.groups.find(group => group.id === config.provider)?.models.find(item => item.id === config.model)
+        if (!model || modelDirectory.status !== 'ready') visionModelError = tr('settings.visionSelectionRequired')
+        else if (config.reasoningEffort && !model.reasoning?.efforts.some(effort => effort.id === config.reasoningEffort)) {
+          visionModelError = tr('settings.visionEffortInvalid')
+        }
+        if (visionModelError) validation.engineConfigurations = visionModelError
+      }
+    }
     for (const field of promptFields) {
       if (editor.draft[field].length > MAX_EXPLANATION_INSTRUCTION_LENGTH) {
         validation[field] = tr('settings.invalidInstruction')
@@ -257,8 +371,31 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
 
   const legacyPromptActive = !!editor && editor.draft.explanationPromptTemplate !== defaultExplanationPromptTemplate
     && promptFields.every(field => !editor.draft[field].trim())
+  const remoteDraft = snapshot.value === undefined ? undefined : toDraft(snapshot.value)
 
-  function edit(field: Field, value: string) {
+  async function rebuildIndex() {
+    if (!rebuildRetrievalIndex || disabled || dirty || !editor || editor.conflict || indexRequest.current) return
+    const controller = new AbortController(), owner = form
+    indexRequest.current = controller
+    setRebuildingIndex(true); setIndexNotice(''); setIndexError('')
+    try {
+      await rebuildRetrievalIndex(controller.signal)
+      if (mounted.current && !controller.signal.aborted && formIdentity.current === owner
+          && indexRequest.current === controller) setIndexNotice(tr('settings.indexRebuilt'))
+    } catch (failure) {
+      if (mounted.current && !controller.signal.aborted && formIdentity.current === owner
+          && indexRequest.current === controller) {
+        setIndexError(`${tr('settings.rebuildIndexFailed')}${failure instanceof Error ? failure.message : String(failure)}`)
+      }
+    } finally {
+      if (indexRequest.current === controller) {
+        indexRequest.current = undefined
+        if (mounted.current) setRebuildingIndex(false)
+      }
+    }
+  }
+
+  function edit<F extends Field>(field: F, value: Draft[F]) {
     const splitPromptEdited = promptFields.some(prompt => prompt === field)
     setEditor(current => current && ({ ...current,
       draft: { ...current.draft, [field]: value,
@@ -267,6 +404,29 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
       unsets: current.unsets.filter(key => key !== field
         && (!splitPromptEdited || key !== 'explanationPromptTemplate')) }))
     setNotice(''); setError('')
+  }
+  function changeVisionMode(mode: VisionModelMode) {
+    setEditor(current => {
+      if (!current) return current
+      const next: EngineConfigurations = JSON.parse(current.draft.engineConfigurations)
+      const saved = next.image?.['dsh-vision']
+      if (mode === 'follow' && saved && ['provider', 'model', 'reasoningEffort'].some(key => Object.hasOwn(saved, key))) {
+        const config = { ...saved }, image = { ...next.image }
+        delete config.provider; delete config.model; delete config.reasoningEffort
+        if (Object.keys(config).length) image['dsh-vision'] = config
+        else delete image['dsh-vision']
+        if (Object.keys(image).length) next.image = image
+        else delete next.image
+      }
+      return { ...current, visionModelMode: mode,
+        draft: { ...current.draft, engineConfigurations: JSON.stringify(next) },
+        unsets: current.unsets.filter(field => field !== 'engineConfigurations') }
+    })
+    setNotice(''); setError('')
+  }
+  function changeVisionConfiguration(config: import('../modules/engines/index.js').EngineConfiguration) {
+    const next = { ...configurations, image: { ...configurations.image, 'dsh-vision': config } }
+    edit('engineConfigurations', JSON.stringify(next))
   }
   function useSplitPrompts() {
     setEditor(current => current && ({ ...current,
@@ -285,16 +445,20 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     const source = toDraft(latest.value)
     const base = latest.base && typeof latest.base === 'object' ? latest.base as Partial<PdfSettings> : {}
     const defaults = toDraft({ ...defaultSettings, ...base })
-    setEditor(current => current && ({
-      source, revision: latest.revision, conflict: false, unsets: current.unsets,
-      draft: Object.fromEntries(fields.map(field => [field, current.unsets.includes(field) ? defaults[field] : current.draft[field] !== current.source[field] ? current.draft[field] : source[field]])) as Draft,
-    }))
+    setEditor(current => {
+      if (!current) return current
+      const draft = Object.fromEntries(fields.map(field => [field, current.unsets.includes(field) ? defaults[field]
+        : current.draft[field] !== current.source[field] ? current.draft[field] : source[field]])) as Draft
+      return { source, revision: latest.revision, conflict: false, unsets: current.unsets, draft,
+        sourceVisionModelMode: visionModelMode(source),
+        visionModelMode: current.visionModelMode !== current.sourceVisionModelMode ? current.visionModelMode : visionModelMode(draft) }
+    })
     setError(''); setNotice(tr('settings.keepHint'))
   }
   function restoreDefaults() {
     const base = snapshot.base && typeof snapshot.base === 'object' ? snapshot.base as Partial<PdfSettings> : {}
     const defaults = toDraft({ ...defaultSettings, ...base })
-    setEditor(current => current && ({ ...current, draft: defaults, unsets: [...fields] }))
+    setEditor(current => current && ({ ...current, draft: defaults, unsets: [...fields], visionModelMode: visionModelMode(defaults) }))
     setError(''); setNotice(tr('settings.resetHint')); setSubmitted(false)
   }
   async function save() {
@@ -306,7 +470,7 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     const ops = fields.filter(field => editor.unsets.includes(field) || editor.draft[field] !== editor.source[field]).map(field =>
       editor.unsets.includes(field) ? { op: 'unset' as const, path: [field] } : {
         op: 'set' as const, path: [field],
-        value: field === 'translationTimeoutMs' || field === 'historyCapacity'
+        value: isBooleanField(field) ? editor.draft[field] : field === 'translationTimeoutMs' || field === 'historyCapacity'
           ? Number(editor.draft[field]) : field === 'engineConfigurations'
             ? JSON.parse(editor.draft[field]) : editor.draft[field].trim(),
       })
@@ -344,21 +508,39 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     'aria-describedby': `${id}-${fieldHints[field] ? `${field}-hint` : 'prompts-hint'}${submitted && validation[field] ? ` ${id}-${field}-error` : ''}`,
     className: 'dsh-pdf-settings-control',
   })
+  const indexOption = (field: BooleanField) => editor && <div key={field} className="dsh-pdf-settings-field">
+    <label htmlFor={`${id}-${field}`} className="dsh-pdf-settings-label">
+      <input {...attributes(field)} className={undefined} type="checkbox" checked={editor.draft[field]}
+        style={{ margin: '0 8px 0 0', verticalAlign: 'middle' }}
+        onChange={event => edit(field, event.target.checked)} />
+      {tr(`settings.${field}`)}
+    </label>
+    <small id={`${id}-${field}-hint`} className="dsh-pdf-settings-hint">{tr(fieldHints[field]!)}</small>
+  </div>
 
   const engineFields = (kind: EngineKind, field: 'ocrEngine' | 'imageEngine' | 'translationEngine' | 'embeddingEngine') => {
     if (!editor) return null
+    const engineId = editor.draft[field]
     const engines = descriptors(kind).filter(engine => kind === 'embedding' || engine.execution !== 'disabled')
-    const selected = engines.find(engine => engine.id === editor.draft[field])
+    const selected = engines.find(engine => engine.id === engineId)
     return <div className="dsh-pdf-settings-engine">
-      {fieldRow(field, <select {...attributes(field)} value={editor.draft[field]}
+      {fieldRow(field, <select {...attributes(field)} value={engineId}
         onChange={event => edit(field, event.target.value)}>
-        {!selected && <option value={editor.draft[field]} disabled>{tr('settings.unknownEngine')}: {editor.draft[field]}</option>}
+        {!selected && <option value={engineId} disabled>{tr('settings.unknownEngine')}: {engineId}</option>}
         {engines.map(engine => <option key={engine.id} value={engine.id}>{engine.id === 'dsh-model'
           ? tr('settings.translationDshModel') : engine.name}</option>)}
-      </select>, selected && <small className="dsh-pdf-settings-engine-kind">{tr(selected.execution === 'local' ? 'settings.engineLocal' : 'settings.engineRemote')}</small>)}
+      </select>, selected && selected.execution !== 'disabled' && <small className="dsh-pdf-settings-engine-kind">{tr(selected.execution === 'local'
+        ? 'settings.engineLocal' : selected.execution === 'service' ? 'settings.engineService' : 'settings.engineRemote')}</small>)}
       {!selected ? <p className="dsh-pdf-settings-hint" role="status">{tr('settings.engineMissing')}</p>
         : <div className="dsh-pdf-settings-engine-options">
-          <EngineConfigurationFields descriptor={selected} config={configurations[kind]?.[selected.id] ?? {}}
+          {kind === 'image' && selected.id === 'dsh-vision' && <DshVisionModelSettings
+            mode={editor.visionModelMode} config={configurations.image?.['dsh-vision'] ?? {}}
+            options={modelOptions} prefix={`${id}-vision`} disabled={disabled} t={tr}
+            error={submitted ? visionModelError : undefined}
+            changeMode={changeVisionMode} changeConfig={changeVisionConfiguration} />}
+          <EngineConfigurationFields descriptor={kind === 'image' && selected.id === 'dsh-vision'
+            ? { ...selected, configurationFields: selected.configurationFields?.filter(field => !['provider', 'model', 'reasoningEffort'].includes(field.key)) }
+            : selected} config={configurations[kind]?.[selected.id] ?? {}}
             prefix={`${id}-${kind}`} disabled={disabled} referenceHint={tr('settings.engineReference')}
             change={(key: string, value: EngineJson | undefined) => {
               const next = structuredClone(configurations), config = { ...next[kind]?.[selected.id] }
@@ -380,22 +562,33 @@ export function Settings({ form, t, translationEngines, engineCatalog }: Setting
     {editor && <form onSubmit={event => { event.preventDefault(); void save() }} className="dsh-pdf-settings-form">
       {editor.conflict && <div role="alert" className="dsh-pdf-settings-notice">
         <p>{tr('settings.conflict')}</p>
-        {snapshot.value && <details><summary>{tr('settings.remoteChanges')}</summary><ul>
-          {fields.filter(field => String(snapshot.value![field]) !== editor.source[field]).map(field => <li key={field}>{tr(`settings.${field}`)}: {editor.source[field]} → {String(snapshot.value![field])}</li>)}
+        {remoteDraft && <details><summary>{tr('settings.remoteChanges')}</summary><ul>
+          {fields.filter(field => remoteDraft[field] !== editor.source[field]).map(field => <li key={field}>{tr(`settings.${field}`)}: {String(editor.source[field])} → {String(remoteDraft[field])}</li>)}
         </ul></details>}
         <div className="dsh-pdf-settings-notice-actions"><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={keepChanges}>{tr('settings.keep')}</button></div>
         <small className="dsh-pdf-settings-hint">{tr('settings.keepHint')}</small>
       </div>}
-      <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-engines-title`}>
-        <h3 id={`${id}-engines-title`}>{tr('settings.engines')}</h3>
+      <div className="dsh-pdf-settings-group">
         <p className="dsh-pdf-settings-hint">{tr('settings.enginesHelp')}</p>
         {engineFields('ocr', 'ocrEngine')}
         {engineFields('image', 'imageEngine')}
         {engineFields('translation', 'translationEngine')}
         {engineFields('embedding', 'embeddingEngine')}
-        {submitted && validation.engineConfigurations && <p role="alert" className="dsh-pdf-settings-error">{validation.engineConfigurations}</p>}
+        {booleanFields.map(indexOption)}
+        {rebuildRetrievalIndex && <div className="dsh-pdf-settings-field">
+          <div className="dsh-pdf-settings-field-heading">
+            <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || dirty || editor.conflict}
+              aria-describedby={`${id}-rebuild-index-help`} onClick={() => { void rebuildIndex() }}>
+              {tr(rebuildingIndex ? 'settings.rebuildingIndex' : 'settings.rebuildIndex')}
+            </button>
+          </div>
+          <small id={`${id}-rebuild-index-help`} className="dsh-pdf-settings-hint">{tr('settings.rebuildIndexHelp')}</small>
+          {indexNotice && <p role="status" className="dsh-pdf-settings-status">{indexNotice}</p>}
+          {indexError && <p role="alert" className="dsh-pdf-settings-error">{indexError}</p>}
+        </div>}
+        {submitted && validation.engineConfigurations && !visionModelError && <p role="alert" className="dsh-pdf-settings-error">{validation.engineConfigurations}</p>}
         {fieldRow('translationTimeoutMs', <input {...attributes('translationTimeoutMs')} type="number" min={1000} max={600000} step={1} value={editor.draft.translationTimeoutMs} onChange={event => edit('translationTimeoutMs', event.target.value)} />)}
-      </section>
+      </div>
       <section className="dsh-pdf-settings-group" aria-labelledby={`${id}-navigation-title`}>
         <h3 id={`${id}-navigation-title`}>{tr('settings.navigation')}</h3>
         {fieldRow('historyCapacity', <input {...attributes('historyCapacity')} type="number" min={1} step={1} value={editor.draft.historyCapacity} onChange={event => edit('historyCapacity', event.target.value)} />)}

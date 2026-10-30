@@ -20,6 +20,16 @@ export interface DocumentResidency {
   pins: number
 }
 
+/** Open ownership and source identity only; operation pins never constitute an open document. */
+export interface OpenWorkingCopyDocument {
+  sessionId: string
+  id: string
+  contentVersion: string
+  sourceDigest: string
+  conflict: boolean
+  title?: string
+}
+
 /** Minimum authority needed by read-only features after session authorization. */
 export interface WorkingCopyReadPort {
   readSnapshot(sessionId: string, documentId: string): HostWorkspaceSnapshot

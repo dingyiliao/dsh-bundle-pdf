@@ -8,7 +8,7 @@ import { NavigationHistory, type NavigationPosition } from '../../../src/navigat
 import type { PdfClientApi } from '../../../src/shared/contracts.ts'
 import { useReaderNavigation, type ReaderNavigationOptions } from '../../../src/modules/viewer/index.ts'
 import { navigateAgentRequest } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
-import { NativeViewport, setWindowLayout, buildPageLayout } from '../../../src/modules/viewer/index.ts'
+import { NativeViewport, setWindowLayout, buildPageLayout, READING_TOP_INSET } from '../../../src/modules/viewer/index.ts'
 import type { NativeDocument, PageView } from '../../../src/modules/viewer/index.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { AgentNavigationRequest } from '../../../src/contracts/navigation.ts'
@@ -82,8 +82,8 @@ for (const resumePage of [1, 2]) test(resumePage === 1
   const bounds = (top: number) => ({ left: 0, top, right: 400, bottom: top + 600, width: 400, height: 600 } as DOMRect)
   Object.defineProperties(scroll, { clientWidth: { value: 400 }, clientHeight: { value: 600 }, scrollWidth: { value: 400 } })
   scroll.getBoundingClientRect = () => bounds(0)
-  element.getBoundingClientRect = () => bounds(72 - scroll.scrollTop)
-  setWindowLayout(scroll, buildPageLayout([page], () => 1, 0, 72))
+  element.getBoundingClientRect = () => bounds(READING_TOP_INSET - scroll.scrollTop)
+  setWindowLayout(scroll, buildPageLayout([page], () => 1, 0, READING_TOP_INSET))
   const state: ReaderNavigationOptions['state'] = { current: { snapshot, scrollRoot: scroll,
     fit: 'custom', zoom: 1, size: { width: 400, height: 600 }, currentPage: 1 } }
   const position: NavigationPosition = { documentVersion: 'v1', page: resumePage, x: 0, y: 300, fit: 'custom', scale: 1 }
@@ -146,7 +146,7 @@ test('exact evidence jumps use the Reader history for cross-page and same-page B
   scroll.getBoundingClientRect = () => ({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 } as DOMRect)
   const views: ReaderNavigationOptions['views'] = { current: new Map() }
   const layout = () => {
-    const pages = buildPageLayout(snapshot.document.pages, () => state.current.zoom, 0, 72)
+    const pages = buildPageLayout(snapshot.document.pages, () => state.current.zoom, 0, READING_TOP_INSET)
     setWindowLayout(scroll, pages)
     views.current.clear()
     for (const page of pages) {

@@ -83,13 +83,13 @@ test('project source-line report excludes non-executable braces and static bundl
     const runtimeImportLine = readerSource.lineOf(imports.find(node => !node.importClause?.isTypeOnly)!)
     const typeImportLine = readerSource.lineOf(imports.find(node => node.importClause?.isTypeOnly)!)
 
-    const shimPath = 'src/client/index.tsx'
-    const shimSource = await sourceFixture(shimPath)
-    const shimReExport = shimSource.nodes(ts.isExportDeclaration)
+    const linkagePath = 'src/modules/annotations/index.ts'
+    const linkageSource = await sourceFixture(linkagePath)
+    const linkageReExport = linkageSource.nodes(ts.isExportDeclaration)
       .find(node => node.moduleSpecifier && !node.isTypeOnly)
-    assert.ok(shimReExport, 'the Client compatibility entry has a static re-export')
-    const shimLine = shimSource.lineOf(shimReExport)
-    assert.ok(shimSource.mapped.has(shimLine), 'TypeScript maps that ESM linkage line')
+    assert.ok(linkageReExport, 'the annotations module entry has a static re-export')
+    const linkageLine = linkageSource.lineOf(linkageReExport)
+    assert.ok(linkageSource.mapped.has(linkageLine), 'TypeScript maps that ESM linkage line')
 
     const runtimeExportPath = 'src/entrypoints/reader-client.tsx'
     const runtimeExportSource = await sourceFixture(runtimeExportPath)
@@ -164,10 +164,10 @@ test('project source-line report excludes non-executable braces and static bundl
     assert.equal(reader.uncoveredLines?.includes(typeImportLine), false, 'type-only imports cannot execute')
     assert.equal(reader.uncoveredLines?.includes(runtimeImportLine), false)
     assert.ok(report.totals.excludedLinkageLines >= reader.excludedLinkageLines.length)
-    const shim = report.files.find(file => file.path === shimPath)
-    assert.ok(shim)
-    assert.ok(shim.excludedLinkageLines.includes(shimLine), 'static re-export is ESM linkage, not an executable line')
-    assert.equal(shim.uncoveredLines?.includes(shimLine), false)
+    const linkage = report.files.find(file => file.path === linkagePath)
+    assert.ok(linkage)
+    assert.ok(linkage.excludedLinkageLines.includes(linkageLine), 'static re-export is ESM linkage, not an executable line')
+    assert.equal(linkage.uncoveredLines?.includes(linkageLine), false)
     const runtimeExport = report.files.find(file => file.path === runtimeExportPath)
     assert.ok(runtimeExport)
     assert.equal(runtimeExport.excludedLinkageLines.includes(runtimeExportLine), false,

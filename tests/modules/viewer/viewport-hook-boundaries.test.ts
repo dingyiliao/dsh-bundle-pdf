@@ -4,6 +4,10 @@ import test from 'node:test'
 import React, { act } from 'react'
 import { usePdfViewportSize } from '../../../src/modules/viewer/controllers/use-pdf-viewport-size.ts'
 import { usePdfWheelZoom } from '../../../src/modules/viewer/controllers/use-pdf-wheel-zoom.ts'
+import { WindowedPages } from '../../../src/modules/viewer/rendering/WindowedPages.tsx'
+import { readingPageProbe } from '../../../src/modules/viewer/rendering/page-layout.ts'
+import { pageIndexAtOffset, windowLayout } from '../../../src/modules/viewer/rendering/window-layout.ts'
+import { readerPageScale } from '../../../src/modules/viewer/controllers/navigation-position.ts'
 
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
@@ -58,7 +62,7 @@ test('a hidden viewport clears its stale measurement, then reports the next visi
     try {
       const sizes: Array<[number, number]> = []
       const Component = () => {
-        usePdfViewportSize({ root: viewport, ownerKey: 'doc', preserveAnchor: true, size: { width: 0, height: 0 },
+        usePdfViewportSize({ root: viewport, ownerKey: 'doc', size: { width: 0, height: 0 },
           onSize: size => { sizes.push([size.width, size.height]) } })
         return null
       }
@@ -72,6 +76,38 @@ test('a hidden viewport clears its stale measurement, then reports the next visi
       if (prior) Object.defineProperty(globalThis, 'ResizeObserver', prior)
       else Reflect.deleteProperty(globalThis, 'ResizeObserver')
     }
+  })
+})
+
+for (const fit of ['width', 'page'] as const) test(`numeric fit-${fit} reflow preserves a distant page at the reading inset without a mounted PageView`, async () => {
+  await withDom(async (dom, viewport, render) => {
+    const mount = dom.document.getElementById('mount')!
+    viewport.replaceChildren(mount)
+    let size = { width: 432, height: 632 }
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, get: () => size.width },
+      clientHeight: { configurable: true, get: () => size.height } })
+    const pages = Array.from({ length: 1151 }, (_, index) => ({ page: index + 1,
+      cropBox: [0, 0, 400, 600] as [number, number, number, number], userUnit: 1, rotation: 0 }))
+    const draw = (nextSize: typeof size, preserveAnchor = true) => {
+      size = nextSize
+      return render(React.createElement(WindowedPages, {
+        pages, rotation: 0, zoom: 1, fit, size, scrollRoot: viewport,
+        scaleForPage: page => readerPageScale(page, { fit, zoom: 1, size }),
+        preserveAnchor, renderPage: () => null,
+      }))
+    }
+    await draw(size)
+    viewport.scrollTop = windowLayout(viewport)![751]!.top - (readingPageProbe(size.height) - 1)
+    for (const nextSize of [{ width: 620, height: 500 }, { width: 500, height: 720 }, { width: 360, height: 400 }]) {
+      await draw(nextSize)
+      const layout = windowLayout(viewport)!
+      assert.equal(layout[pageIndexAtOffset(layout, viewport.scrollTop + readingPageProbe(size.height))]!.page, 752)
+      assert.equal(viewport.querySelector('[data-pdf-page]'), null,
+        'reflow cannot depend on a PageView element that virtual rendering may have removed')
+    }
+    const beforeNavigation = viewport.scrollTop
+    await draw({ width: 600, height: 650 }, false)
+    assert.equal(viewport.scrollTop, beforeNavigation, 'an explicit navigation owns scroll while its target is pinned')
   })
 })
 

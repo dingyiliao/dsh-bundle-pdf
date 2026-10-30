@@ -17,15 +17,6 @@ export interface ReaderSelection {
   selectionAfter?: string
 }
 
-export function unionRects(rects: readonly PdfRect[]): PdfRect {
-  const result: PdfRect = [Infinity, Infinity, -Infinity, -Infinity]
-  for (const rect of rects) {
-    result[0] = Math.min(result[0], rect[0]); result[1] = Math.min(result[1], rect[1])
-    result[2] = Math.max(result[2], rect[2]); result[3] = Math.max(result[3], rect[3])
-  }
-  return result
-}
-
 export function viewportRectToPdf(viewport: PageViewport, rect: PdfRect) {
   const [left, top, right, bottom] = rect
   const points = [viewport.convertToPdfPoint(left, top), viewport.convertToPdfPoint(right, top),
@@ -88,31 +79,30 @@ export function overlapFraction(rect: PdfRect, other: PdfRect): number {
 }
 
 function selectionBoundaryContext(range: Range): Pick<ReaderSelection, 'selectionBefore' | 'selectionAfter'> {
-  const start = range.startContainer, end = range.endContainer
-  if (start.nodeType !== Node.TEXT_NODE || end.nodeType !== Node.TEXT_NODE) return {}
-  if (start === end) {
-    const text = start.textContent ?? ''
-    return {
-      selectionBefore: text.slice(Math.max(0, range.startOffset - 80), range.startOffset),
-      selectionAfter: text.slice(range.endOffset, range.endOffset + 80),
+  // Font/style runs are not word boundaries. Read bounded original evidence in
+  // DOM text order, independently at each endpoint, without leaving its page's
+  // active text layer or rewriting the selected source.
+  const surrounding = (boundary: Node, offset: number, before: boolean): string | undefined => {
+    if (boundary.nodeType !== Node.TEXT_NODE) return undefined
+    const layer = boundary.parentElement?.closest<HTMLElement>('[data-pdf-text="active"]')
+    if (!layer) return undefined
+    const text = (boundary as Text).data
+    let result = before ? text.slice(Math.max(0, offset - 80), offset) : text.slice(offset, offset + 80)
+    const walker = boundary.ownerDocument!.createTreeWalker(layer, NodeFilter.SHOW_TEXT)
+    walker.currentNode = boundary
+    let node: Node | null
+    while (result.length < 80 && (node = before ? walker.previousNode() : walker.nextNode())) {
+      const value = (node as Text).data, remaining = 80 - result.length
+      result = before ? value.slice(-remaining) + result : result + value.slice(0, remaining)
     }
+    return result
   }
-  // Native PDFium positioning uses one span per glyph. Recover surrounding
-  // letters only inside the same PDFium text run, never across unrelated runs.
-  const startSpan = start.parentElement?.closest<HTMLElement>('[data-pdf-run]')
-  const endSpan = end.parentElement?.closest<HTMLElement>('[data-pdf-run]')
-  const layer = startSpan?.closest<HTMLElement>('[data-pdf-text="active"]')
-  if (!startSpan || !endSpan || !layer || layer !== endSpan.closest('[data-pdf-text="active"]') ||
-      startSpan.dataset.pdfRun !== endSpan.dataset.pdfRun) return {}
-  const spans = [...layer.querySelectorAll<HTMLElement>('[data-pdf-run]')]
-    .filter(span => span.dataset.pdfRun === startSpan.dataset.pdfRun)
-  const first = spans.indexOf(startSpan), last = spans.indexOf(endSpan)
-  if (first < 0 || last < first) return {}
-  const before = spans.slice(0, first).map(span => span.textContent ?? '').join('') +
-    (start.textContent ?? '').slice(0, range.startOffset)
-  const after = (end.textContent ?? '').slice(range.endOffset) +
-    spans.slice(last + 1).map(span => span.textContent ?? '').join('')
-  return { selectionBefore: before.slice(-80), selectionAfter: after.slice(0, 80) }
+  const before = surrounding(range.startContainer, range.startOffset, true)
+  const after = surrounding(range.endContainer, range.endOffset, false)
+  return {
+    ...(before === undefined ? {} : { selectionBefore: before }),
+    ...(after === undefined ? {} : { selectionAfter: after }),
+  }
 }
 
 /** Collect selected text nodes individually: a container's bounding box would include other columns. */

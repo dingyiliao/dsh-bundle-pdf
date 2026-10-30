@@ -5,7 +5,6 @@ export type TranslationErrorCode =
   | 'disabled' | 'not-configured' | 'engine-unavailable' | 'authentication-failed'
   | 'invalid-request' | 'limit-exceeded' | 'timeout' | 'cancelled' | 'stale-result' | 'translation-failed'
   | 'invalid-model-output' | 'incomplete-model-output' | 'empty-model-output'
-  | 'incomplete-selection' | 'unrecognized-selection'
 
 export class TranslationError extends Error {
   constructor(readonly code: TranslationErrorCode, message: string, options?: ErrorOptions) {
@@ -49,12 +48,23 @@ export interface TranslationEngineRequest extends Omit<TranslationRequest, 'sign
   maxOutputCharacters: number
 }
 
+/** The source used for this result, distinct from the user's unchanged selection.
+ * Certainty is the engine's assessment, not proof that a completion is original. */
+export interface TranslationInterpretation {
+  text: string
+  kind: 'correction' | 'completion'
+  certainty: 'confident' | 'tentative'
+  explanation: string
+}
+
 export interface TranslationOutput {
   text: string
   status: 'complete' | 'partial'
   /** Stable warning identifiers suitable for localization by the consuming UI. */
   warnings: string[]
   detectedSourceLanguage?: string
+  /** Omit when translating the selection as-is. Never write this back to the PDF. */
+  interpretation?: TranslationInterpretation
   /** Lexical detail is present only when an engine can validate it. */
   detail?: {
     kind: 'word' | 'phrase'
@@ -74,7 +84,7 @@ export interface TranslationEngineDescriptor {
   id: string
   name: string
   version: string
-  execution: 'disabled' | 'local' | 'remote'
+  execution: import('../modules/engines/types.js').EngineDescriptor['execution']
   maxInputCharacters?: number
   configurationFields?: import('../modules/engines/types.js').EngineConfigurationField[]
 }

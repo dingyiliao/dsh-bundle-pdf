@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import type { AgentNavigationRequest, TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { navigateAgentRequest, textTargetPosition, type AgentTextNavigationOptions } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
-import { NativeViewport } from '../../../src/modules/viewer/rendering/viewport.ts'
+import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import type { NativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
 
 const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
@@ -40,7 +40,7 @@ test('exact navigation verifies the second repeated quote by UTF-16 offset and p
   assert.equal(await navigateAgentRequest(request(), new AbortController().signal, f.options), 'opened')
   assert.equal(f.reads(), 1)
   assert.equal(f.jumps(), 1)
-  assert.deepEqual(f.position(), { x: 40, y: 220, viewportAnchor: { x: 0.08, y: 0.16999999999999998 } })
+  assert.deepEqual(f.position(), { x: 40, y: 220, viewportAnchor: { x: 0.08, y: 16 / 600 + 0.05 } })
   assert.equal(f.listeners.size, 0)
   const invalidOffset = request({ target: target({ startUtf16: second + 1, endUtf16: second + 11 }) })
   assert.equal(await navigateAgentRequest(invalidOffset, new AbortController().signal, f.options), 'stale')

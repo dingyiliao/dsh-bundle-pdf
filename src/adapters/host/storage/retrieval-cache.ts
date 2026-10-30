@@ -65,6 +65,20 @@ export function createRetrievalCache(table: Pick<KvTable<string, RetrievalCacheR
       pending = task.catch(() => undefined)
       return task
     },
+    async clear(): Promise<void> {
+      const task = pending.then(async () => {
+        initialize()
+        // This queue also owns reads/writes. A pending write completes before
+        // deletion and a later write cannot be removed by this reset.
+        for (const [key, entry] of [...entries]) {
+          await table.delete(key)
+          entries.delete(key); bytes -= entry.bytes
+        }
+        nextPrune = 0
+      })
+      pending = task.catch(() => undefined)
+      return task
+    },
     async dispose(): Promise<void> { await pending },
   }
 }

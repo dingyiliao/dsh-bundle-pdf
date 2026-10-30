@@ -3,7 +3,8 @@ import { requestEnvelopeSchema } from '../../../contracts/rpc/index.js'
 class InfoRequestTooLarge extends Error {}
 
 /** The settings bootstrap is connection-authenticated, but has no resource session. */
-export function createPdfInfoRoute(read: (payload: unknown, signal: AbortSignal) => unknown | Promise<unknown>, method = 'pdf.info') {
+export function createPdfInfoRoute(read: (payload: unknown, signal: AbortSignal) => unknown | Promise<unknown>, method = 'pdf.info',
+  failure = { code: 'pdf/catalog-unavailable', message: 'Engine catalog request failed.' }) {
   return {
     path: `/api/${method}`, methods: ['POST'] as const, requestBody: 'streaming' as const,
     async fetch(request: Request): Promise<Response> {
@@ -27,7 +28,7 @@ export function createPdfInfoRoute(read: (payload: unknown, signal: AbortSignal)
         }, { headers })
       } catch {
         return Response.json({ type: 'server-response', rpcId: parsed.data.rpcId,
-          result: { ok: false, error: { code: 'pdf/catalog-unavailable', message: 'Engine catalog request failed.' } },
+          result: { ok: false, error: failure },
         }, { headers, status: request.signal.aborted ? 499 : 200 })
       }
     },

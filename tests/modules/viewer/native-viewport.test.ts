@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { NativeViewport } from '../../../src/modules/viewer/rendering/viewport.ts'
-import { NativeViewport as SharedViewport } from '../../../src/shared/geometry/native-viewport.ts'
+import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
 import { nativeFixture } from '../../native-fixture.ts'
 
 test('native UI viewports apply crop, UserUnit, rotation, offsets and dontFlip', async () => {
-  assert.equal(NativeViewport, SharedViewport)
   const bytes = await nativeFixture(), info = await loadPdfDocument(bytes)
   const transforms: Record<number, number[]> = {
     0: [1, 0, 0, -1, -30, 360],

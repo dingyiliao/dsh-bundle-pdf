@@ -28,16 +28,17 @@ export function WindowedPages(props: WindowedPagesProps) {
   // Read the old scroll offset before React replaces the old page dimensions.
   // On a large zoom-out the browser may clamp scrollTop during that replacement.
   const prior = previous.current
-  // Automatic-fit viewport resizes have their own point-preserving anchor in
-  // usePdfViewportSize. Running this center-based anchor too scrolls twice
-  // during sidebar dragging. A fit-mode change resets that hook, so keep this
-  // anchor for the mode transition even if the viewport changed concurrently.
+  // Numeric layouts survive virtual page unmounts. One owner preserves the
+  // reading point at the content inset during automatic fit resizes; ordinary
+  // zoom and fit-mode changes retain the viewport's center instead.
   const viewportResized = prior && (Math.abs(prior.size.width - size.width) >= .25 || Math.abs(prior.size.height - size.height) >= .25)
-  const viewportAnchorOwnsChange = viewportResized && fit !== 'custom' && prior?.fit === fit
-  const anchor = props.preserveAnchor && !viewportAnchorOwnsChange && prior?.root === scrollRoot && prior.layout !== layout && scrollRoot && prior.layout.length && layout.length
+  const automaticResize = viewportResized && fit !== 'custom' && prior?.fit === fit
+  const anchor = props.preserveAnchor && prior?.root === scrollRoot && prior.layout !== layout && scrollRoot && prior.layout.length && layout.length
     ? (() => {
-      const viewportX = scrollRoot.clientWidth / 2, viewportY = scrollRoot.clientHeight / 2
-      const oldX = scrollRoot.scrollLeft + viewportX, oldY = scrollRoot.scrollTop + viewportY
+      const viewportX = automaticResize ? Math.min(16, size.width / 2) : scrollRoot.clientWidth / 2
+      const viewportY = automaticResize ? readingPageProbe(size.height) : scrollRoot.clientHeight / 2
+      const oldX = scrollRoot.scrollLeft + (automaticResize ? Math.min(16, prior.size.width / 2) : viewportX)
+      const oldY = scrollRoot.scrollTop + (automaticResize ? readingPageProbe(prior.size.height) : viewportY)
       const index = pageIndexAtOffset(prior.layout, oldY)
       const oldPage = prior.layout[index], newPage = layout[index]
       if (!oldPage || !newPage) return null

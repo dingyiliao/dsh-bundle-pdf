@@ -7,7 +7,7 @@ export function createPdfEngineRouting(ctx: Pick<Context, 'get'>) {
   const bindings = () => {
     const settings = ctx.get('pdfAiSettings')?.()
     return settings ? {
-      binding: engineBinding('image', settings.imageEngine ?? 'session-vision', settings.engineConfigurations),
+      binding: engineBinding('image', settings.imageEngine ?? 'dsh-vision', settings.engineConfigurations),
       ocrBinding: engineBinding('ocr', settings.ocrEngine ?? 'session-llm', settings.engineConfigurations),
     } : undefined
   }
@@ -20,15 +20,14 @@ export function createPdfEngineRouting(ctx: Pick<Context, 'get'>) {
         selectedDescriptor: () => service.selectedDescriptor(binding),
         availability: (sessionId, signal) => service.availability(sessionId, signal, binding),
         recognize: request => service.recognize({ ...request, binding }),
-        stageImage: request => service.stageImage({ ...request, binding }),
+        stageImage: (request, hooks) => service.stageImage({ ...request, binding }, hooks),
       }
     },
     image(): AgentImageUnderstandingPort | undefined {
       const service = ctx.get('imageUnderstanding'), selected = bindings()
       if (!service) return undefined
       return {
-        availability: (sessionId, signal) => service.availability(sessionId, signal, selected?.binding, selected?.ocrBinding),
-        prepare: request => service.prepare({ ...request, ...selected }),
+        availability: (sessionId, signal) => service.availability(sessionId, signal, selected?.binding),
       }
     },
   }

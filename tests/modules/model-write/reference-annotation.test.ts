@@ -3,8 +3,8 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { createEvidenceReader, createMemoryEvidenceReferenceStore, createTextReferenceResolver,
-  evidenceSha256, type TextReferenceResolverPort } from '../../../src/modules/evidence/index.ts'
+import { readPageWindow, createMemoryEvidenceReferenceStore, createTextReferenceResolver,
+  evidenceSha256, createTextRangeReferences, searchPageWindows, type TextReferenceResolverPort } from '../../../src/modules/evidence/index.ts'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
 import { createPdfRetrieval } from '../../../src/adapters/host/dsh/retrieval.ts'
 import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
@@ -36,9 +36,8 @@ async function fixture() {
     } as NativeTextContent }
   } }
   const references = createMemoryEvidenceReferenceStore()
-  const reader = createEvidenceReader(state.workspaces, pages, references)
-  const located = await reader.locate(sessionId, { documentId: opened.id, page: 1, quote }, signal)
-  const reference = located.matches[1]!.evidence
+  const located = await searchPageWindows(state.workspaces, pages, sessionId, opened.id, { page: 1, query: quote }, signal, references)
+  const reference = located.matches[1]!.evidence!
   const resolver = createTextReferenceResolver(state.workspaces, pages, references)
   const input = { documentId: opened.id, expectedRevision: opened.revision,
     subtype: 'Highlight' as const, target: { kind: 'reference' as const, refId: reference.refId } }
@@ -81,11 +80,13 @@ test('a reference subquote marks only the requested text in its attested repeate
   const f = await fixture(), writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
   const selected = 'evidence'
   try {
+    const narrowed = await createTextRangeReferences(f.state.workspaces, f.pages, f.references)
+      .derive(sessionId, f.opened.id, f.reference.refId, selected, signal)
     const result = await writes.annotate(sessionId, { ...f.input,
-      target: { ...f.input.target, quote: selected } }, agent, signal)
+      target: { kind: 'reference', refId: narrowed.refId } }, agent, signal)
     assert.equal(result.status, 'updated')
-    assert.equal(result.resolvedTarget.refId, f.reference.refId)
-    assert.equal(result.resolvedTarget.quote, selected)
+    assert.equal(result.resolvedTarget.refId, narrowed.refId)
+    assert.equal('quote' in result.resolvedTarget, false)
     assert.equal(result.coverage.totalChars, selected.length)
     assert.equal(result.coverage.pages[0]!.text, selected)
     assert.equal(result.coverage.pages[0]!.startUtf16, quote.length + 1 + 'Repeated '.length)
@@ -93,13 +94,13 @@ test('a reference subquote marks only the requested text in its attested repeate
     const mark = draft.document.annotations.find(item => item.id === result.annotationId)!
     assert.deepEqual(mark.rect, [114, 177.6, 162, 189.6])
     const jump = await f.resolver.resolve(sessionId, f.opened.id, result.resolvedTarget.refId!, signal,
-      undefined, result.resolvedTarget.quote)
+      undefined)
     assert.deepEqual(jump.rectPdf, mark.rect)
     assert.equal(jump.text, selected)
     const original = await f.resolver.resolve(sessionId, f.opened.id, f.reference.refId, signal)
     assert.equal(original.text, quote, 'narrowing must not mutate the parent reference')
     const repeated = await writes.annotate(sessionId, { ...f.input, expectedRevision: result.revision,
-      target: { ...f.input.target, quote: selected } }, agent, signal)
+      target: { kind: 'reference', refId: narrowed.refId } }, agent, signal)
     assert.equal(repeated.status, 'already_annotated')
     assert.equal(repeated.annotationId, result.annotationId)
     assert.equal(f.state.writes(), 0)
@@ -112,17 +113,15 @@ test('a reference subquote marks only the requested text in its attested repeate
 
 test('a whole-context reference stays broad when requested, while invalid subquotes write nothing', async () => {
   const f = await fixture(), writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
-  const reader = createEvidenceReader(f.state.workspaces, f.pages, f.references)
   try {
-    const context = await reader.context(sessionId, { documentId: f.opened.id,
-      focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
-    const reference = context.chunks[0]!.evidence
+    const context = await readPageWindow(f.state.workspaces, f.pages, sessionId, f.opened.id, 1, 0, 8000, signal, f.references)
+    const reference = context.evidence!
     for (const [refId, selected, code] of [
       [reference.refId, 'evidence', 'pdf/ambiguous-text-target'],
       [f.reference.refId, 'evidence\nRepeated', 'pdf/text-not-found'],
     ]) {
-      await assert.rejects(writes.annotate(sessionId, { ...f.input,
-        target: { kind: 'reference', refId: refId!, quote: selected } }, agent, signal), { code })
+      await assert.rejects(createTextRangeReferences(f.state.workspaces, f.pages, f.references)
+        .derive(sessionId, f.opened.id, refId!, selected!, signal), { code })
       assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
     }
     const broad = await writes.annotate(sessionId, { ...f.input,
@@ -136,8 +135,8 @@ test('a whole-context reference stays broad when requested, while invalid subquo
 
 test('a UI edit after reference resolution wins the CAS; the model does not add a stale mark', async () => {
   const f = await fixture()
-  const racing: TextReferenceResolverPort = { async resolve(...args) {
-    const result = await f.resolver.resolve(...args)
+  const racing: TextReferenceResolverPort = { resolve: f.resolver.resolve.bind(f.resolver), async resolveRange(...args) {
+    const result = await f.resolver.resolveRange(...args)
     await f.state.workspaces.execute(sessionId, { action: 'change', sessionId,
       id: f.opened.id, revision: f.opened.revision, operations: [{ type: 'add', annotation: {
         id: 'user-note', page: 1, subtype: 'Text', rect: [40, 50, 60, 70], contents: 'User edit',
@@ -161,7 +160,7 @@ test('reference metadata must match the draft before an annotation is planned', 
     for (const mismatch of [{ documentId: 'other-document' }, { revision: resolved.revision + 1 },
       { contentVersion: 'other-version' }, { sourceDigest: 'other-source' }]) {
       const writes = createModelWriteService(f.state.workspaces, f.pages,
-        { resolve: async () => ({ ...resolved, ...mismatch }) })
+        { resolve: f.resolver.resolve.bind(f.resolver), resolveRange: async () => ({ refId: f.reference.refId, pages: [{ ...resolved, ...mismatch }] }) })
       try {
         await assert.rejects(writes.annotate(sessionId, f.input, agent, signal), { code: 'pdf/stale-revision' })
         assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
@@ -182,24 +181,22 @@ test('context and related references spanning line-interleaved columns reject ma
       run('Right unrelated', 180, 260), run('Left following', 60, 240)] } }
   } }
   const references = createMemoryEvidenceReferenceStore()
-  const evidence = createEvidenceReader(f.state.workspaces, pages, references)
   const retrieval = createPdfRetrieval(f.state.workspaces, pages, references)
   const writes = createModelWriteService(f.state.workspaces, pages,
     createTextReferenceResolver(f.state.workspaces, pages, references))
   try {
-    const context = await evidence.context(sessionId, { documentId: f.opened.id,
-      focus: { kind: 'page-window', page: 1 }, maxPages: 1 }, signal)
+    const context = await readPageWindow(f.state.workspaces, pages, sessionId, f.opened.id, 1, 0, 8000, signal, references)
     const related = await retrieval.search(sessionId, { documentId: f.opened.id,
       query: 'Left start', mode: 'lexical', maxPages: 1 }, signal)
-    const refs = [context.chunks[0]!.evidence.refId, related.candidates[0]!.evidence.refId]
+    const refs = [context.evidence!.refId, related.candidates[0]!.evidence.refId]
     for (const refId of refs) await assert.rejects(writes.annotate(sessionId, {
       ...f.input, target: { kind: 'reference', refId } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
     const preciseReference = await createTextReferenceResolver(f.state.workspaces, pages, references)
-      .resolve(sessionId, f.opened.id, context.chunks[0]!.evidence.refId, signal, undefined, 'Left start')
+      .resolve(sessionId, f.opened.id, context.evidence!.refId, signal, undefined, 'Left start')
     assert.equal(preciseReference.text, 'Left start', 'a safe subpassage need not validate the broad parent geometry')
     assert.equal(preciseReference.endUtf16, 'Left start'.length)
     await assert.rejects(writes.annotate(sessionId, { ...f.input, target: { kind: 'pdf-text', page: 1,
-      quote: context.chunks[0]!.evidence.snapshot.text } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
+      quote: context.evidence!.snapshot.text } }, agent, signal), { code: 'pdf/ambiguous-reading-order' })
     assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
     assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).document.annotations.length,
       f.opened.document.annotations.length)
@@ -215,8 +212,8 @@ test('context and related references spanning line-interleaved columns reject ma
 test('source replacement and cancellation after resolving evidence still apply zero model changes', async () => {
   for (const mode of ['source', 'abort', 'dispose'] as const) {
     const f = await fixture(), controller = new AbortController()
-    const resolver: TextReferenceResolverPort = { async resolve(...args) {
-      const result = await f.resolver.resolve(...args)
+    const resolver: TextReferenceResolverPort = { resolve: f.resolver.resolve.bind(f.resolver), async resolveRange(...args) {
+      const result = await f.resolver.resolveRange(...args)
       if (mode === 'source') await f.state.files.save(agent, f.opened.path,
         Buffer.from('External replacement'), evidenceSha256(f.state.current()), { signal })
       else if (mode === 'abort') controller.abort()
@@ -254,10 +251,9 @@ test('real PDFium evidence offsets become the correct shared-draft annotation wi
         return { snapshot, content: reply.value as NativeTextContent }
       } }
       const references = createMemoryEvidenceReferenceStore()
-      const reader = createEvidenceReader(state.workspaces, pages, references)
-      const located = await reader.locate(sessionId, { documentId: opened.id, page: 1, quote }, signal)
+      const located = await searchPageWindows(state.workspaces, pages, sessionId, opened.id, { page: 1, query: quote }, signal, references)
       assert.equal(located.matches.length, 2)
-      const target = located.matches[1]!.evidence
+      const target = located.matches[1]!.evidence!
       writes = createModelWriteService(state.workspaces, pages,
         createTextReferenceResolver(state.workspaces, pages, references))
       const result = await writes.annotate(sessionId, { documentId: opened.id,
@@ -268,3 +264,89 @@ test('real PDFium evidence offsets become the correct shared-draft annotation wi
       assert.equal(state.writes(), 0)
     } finally { writes?.dispose(); await worker.dispose(); await state.workspaces.dispose() }
   })
+
+async function continuousFixture() {
+  const state = memoryWorkspace(await nativeFixture())
+  const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId, owner: 'agent',
+    address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
+  assert.ok('bytes' in opened)
+  let alteredPage = 0
+  const strings = ['Before Start selected first', 'Entire middle page', 'Last selected Finish after']
+  const pages = { async readPageText(owner: string, id: string, page: number) {
+    const str = alteredPage === page ? 'Externally changed page text' : strings[page - 1] ?? 'Other page'
+    return { snapshot: state.workspaces.readSnapshot(owner, id), content: {
+      items: [{ str, transform: [12, 0, 0, 12, 60, 260], width: str.length * 6, height: 12,
+        dir: 'ltr', fontName: 'test', hasEOL: true,
+        glyphs: Array.from(str, (_, i) => [60 + i * 6, 260, 6]) }],
+      styles: { test: { fontFamily: 'sans-serif', ascent: 0.8, descent: -0.2, vertical: false } }, lang: null,
+    } as NativeTextContent }
+  } }
+  const references = createMemoryEvidenceReferenceStore()
+  const capture = createTextRangeReferences(state.workspaces, pages, references)
+  const reference = await capture.capture(sessionId, opened.id, {
+    start: { page: 1, quote: 'Start' }, end: { page: 3, quote: 'Finish' },
+  }, signal)
+  const resolver = createTextReferenceResolver(state.workspaces, pages, references)
+  return { state, opened, pages, reference, resolver, changePage(page: number) { alteredPage = page },
+    input: { documentId: opened.id, expectedRevision: opened.revision, subtype: 'Highlight' as const,
+      target: { kind: 'reference' as const, refId: reference.refId }, comment: 'One continuous explanation' } }
+}
+
+test('one continuous reference marks every intervening page atomically, reuses complete duplicates and undoes once', async () => {
+  const f = await continuousFixture()
+  const writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
+  try {
+    const changed = await writes.annotate(sessionId, f.input, agent, signal)
+    assert.equal(changed.revision, f.opened.revision + 1)
+    assert.equal(changed.annotationIds.length, 3)
+    assert.deepEqual(changed.coverage.pages.map(page => [page.page, page.text]), [
+      [1, 'Start selected first'], [2, 'Entire middle page'], [3, 'Last selected Finish'],
+    ])
+    assert.ok(changed.coverage.pages.every(page => page.refId === f.reference.refId))
+    const snapshot = f.state.workspaces.readSnapshot(sessionId, f.opened.id)
+    const marks = changed.annotationIds.map(id => snapshot.document.annotations.find(mark => mark.id === id)!)
+    assert.deepEqual(marks.map(mark => mark.contents), ['One continuous explanation', undefined, undefined])
+    const repeated = await writes.annotate(sessionId, { ...f.input, expectedRevision: changed.revision }, agent, signal)
+    assert.equal(repeated.status, 'already_annotated')
+    assert.deepEqual(repeated.annotationIds, changed.annotationIds)
+    const undone = await f.state.workspaces.execute(sessionId, { action: 'undo', sessionId,
+      id: f.opened.id, revision: repeated.revision }, agent, signal)
+    assert.ok('bytes' in undone)
+    assert.equal(undone.document.annotations.filter(mark => changed.annotationIds.includes(mark.id)).length, 0)
+    assert.equal(f.state.writes(), 0)
+  } finally { writes.dispose(); await f.state.workspaces.dispose() }
+})
+
+test('a changed middle page or replaced source rejects the entire range without leaving a first-page mark', async () => {
+  for (const mode of ['middle-page', 'source'] as const) {
+    const f = await continuousFixture()
+    const writes = createModelWriteService(f.state.workspaces, f.pages, f.resolver)
+    try {
+      if (mode === 'middle-page') f.changePage(2)
+      else await f.state.files.save(agent, f.opened.path, Buffer.from('External source replacement'),
+        evidenceSha256(f.state.current()), { signal })
+      await assert.rejects(writes.annotate(sessionId, f.input, agent, signal), { code: 'pdf/stale-reader' })
+      const snapshot = f.state.workspaces.readSnapshot(sessionId, f.opened.id)
+      assert.equal(snapshot.revision, f.opened.revision)
+      assert.deepEqual(snapshot.document.annotations, f.opened.document.annotations)
+      assert.equal(snapshot.canUndo, false)
+    } finally { writes.dispose(); await f.state.workspaces.dispose() }
+  }
+})
+
+test('a reference resolver cannot omit an intermediate page from an atomic annotation range', async () => {
+  const f = await continuousFixture()
+  const resolver: TextReferenceResolverPort = {
+    resolve: f.resolver.resolve.bind(f.resolver),
+    async resolveRange(...args) {
+      const verified = await f.resolver.resolveRange(...args)
+      return { ...verified, pages: [verified.pages[0]!, verified.pages[2]!] }
+    },
+  }
+  const writes = createModelWriteService(f.state.workspaces, f.pages, resolver)
+  try {
+    await assert.rejects(writes.annotate(sessionId, f.input, agent, signal), { code: 'pdf/invalid-text-range' })
+    assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).revision, f.opened.revision)
+    assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.id).canUndo, false)
+  } finally { writes.dispose(); await f.state.workspaces.dispose() }
+})

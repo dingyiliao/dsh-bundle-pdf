@@ -18,7 +18,7 @@ test('in-field numbering respects all rotations, crop and UserUnit without expos
     const inspection = inspectFormPage(document(index * 90), 1, 512)
     const field = inspection.fields[0], control = field.controls[0]
     assert.equal(field.fieldId, 'Text1'); assert.equal(field.required, true); assert.equal(field.maxLength, 32)
-    assert.equal(field.valueContract.valueType, 'string'); assert.equal('value' in field, false)
+    assert.equal(field.valueType, 'string'); assert.equal('value' in field, false)
     assert.equal(control.label, 'F01'); assert.equal(control.fieldId, field.fieldId)
     assert.deepEqual(inspection.pageRect, [0, 0, inspection.width, inspection.height])
     control.rectImage.forEach((value, position) => {
@@ -42,7 +42,7 @@ test('read-only, unsupported, off-page and clipped widgets are not marked; radio
   assert.deepEqual(inspection.fields.map(field => field.fieldId), ['Text1', 'contact'])
   assert.deepEqual(inspection.fields[1].controls.map(control => [control.label, control.fieldId, control.option]),
     [['F02', 'contact', 'a'], ['F03', 'contact', 'b']])
-  assert.deepEqual(inspection.fields[1].valueContract.examples, ['a'])
+  assert.equal(inspection.fields[1].valueType, 'string')
   assert.deepEqual(inspectFormPage({ ...pdf, readOnly: true }, 1, 512).fields, [])
 })
 

@@ -491,12 +491,12 @@ test('activity popup returns focus on Escape and note color menu dismisses on Es
     assert.equal(activity.getAttribute('aria-expanded'), 'false')
     assert.equal(dom.document.activeElement, activity)
 
-    await render(React.createElement(ReaderNoteEditor, {
+    await render(React.createElement('div', { className: 'dsh-pdf-reader' }, React.createElement(ReaderNoteEditor, {
       mode: 'read', readOnly: false, editable: true, value: 'A note', color: '#ffd900',
       note: { id: 'note-1', page: 1, subtype: 'Text', contents: 'A note', flags: 4, supported: true, editable: true },
       textarea: React.createRef<HTMLTextAreaElement>(), t,
       onChange() {}, onColorChange() {}, onEdit() {}, onSave() {}, onCancel() {}, onDismiss() {}, onDelete() {},
-    }))
+    })))
     const color = container.querySelector<HTMLButtonElement>('.dsh-pdf-note-color')!
     await act(async () => { color.click() })
     assert.equal(color.getAttribute('aria-expanded'), 'true')

@@ -22,6 +22,24 @@ function literal(node) {
   return undefined
 }
 
+/** Shared RPC identities remain statically inspectable without executing Host code. */
+async function methodLiteral(file, node) {
+  const value = literal(node)
+  if (value !== undefined || !node || !ts.isIdentifier(node)) return value
+  for (const statement of file.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const bindings = statement.importClause?.namedBindings
+    if (!bindings || !ts.isNamedImports(bindings)) continue
+    const binding = bindings.elements.find(item => item.name.text === node.text)
+    const specifier = literal(statement.moduleSpecifier)
+    if (!binding || !specifier?.startsWith('.')) continue
+    const target = new URL(specifier, new URL(`../${file.fileName}`, import.meta.url))
+    target.pathname = target.pathname.replace(/\.js$/, '.ts')
+    const imported = ts.createSourceFile(target.pathname, await readFile(target, 'utf8'), ts.ScriptTarget.Latest, true)
+    return literal(exportedConstant(imported, binding.propertyName?.text ?? binding.name.text))
+  }
+}
+
 function exportedConstant(file, name) {
   let value
   for (const statement of file.statements) {
@@ -121,12 +139,13 @@ export async function collectCompatibilityManifest() {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const patch = patchEntries(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
   const [reader, native, ocr, image, client, transport, infoRoute, tools, modelWriteTools,
-    modelFormTools, ocrTool, drafts, navigation] = await Promise.all([
+    modelFormTools, imageTools, ocrTool, drafts, navigation] = await Promise.all([
     source('src/entrypoints/reader-host.ts'), source('src/entrypoints/native-host.ts'), source('src/entrypoints/ocr-host.ts'),
     source('src/entrypoints/image-understanding-host.ts'), source('src/entrypoints/reader-client.tsx'),
     source('src/contracts/rpc/envelope.ts'), source('src/adapters/host/dsh/info-route.ts'),
     source('src/adapters/host/dsh/agent-tools.ts'), source('src/adapters/host/dsh/model-write-tools.ts'),
     source('src/adapters/host/dsh/model-form-tools.ts'),
+    source('src/adapters/host/dsh/image-tools.ts'),
     source('src/adapters/host/dsh/ocr-tool.ts'),
     source('src/adapters/host/storage/v1-drafts.ts'), source('src/adapters/host/storage/v1-navigation.ts'),
   ])
@@ -139,8 +158,8 @@ export async function collectCompatibilityManifest() {
       endpoints.push(endpoint)
     }
   }
-  // Connection-scoped read-only routes share the bounded info envelope. Read
-  // their literal method arguments, rather than guessing a template's value.
+  // Connection-scoped routes share the bounded envelope, including settings
+  // actions. Resolve literal methods or imported contract constants statically.
   const factory = infoRoute.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createPdfInfoRoute')
   const defaultMethod = literal(factory?.parameters[1]?.initializer)
   const infoCalls = calls(reader, 'createPdfInfoRoute')
@@ -148,12 +167,12 @@ export async function collectCompatibilityManifest() {
     throw new Error(`Cannot determine PDF info route in ${infoRoute.fileName}`)
   }
   for (const call of infoCalls) {
-    const method = call.arguments[1] ? literal(call.arguments[1]) : defaultMethod
+    const method = call.arguments[1] ? await methodLiteral(reader, call.arguments[1]) : defaultMethod
     if (!method?.startsWith('pdf.')) throw new Error('Nonliteral PDF metadata method')
     endpoints.push(method)
   }
   const toolNames = []
-  for (const file of [tools, modelWriteTools, modelFormTools, ocrTool]) {
+  for (const file of [tools, modelWriteTools, modelFormTools, imageTools, ocrTool]) {
     for (const call of calls(file, 'defineTool')) {
       const name = literal(property(call.arguments[0], 'name'))
       if (!name) throw new Error(`Cannot determine tool name in ${file.fileName}`)

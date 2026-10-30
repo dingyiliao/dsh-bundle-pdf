@@ -4,7 +4,7 @@ import { MIN_NOTE_CARD_HEIGHT, MIN_NOTE_CARD_WIDTH, readNoteCardSize, saveNoteCa
   type NoteCardSize } from '../model/note-card-size.js'
 
 export interface AnnotationCommentCardProps {
-  /** The scrollable PDF reading column, excluding the sidebar. */
+  /** The scrollable PDF reading column, excluding both docked tool and reading rails. */
   viewport: HTMLElement | null
   /** Current annotation geometry in window coordinates. */
   getAnchor(): DOMRect | null
@@ -109,12 +109,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
 
       const leftEdge = Math.max(bounds.left + EDGE, rootBounds.left + EDGE)
       const rightEdge = Math.min(bounds.right - EDGE, rootBounds.right - EDGE)
-      const controls = readerRoot.querySelector<HTMLElement>('.dsh-pdf-floating-controls')
-      const controlsBottom = controls?.getBoundingClientRect().bottom ?? bounds.top
-      // A note marker can sit at the page's top corner underneath the floating
-      // controls. Its opened card still needs a usable position below them.
-      if (anchor.bottom <= controlsBottom && cardKind !== 'note') { hide(); return }
-      const topEdge = Math.max(bounds.top + EDGE, rootBounds.top + EDGE, controlsBottom + EDGE)
+      const topEdge = Math.max(bounds.top + EDGE, rootBounds.top + EDGE)
       const bottomEdge = Math.min(bounds.bottom - EDGE, rootBounds.bottom - EDGE)
       const rightRoom = rightEdge - anchor.right - GAP
       const leftRoom = anchor.left - leftEdge - GAP
@@ -126,12 +121,15 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
 
       // Measure the real content after constraining it to this reader viewport.
       // No state update is needed on scroll or zoom; only the DOM position moves.
+      const scrollTop = card.scrollTop
       card.style.width = `${width}px`
-      card.style.maxHeight = `${bottomEdge - topEdge}px`
-      card.style.minHeight = cardKind === 'note' ? `${Math.min(MIN_NOTE_CARD_HEIGHT, bottomEdge - topEdge)}px` : ''
-      card.style.height = cardKind === 'note' && sizeRef.current
-        ? `${Math.min(sizeRef.current.height, bottomEdge - topEdge)}px` : ''
-      const height = card.offsetHeight
+      // Expanding max-height just to measure would clamp a scrolled editor
+      // back toward its beginning. Its scroll extent exposes the full content
+      // without changing the current height or the user's scroll position.
+      const naturalHeight = Math.max(card.offsetHeight, card.scrollHeight + card.offsetHeight - card.clientHeight)
+      const preferredHeight = cardKind === 'note' && sizeRef.current ? sizeRef.current.height : naturalHeight
+      let maximumHeight = bottomEdge - topEdge
+      let height = Math.min(maximumHeight, Math.max(cardKind === 'note' ? MIN_NOTE_CARD_HEIGHT : 0, preferredHeight))
       const belowRoom = bottomEdge - anchor.bottom - GAP
       const aboveRoom = anchor.top - topEdge - GAP
       let side = rightRoom >= MIN_SIDE_WIDTH ? 'right'
@@ -157,15 +155,33 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
       // The mark action bar and the comment card can be visible together. On a
       // narrow PDF column their preferred placements may overlap; move the
       // card to the nearest free side before drawing its connector.
-      const toolbar = readerRoot.querySelector<HTMLElement>('.dsh-pdf-annotation-toolbar[data-visible="true"]')
+      const toolbar = readerRoot.querySelector<HTMLElement>('.dsh-pdf-context-toolbar[data-visible="true"]')
       const toolbarBounds = toolbar?.getBoundingClientRect()
       if (toolbarBounds && left < toolbarBounds.right + GAP && left + width > toolbarBounds.left - GAP
         && top < toolbarBounds.bottom + GAP && top + height > toolbarBounds.top - GAP) {
         if (toolbarBounds.bottom + GAP + height <= bottomEdge) top = toolbarBounds.bottom + GAP
         else if (toolbarBounds.top - GAP - height >= topEdge) top = toolbarBounds.top - GAP - height
-        else if (leftRoom >= MIN_SIDE_WIDTH && left >= anchor.right) left = clamp(anchor.left - GAP - width, leftEdge, rightEdge - width)
-        else if (rightRoom >= MIN_SIDE_WIDTH && left + width <= anchor.left) left = clamp(anchor.right + GAP, leftEdge, rightEdge - width)
+        else if (toolbarBounds.left - GAP - width >= leftEdge) left = toolbarBounds.left - GAP - width
+        else if (toolbarBounds.right + GAP + width <= rightEdge) left = toolbarBounds.right + GAP
+        else {
+          // A short, narrow column may have no room for the full editor on
+          // either side of the actions. Keep both usable by scrolling the
+          // card within the larger free vertical region instead of covering it.
+          const below = bottomEdge - toolbarBounds.bottom - GAP
+          const above = toolbarBounds.top - GAP - topEdge
+          const availableHeight = Math.max(below, above)
+          if (availableHeight >= 60) {
+            maximumHeight = availableHeight
+            height = Math.min(height, maximumHeight)
+            top = below >= above ? toolbarBounds.bottom + GAP : toolbarBounds.top - GAP - height
+          }
+        }
       }
+
+      card.style.maxHeight = `${maximumHeight}px`
+      card.style.minHeight = cardKind === 'note' ? `${Math.min(MIN_NOTE_CARD_HEIGHT, maximumHeight)}px` : ''
+      card.style.height = cardKind === 'note' && sizeRef.current ? `${Math.min(sizeRef.current.height, maximumHeight)}px` : ''
+      height = card.offsetHeight
 
       // Keep a user-placed card at the same offset from its mark as the PDF
       // scrolls or zooms. Clamp the card to the reader without snapping it back.
@@ -176,6 +192,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
 
       card.style.left = `${left - rootBounds.left}px`
       card.style.top = `${top - rootBounds.top}px`
+      card.scrollTop = scrollTop
       const wasVisible = card.dataset.visible === 'true'
       card.dataset.visible = 'true'
       card.setAttribute('aria-hidden', 'false')
@@ -216,6 +233,12 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
       if (!wasVisible) onVisibleRef.current?.()
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
+    const onWindowScroll = (event: Event) => {
+      // Scrolling the card or its textarea cannot change the PDF anchor.
+      // Repositioning in response would feed editor scroll back into layout.
+      if (event.composedPath().includes(card)) return
+      schedule()
+    }
     // React-driven geometry changes (notably zoom) update before paint; scroll
     // and ResizeObserver bursts still share one animation-frame measurement.
     refreshRef.current = update
@@ -227,8 +250,9 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('pdfviewchange', schedule)
     viewport.addEventListener('pdflayoutchange', schedule)
+    viewport.addEventListener('pdfcontextchange', schedule)
     window.addEventListener('resize', schedule)
-    window.addEventListener('scroll', schedule, true)
+    window.addEventListener('scroll', onWindowScroll, true)
     update()
     return () => {
       if (frame) cancelAnimationFrame(frame)
@@ -239,8 +263,9 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('pdfviewchange', schedule)
       viewport.removeEventListener('pdflayoutchange', schedule)
+      viewport.removeEventListener('pdfcontextchange', schedule)
       window.removeEventListener('resize', schedule)
-      window.removeEventListener('scroll', schedule, true)
+      window.removeEventListener('scroll', onWindowScroll, true)
     }
   }, [viewport, readerRoot, connectorEnabled, cardKind])
   useLayoutEffect(() => { refreshRef.current?.() })

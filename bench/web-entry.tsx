@@ -60,7 +60,6 @@ function open() {
       recognize: async () => { throw new Error('OCR is outside the reader benchmark.') },
     }} imageUnderstanding={{
       availability: async () => ({ status: 'unavailable', reason: 'Image understanding is outside the reader benchmark.' }),
-      prepare: async () => { throw new Error('Image understanding is outside the reader benchmark.') },
       prepareReference: async () => { throw new Error('Image understanding is outside the reader benchmark.') },
     }} translation={createTranslationRegistry({ timeoutMs: 600000, maxInputCharacters: 8192, maxOutputCharacters: 32768 })}
     settings={defaultSettings} />)

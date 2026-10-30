@@ -54,7 +54,7 @@ test('session OCR fails closed when image capability is absent or unknown', asyn
   const backend = createSessionLlmOcrBackend({
     getLlm: () => ({
       async resolveModelInfo() { return {} },
-      async *stream() { throw new Error('must not call'); yield { type: 'finish' } },
+      async *stream() { throw new Error('must not call') },
     }),
     getAttachments: () => ({ async saveImage() { saved++; return reference } }),
     resolveModel: async () => ({ provider: 'text', model: 'current' }),
@@ -72,7 +72,7 @@ test('session OCR availability follows the current session model instead of a Cl
       async resolveModelInfo(_provider, model) {
         return { inputModalities: model === 'vision' ? ['text', 'image'] : ['text'] }
       },
-      async *stream() { throw new Error('availability must not invoke the model'); yield { type: 'finish' } },
+      async *stream() { throw new Error('availability must not invoke the model') },
     }),
     getAttachments: () => ({ async saveImage() { uploads++; return reference } }),
     resolveModel: async (sessionId) => {
@@ -121,7 +121,7 @@ test('staged image handles are session-scoped and do not expose raw paths or byt
   assert.equal(result.text, 'hello')
   assert.deepEqual(result.source, { backendId: 'local-test', backendVersion: '1' })
   service.dispose()
-  await assert.rejects(service.recognizeStaged(handle, 'session-1', new AbortController().signal), hasCode('invalid-request'))
+  await assert.rejects(service.recognizeStaged(handle, 'session-1', new AbortController().signal), hasCode('engine-unavailable'))
 })
 
 test('the shared OCR service bounds direct input and backend output', async () => {

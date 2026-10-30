@@ -7,6 +7,7 @@ import { useOutlineEditing, type OutlineNameEdit } from '../controllers/use-outl
 import { useVirtualRows } from '../controllers/use-virtual-rows.js'
 import { OutlineEntry, type OutlineRow } from './OutlineEntry.js'
 import { OutlineActions } from './OutlineActions.js'
+import { ScrollablePanel } from './ScrollablePanel.js'
 
 export type { OutlineAccess } from '../ports/outline.js'
 
@@ -143,28 +144,32 @@ export function BookmarkPanel({ pdf, active, currentPage, outlineAccess, onNavig
   }
   const stopDrag = () => { setDrag(undefined); setDropTarget(undefined) }
 
-  return <div className="dsh-pdf-bookmark-panel">
-    <div className="dsh-pdf-panel-heading dsh-pdf-bookmark-heading">
-      <h3>{t('reader.sidebar.bookmarks')}</h3>
-      {editing.editable && <button ref={addButton} type="button" disabled={editing.busy || !!editing.editor}
-        title={t('reader.sidebar.addPdfBookmark')} aria-label={t('reader.sidebar.addPdfBookmark')} onClick={() => beginCreate()}>+</button>}
-    </div>
-    {outlineAccess?.readOnlyReason && <p className="dsh-pdf-sidebar-empty" role="status">{outlineAccess.readOnlyReason}</p>}
-    {(editing.error && !editing.popup || editing.editor && editing.editor.revision !== outlineAccess?.revision) && <div className="dsh-pdf-outline-error" role="alert">
-      <span>{editing.editor && editing.editor.revision !== outlineAccess?.revision ? t('reader.sidebar.outlineChanged') : editing.error}</span>
-      <button type="button" aria-label={t('reader.dismiss')} onClick={editing.clearError}>×</button>
-    </div>}
+  return <ScrollablePanel ref={root} className="dsh-pdf-bookmark-panel" title={t('reader.sidebar.bookmarks')}
+    headingClassName="dsh-pdf-bookmark-heading"
+    verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
+    actions={editing.editable && <button ref={addButton} type="button" disabled={editing.busy || !!editing.editor}
+      title={t('reader.sidebar.addPdfBookmark')} aria-label={t('reader.sidebar.addPdfBookmark')} onClick={() => beginCreate()}>+</button>}
+    notice={<>
+      {outlineAccess?.readOnlyReason && <p className="dsh-pdf-sidebar-empty" role="status">{outlineAccess.readOnlyReason}</p>}
+      {(editing.error && !editing.popup || editing.editor && editing.editor.revision !== outlineAccess?.revision) && <div className="dsh-pdf-outline-error" role="alert">
+        <span>{editing.editor && editing.editor.revision !== outlineAccess?.revision ? t('reader.sidebar.outlineChanged') : editing.error}</span>
+        <button type="button" aria-label={t('reader.dismiss')} onClick={editing.clearError}>×</button>
+      </div>}
+    </>}
+    scrollProps={{ className: 'dsh-pdf-bookmark-scroll', role: 'tree', 'aria-label': t('reader.sidebar.bookmarks'),
+      onDragOver: event => {
+        if (!drag || !root.current) return
+        const bounds = root.current.getBoundingClientRect()
+        if (event.clientY < bounds.top + 32) root.current.scrollTop -= 12
+        else if (event.clientY > bounds.bottom - 32) root.current.scrollTop += 12
+      },
+      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(undefined) },
+    }}>
     {!pdf ? <p className="dsh-pdf-sidebar-empty">{t('reader.loading')}</p>
       : !outline ? <p className="dsh-pdf-sidebar-empty" role="status">{t('reader.sidebar.bookmarksLoading')}</p>
         : outline.error ? <div className="dsh-pdf-sidebar-empty" role="alert">{t('reader.sidebar.bookmarksError')}: {outline.error}
           <button type="button" onClick={() => setLoaded(undefined)}>{t('reader.sidebar.retryBookmarks')}</button></div>
-          : <div ref={root} className="dsh-pdf-bookmark-scroll" role="tree" tabIndex={0} aria-label={t('reader.sidebar.bookmarks')}
-            onDragOver={event => {
-              if (!drag || !root.current) return
-              const bounds = root.current.getBoundingClientRect()
-              if (event.clientY < bounds.top + 32) root.current.scrollTop -= 12
-              else if (event.clientY > bounds.bottom - 32) root.current.scrollTop += 12
-            }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(undefined) }}>
+          : <>
             {!rows.length && <p className="dsh-pdf-sidebar-empty">{t('reader.sidebar.bookmarksEmpty')}</p>}
             <div className="dsh-pdf-bookmark-virtual" style={{ height: totalHeight }}>
               {rows.slice(start, end).map((row, offset) => <OutlineEntry key={row.key} pdf={pdf} row={row}
@@ -201,8 +206,8 @@ export function BookmarkPanel({ pdf, active, currentPage, outlineAccess, onNavig
                   stopDrag()
                 }} t={t} />)}
             </div>
-          </div>}
+          </>}
     {active && editing.popup && outlineAccess && <OutlineActions key={`${editing.popup.id}:${editing.popup.kind}`} editing={editing}
       access={outlineAccess} currentPage={currentPage} pageCount={pdf?.numPages ?? 0} onCreate={beginCreate} onMoved={reveal} t={t} />}
-  </div>
+  </ScrollablePanel>
 }

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReaderDocument } from '../ports/reader-document.js'
 import { useVirtualRows } from '../controllers/use-virtual-rows.js'
+import { ScrollablePanel } from './ScrollablePanel.js'
 
 const rowHeight = 190
 const maximumWidth = 108
@@ -75,9 +76,10 @@ export function PageThumbnailPanel({ pdf, active, currentPage, onNavigatePage, t
     } else scrollToRow(Math.max(0, currentRow), true)
   }, [active, pdf, currentPage, columns, scrollToRow])
 
-  return <div className="dsh-pdf-thumbnail-panel">
-    <div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.pages')}</h3></div>
-    {pdf ? <div ref={root} className="dsh-pdf-thumbnail-scroll" tabIndex={0} aria-label={t('reader.sidebar.pages')}>
+  return <ScrollablePanel ref={root} className="dsh-pdf-thumbnail-panel" title={t('reader.sidebar.pages')}
+    verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
+    scrollProps={{ className: 'dsh-pdf-thumbnail-scroll', 'aria-label': t('reader.sidebar.pages') }}>
+    {pdf ? <>
       <div className="dsh-pdf-thumbnail-virtual" style={{ height: totalHeight }}>
         {Array.from({ length: end - start }, (_, offset) => {
           const row = start + offset
@@ -95,6 +97,6 @@ export function PageThumbnailPanel({ pdf, active, currentPage, onNavigatePage, t
           </div>
         })}
       </div>
-    </div> : <p className="dsh-pdf-sidebar-empty">{t('reader.loading')}</p>}
-  </div>
+    </> : <p className="dsh-pdf-sidebar-empty">{t('reader.loading')}</p>}
+  </ScrollablePanel>
 }

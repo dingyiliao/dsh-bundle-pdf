@@ -61,6 +61,11 @@ test('working-copy commands use injected PDF/file ports and preserve logical con
     },
   }
   const service = createWorkingCopyService(files, drafts, pdf)
+  const openedSources: Array<{ sourceDigest: string; contentVersion: string }> = []
+  service.onDocumentsChanged(() => {
+    const current = service.listOpenDocuments()[0]
+    if (current) openedSources.push({ sourceDigest: current.sourceDigest, contentVersion: current.contentVersion })
+  })
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('document' in opened)
@@ -79,6 +84,10 @@ test('working-copy commands use injected PDF/file ports and preserve logical con
     assert.ok('document' in saved)
     assert.equal(saved.dirty, false)
     assert.equal(saved.contentVersion, opened.contentVersion)
+    assert.deepEqual(openedSources, [
+      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(source) },
+      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(materialized) },
+    ], 'a saved byte baseline notifies index consumers even when logical contentVersion is retained')
     assert.equal(saved.revision, edited.revision + 1)
     assert.equal(inspectCount, 1)
     assert.equal(materializeCount, 1)

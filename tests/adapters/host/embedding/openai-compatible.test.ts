@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { EmbeddingError, EmbeddingRegistry } from '../../../../src/embedding/index.js'
-import { createOpenAiCompatibleEmbeddingEngine, LOCAL_QWEN3_REVISION, QWEN3_RETRIEVAL_INSTRUCTION } from '../../../../src/adapters/host/embedding/openai-compatible.js'
+import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../../../../src/adapters/host/embedding/openai-compatible.js'
 
-const binding = { engineId: 'local-qwen3-embedding', config: { dimensions: 2 } }
+const FIXTURE_MODEL_REVISION = 'test-model-revision'
+const binding = { engineId: 'local-qwen3-embedding', config: { dimensions: 2, queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION } }
 function metadata(overrides = {}) {
   return { data: [{ id: 'mlx-community/Qwen3-Embedding-0.6B-8bit', embedding: {
-    revision: LOCAL_QWEN3_REVISION, dimensions: 2, truncation: false, maxInputCharacters: 16000,
+    revision: FIXTURE_MODEL_REVISION, dimensions: 2, truncation: false, maxInputCharacters: 16000,
     maxBatchSize: 8, queryEncoding: 'client-instruction', ...overrides } }] }
 }
-function reply(values: object) { return new Response(JSON.stringify({ model_revision: LOCAL_QWEN3_REVISION, ...values }), { headers: { 'content-type': 'application/json' } }) }
+function reply(values: object) { return new Response(JSON.stringify({ model_revision: FIXTURE_MODEL_REVISION, ...values }), { headers: { 'content-type': 'application/json' } }) }
 const code = (expected: string) => (error: unknown) => error instanceof EmbeddingError && error.code === expected
 
 test('endpoint configuration and direct engine inputs reject invalid limits before network access', async () => {
@@ -59,12 +60,12 @@ test('metadata-verified embeddings preserve API indices and distinguish query/do
   assert.deepEqual(requests[0], texts)
   assert.deepEqual(requests[1], texts.map(text => `Instruct: ${QWEN3_RETRIEVAL_INSTRUCTION}\nQuery: ${text}`))
   assert.notEqual(registry.describe(binding).fingerprint,
-    registry.describe({ ...binding, config: { ...binding.config, modelRevision: 'different' } }).fingerprint)
+    registry.describe({ ...binding, config: { ...binding.config, queryInstruction: 'different' } }).fingerprint)
   registry.dispose()
 })
 
-test('legacy silently-truncating or mismatched servers are rejected before sending document text', async () => {
-  for (const data of [{}, metadata({ truncation: true }), metadata({ revision: 'different' }), metadata({ dimensions: 3 }),
+test('missing models and explicitly truncating or mismatched metadata are rejected before sending document text', async () => {
+  for (const data of [{}, metadata({ truncation: true }), metadata({ revision: '' }), metadata({ dimensions: 3 }),
     metadata({ maxInputCharacters: 512 }), metadata({ maxBatchSize: 1 })]) {
     let calls = 0
     const registry = new EmbeddingRegistry()
@@ -100,8 +101,9 @@ test('response bytes, endpoint destinations and status errors are bounded withou
   registry.register(createOpenAiCompatibleEmbeddingEngine({ maxResponseBytes: 10,
     fetch: (async url => String(url).endsWith('/models') ? reply(metadata()) : reply({ secret: 'private error body', data: [] })) as typeof fetch }))
   await assert.rejects(registry.embed({ texts: ['a'], purpose: 'document' }, binding), code('limit-exceeded'))
-  for (const endpoint of ['https://example.com/v1/embeddings', 'http://localhost.evil.test/v1/embeddings',
-    'file:///tmp/secret', 'http://user:password@localhost:8001/v1/embeddings', 'http://localhost:8001/v1/embeddings?token=secret']) {
+  for (const endpoint of ['http://example.com/v1/embeddings', 'http://localhost.evil.test/v1/embeddings',
+    'file:///tmp/secret', 'http://user:password@localhost:8001/v1/embeddings', 'http://localhost:8001/v1/embeddings?token=secret',
+    'https://example.com/v1/chat/completions', 'https://example.com/v1/embeddings#secret']) {
     assert.throws(() => registry.describe({ ...binding, config: { endpoint } }), code('invalid-request'))
   }
   registry.dispose()
@@ -113,4 +115,124 @@ test('response bytes, endpoint destinations and status errors are bounded withou
     return true
   })
   failed.dispose()
+})
+
+test('one service adapter accepts local and third-party endpoints using standard model and vector responses', async () => {
+  for (const endpoint of ['http://localhost:8001/v1/embeddings', 'http://[::1]:8001/v1/embeddings', 'https://provider.example/api/v1/embeddings']) {
+    const calls: string[] = []
+    const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {
+      calls.push(String(url))
+      assert.equal(init?.redirect, 'error')
+      if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'provider-embedding' }] }))
+      assert.deepEqual(JSON.parse(String(init?.body)), { model: 'provider-embedding', input: ['search words'], encoding_format: 'float' })
+      return new Response(JSON.stringify({ model: 'provider-embedding', data: [{ index: 0, embedding: [3, 4] }] }))
+    }) as typeof fetch })
+    const registry = new EmbeddingRegistry()
+    registry.register(engine)
+    try {
+      const configured = { ...binding, config: { endpoint, model: 'provider-embedding', dimensions: 2 } }
+      assert.equal(registry.list()[0]!.execution, 'service')
+      assert.deepEqual(await registry.availability(configured), { status: 'available' })
+      assert.deepEqual((await registry.embed({ texts: ['search words'], purpose: 'query' }, configured)).vectors, [[0.6, 0.8]])
+      assert.deepEqual(calls, [endpoint.replace(/embeddings$/, 'models'), endpoint.replace(/embeddings$/, 'models'), endpoint])
+      assert.equal(registry.describe(configured).modelRevision, 'unversioned')
+    } finally { registry.dispose() }
+  }
+})
+
+test('authentication is resolved once per operation and sent to both API requests without entering the model identity', async () => {
+  let resolutions = 0, token = 'first-secret'
+  const authorizations: Array<string | null> = []
+  const engine = createOpenAiCompatibleEmbeddingEngine({
+    async resolveCredential(reference) { assert.equal(reference, '_EMBEDDING_API_KEY'); resolutions++; return token },
+    fetch: (async (url, init) => {
+      authorizations.push(new Headers(init?.headers).get('authorization'))
+      return String(url).endsWith('/models') ? reply(metadata()) : reply({ data: [{ index: 0, embedding: [1, 0] }] })
+    }) as typeof fetch,
+  })
+  const registry = new EmbeddingRegistry()
+  registry.register(engine)
+  try {
+    const configured = { ...binding, config: { ...binding.config, apiKeyRef: '_EMBEDDING_API_KEY' } }
+    await registry.availability(configured)
+    resolutions = 0; authorizations.length = 0
+    const before = registry.describe(configured)
+    await registry.embed({ texts: ['document'], purpose: 'document' }, configured)
+    token = 'rotated-secret'
+    await registry.embed({ texts: ['query'], purpose: 'query' }, configured)
+    assert.equal(resolutions, 2)
+    assert.deepEqual(authorizations, ['Bearer first-secret', 'Bearer first-secret', 'Bearer rotated-secret', 'Bearer rotated-secret'])
+    assert.deepEqual(registry.describe(configured), before)
+    assert.equal(JSON.stringify(before).includes('secret'), false)
+  } finally { registry.dispose() }
+})
+
+test('missing or invalid credentials stop before any request and provider errors do not leak secrets', async () => {
+  for (const resolveCredential of [undefined, async () => undefined, async () => '', async () => 'key\ninvalid',
+    async () => { throw new Error('private credential failure') }]) {
+    let requests = 0
+    const engine = createOpenAiCompatibleEmbeddingEngine({ resolveCredential, fetch: (async () => { requests++; throw new Error('unexpected fetch') }) as typeof fetch })
+    const registry = new EmbeddingRegistry()
+    registry.register(engine)
+    try {
+      await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' },
+        { ...binding, config: { ...binding.config, apiKeyRef: 'EMBEDDING_API_KEY' } }), error => {
+        assert.ok(error instanceof EmbeddingError)
+        assert.equal(error.code, 'not-configured')
+        assert.equal(error.message.includes('private'), false)
+        return true
+      })
+      assert.equal(requests, 0)
+    } finally { registry.dispose() }
+  }
+  const engine = createOpenAiCompatibleEmbeddingEngine()
+  for (const apiKeyRef of ['sk-raw-key', 'HAS SPACE', 123, 'user/reference']) {
+    assert.throws(() => engine.describe({ apiKeyRef }), code('invalid-request'))
+  }
+})
+
+test('cancellation after model discovery prevents transmitting document text', async () => {
+  const controller = new AbortController()
+  let requests = 0
+  const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async () => {
+    requests++
+    controller.abort(new Error('stop'))
+    return reply(metadata())
+  }) as typeof fetch })
+  await assert.rejects(engine.embed({ texts: ['document'], purpose: 'document', signal: controller.signal, timeoutMs: 1000 }, binding.config), /stop/)
+  assert.equal(requests, 1)
+})
+
+test('cache identity is internally managed from the service and encoding configuration', () => {
+  const engine = createOpenAiCompatibleEmbeddingEngine()
+  const initial = engine.describe({})
+  const configurations: Parameters<typeof engine.describe>[0][] = [
+    { endpoint: 'https://provider.example/v1/embeddings' }, { model: 'other-embedding' },
+    { dimensions: 2 }, { queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION },
+  ]
+  for (const config of configurations) {
+    assert.notEqual(engine.describe(config).fingerprint, initial.fingerprint)
+  }
+  assert.equal(engine.descriptor.configurationFields?.some(field => field.key === 'modelRevision'), false)
+  assert.deepEqual(engine.describe({ modelRevision: 'retired-user-tag' }), initial)
+})
+
+test('server revisions are checked within an operation without requiring a configured revision', async () => {
+  for (const revision of ['server-build-1', 'server-build-2']) {
+    const registry = new EmbeddingRegistry()
+    registry.register(createOpenAiCompatibleEmbeddingEngine({ fetch: (async url => String(url).endsWith('/models')
+      ? reply(metadata({ revision })) : new Response(JSON.stringify({ model_revision: revision, data: [{ index: 0, embedding: [1, 0] }] }))) as typeof fetch }))
+    try {
+      assert.deepEqual((await registry.embed({ texts: ['document'], purpose: 'document' }, binding)).vectors, [[1, 0]])
+    } finally { registry.dispose() }
+  }
+})
+
+test('a service advertising the revision contract must echo it for the embedding response', async () => {
+  const registry = new EmbeddingRegistry()
+  registry.register(createOpenAiCompatibleEmbeddingEngine({ fetch: (async url => String(url).endsWith('/models')
+    ? reply(metadata()) : new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] }))) as typeof fetch }))
+  try {
+    await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), code('invalid-result'))
+  } finally { registry.dispose() }
 })

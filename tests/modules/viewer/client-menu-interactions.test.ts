@@ -16,12 +16,13 @@ const { JSDOM } = testRequire('jsdom') as {
 
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const dom = new JSDOM('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { url: 'http://localhost' }).window
   const saved = new Map<string, PropertyDescriptor | undefined>()
-  const values = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Node: dom.Node,
+  const values = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node,
+    MutationObserver: dom.MutationObserver, getComputedStyle: dom.getComputedStyle.bind(dom),
     Event: dom.Event, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent,
     CustomEvent: dom.CustomEvent, StorageEvent: dom.StorageEvent, localStorage: dom.localStorage,
-    ResizeObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true }
@@ -92,14 +93,36 @@ test('note color opens its own editable quick palette before the native picker',
     assert.equal(container.querySelector('[data-testid="pdf-note-colors"]'), null)
 
     await act(async () => { toggle.click() })
+    const palette = container.querySelector<HTMLElement>('.dsh-pdf-note-color-popover')!
+    assert.equal(palette.parentElement, container, 'note palette shares the reader-owned overlay layer')
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-swatch-0"]')!
       .dispatchEvent(new dom.MouseEvent('contextmenu', { bubbles: true, cancelable: true })) })
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-delete-color"]')!.click() })
+    const colorMenu = container.querySelector<HTMLElement>('[data-testid="pdf-highlight-color-menu"]')!
+    assert.equal(colorMenu.parentElement, container, 'quick-color actions are a nested portal, not DOM children of the note palette')
+    const remove = colorMenu.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-delete-color"]')!
+    await act(async () => { remove.dispatchEvent(new dom.Event('pointerdown', { bubbles: true })) })
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'a real pointer press in a nested color menu preserves the note palette')
+    assert.ok(container.contains(remove), 'the intended action must remain mounted until click')
+    await act(async () => { remove.click() })
     assert.equal(container.querySelectorAll('.dsh-pdf-highlight-swatch').length, 4)
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-add-color"]')!.click() })
     assert.deepEqual(JSON.parse(dom.localStorage.getItem(NOTE_QUICK_COLORS_KEY)!),
       ['#ff9f0a', '#75d86a', '#80bfff', '#d1a2ff', '#abcdef'])
     assert.deepEqual(JSON.parse(dom.localStorage.getItem(HIGHLIGHT_QUICK_COLORS_KEY)!), ['#123456'])
+
+    const swatch = container.querySelector<HTMLButtonElement>('[data-testid="pdf-highlight-swatch-0"]')!
+    await act(async () => { swatch.dispatchEvent(new dom.MouseEvent('contextmenu', { bubbles: true, cancelable: true })) })
+    await act(async () => { dom.document.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })) })
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'first Escape closes the nested menu only')
+    assert.equal(Boolean(container.querySelector('[data-testid="pdf-highlight-color-menu"]')), false)
+    assert.equal(dom.document.activeElement, swatch)
+    await act(async () => { dom.document.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, key: 'Escape' })) })
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'second Escape closes the note palette')
+    assert.equal(dom.document.activeElement, toggle)
+
+    await act(async () => { toggle.click() })
+    await act(async () => { dom.document.body.dispatchEvent(new dom.Event('pointerdown', { bubbles: true })) })
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'outside pointer dismisses the whole palette')
   })
 })
 

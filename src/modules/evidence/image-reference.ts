@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
 import { evidenceSha256 } from './provenance.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
-import { imageEvidenceSchema, isSavedImageReference,
+import { imageEvidenceSchema, savedImageReferenceSchema,
   type EvidenceReferenceStore, type PdfImageEvidence } from './reference-store.js'
 
 export type ImageEvidenceCapture = Omit<PdfImageEvidence, 'refId'>
@@ -84,10 +84,11 @@ export function createImageEvidenceRegistry(workspaces: WorkingCopyReadPort, ref
   async function revalidate(sessionId: string, documentId: string, refId: string,
     signal: AbortSignal, readSource: FreshSourceRead): Promise<{ evidence: PdfImageEvidence; revalidated: boolean }> {
     signal.throwIfAborted()
-    const saved = references.get(refId)
-    if (!saved || !isSavedImageReference(saved) || saved.sessionId !== sessionId) {
+    const parsed = savedImageReferenceSchema.safeParse(references.get(refId))
+    if (!parsed.success || parsed.data.sessionId !== sessionId || parsed.data.evidence.refId !== refId) {
       fail('pdf/reference-unavailable', 'Image evidence is unavailable in this session')
     }
+    const saved = parsed.data
     // A reference is not permission. Resolve the requested working copy through
     // the caller's session before comparing the persisted source identity.
     const current = workspaces.readSnapshot(sessionId, documentId)

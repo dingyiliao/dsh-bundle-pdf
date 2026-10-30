@@ -5,9 +5,10 @@ import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-sub
 import { encodeFrame, FrameDecoder } from '../src/engine/framing.ts'
 import { NativeWorker, type NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
 
+type Request = { command: string; requestId: string }
 type Reply = { requestId: string; ok: boolean; value?: unknown; error?: { code: string; message: string } }
 
-function runtime(reply: (request: { command: string; requestId: string }) => Reply,
+function runtime(reply: (request: Request, send: (value: Reply) => void) => Reply | void,
   missingInput = false): NativeProcessRuntime {
   return {
     async resolveExecutable(command: string) { return command },
@@ -15,9 +16,10 @@ function runtime(reply: (request: { command: string; requestId: string }) => Rep
       const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough()
       let finish!: (value: { exitCode: number | null; signal: null }) => void
       const done = new Promise<{ exitCode: number | null; signal: null }>(resolve => { finish = resolve })
+      const send = (value: Reply) => { for (const part of encodeFrame(value)) stdout.write(part) }
       const decoder = new FrameDecoder(frame => {
-        const request = frame.metadata as { command: string; requestId: string }
-        for (const part of encodeFrame(reply(request), new Uint8Array())) stdout.write(part)
+        const value = reply(frame.metadata as Request, send)
+        if (value) send(value)
       })
       stdin.on('data', chunk => decoder.feed(chunk))
       return { stdin: missingInput ? undefined : stdin, stdout, stderr, done, control: undefined, collected: {},
@@ -26,6 +28,37 @@ function runtime(reply: (request: { command: string; requestId: string }) => Rep
     },
   }
 }
+
+// Portable queue coverage also exercises replies delivered synchronously by a stream.
+test('synchronous managed pipes drain a cancelled reply before sending the next command', async () => {
+  const commands: string[] = []
+  let firstReceived!: () => void, releaseFirst!: () => void
+  const entered = new Promise<void>(resolve => { firstReceived = resolve })
+  const worker = new NativeWorker('/tmp/not-executed', runtime((request, send) => {
+    commands.push(request.command)
+    if (request.command === 'hello') return { requestId: request.requestId, ok: true,
+      value: { protocolVersion: 1, build: '156.0.8076.0' } }
+    const response = { requestId: request.requestId, ok: true, value: { command: request.command } }
+    if (request.command !== 'first') return response
+    releaseFirst = () => send(response)
+    firstReceived()
+  }), 3000)
+  try {
+    await worker.ready()
+    const controller = new AbortController()
+    const first = worker.request({ command: 'first' }, undefined, controller.signal)
+    await entered
+    const second = worker.request({ command: 'second' })
+    const cancelled = assert.rejects(first, { name: 'AbortError' })
+    controller.abort()
+    await cancelled
+    assert.deepEqual(commands, ['hello', 'first'], 'cancelled work retains the wire slot until its reply arrives')
+    releaseFirst()
+    assert.deepEqual((await second).value, { command: 'second' })
+    assert.deepEqual(commands, ['hello', 'first', 'second'])
+    assert.equal(worker.generation, 1, 'draining cancellation must not restart the process')
+  } finally { await worker.dispose() }
+})
 
 test('native worker rejects a helper with missing protocol pipes', async () => {
   const worker = new NativeWorker('/tmp/not-executed', runtime(() => { throw new Error('not reached') }, true))

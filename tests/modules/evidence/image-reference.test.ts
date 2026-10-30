@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createEvidenceReferenceStore } from '../../../src/adapters/host/storage/evidence-references.ts'
-import { captureOcrPageEvidence, captureRenderedPageEvidence, createImageEvidenceRegistry,
+import { captureRenderedPageEvidence, createImageEvidenceRegistry,
   evidenceSha256, savedReferenceSchema, type DerivedPageValue, type ImageEvidenceCapture,
-  type OcrPageEvidenceValue, type RenderedPageValue, type SavedReference,
+  type RenderedPageValue, type SavedReference,
 } from '../../../src/modules/evidence/index.ts'
 import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
 
@@ -81,7 +81,7 @@ test('page render/OCR adapters preserve source provenance without persisting ima
   const evidenceSource = { kind: 'direct-image' as const, sourceDigest: evidenceSha256('source'),
     renderedImageSha256: evidenceSha256(png), storedImageSha256: evidenceSha256(png),
     precision: 'page-only' as const, limitations: ['No draft overlays'] }
-  const direct: RenderedPageValue = { ...common, evidenceSource,
+  const direct: RenderedPageValue = { ...common, evidenceSource, deliverImage: true,
     image: { attachmentId: 'attachment-1', mediaType: 'image/png', bytes: png.length, width: 600, height: 800 } }
   const capturedDirect = captureRenderedPageEvidence(direct)
   assert.equal(capturedDirect.source, 'direct-image')
@@ -99,10 +99,10 @@ test('page render/OCR adapters preserve source provenance without persisting ima
     assert.equal(capturedDerived.snapshot.sha256, evidenceSha256('caption'))
   }
 
-  const ocr: OcrPageEvidenceValue = { ...common, text: 'page text', source: {
-    backendId: 'local-ocr', backendVersion: '2', kind: 'ocr' },
+  const ocr: DerivedPageValue = { ...common, kind: 'derived-text', text: 'page text',
+    totalChars: 9, truncated: false, source: { backendId: 'local-ocr', backendVersion: '2', mode: 'ocr-text' },
     evidenceSource: { ...evidenceSource, kind: 'ocr-text', snapshotSha256: evidenceSha256('page text') } }
-  const capturedOcr = captureOcrPageEvidence(ocr)
+  const capturedOcr = captureRenderedPageEvidence(ocr)
   assert.equal(capturedOcr.source, 'ocr-text')
   assert.equal(capturedOcr.snapshot.kind, 'derived-text')
   if (capturedOcr.snapshot.kind === 'derived-text') {

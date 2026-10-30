@@ -7,7 +7,7 @@ import { createPdfService } from '../../../src/adapters/host/pdfium/pdf-service.
 import { createLocalTextRecovery } from '../../../src/adapters/host/ocr/local-text-recovery.ts'
 import { brokenTextMappingFixture } from '../../fixtures/broken-text-mapping.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
-import { memoryWorkspace, nativeFixture, digest } from '../../native-fixture.ts'
+import { hyphenatedTextPdf, memoryWorkspace, nativeFixture, digest } from '../../native-fixture.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 import { readPageWindow } from '../../../src/modules/evidence/agent-page-read.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
@@ -57,6 +57,26 @@ test('normal native text never starts OCR; cancellation/disposal terminate recog
     const rejected = assert.rejects(pending, /unloading/)
     await local.dispose(); await rejected
     await assert.rejects(local.recognize(new Uint8Array(), 100, 100, signal), /closed/)
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('ordinary line-wrap hyphens keep native text for both model and Reader without starting OCR', { skip }, async () => {
+  const state = memoryWorkspace(await hyphenatedTextPdf())
+  let calls = 0
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    textRecovery: { async recognize() { calls++; throw new Error('Layout hyphens must not trigger OCR') }, async dispose() {} } })
+  try {
+    const opened = await service.dispatch(sessionId, { action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as { id: string; reader: { bytesHash: string } }
+    const model = await readPageWindow(state.workspaces, service, sessionId, opened.id, 1, undefined, undefined, signal)
+    assert.match(model.text, /understand\s+ing the model/)
+    assert.notEqual(model.extraction, 'local-ocr')
+    const reader = await service.native(sessionId, { action: 'text', sessionId, id: opened.id,
+      bytesHash: opened.reader.bytesHash, page: 1 }, agent, signal) as NativeTextContent
+    assert.equal(joinPageText(reader.items), model.text)
+    assert.equal(reader.quality, undefined)
+    assert.equal(calls, 0)
+    assert.equal(state.writes(), 0)
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 

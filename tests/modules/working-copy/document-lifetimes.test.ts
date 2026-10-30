@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
 import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
 import { digestPdfBytes } from '../../../src/modules/document/index.ts'
-import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
+import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort, type OpenWorkingCopyDocument } from '../../../src/modules/working-copy/index.ts'
 
 const signal = new AbortController().signal
 const sessionId = 'document-lifetimes'
@@ -52,6 +52,79 @@ function setup() {
   }
   return { service, records, drafts, open, add, removeSource() { source = undefined }, changeSource() { source = Uint8Array.from([4, 5, 6]) } }
 }
+
+test('open document observers combine UI and model ownership without treating operation pins as open references', async () => {
+  const { service, open, add } = setup()
+  const events: OpenWorkingCopyDocument[][] = []
+  const unsubscribe = service.onDocumentsChanged(() => { events.push(service.listOpenDocuments()) })
+  service.onDocumentsChanged(() => { throw new Error('passive observer failed') })
+  service.onDocumentsChanged(async () => { throw new Error('asynchronous observer failed') })
+  service.onDocumentsChanged(() => new Promise<void>(() => {}))
+  let release: (() => void) | undefined
+  try {
+    const opened = await open('agent', 'model-one')
+    assert.deepEqual(events, [[{ sessionId, id: opened.id, contentVersion: opened.contentVersion,
+      sourceDigest: digestPdfBytes(opened.bytes), conflict: false, title: 'shared.pdf' }]])
+    assert.deepEqual(Object.keys(events[0]![0]!).sort(), ['conflict', 'contentVersion', 'id', 'sessionId', 'sourceDigest', 'title'])
+    await open('ui', 'reader-one')
+    release = await service.acquire(sessionId, opened.id, agent, signal)
+    await add(opened.id, opened.revision)
+    await service.releaseBackground(sessionId, opened.id)
+    assert.equal(events.length, 1, 'adoption, pins, annotation edits and partial closes do not schedule another index')
+    await service.execute(sessionId, { action: 'release', sessionId, id: opened.id, referenceId: 'reader-one' }, agent, signal)
+    assert.deepEqual(events[1], [])
+    assert.equal(service.listDocuments()[0]!.pins, 1)
+    assert.deepEqual(service.listOpenDocuments(), [], 'an ongoing read cannot keep a closed document logically open')
+    release(); release = undefined
+    assert.equal(events.length, 2, 'releasing the operation pin does not reopen or reschedule the document')
+    unsubscribe(); unsubscribe()
+    await open('ui', 'reader-two')
+    assert.equal(service.listOpenDocuments().length, 1)
+    assert.equal(events.length, 2)
+  } finally { release?.(); await service.dispose() }
+})
+
+test('open document notifications track source replacement and conflicts without exposing file contents', async () => {
+  const { service, open, add, changeSource, removeSource } = setup()
+  const events: OpenWorkingCopyDocument[][] = []
+  service.onDocumentsChanged(() => { events.push(service.listOpenDocuments()) })
+  try {
+    const opened = await open()
+    changeSource()
+    const refreshed = await service.execute(sessionId, { action: 'refresh', sessionId, id: opened.id }, agent, signal)
+    assert.ok('document' in refreshed)
+    assert.equal(events.length, 2)
+    assert.notEqual(events[1]![0]!.contentVersion, events[0]![0]!.contentVersion)
+    assert.notEqual(events[1]![0]!.sourceDigest, events[0]![0]!.sourceDigest)
+    await add(opened.id, refreshed.revision)
+    removeSource()
+    await service.execute(sessionId, { action: 'refresh', sessionId, id: opened.id }, agent, signal)
+    assert.equal(events.length, 3)
+    assert.equal(events[2]![0]!.conflict, true)
+    await service.execute(sessionId, { action: 'refresh', sessionId, id: opened.id }, agent, signal)
+    assert.equal(events.length, 3, 'unchanged conflict and ordinary refreshes do not emit repeated notifications')
+  } finally { await service.dispose() }
+})
+
+test('discard, terminal close and service disposal remove open document entries for background consumers', async () => {
+  const { service, open } = setup()
+  const events: OpenWorkingCopyDocument[][] = []
+  service.onDocumentsChanged(() => { events.push(service.listOpenDocuments()) })
+  await service.execute(sessionId, { action: 'release', sessionId, referenceId: 'closed-before-open' }, agent, signal)
+  await assert.rejects(open('ui', 'closed-before-open'), { code: 'pdf/reference-released' })
+  assert.equal(events.length, 0, 'failed and fenced opens do not start background work')
+  const opened = await open()
+  await service.execute(sessionId, { action: 'discardMany', sessionId, ids: [opened.id] }, agent, signal)
+  assert.deepEqual(events[1], [])
+  await open('agent', 'reopened')
+  await service.dispose()
+  assert.deepEqual(events.at(-1), [])
+  assert.deepEqual(service.listOpenDocuments(), [])
+  const count = events.length
+  service.onDocumentsChanged(() => { events.push([]) })
+  await service.dispose()
+  assert.equal(events.length, count, 'subscriptions after disposal remain inert')
+})
 
 test('pure background document is adopted by UI with the same identity, draft and revision stream', async () => {
   const { service, open, add, records } = setup()

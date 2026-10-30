@@ -12,7 +12,7 @@ const snapshot = { contentVersion: 'content-1', document: { pages } } as Workspa
 test('page scale uses viewport fit modes without mutating custom zoom', () => {
   const state = { fit: 'width' as const, zoom: 2, size: { width: 432, height: 450 } }
   assert.equal(readerPageScale(pages[0], state), 1)
-  assert.equal(readerPageScale(pages[0], state, 'page'), Math.max(0.1, (450 - 72 - 16) / 600))
+  assert.equal(readerPageScale(pages[0], state, 'page'), (450 - 16 - 16) / 600)
   assert.equal(readerPageScale(pages[0], state, 'custom', 1.75), 1.75)
 })
 
@@ -21,8 +21,8 @@ test('capture chooses distant numeric layout while its PageView is still unmount
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 400, bottom: 300, width: 400, height: 300 }),
   } as unknown as HTMLDivElement
   setWindowLayout(root, [
-    { page: 1, top: 72, width: 400, height: 600, outerHeight: 616, scale: 1 },
-    { page: 2, top: 688, width: 400, height: 600, outerHeight: 616, scale: 1 },
+    { page: 1, top: 16, width: 400, height: 600, outerHeight: 616, scale: 1 },
+    { page: 2, top: 632, width: 400, height: 600, outerHeight: 616, scale: 1 },
   ])
   const captured = captureReaderPosition({ snapshot, scrollRoot: root, fit: 'width', zoom: 1,
     size: { width: 432, height: 700 }, currentPage: 1 }, new Map(), 'not ready')
@@ -45,5 +45,9 @@ test('PDF destinations remain one-based and reject invalid targets before naviga
     { page: 1, options: { x: 10, y: 20, scale: 2, fit: 'custom' } })
   assert.deepEqual(await resolvePdfDestination(document, snapshot, size, [1, { name: 'FitH' }, 250], 'invalid'),
     { page: 2, options: { fit: 'width', y: 250 } })
+  assert.deepEqual(await resolvePdfDestination(document, snapshot, size, [1, { name: 'FitV' }, 10], 'invalid'),
+    { page: 2, options: { fit: 'custom', scale: (700 - 16 - 16) / 600, x: 10 } })
+  assert.deepEqual(await resolvePdfDestination(document, snapshot, size, [1, { name: 'FitR' }, 0, 0, 400, 600], 'invalid'),
+    { page: 2, options: { fit: 'custom', scale: (700 - 16 - 16) / 600, x: 0, y: 600 } })
   await assert.rejects(resolvePdfDestination(document, snapshot, size, 'missing', 'invalid'), /invalid/)
 })

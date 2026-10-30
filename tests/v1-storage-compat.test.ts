@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import type { PdfAgent } from '../src/adapters/host/dsh/index.ts'
 import { draftSchema, type DraftRecord } from '../src/modules/working-copy/index.ts'
-import { createWorkspaces } from '../src/host/workspaces.ts'
+import { createWorkspaces } from './fixtures/working-copy-service.ts'
 
 // These JSON records are frozen, synthetic V1 committed-format examples. They
 // are deliberately not produced by the createWorkspaces implementation under

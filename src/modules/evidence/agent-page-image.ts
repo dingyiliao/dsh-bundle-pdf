@@ -1,20 +1,17 @@
 import type { OcrOutput } from '../../ocr/types.js'
+import type { StagedImageHooks } from '../ocr/index.js'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
 import { evidenceSha256, imageEvidenceSource, type ImageEvidenceSource } from './provenance.js'
-import { windowPageText } from './text-window.js'
 
 export interface AgentPageImagePort {
   renderPage(sessionId: string, documentId: string, page: number, maxEdge: number,
     signal: AbortSignal): Promise<{ snapshot: HostWorkspaceSnapshot; png: Uint8Array; width: number; height: number }>
 }
 
+/** Capability reporting uses the same selected execution service as image tools. */
 export interface AgentImageUnderstandingPort {
   availability(sessionId: string, signal: AbortSignal): Promise<
-    { status: 'available'; kind: 'direct-image' | 'derived-text' } | { status: 'unavailable'; reason: string }>
-  prepare(input: { sessionId: string; image: { data: Uint8Array; mediaType: 'image/png'; width: number; height: number };
-    question: string; signal: AbortSignal }): Promise<
-      { kind: 'direct-image' } | { kind: 'derived-text'; text: string;
-        provenance: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string }; limitations?: string }>
+    { status: 'available' } | { status: 'unavailable'; reason: string }>
 }
 
 export interface AgentOcrPort {
@@ -25,7 +22,7 @@ export interface AgentOcrPort {
       source: { backendId: string; backendVersion: string }
     }>
   stageImage(input: { sessionId: string; image: Uint8Array; mediaType: 'image/png'; width: number; height: number;
-    languages: readonly string[] }): Promise<string>
+    languages: readonly string[] }, hooks?: StagedImageHooks): Promise<string>
 }
 
 export interface AgentImageAttachmentPort {
@@ -38,10 +35,10 @@ export interface AgentImageAttachmentPort {
 }
 
 export interface AgentImageServices {
-  imageUnderstanding(): AgentImageUnderstandingPort | undefined
   ocr(): AgentOcrPort | undefined
   attachments(): AgentImageAttachmentPort | undefined
   requireVisualModel(signal: AbortSignal): Promise<void>
+  imageHooks?(snapshot: HostWorkspaceSnapshot, png: Uint8Array): StagedImageHooks
 }
 
 export interface RenderedPageValue {
@@ -52,13 +49,15 @@ export interface RenderedPageValue {
     bytes: number; width: number; height: number; name?: string;
     originalDimensions?: { width: number; height: number } }
   imageHandle?: string
+  imageHandleWarning?: string
+  deliverImage: boolean
 }
 
 export interface DerivedPageValue {
   kind: 'derived-text'; documentId: string; path: string; page: number; pageCount: number; revision: number
   sourceVersion: string; contentVersion: string; text: string; totalChars: number; truncated: boolean
   evidenceSource: ImageEvidenceSource
-  source: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string }
+  source: { backendId: string; backendVersion?: string; mode: 'ocr-text' | 'image-description'; model?: string }
   limitations?: string
 }
 
@@ -86,110 +85,60 @@ function ensureSameSource(workspaces: WorkingCopyReadPort, sessionId: string, do
   }
 }
 
-/** Render only after model/backend and attachment preflight; never imply a text model saw a page image. */
+/** Produce one immutable page image; generation is independent of the current model's modalities. */
 export async function renderPageForAgent(workspaces: WorkingCopyReadPort, pages: AgentPageImagePort,
   services: AgentImageServices, sessionId: string, documentId: string, page: number,
-  maxEdge: number | undefined, mode: 'current-model' | 'configured-backend' | undefined,
-  question: string | undefined, signal: AbortSignal) {
-  const imageUnderstanding = mode === 'configured-backend' ? services.imageUnderstanding() : undefined
-  if (mode === 'configured-backend' && imageUnderstanding === undefined) {
-    throw Object.assign(new Error('The configured image-understanding plugin is not installed'),
-      { code: 'pdf/image-backend-unavailable' })
+  maxEdge: number | undefined, signal: AbortSignal): Promise<RenderedPageValue> {
+  const attachments = ensurePngAttachments(services.attachments())
+  let deliverImage = true
+  try { await services.requireVisualModel(signal) }
+  catch (error) {
+    signal.throwIfAborted()
+    const code = error instanceof Error && 'code' in error ? error.code : undefined
+    if (code !== 'pdf/image-input-unsupported' && code !== 'pdf/image-route-unknown') throw error
+    deliverImage = false
   }
-  const availability = imageUnderstanding === undefined ? undefined
-    : await imageUnderstanding.availability(sessionId, signal)
-  if (availability?.status === 'unavailable') {
-    throw Object.assign(new Error(availability.reason), { code: 'pdf/image-backend-unavailable' })
-  }
-  if (availability === undefined || availability.kind === 'direct-image') await services.requireVisualModel(signal)
-  let attachments = availability?.kind === 'derived-text' ? undefined : ensurePngAttachments(services.attachments())
   const { snapshot, png, width, height } = await pages.renderPage(sessionId, documentId, page, maxEdge ?? 1024, signal)
   ensureSameSource(workspaces, sessionId, documentId, snapshot, 'PDF changed during page rendering; retry')
-  if (imageUnderstanding !== undefined) {
-    const prepared = await imageUnderstanding.prepare({ sessionId,
-      image: { data: png, mediaType: 'image/png', width, height },
-      question: question ?? 'Describe this PDF page accurately, including any relevant figures or tables.', signal })
-    signal.throwIfAborted()
-    ensureSameSource(workspaces, sessionId, documentId, snapshot, 'PDF changed during image understanding; retry')
-    if (prepared.kind === 'derived-text') {
-      // Auxiliary backends are not trusted to enforce a model-output budget.
-      // Bound both UTF-16 units and UTF-8 bytes before the tool renderer and
-      // session-log presentation metadata ever see the derived passage.
-      const window = windowPageText(prepared.text, 0, 8000)
-      const backendLimitations = prepared.limitations === undefined ? undefined
-        : windowPageText(prepared.limitations, 0, 512).text
-      const limitations = [backendLimitations,
-        ...(window.truncated ? ['Image-derived text was truncated; rerunning may produce a different answer, not a continuation.'] : [])]
-        .filter((value): value is string => value !== undefined && value.length > 0)
-      return { kind: 'derived-text' as const, documentId: snapshot.id, path: snapshot.path, page,
-        pageCount: snapshot.document.pageCount, revision: snapshot.revision,
-        sourceVersion: snapshot.sourceVersion, contentVersion: snapshot.contentVersion,
-        source: prepared.provenance, ...(limitations.length ? { limitations: limitations.join(' ') } : {}),
-        evidenceSource: imageEvidenceSource({ kind: prepared.provenance.mode === 'ocr-text' ? 'ocr-text' : 'auxiliary-vision',
-          pdfBytes: snapshot.bytes, imageBytes: png, text: window.text }),
-        text: window.text, totalChars: window.totalChars, truncated: window.truncated }
-    }
-    await services.requireVisualModel(signal)
-  }
-  attachments = ensurePngAttachments(attachments ?? services.attachments())
   const ref = await attachments.saveImage({ data: png, mediaType: 'image/png', name: `pdf-page-${page}.png` })
-  const storedImageSha256 = /^sha256:[a-f0-9]{64}$/.test(ref.attachmentId)
-    ? ref.attachmentId : undefined
+  if (ref.width !== width || ref.height !== height || !Number.isInteger(ref.bytes) || ref.bytes <= 0
+    || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(ref.mediaType)) {
+    throw Object.assign(new Error('Attachment storage changed the page image dimensions or metadata'),
+      { code: 'pdf/image-normalized' })
+  }
+  const storedImageSha256 = /^sha256:[a-f0-9]{64}$/.test(ref.attachmentId) ? ref.attachmentId : undefined
   signal.throwIfAborted()
-  let imageHandle: string | undefined
   const ocr = services.ocr()
-  if (ocr?.selectedDescriptor()) {
-    try { imageHandle = await ocr.stageImage({ sessionId, image: png, mediaType: 'image/png',
-      width, height, languages: recognitionLanguages(ocr) }) }
-    catch { signal.throwIfAborted() }
+  let imageHandle: string | undefined
+  let imageHandleWarning: string | undefined
+  if (ocr) {
+    try {
+      imageHandle = await ocr.stageImage({ sessionId, image: png, mediaType: 'image/png',
+        width, height, languages: recognitionLanguages(ocr) }, services.imageHooks?.(snapshot, png))
+    } catch (error) {
+      signal.throwIfAborted()
+      const code = error instanceof Error && 'code' in error ? String(error.code) : ''
+      if (code === 'cancelled' || code.startsWith('pdf/source-') || code.startsWith('pdf/stale-')
+        || code.startsWith('pdf/session-') || error instanceof Error && error.name === 'AbortError') throw error
+      imageHandleWarning = 'Image rendering succeeded, but no consumable image handle could be staged. OCR and auxiliary image tools cannot use this result.'
+    }
+  } else {
+    imageHandleWarning = 'The optional image-handle service is not installed. OCR and auxiliary image tools cannot consume this result.'
   }
   signal.throwIfAborted()
   ensureSameSource(workspaces, sessionId, documentId, snapshot, 'PDF changed before image delivery; retry')
+  const evidenceSource = imageEvidenceSource({ kind: 'direct-image', pdfBytes: snapshot.bytes, imageBytes: png,
+    storedImageSha256 })
+  if (!deliverImage) evidenceSource.limitations = [
+    'This is a stored page image. The current text-only or unknown-route model has not received its pixels; pass imageHandle to an available OCR or auxiliary image engine.',
+    ...evidenceSource.limitations.filter(value => !value.startsWith('The current vision-capable model receives')),
+  ]
   return { documentId: snapshot.id, path: snapshot.path, page,
     pageCount: snapshot.document.pageCount, revision: snapshot.revision,
-    sourceVersion: snapshot.sourceVersion, contentVersion: snapshot.contentVersion,
-    evidenceSource: imageEvidenceSource({ kind: 'direct-image', pdfBytes: snapshot.bytes, imageBytes: png,
-      storedImageSha256 }),
-    ...(imageHandle ? { imageHandle } : {}),
+    sourceVersion: snapshot.sourceVersion, contentVersion: snapshot.contentVersion, evidenceSource,
+    deliverImage, ...(imageHandle ? { imageHandle } : {}), ...(imageHandleWarning ? { imageHandleWarning } : {}),
     image: { attachmentId: ref.attachmentId, mediaType: ref.mediaType, bytes: ref.bytes,
       width: ref.width, height: ref.height,
       ...ref.name === undefined ? {} : { name: ref.name },
       ...ref.originalDimensions === undefined ? {} : { originalDimensions: ref.originalDimensions } } }
-}
-
-/** OCR is an independent, text-only read; geometry remains in rendered-image pixel space. */
-export async function ocrPageForAgent(workspaces: WorkingCopyReadPort, pages: AgentPageImagePort,
-  ocr: AgentOcrPort | undefined, sessionId: string, documentId: string, page: number,
-  maxEdge: number | undefined, maxChars: number | undefined, signal: AbortSignal) {
-  if (!ocr) throw Object.assign(new Error('PDF OCR requires the optional OCR plugin'), { code: 'pdf/ocr-unavailable' })
-  const availability = await ocr.availability(sessionId, signal)
-  if (availability.status !== 'available') {
-    throw Object.assign(new Error(availability.reason ?? `Selected OCR backend is ${availability.status}`),
-      { code: 'pdf/ocr-unavailable' })
-  }
-  const { snapshot, png, width, height } = await pages.renderPage(sessionId, documentId, page, maxEdge ?? 1024, signal)
-  const result = await ocr.recognize({ sessionId, image: png, mediaType: 'image/png', width, height,
-    languages: recognitionLanguages(ocr), signal })
-  signal.throwIfAborted()
-  ensureSameSource(workspaces, sessionId, documentId, snapshot, 'PDF changed during OCR; retry')
-  const { nextOffset: _nextOffset, ...window } = windowPageText(result.text, 0, maxChars)
-  const parts = [...result.blocks, ...result.lines, ...result.words]
-  const positioned = parts.filter(part => part.box !== null).length
-  const geometry = positioned === 0 ? 'none' : positioned === parts.length ? 'complete' : 'partial'
-  return { status: result.text.trim() ? result.status : 'no_text', documentId: snapshot.id,
-    path: snapshot.path, page, pageCount: snapshot.document.pageCount,
-    revision: snapshot.revision, sourceVersion: snapshot.sourceVersion,
-    contentVersion: snapshot.contentVersion,
-    source: { ...result.source, kind: 'ocr' },
-    evidenceSource: imageEvidenceSource({ kind: 'ocr-text', pdfBytes: snapshot.bytes, imageBytes: png,
-      text: window.text }),
-    image: { width, height }, geometry: { status: geometry,
-      coordinateSpace: 'rendered-image-pixels', positionedParts: positioned, totalParts: parts.length,
-      pdfCoordinatesAvailable: false },
-    lines: result.lines.slice(0, 50).map(line => ({ id: line.id,
-      text: windowPageText(line.text, 0, 300).text,
-      box: line.box ? { x0: line.box.x0, y0: line.box.y0, x1: line.box.x1, y1: line.box.y1 } : null })),
-    totalLines: result.lines.length,
-    warnings: result.warnings.slice(0, 20).map(warning => windowPageText(warning, 0, 500).text),
-    ...window }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { readingSidebarSections, type ReadingSidebarSection } from '../components/ReadingSidebar.js'
+import { readerPaneWidth } from '../rendering/reader-pane-layout.js'
 
 export interface ReaderSidebarLayoutOptions {
   bodyRef: RefObject<HTMLDivElement | null>
@@ -68,7 +69,7 @@ export function useReaderSidebarLayout(options: ReaderSidebarLayoutOptions) {
     const update = () => {
       // Observe the whole pane. Watching just the PDF column would oscillate
       // as sidebar collapse changes its width.
-      const isNarrow = body.clientWidth < 760
+      const isNarrow = readerPaneWidth(body) < 760
       // Do not unmount an active page field while Enter is in flight.
       if (isNarrow && (body.querySelector('.dsh-pdf-sidebar-page-nav input:focus') || navigationLock.current)) return
       setLayout(current => {
@@ -83,6 +84,8 @@ export function useReaderSidebarLayout(options: ReaderSidebarLayoutOptions) {
     }
     const observer = new ResizeObserver(update)
     observer.observe(body)
+    const toolRail = body.querySelector('[data-pdf-tool-rail]')
+    if (toolRail) observer.observe(toolRail)
     body.addEventListener('focusout', afterFocusOut)
     update()
     return () => {

@@ -7,7 +7,7 @@ export interface EngineDirectorySource {
 
 /** Shared bookkeeping only. Each service retains its own typed implementation API. */
 export class EngineDirectory<T> implements EngineDirectorySource {
-  private readonly entries = new Map<string, { implementation: T; descriptor: EngineDescriptor }>()
+  private readonly entries = new Map<string, { implementation: T; descriptor: EngineDescriptor; generation: string }>()
   private readonly listeners = new Set<() => void>()
   private disposed = false
   constructor(private readonly describe: (implementation: T) => EngineDescriptor) {}
@@ -16,7 +16,7 @@ export class EngineDirectory<T> implements EngineDirectorySource {
     const descriptor = engineDescriptorSchema.parse(this.describe(implementation))
     if (this.entries.has(descriptor.id)) throw new Error(`Engine already registered: ${descriptor.id}`)
     if (this.entries.size >= 128) throw new Error('Engine directory limit exceeded')
-    const entry = { implementation, descriptor: structuredClone(descriptor) }
+    const entry = { implementation, descriptor: structuredClone(descriptor), generation: crypto.randomUUID() }
     this.entries.set(descriptor.id, entry)
     this.changed()
     return () => {
@@ -26,6 +26,7 @@ export class EngineDirectory<T> implements EngineDirectorySource {
     }
   }
   get(id: string): T | undefined { return this.entries.get(id)?.implementation }
+  generation(id: string): string | undefined { return this.entries.get(id)?.generation }
   has(id: string): boolean { return this.entries.has(id) }
   *values(): IterableIterator<T> { for (const entry of this.entries.values()) yield entry.implementation }
   descriptor(id: string): EngineDescriptor | undefined {

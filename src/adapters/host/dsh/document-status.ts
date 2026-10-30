@@ -51,7 +51,7 @@ export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sess
     ...(!services.navigation ? { reason: 'Reader navigation is not installed' }
       : !services.visible ? { reason: 'No matching PDF Reader is visible' } : {}) }
   return { readOnly, ...(document.readOnlyReason ? { readOnlyReason: document.readOnlyReason } : {}),
-    capabilities: { readText: true, searchText: true, findRelatedText: true, semanticSearch: semanticSearch.available,
+    capabilities: { readText: true, searchText: true, semanticSearch: semanticSearch.available,
       writeAnnotations: annotation.available, fillForms: forms.available, editBookmarks: bookmarks.available,
       navigateVisibleReader: navigation.available, ocr: ocr.available, imageUnderstanding: imageUnderstanding.available },
     capabilityDetails: { writeAnnotations: annotation, fillForms: forms, editBookmarks: bookmarks,

@@ -33,6 +33,7 @@ export function ZoomMenu({ fit, zoom, disabled = false, t, onSelect }: ZoomMenuP
   }, [disabled])
   useLayoutEffect(() => {
     if (!open) return
+    if (details.current?.closest('[data-pdf-tool-rail]')) return
     const menu = details.current?.querySelector<HTMLElement>('.dsh-pdf-zoom-menu')
     const reader = trigger.current?.closest<HTMLElement>('.dsh-pdf-reader')
     if (!menu || !reader) return

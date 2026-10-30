@@ -80,5 +80,5 @@ test('Loader resolves the published PDF Host entry from its built export', { tim
   assert.equal(report.imageProvide, 'imageUnderstanding')
   assert.deepEqual(report.imageInject, ['connection', 'sessionController'])
   assert.equal(report.imageApplyType, 'function')
-  assert.deepEqual(report.imageConfig, { backend: 'session-vision' })
+  assert.deepEqual(report.imageConfig, { backend: 'dsh-vision' })
 })

@@ -4,25 +4,21 @@ import type { PdfDispatch } from './transport.js'
 import { binaryResult } from './transport.js'
 import { createImageEvidenceRegistry, evidenceSha256,
   type EvidenceReferenceStore, type FreshSourceRead, type PdfImageEvidence } from '../../../modules/evidence/index.js'
-import { ImageUnderstandingError, MAX_IMAGE_BYTES, MAX_QUESTION_CHARACTERS,
+import { ImageUnderstandingError, MAX_IMAGE_PROMPT_CHARACTERS,
   type HostImageUnderstandingService, type ImageUnderstandingImage } from '../../../modules/image-understanding/index.js'
 import type { WorkingCopyReadPort } from '../../../modules/working-copy/index.js'
 import type { EngineBinding } from '../../../modules/engines/index.js'
 
-export const MAX_IMAGE_BASE64_CHARACTERS = Math.ceil(MAX_IMAGE_BYTES / 3) * 4
-export const MAX_IMAGE_REQUEST_BYTES = MAX_IMAGE_BASE64_CHARACTERS + 16_384
+// This route accepts evidence handles, never uploaded image bytes.
+export const MAX_IMAGE_REQUEST_BYTES = 16_384
 
 const identity = z.string().min(1).max(512)
 const referenceId = z.string().regex(/^pdfref_[0-9a-f-]{36}$/)
 const request = z.discriminatedUnion('action', [
   z.object({ action: z.literal('availability'), sessionId: identity }).strict(),
-  z.object({ action: z.literal('prepare'), sessionId: identity,
-    image: z.object({ mediaType: z.literal('image/png'), data: z.string().min(1).max(MAX_IMAGE_BASE64_CHARACTERS),
-      width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192) }).strict(),
-    question: z.string().min(1).max(MAX_QUESTION_CHARACTERS) }).strict(),
   z.object({ action: z.literal('prepare-reference'), sessionId: identity,
     documentId: identity, refId: referenceId,
-    question: z.string().min(1).max(MAX_QUESTION_CHARACTERS) }).strict(),
+    question: z.string().min(1).max(MAX_IMAGE_PROMPT_CHARACTERS) }).strict(),
 ])
 
 /** A Host-owned capability, never constructed from an RPC payload. The implementation
@@ -95,9 +91,15 @@ function referencedImage(source: Awaited<ReturnType<PdfImageEvidenceResolver['re
   return image
 }
 
-/** Connection authenticates the RPC before this dispatch verifies its Session identity. */
+export interface ExplanationImageRouting {
+  binding?(): EngineBinding | undefined
+  /** Checks the conversation model, independently of the selected preprocessing engine. */
+  canDeliverImage?(sessionId: string, signal: AbortSignal): Promise<boolean>
+}
+
+/** Session attachment delivery belongs to explanation orchestration, not an engine backend. */
 export function createImageUnderstandingDispatch(service: HostImageUnderstandingService,
-  references?: PdfImageEvidenceResolver, readBindings?: () => { binding: EngineBinding; ocrBinding: EngineBinding } | undefined): PdfDispatch {
+  references?: PdfImageEvidenceResolver, routing: ExplanationImageRouting = {}): PdfDispatch {
   return async (sessionId, input, agent, signal) => {
     const parsed = request.safeParse(input)
     if (!parsed.success) throw new ImageUnderstandingError('pdf/image-invalid-request', 'Invalid image request.')
@@ -106,14 +108,22 @@ export function createImageUnderstandingDispatch(service: HostImageUnderstanding
       throw new ImageUnderstandingError('pdf/session-mismatch', 'Session identity mismatch.')
     }
     signal.throwIfAborted()
-    const bindings = readBindings ? structuredClone(readBindings()) : undefined
-    if (args.action === 'availability') return service.availability(sessionId, signal, bindings?.binding, bindings?.ocrBinding)
+    const selection = routing.binding?.()
+    const binding = selection ? structuredClone(selection) : undefined
+    const direct = await routing.canDeliverImage?.(sessionId, signal) ?? false
+    signal.throwIfAborted()
+    if (args.action === 'availability') {
+      if (direct) return { status: 'available', kind: 'direct-image', backendId: 'session-model' }
+      const availability = await service.availability(sessionId, signal, binding)
+      return availability.status === 'available' ? { ...availability, kind: 'derived-text' } : availability
+    }
     if (args.action === 'prepare-reference') {
       if (!references) throw new ImageUnderstandingError('pdf/reference-unavailable', 'PDF image references are not mounted.')
       const source = await references.resolve(sessionId, args.documentId, args.refId, signal)
       signal.throwIfAborted()
       const image = referencedImage(source, args.documentId, source.evidence.refId)
-      const prepared = await service.prepare({ sessionId, image, question: args.question, signal, ...bindings })
+      const prepared = direct ? undefined : await service.understand({ sessionId, image,
+        prompt: args.question, signal, binding })
       signal.throwIfAborted()
       // Preparation may call OCR or a remote model. Recheck the source and
       // attachment after that asynchronous work before delivering its result.
@@ -124,25 +134,24 @@ export function createImageUnderstandingDispatch(service: HostImageUnderstanding
         || evidenceSha256(latest.image.data) !== evidenceSha256(image.data)) {
         throw new ImageUnderstandingError('pdf/stale-reader', 'PDF image changed while it was being prepared.')
       }
+      if ((await routing.canDeliverImage?.(sessionId, signal) ?? false) !== direct) {
+        throw new ImageUnderstandingError('pdf/image-route-changed', 'The conversation image capability changed; retry this explanation.')
+      }
+      signal.throwIfAborted()
       const evidence = { refId: source.evidence.refId, documentId: source.evidence.documentId,
         page: source.evidence.page, locator: source.evidence.locator,
         sourceDigest: source.evidence.sourceDigest, sourceVersion: source.evidence.sourceVersion,
         contentVersion: source.evidence.contentVersion, revision: source.evidence.revision,
         renderedImageSha256: source.evidence.renderedImageSha256 }
-      if (prepared.kind === 'direct-image') {
-        return binaryResult({ ...prepared, requestedRefId: args.refId, evidence }, image.data, image.mediaType)
+      if (direct) {
+        return binaryResult({ kind: 'direct-image', backendId: 'session-model',
+          provenance: { backendId: 'session-model', mode: 'session-vision' },
+          requestedRefId: args.refId, evidence }, image.data, image.mediaType)
       }
-      return { ...prepared, requestedRefId: args.refId, evidence }
+      return { kind: 'derived-text', backendId: prepared!.source.backendId, text: prepared!.text,
+        provenance: { ...prepared!.source, mode: 'image-description' },
+        ...(prepared!.limitations ? { limitations: prepared!.limitations } : {}),
+        requestedRefId: args.refId, evidence }
     }
-    const { data, width, height, mediaType } = args.image
-    if (data.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) {
-      throw new ImageUnderstandingError('pdf/image-invalid-request', 'Image data must be canonical Base64.')
-    }
-    const bytes = Buffer.from(data, 'base64')
-    if (bytes.byteLength > MAX_IMAGE_BYTES || bytes.toString('base64') !== data) {
-      throw new ImageUnderstandingError('pdf/image-invalid-request', 'Image data exceeds the limit or is not canonical Base64.')
-    }
-    return service.prepare({ sessionId, image: { mediaType, data: bytes, width, height },
-      question: args.question, signal, ...bindings })
   }
 }

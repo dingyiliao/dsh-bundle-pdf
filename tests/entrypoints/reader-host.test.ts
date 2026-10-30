@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test, { type TestContext } from 'node:test'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
 import { PDFDocument } from 'pdf-lib'
 import { apply, inject, name } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
@@ -12,6 +14,7 @@ import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
 import { nativeTestSubprocess } from '../native-test-subprocess.ts'
 import type { PdfImageEvidenceResolver } from '../../src/adapters/host/dsh/index.ts'
 import type { SavedImageReference } from '../../src/modules/evidence/index.ts'
+import { EmbeddingError, type EmbeddingEngine, type EmbeddingRegistry } from '../../src/embedding/index.ts'
 
 type Route = Parameters<Parameters<typeof apply>[0]['connection']['fetch']['register']>[0]
 type HostContext = Parameters<typeof apply>[0]
@@ -48,6 +51,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
   const services = new Map<string, unknown>()
   const injections: string[][] = []
   const effects: { label: string; dispose?: () => void | Promise<void> }[] = []
+  const configListeners = new Set<(paths: readonly (readonly string[])[]) => void>()
   const ctx = {
     loader: { locate: () => options.namespace ?? 'entry/pdf',
       resolve: (id: string) => ({ options: { id: id === 'entry/pdf' ? 'pdf-reader-entry' : id } }) },
@@ -58,6 +62,10 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
         : { error: new Error('No active agent') }
     } },
     get(name: string) { return name === 'attachments' ? options.attachments : services.get(name) },
+    on(event: string, listener: (paths: readonly (readonly string[])[]) => void) {
+      if (event === 'loader/volatile-update') configListeners.add(listener)
+      return () => { if (event === 'loader/volatile-update') configListeners.delete(listener) }
+    },
     storageDomain: { async open(definition: { name: string }) {
       if (opened.length + 1 === options.failOpenAt) throw new Error('Domain open failed')
       opened.push(definition.name)
@@ -105,13 +113,15 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
     for (const effect of [...effects].reverse()) await effect.dispose?.()
   }
   return { ctx: ctx as unknown as HostContext, config, routes, registrations, releases, opened, closed,
-    tools, registeredTools, domainValues, provided, services, injections, effects, disposeEffects }
+    tools, registeredTools, domainValues, provided, services, injections, effects, disposeEffects, configListeners,
+    configChanged(paths: readonly (readonly string[])[]) { for (const listener of [...configListeners]) listener(paths) } }
 }
 
-async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string) {
+async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string, text?: string) {
   const root = await realpath(assetRoot), path = join(root, 'evidence.pdf')
   const pdf = await PDFDocument.create()
-  pdf.addPage([200, 200])
+  const page = pdf.addPage([200, 200])
+  if (text) page.drawText(text, { x: 10, y: 160, size: 10 })
   const bytes = await pdf.save()
   await writeFile(path, bytes)
   runtime.ctx.fs = {
@@ -147,6 +157,133 @@ function infoRequest(payload: unknown, init: RequestInit = {}) {
   })
 }
 
+const indexingWorker = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
+async function waitForIndexing(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000
+  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.ok(condition(), 'background indexing did not reach its expected state')
+}
+function indexingEngine(embed: EmbeddingEngine['embed']): EmbeddingEngine {
+  return { descriptor: { id: 'fixture', name: 'Fixture', version: '1', execution: 'local' },
+    describe: () => ({ engineId: 'fixture', engineVersion: '1', model: 'fixture', modelRevision: '1',
+      fingerprint: 'fixture-index', encoding: 'fixture', dimensions: 2, maxBatchSize: 8, maxInputCharacters: 16000 }), embed }
+}
+
+test('opening a PDF starts shared background indexing without a synthetic query or delaying open', { skip: !existsSync(indexingWorker) }, async t => {
+  const assets = await assetFixture(t), sessionId = 'preindex-owner', runtime = host({ agentSessionId: sessionId })
+  runtime.ctx.pdfNative.executable = indexingWorker
+  const config = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: 'fixture' })
+  await apply(runtime.ctx, config, assets)
+  const purposes: string[] = []
+  let finish!: () => void
+  const gate = new Promise<void>(resolve => { finish = resolve })
+  ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register(indexingEngine(async request => {
+    purposes.push(request.purpose)
+    if (request.purpose === 'document') await gate
+    return request.texts.map(() => [1, 0])
+  }))
+  try {
+    const opened = await openSyntheticDocument(runtime, assets, sessionId, 'An atomic transaction rolls back changes.')
+    await waitForIndexing(() => purposes.length > 0)
+    assert.deepEqual(purposes, ['document'], 'opening completes while document vectors are still pending')
+    const execution = { agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal }
+    const service = runtime.services.get('pdf') as { dispatch(session: string, input: unknown, agent: unknown, signal: AbortSignal): Promise<{ id: string }> }
+    const ui = await service.dispatch(sessionId, { action: 'open', sessionId, owner: 'ui', referenceId: 'reader-view',
+      address: `dsh-resource://file/session/${sessionId}/${opened.path}` }, execution.agent, execution.signal)
+    assert.equal(ui.id, opened.documentId, 'UI takes over the same working copy')
+    finish()
+    const search = await runtime.registeredTools.get('pdf_semantic_search')!.execute({ documentId: opened.documentId, query: 'rollback' }, execution) as { status: string }
+    assert.equal(search.status, 'complete')
+    assert.equal(purposes.filter(purpose => purpose === 'document').length, 1)
+    assert.equal(purposes.filter(purpose => purpose === 'query').length, 1)
+  } finally { finish(); await runtime.disposeEffects() }
+  assert.equal(runtime.configListeners.size, 0)
+})
+
+test('saved engine changes cancel preparation and rebuild automatically prepares still-open documents', { skip: !existsSync(indexingWorker) }, async t => {
+  const assets = await assetFixture(t), sessionId = 'preindex-settings', runtime = host({ agentSessionId: sessionId })
+  runtime.ctx.pdfNative.executable = indexingWorker
+  await apply(runtime.ctx, runtime.config, assets)
+  const calls: AbortSignal[] = []
+  ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register(indexingEngine(async request => {
+    assert.equal(request.purpose, 'document', 'background preparation must never invent a query')
+    calls.push(request.signal)
+    if (calls.length === 1) await new Promise<void>((_resolve, reject) => {
+      const abort = () => reject(request.signal.reason)
+      request.signal.addEventListener('abort', abort, { once: true })
+      if (request.signal.aborted) abort()
+    })
+    return request.texts.map(() => [1, 0])
+  }))
+  const changeEngine = (engine: string) => {
+    const next = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: engine })
+    updateVolatile(runtime.config.embeddingEngine, next.embeddingEngine)
+    runtime.configChanged([['embeddingEngine']])
+  }
+  try {
+    await openSyntheticDocument(runtime, assets, sessionId, 'Prepare this already opened document in the background.')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(calls.length, 0, 'disabled semantic retrieval must not process document text')
+    changeEngine('fixture')
+    await waitForIndexing(() => calls.length === 1)
+    changeEngine('none')
+    await waitForIndexing(() => calls[0]!.aborted)
+    changeEngine('fixture')
+    await waitForIndexing(() => calls.length === 2)
+    const reset = await runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
+      type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'reset-prefetch', payload: {},
+    }))
+    const body = await reset.json() as { result: { ok: boolean } }
+    assert.equal(body.result.ok, true)
+    await waitForIndexing(() => calls.length === 3)
+  } finally { await runtime.disposeEffects() }
+  assert.equal(runtime.configListeners.size, 0)
+})
+
+test('indexing controls use the resource Session and a long poll reauthorizes before publishing task names', async t => {
+  const assets = await assetFixture(t), sessionId = 'indexing-controls', runtime = host({ agentSessionId: sessionId })
+  const config = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: 'fixture' })
+  await apply(runtime.ctx, config, assets)
+  const signals: AbortSignal[] = []
+  const engine = indexingEngine(async () => { throw new Error('No text embedding should be admitted before availability finishes') })
+  ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register({ ...engine,
+    async availability(_config, signal) {
+      signals.push(signal)
+      await new Promise<void>(resolve => { signal.addEventListener('abort', () => resolve(), { once: true }); if (signal.aborted) resolve() })
+      return { status: 'unavailable' }
+    },
+  })
+  const call = async (payload: unknown) => {
+    const response = await runtime.routes.get('/api/pdf.indexing')!.fetch(infoRequest({
+      type: 'client-request', method: 'pdf.indexing', rpcId: 'indexing-fixture', payload,
+    }))
+    return (await response.json() as { result: { ok: boolean; value?: { revision: string; tasks: Array<{ documentId: string; title: string; state: string }> }; error?: { code: string } } }).result
+  }
+  try {
+    const opened = await openSyntheticDocument(runtime, assets, sessionId)
+    await waitForIndexing(() => signals.length === 1)
+    const current = await call({ action: 'status', sessionId })
+    assert.equal(current.value!.tasks[0]!.documentId, opened.documentId)
+    assert.equal(current.value!.tasks[0]!.title, 'evidence.pdf')
+    assert.equal((await call({ action: 'cancel', sessionId: 'another-session', documentId: opened.documentId })).error!.code, 'pdf/session-mismatch')
+    const cancelled = await call({ action: 'cancel', sessionId, documentId: opened.documentId })
+    assert.equal(cancelled.value!.tasks[0]!.state, 'cancelled')
+    await waitForIndexing(() => signals[0]!.aborted)
+    await call({ action: 'start', sessionId, documentId: opened.documentId })
+    await waitForIndexing(() => signals.length === 2)
+    const before = await call({ action: 'status', sessionId })
+    const watching = call({ action: 'status', sessionId, revision: before.value!.revision })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    t.mock.method(runtime.ctx.sessionController, 'resolveAgent', async () => ({ error: new Error('Session retired') }))
+    const disabled = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: 'none' })
+    updateVolatile(config.embeddingEngine, disabled.embeddingEngine)
+    runtime.configChanged([['embeddingEngine']])
+    const rejected = await watching
+    assert.equal(rejected.ok, false)
+    assert.equal('value' in rejected, false, 'a retired Session cannot receive names/progress from a completed long poll')
+  } finally { await runtime.disposeEffects() }
+})
+
 test('Host plugin installs its authenticated routes, tools, services and isolated domains', async (t) => {
   const assets = await assetFixture(t)
   const runtime = host()
@@ -155,20 +292,20 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
     'loader', 'tools', 'pdfNative', 'subprocess'])
   await apply(runtime.ctx, runtime.config, assets)
   try {
-    assert.equal(runtime.routes.size, 14)
+    assert.equal(runtime.routes.size, 17)
     assert.deepEqual(runtime.registrations, [
       '/api/pdf.dispatch.v2', '/api/pdf.watch', '/api/pdf.native', '/api/pdf.position',
       '/api/pdf.translation', '/api/pdf.ocr', '/api/pdf.region', '/api/pdf.selection',
-      '/api/pdf.readercontext', '/api/pdf.navigation', '/api/pdf.evidence',
-      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines',
+      '/api/pdf.readercontext', '/api/pdf.navigation', '/api/pdf.indexing', '/api/pdf.evidence',
+      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines', '/api/pdf.model-options', '/api/pdf.retrieval.rebuild',
     ])
     assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
       ['pdf_drafts', 'pdf_positions', 'pdf_evidence', 'pdf_retrieval'])
     assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfEmbedding', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
-    assert.ok(runtime.tools.includes('pdf_read_page'))
-    assert.ok(runtime.tools.includes('pdf_find_related'))
-    assert.ok(runtime.tools.includes('pdf_navigate'))
+    assert.ok(runtime.tools.includes('pdf_page_read'))
+    assert.ok(runtime.tools.includes('pdf_semantic_search'))
+    assert.ok(runtime.tools.includes('pdf_page_jump'))
     assert.deepEqual(runtime.injections, [['ocr'], ['imageUnderstanding'], ['systemPrompt']])
     assert.equal(runtime.effects.length, 10)
 
@@ -192,6 +329,41 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
   assert.deepEqual(runtime.closed, [...runtime.opened].reverse())
 })
 
+test('settings model choices reuse the official catalog without an active PDF or conversation mutation', async t => {
+  const runtime = host(), assets = await assetFixture(t)
+  let reads = 0
+  Object.assign(runtime.ctx.sessionController, {
+    async modelCatalog() {
+      reads++
+      return { groups: [{ id: 'provider', name: 'Provider', models: [
+        { id: 'text', name: 'Text' }, { id: 'visual', name: 'Visual' },
+      ] }], failures: [] }
+    },
+    selectModel() { assert.fail('PDF model settings must not select a conversation model') },
+  })
+  runtime.services.set('llm', { async resolveModelInfo(_provider: string, model: string) {
+    return { inputModalities: model === 'visual' ? ['text', 'image'] : ['text'] }
+  }, stream() { assert.fail('listing models must not run inference') } })
+  await apply(runtime.ctx, runtime.config, assets)
+  const route = runtime.routes.get('/api/pdf.model-options')!
+  const call = (payload: unknown) => route.fetch(infoRequest({
+    type: 'client-request', method: 'pdf.model-options', rpcId: 'model-options-test', payload,
+  }))
+  try {
+    const response = await call({})
+    const envelope = await response.json() as { result: { ok: boolean; value: unknown } }
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    assert.equal(envelope.result.ok, true)
+    assert.deepEqual(envelope.result.value, { groups: [{ id: 'provider', name: 'Provider',
+      models: [{ id: 'visual', name: 'Visual' }] }], failures: [] })
+    assert.equal(reads, 1)
+    const invalid = await (await call({ provider: 'client-invented' })).json() as { result: { ok: boolean } }
+    assert.equal(invalid.result.ok, false)
+    assert.equal(reads, 1, 'invalid settings requests do not load the Host catalog')
+  } finally { await runtime.disposeEffects() }
+  assert.equal(runtime.routes.has('/api/pdf.model-options'), false)
+})
+
 test('Host settings bootstrap reads a profile with retired form configuration without reviving that engine', async t => {
   const assets = await assetFixture(t), runtime = host()
   const active = { ocr: { 'fixture.ocr': { language: 'auto' } },
@@ -212,6 +384,123 @@ test('Host settings bootstrap reads a profile with retired form configuration wi
     assert.deepEqual(body.result.value.settings.engineConfigurations, active)
     assert.equal('form' in body.result.value.engineCatalog.engines, false)
     assert.equal(runtime.services.has('formUnderstanding'), false)
+  } finally { await runtime.disposeEffects() }
+})
+
+test('authenticated settings rebuild resets only derived retrieval records without opening a PDF', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  await apply(runtime.ctx, runtime.config, assets)
+  const cache = [...runtime.domainValues].find(([name]) => name.startsWith('pdf_retrieval_'))![1]
+  const drafts = [...runtime.domainValues].find(([name]) => name.startsWith('pdf_drafts_'))![1]
+  drafts.set('unchanged-draft', { revision: 7, dirty: true })
+  const call = (payload: unknown) => runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
+    type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'rebuild', payload,
+  }))
+  try {
+    cache.set('derived-vector', { createdAt: Date.now(), payload: [1, 0] })
+    const invalid = await (await call({ documentId: 'unexpected' })).json() as { result: { ok: boolean } }
+    assert.equal(invalid.result.ok, false)
+    assert.equal(cache.size, 1, 'invalid input cannot clear indexes')
+    const response = await call({})
+    assert.equal(response.headers.get('cache-control'), 'private, no-store')
+    const body = await response.json() as { result: unknown }
+    assert.deepEqual(body.result, { ok: true, value: { status: 'invalidated' } })
+    assert.equal(cache.size, 0)
+    assert.deepEqual(drafts.get('unchanged-draft'), { revision: 7, dirty: true })
+  } finally { await runtime.disposeEffects() }
+})
+
+test('rebuild route reports storage failures without claiming success and permits a successful retry', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  await apply(runtime.ctx, runtime.config, assets)
+  const cache = [...runtime.domainValues].find(([name]) => name.startsWith('pdf_retrieval_'))![1]
+  cache.set('derived-vector', { createdAt: Date.now(), payload: [1, 0] })
+  const deletion = t.mock.method(cache, 'delete', () => { throw new Error('private storage path') })
+  const call = () => runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
+    type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'rebuild', payload: {},
+  }))
+  try {
+    const body = await (await call()).json() as { result: { ok: boolean; error: { code: string; message: string } } }
+    assert.equal(body.result.ok, false)
+    assert.equal(body.result.error.code, 'pdf/retrieval-rebuild-failed')
+    assert.equal(JSON.stringify(body).includes('private storage path'), false)
+    deletion.mock.restore()
+    const retried = await (await call()).json() as { result: { ok: boolean } }
+    assert.equal(retried.result.ok, true)
+    assert.equal(cache.size, 0)
+  } finally { await runtime.disposeEffects() }
+})
+
+test('Host embedding resolves optional credentials per operation, including rotation and provider removal', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  const authorizations: Array<string | null> = [], references: string[] = []
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === 'https://embedding.example/v1/models') {
+      return new Response(JSON.stringify({ data: [{ id: 'fixture' }] }),
+        { headers: { 'content-type': 'application/json' } })
+    }
+    authorizations.push(new Headers(init?.headers).get('authorization'))
+    assert.equal(String(input), 'https://embedding.example/v1/embeddings')
+    return new Response(JSON.stringify({ model: 'fixture', data: [{ index: 0, embedding: [3, 4] }] }),
+      { headers: { 'content-type': 'application/json' } })
+  })
+  await apply(runtime.ctx, runtime.config, assets)
+  const registry = runtime.services.get('pdfEmbedding') as EmbeddingRegistry
+  const config = { endpoint: 'https://embedding.example/v1/embeddings', model: 'fixture',
+    dimensions: 2, queryInstruction: '' }
+  const binding = { engineId: 'local-qwen3-embedding', config }
+  try {
+    assert.deepEqual((await registry.embed({ texts: ['document'], purpose: 'document' }, binding)).vectors, [[0.6, 0.8]])
+    assert.deepEqual(authorizations, [null], 'a keyless service must work without the optional credential seam')
+
+    const authenticated = { ...binding, config: { ...config, apiKeyRef: 'PDF_EMBEDDING_KEY' } }
+    let value = 'first-key'
+    runtime.services.set('credentials', { async resolve(reference: string) {
+      references.push(reference)
+      return { value }
+    } })
+    await registry.embed({ texts: ['document'], purpose: 'document' }, authenticated)
+    value = 'rotated-key'
+    await registry.embed({ texts: ['document'], purpose: 'document' }, authenticated)
+    runtime.services.set('credentials', { async resolve(reference: string) {
+      references.push(reference)
+      return { value: 'replacement-key' }
+    } })
+    await registry.embed({ texts: ['document'], purpose: 'document' }, authenticated)
+    assert.deepEqual(references, Array(3).fill('PDF_EMBEDDING_KEY'))
+    assert.deepEqual(authorizations, [null, 'Bearer first-key', 'Bearer rotated-key', 'Bearer replacement-key'])
+
+    runtime.services.delete('credentials')
+    await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, authenticated),
+      error => error instanceof EmbeddingError && error.code === 'not-configured')
+    assert.equal(authorizations.length, 4, 'removing the provider must not reuse the last resolved key')
+    runtime.services.set('credentials', { async resolve() { return undefined } })
+    await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, authenticated),
+      error => error instanceof EmbeddingError && error.code === 'not-configured')
+    assert.equal(authorizations.length, 4, 'an unset reference must not fall back to a previous key')
+  } finally { await runtime.disposeEffects() }
+})
+
+test('Host embedding cancellation during credential resolution sends no document request', async t => {
+  const assets = await assetFixture(t), runtime = host()
+  let networkRequests = 0, finish!: (result: { value: string }) => void, started!: () => void
+  const resolving = new Promise<void>(resolve => { started = resolve })
+  const credential = new Promise<{ value: string }>(resolve => { finish = resolve })
+  runtime.services.set('credentials', { async resolve() { started(); return credential } })
+  t.mock.method(globalThis, 'fetch', async () => { networkRequests++; throw new Error('Unexpected request') })
+  await apply(runtime.ctx, runtime.config, assets)
+  try {
+    const registry = runtime.services.get('pdfEmbedding') as EmbeddingRegistry
+    const controller = new AbortController()
+    const pending = registry.embed({ texts: ['private document'], purpose: 'document', signal: controller.signal },
+      { engineId: 'local-qwen3-embedding', config: { endpoint: 'https://embedding.example/v1/embeddings',
+        model: 'fixture', dimensions: 2, queryInstruction: '', apiKeyRef: 'PDF_EMBEDDING_KEY' } })
+    await resolving
+    controller.abort()
+    await assert.rejects(pending, error => error instanceof EmbeddingError && error.code === 'cancelled')
+    finish({ value: 'late-key' })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(networkRequests, 0)
   } finally { await runtime.disposeEffects() }
 })
 

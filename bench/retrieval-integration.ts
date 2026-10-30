@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { EmbeddingRegistry, type EmbeddingEngine } from '../src/embedding/index.ts'
-import { createOpenAiCompatibleEmbeddingEngine, LOCAL_QWEN3_REVISION } from '../src/adapters/host/embedding/openai-compatible.ts'
+import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../src/adapters/host/embedding/openai-compatible.ts'
 import { registerPdfAgentTools } from '../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfRetrieval } from '../src/adapters/host/dsh/retrieval.ts'
 import { createPdfService } from '../src/adapters/host/pdfium/index.ts'
@@ -22,7 +22,7 @@ import { environmentMetadata } from './metadata.ts'
 // Deliberately opt-in. This exercises a real local model and native PDFium, but
 // the PDF is generated in memory and contains no user documents or credentials.
 const { values } = parseArgs({ options: {
-  endpoint: { type: 'string' }, 'model-revision': { type: 'string', default: LOCAL_QWEN3_REVISION },
+  endpoint: { type: 'string' },
   sdk: { type: 'string', default: 'source' }, out: { type: 'string' },
 } })
 if (!values.endpoint) throw new Error('Pass --endpoint http://127.0.0.1:8001/v1/embeddings to explicitly run local model integration.')
@@ -86,7 +86,8 @@ function createRuntime(maxBatchSize = 8) {
     async delete(key) { return records.delete(key) }, entries: () => records.entries(),
   } as Parameters<typeof createRetrievalCache>[0])
   const binding = { engineId: transport.descriptor.id,
-    config: { endpoint: values.endpoint!, modelRevision: values['model-revision']!, maxBatchSize } }
+    config: { endpoint: values.endpoint!, maxBatchSize,
+      queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION } }
   const retrieval = createPdfRetrieval(workspace.workspaces, pdf, references, {
     cache, embeddings: registry, settings: () => ({ ...defaultSettings, embeddingEngine: binding.engineId,
       engineConfigurations: { embedding: { [binding.engineId]: binding.config } } }),
@@ -98,30 +99,33 @@ function createRuntime(maxBatchSize = 8) {
   references, workspace.files, navigation, retrieval)
   const run = (name: string, input: unknown) => tools.get(name)!.execute(input, { agent, signal })
   async function search(documentId: string) {
-    const input = { documentId, query: '如果一次操作中途失败，如何保证已经完成的修改不会残留？', mode: 'hybrid', topK: 3 }
-    let result = await run('pdf_find_related', input) as Result
+    const input = { documentId, query: '如果一次操作中途失败，如何保证已经完成的修改不会残留？', topK: 3 }
+    let result = await run('pdf_semantic_search', input) as Result
     const searchId = result.searchId
     assert.match(searchId, /^rel_[a-f0-9]{12}$/)
     assert.equal('nextCursor' in result, false, 'The model must not receive internal cursor state')
     let steps = 1
     while (result.hasMore) {
       assert.ok(steps < 20, 'Synthetic fixture must finish within a bounded number of indexing steps')
-      result = await run('pdf_find_related', { searchId: result.searchId }) as Result
+      result = await run('pdf_semantic_search', { searchId: result.searchId }) as Result
       assert.equal(result.searchId, searchId, 'ID-only continuation retains the same search')
       assert.equal('nextCursor' in result, false)
       steps++
     }
     assert.equal(result.status, 'complete')
-    assert.equal(result.effectiveMode, 'hybrid')
+    assert.equal(result.effectiveMode, 'semantic')
     assert.equal(result.coverage.indexedPages, paragraphs.length)
     assert.equal(result.coverage.visual, 'not-indexed')
     assert.equal(result.candidates[0]?.page, 2, 'Chinese intent must find the original English transaction passage')
     const hit = result.candidates[0]!
+    assert.ok('text' in hit.evidence.snapshot, 'this native-text fixture returns text evidence')
     assert.equal(hit.quote, hit.evidence.snapshot.text)
     return { ...result, steps }
   }
   return { workspace, registry, navigation, contexts, run, search,
-    model: registry.describe(binding),
+    prepare: (documentId: string) => retrieval.prepare(sessionId, { documentId }, signal),
+    rebuild: retrieval.rebuild,
+    get model() { return registry.describe(binding) },
     async dispose() {
       await disposeTools()
       navigation.dispose(); contexts.dispose(); registry.dispose()
@@ -138,7 +142,7 @@ try {
   const warm = await measured(() => runtime.search(opened.documentId))
   assert.equal(warm.metrics.embedding.documents, 0, 'Warm searches must reuse document vectors')
   const evidence = warm.result.candidates[0]!.evidence as PdfTextEvidence
-  const annotation = await measured(() => runtime.run('pdf_annotate', { documentId: opened.documentId,
+  const annotation = await measured(() => runtime.run('pdf_annotation_create', { documentId: opened.documentId,
     expectedRevision: warm.result.revision, subtype: 'Highlight', target: { kind: 'reference', refId: evidence.refId } }))
   const changed = annotation.result as { revision: number; dirty: boolean; annotationId: string; coverage: { complete: boolean } }
   assert.equal(changed.dirty, true)
@@ -152,7 +156,7 @@ try {
   const lease = { sessionId, tabId: 'reader', leaseId: 'lease', documentId: ui.id, contentVersion: ui.contentVersion }
   runtime.contexts.update(sessionId, { action: 'set', ...lease, sequence: 1, page: 1 })
   const pending = runtime.navigation.dispatch(sessionId, { action: 'wait', ...lease }, signal)
-  const jumping = runtime.run('pdf_navigate', { documentId: ui.id, refId: evidence.refId })
+  const jumping = runtime.run('pdf_page_jump', { documentId: ui.id, refId: evidence.refId })
   const request = await pending as AgentNavigationRequest
   assert.equal(request.page, 2)
   assert.ok(request.target?.quadPoints.length)
@@ -174,6 +178,13 @@ try {
   const restored = await measured(() => runtime.search(reopened.documentId))
   assert.equal(restored.metrics.embedding.documents, 0, 'Restored derived cache must reuse document vectors with a new logical document ID')
   const measuredCache = { records: records.size, serializedBytes: Buffer.byteLength(serializedCache) }
+  await runtime.rebuild()
+  const prepared = await measured(() => runtime.prepare(reopened.documentId))
+  assert.ok(prepared.metrics.embedding.documents > 0, 'A reset must force actual document preparation')
+  assert.equal(prepared.metrics.embedding.queries, 0, 'Preparation must not generate a synthetic query vector')
+  const preparedQuery = await measured(() => runtime.search(reopened.documentId))
+  assert.equal(preparedQuery.metrics.embedding.documents, 0, 'The first search must reuse prepared document vectors')
+  assert.equal(preparedQuery.result.steps, 1)
   // Force a real continuation without introducing a large or private document:
   // six pages exceed four one-input embedding batches in a single indexing step.
   await runtime.dispose()
@@ -186,9 +197,11 @@ try {
     sdk: values.sdk, model, fixture: { kind: 'synthetic-memory-only', pages: paragraphs.length, bytes: bytes.length },
     coldIndex: cold.metrics, warmQuery: warm.metrics, annotation: annotation.metrics,
     afterAnnotation: afterAnnotation.metrics, reopenedCache: restored.metrics,
+    documentPreparation: prepared.metrics, firstPreparedQuery: preparedQuery.metrics,
     cache: measuredCache,
     verified: { crossLanguageHitPage: 2, originalTextEvidence: true, exactReferenceAnnotation: true,
       sharedUiDraft: true, acknowledgedNavigation: true, originalFileWrites: 0, restoredCacheEmbeddings: 0,
+      preparedQueryDocumentEmbeddings: 0, preparationQueryEmbeddings: 0,
       shortIdContinuation: { steps: continued.steps, embeddingBatchSize: 1, onlySearchId: true, complete: true } },
     limitations: ['Cold means empty retrieval cache; the separate MLX service may already be warm.',
       'CPU/RSS cover this Node benchmark process, excluding the PDFium child and external MLX server.',

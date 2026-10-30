@@ -30,7 +30,7 @@ test('document operations hold one pin across the whole tool, including approval
     acquired++; pinned++
     return () => { pinned-- }
   })
-  for (const name of ['pdf_read_page', 'pdf_form_inspect_page', 'pdf_fill_form', 'pdf_save']) {
+  for (const name of ['pdf_page_read', 'pdf_form_inspect', 'pdf_form_fill', 'pdf_save']) {
     let continueOperation!: () => void, started!: () => void
     const waiting = new Promise<void>(resolve => { started = resolve })
     const pause = new Promise<void>(resolve => { continueOperation = resolve })
@@ -60,13 +60,13 @@ test('Host-owned continuation IDs resolve to an authorized document before the o
     acquired++; pinned++
     return () => { pinned-- }
   }, { resolveDocumentId(name, raw, sessionId) {
-    assert.equal(name, 'pdf_find_related'); assert.equal(sessionId, 'session')
+    assert.equal(name, 'pdf_semantic_search'); assert.equal(sessionId, 'session')
     if ((raw as { searchId: string }).searchId !== 'rel_123456789abc') {
       throw Object.assign(new Error('Unknown search ID'), { code: 'pdf/unknown-search' })
     }
     return 'stored-document'
   } })
-  f.lifecycle.tools.register(defineTool({ name: 'pdf_find_related', description: 'Search fixture',
+  f.lifecycle.tools.register(defineTool({ name: 'pdf_semantic_search', description: 'Search fixture',
     parameters: { searchId: { type: 'string', required: true } },
     output: { schema: { type: 'object', additionalProperties: true }, render: () => [] },
     async execute(_raw, exec) {
@@ -76,7 +76,7 @@ test('Host-owned continuation IDs resolve to an authorized document before the o
       return { hasMore: false }
     },
   }))
-  const tool = f.definitions.get('pdf_find_related')!
+  const tool = f.definitions.get('pdf_semantic_search')!
   assert.deepEqual(await tool.execute({ searchId: 'rel_123456789abc' }, { agent, signal } as never), { hasMore: false })
   assert.equal(pinned, 0); assert.equal(acquired, 1)
   await assert.rejects(tool.execute({ searchId: 'rel_changed' }, { agent, signal } as never), { code: 'pdf/unknown-search' })
@@ -92,13 +92,13 @@ test('tool errors and cancellation release pins, while rejected acquisition neve
     return () => { pinned-- }
   })
   const controller = new AbortController()
-  f.register('pdf_read_page', async (_raw, exec) => {
+  f.register('pdf_page_read', async (_raw, exec) => {
     calls++
     controller.abort(new Error('Cancelled during native read'))
     exec.signal.throwIfAborted()
     return {}
   })
-  const tool = f.definitions.get('pdf_read_page')!
+  const tool = f.definitions.get('pdf_page_read')!
   await assert.rejects(tool.execute({ documentId: 'document' }, { agent, signal: controller.signal } as never), /Cancelled/)
   assert.equal(pinned, 0); assert.equal(calls, 1)
   rejected = true
@@ -111,10 +111,10 @@ test('tool errors and cancellation release pins, while rejected acquisition neve
 test('open, close and visible metadata do not acquire pins; invalid arguments retain tool validation', async () => {
   let acquired = 0, executed = 0
   const f = fixture(async () => { acquired++; return () => {} })
-  for (const name of ['pdf_open', 'pdf_close', 'pdf_current', 'pdf_read_page']) {
+  for (const name of ['pdf_open', 'pdf_close', 'pdf_current', 'pdf_page_read']) {
     f.register(name, async () => { executed++; return {} })
     const tool = f.definitions.get(name)!
-    if (name !== 'pdf_read_page') await tool.execute({ documentId: 'document' }, { agent, signal } as never)
+    if (name !== 'pdf_page_read') await tool.execute({ documentId: 'document' }, { agent, signal } as never)
     else {
       for (const raw of [undefined, {}, { documentId: 42 }]) {
         await assert.rejects(tool.execute(raw, { agent, signal } as never), { code: 'INVALID_ARGS' })
@@ -163,11 +163,11 @@ test('session retirement keeps admission closed until native release and inspect
   for (const previouslyUsed of [false, true]) {
     const f = fixture(async () => () => {})
     const inspectionMappings = new Map<string, string>([['session', 'old-generation']])
-    f.register('pdf_form_inspect_page', async () => {
+    f.register('pdf_form_inspect', async () => {
       inspectionMappings.set('session', 'new-generation')
       return { status: 'inspected' }
     })
-    const inspect = () => f.definitions.get('pdf_form_inspect_page')!.execute({ documentId: 'document' }, { agent, signal } as never)
+    const inspect = () => f.definitions.get('pdf_form_inspect')!.execute({ documentId: 'document' }, { agent, signal } as never)
     if (previouslyUsed) await inspect()
     inspectionMappings.set('session', 'old-generation')
     let startCleanup!: () => void, finishCleanup!: () => void, cleanupCalls = 0

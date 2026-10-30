@@ -9,11 +9,6 @@ interface FloatingToolbarProps {
   className?: string
 }
 
-/** Docked tools live outside this viewport; contextual actions stay within the PDF column. */
-export function visibleReadingBounds(viewport: HTMLElement): DOMRect {
-  return viewport.getBoundingClientRect()
-}
-
 /** Keep contextual actions near their PDF anchor without changing page layout. */
 export function FloatingToolbar({ viewport, getAnchor, label, children, active = true, className }: FloatingToolbarProps) {
   const toolbar = useRef<HTMLDivElement>(null)
@@ -25,32 +20,52 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
     const parent = element?.closest<HTMLElement>('.dsh-pdf-reader')
     if (!element || !parent || !viewport) return
     let frame = 0
+    const show = (visible: boolean) => {
+      element.dataset.visible = String(visible)
+      // A neighbouring comment card needs the committed action-bar bounds,
+      // including changes that move it without resizing the PDF scrollport.
+      viewport.dispatchEvent(new Event('pdfcontextchange'))
+    }
     const update = () => {
       frame = 0
       const selection = anchor.current()
-      const bounds = visibleReadingBounds(viewport)
+      const bounds = viewport.getBoundingClientRect()
       const origin = parent.getBoundingClientRect()
       if (!active || !selection || bounds.width < 40 || selection.bottom <= bounds.top || selection.top >= bounds.bottom
         || selection.right <= bounds.left || selection.left >= bounds.right) {
-        element.dataset.visible = 'false'
+        show(false)
         return
       }
       const inset = 8, gap = 7
-      const mainToolbar = parent.querySelector<HTMLElement>('.dsh-pdf-main-toolbar')
-      const safeTop = Math.max(bounds.top + inset, (mainToolbar?.getBoundingClientRect().bottom ?? bounds.top) + inset)
+      // The tool rail reserves its own column; only the PDF scrollport bounds
+      // constrain page actions, including marks near the top of the page.
+      const safeTop = bounds.top + inset
+      const availableHeight = Math.max(0, bounds.height - inset * 2)
+      const hasCard = !!parent.querySelector('.dsh-pdf-page-comment-card')
+      const heightBudget = hasCard ? Math.min(availableHeight, Math.max(46, Math.floor((availableHeight - 12) / 2))) : availableHeight
+      const scrollTop = element.scrollTop
       element.style.maxWidth = `${Math.max(0, bounds.width - inset * 2)}px`
+      // Read the full extent under the existing constraint. Temporarily
+      // expanding a scrolled toolbar would clamp its saved scroll position.
+      const naturalHeight = Math.max(element.offsetHeight, element.scrollHeight + element.offsetHeight - element.clientHeight)
+      const constrained = naturalHeight > heightBudget
+      element.dataset.heightConstrained = String(constrained)
+      element.style.maxHeight = `${heightBudget}px`
       const width = element.offsetWidth, height = element.offsetHeight
       if (safeTop + height > bounds.bottom - inset) {
-        element.dataset.visible = 'false'
+        show(false)
         return
       }
       const left = Math.max(bounds.left + inset, Math.min(bounds.right - width - inset, selection.left))
-      let top = selection.bottom + gap
+      // An unusually tall action bar shares the short column with its editor.
+      // Dock it at the top so the remaining region stays contiguous and usable.
+      let top = constrained && hasCard ? safeTop : selection.bottom + gap
       if (top + height > bounds.bottom - inset) top = selection.top - gap - height
       top = Math.max(safeTop, Math.min(bounds.bottom - height - inset, top))
       element.style.left = `${left - origin.left}px`
       element.style.top = `${top - origin.top}px`
-      element.dataset.visible = 'true'
+      element.scrollTop = scrollTop
+      show(true)
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
     refresh.current = schedule
@@ -59,6 +74,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
     observer.observe(element)
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('pdfviewchange', schedule)
+    viewport.addEventListener('pdflayoutchange', schedule)
     window.addEventListener('resize', schedule)
     update()
     return () => {
@@ -66,6 +82,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
       observer.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('pdfviewchange', schedule)
+      viewport.removeEventListener('pdflayoutchange', schedule)
       window.removeEventListener('resize', schedule)
       refresh.current = undefined
     }

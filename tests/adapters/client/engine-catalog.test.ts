@@ -6,7 +6,8 @@ import { createTranslationDirectoryMirror } from '../../../src/adapters/client/r
 import { createPdfInfoRoute } from '../../../src/adapters/host/dsh/info-route.ts'
 import { TranslationRegistry } from '../../../src/translation/index.ts'
 
-const descriptor = { id: 'fixture.engine', name: 'Fixture engine', version: '1', execution: 'local' as const }
+const descriptor = { id: 'fixture.engine', name: 'Fixture engine', version: '1', execution: 'local' as const,
+  capabilities: ['ocr-text' as const] }
 async function until(predicate: () => boolean) {
   const deadline = Date.now() + 2500
   while (!predicate()) {
@@ -36,6 +37,7 @@ test('directory changes cross the real RPC envelope without client restart; disc
     const remove = directory.register({ descriptor })
     await until(() => store.getSnapshot().engines.ocr.length === 1)
     assert.equal(store.getSnapshot().engines.ocr[0]?.id, descriptor.id)
+    assert.deepEqual(store.getSnapshot().engines.ocr[0]?.capabilities, ['ocr-text'])
     remove()
     await until(() => store.getSnapshot().engines.ocr.length === 0)
     const removeAgain = directory.register({ descriptor })

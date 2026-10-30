@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../shared/contracts.js'
 
-export type SaveFeedback = 'saving' | 'saved' | 'unsaved'
+export type SaveFeedback = 'saving' | 'saved' | 'unsaved' | 'failed'
 export interface SaveFeedbackState { kind: SaveFeedback; durationMs: number; occurrence: number; path?: string }
 
 export interface ReaderSaveOptions {
@@ -37,7 +37,7 @@ export function useReaderSave(options: ReaderSaveOptions) {
   const pickerLock = useRef(false)
   const feedbackOccurrence = useRef(0)
   const feedbackOwner = useRef<{ sessionId: string; resourceAddress: string } | null>(null)
-  const previousDirty = useRef<{ id: string; dirty: boolean } | null>(null)
+  const previousDirty = useRef<{ id: string; revision: number; dirty: boolean } | null>(null)
 
   const showFeedback = useCallback((kind: SaveFeedback | null, durationMs = 2600, path?: string) => {
     setFeedback(kind ? { kind, durationMs, occurrence: ++feedbackOccurrence.current, path } : null)
@@ -51,38 +51,57 @@ export function useReaderSave(options: ReaderSaveOptions) {
   }, [sessionId, resourceAddress, showFeedback])
 
   useEffect(() => {
-    if (!snapshot) { previousDirty.current = null; return }
+    if (!snapshot) { previousDirty.current = null; showFeedback(null); return }
     const previous = previousDirty.current
-    previousDirty.current = { id: snapshot.id, dirty: snapshot.dirty }
-    if (previous?.id === snapshot.id && !previous.dirty && snapshot.dirty) showFeedback('unsaved')
-    else if (previous?.id === snapshot.id && previous.dirty && !snapshot.dirty && feedback?.kind === 'unsaved') showFeedback(null)
-  }, [snapshot?.id, snapshot?.dirty, feedback, showFeedback])
+    previousDirty.current = { id: snapshot.id, revision: snapshot.revision, dirty: snapshot.dirty }
+    if (previous && previous.id !== snapshot.id) showFeedback(null)
+    else if (previous && !previous.dirty && snapshot.dirty && feedback?.kind !== 'failed' && feedback?.kind !== 'saving') showFeedback('unsaved')
+    else if (previous && !snapshot.dirty && (previous.dirty || previous.revision !== snapshot.revision)
+      && (feedback?.kind === 'unsaved' || feedback?.kind === 'failed')) showFeedback(null)
+  }, [snapshot?.id, snapshot?.revision, snapshot?.dirty, feedback, showFeedback])
 
   const save = async (path?: string, confirmedTarget?: { version: string | null; overwrite: boolean }) => {
     const checkedTarget = confirmedTarget ?? (target && target.path === path ? { version: target.version, overwrite } : undefined)
     if (path && !checkedTarget) { setError(t('reader.targetUnchecked')); return }
-    const originalPath = currentSnapshot()?.path
-    showFeedback('saving', 0)
+    const original = currentSnapshot()
+    const originalPath = original?.path
+    const resourceOwner = feedbackOwner.current
+    const previousFeedback = feedback
     let committed: WorkspaceSnapshot | undefined
+    let attempted = false
+    let failed = false
+    let attemptOwner: number | undefined
     const result = await act(async (current) => {
-      committed = await api.save(sessionId, current.id, current.revision,
-        path ? { path, overwrite: checkedTarget!.overwrite, expectedTargetVersion: checkedTarget!.version } : {}, tabSignal)
-      return committed
+      attempted = true
+      attemptOwner = ownerSequence.current
+      showFeedback('saving', 0)
+      try {
+        committed = await api.save(sessionId, current.id, current.revision,
+          path ? { path, overwrite: checkedTarget!.overwrite, expectedTargetVersion: checkedTarget!.version } : {}, tabSignal)
+        return committed
+      } catch (failure) {
+        failed = !(failure instanceof Error && failure.name === 'AbortError')
+        throw failure
+      }
     }, !path || path === originalPath)
     // A successful same-file save can advance the source revision before its
     // RPC resolves, so the caller's stale-response guard may discard result.
-    const sameResource = feedbackOwner.current?.sessionId === sessionId
-      && feedbackOwner.current.resourceAddress === resourceAddress && !tabSignal.aborted
-    const saved = result ?? (sameResource ? committed : undefined)
+    const sameResource = feedbackOwner.current === resourceOwner && currentSnapshot()?.id === original?.id && !tabSignal.aborted
+    if (!sameResource) return
+    const saved = result ?? committed
     if (saved) {
-      showFeedback('saved', 2600, saved.path)
+      showFeedback('saved', 2000, saved.path)
       setSaveAsOpen(false); setOverwrite(false)
       if (path && saved.path !== originalPath) {
         const nextAddress = addressForPath(sessionId, saved.path)
         feedbackOwner.current = { sessionId, resourceAddress: nextAddress }
         openResource(nextAddress)
       }
-    } else if (sameResource) showFeedback(null)
+    } else if (attempted) {
+      if (attemptOwner !== ownerSequence.current) setFeedback(current => current?.kind === 'saving' ? null : current)
+      else if (failed) showFeedback('failed', 0, originalPath)
+      else setFeedback(previousFeedback)
+    }
   }
 
   const beginSaveAs = async () => {

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { createReadingPositionService, type ReadingPositionRecord } from '../../../src/host/reading-positions.ts'
+import { createReadingPositionService, createWorkspaces, type ReadingPositionRecord,
+  type HostWorkspaceSnapshot } from '../../fixtures/working-copy-service.ts'
 import type { DraftRecord } from '../../../src/modules/working-copy/index.ts'
-import { createWorkspaces, type HostWorkspaceSnapshot } from '../../../src/host/workspaces.ts'
 import { nativeFixture } from '../../native-fixture.ts'
 
 const PATH = '/fixtures/resumed.pdf'

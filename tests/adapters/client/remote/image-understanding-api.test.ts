@@ -17,9 +17,9 @@ const evidence = { refId, documentId: 'doc-1', page: 2,
   renderedImageSha256: imageDigest }
 const direct = { kind: 'direct-image', backendId: 'session-vision', requestedRefId: refId,
   provenance: { backendId: 'session-vision', mode: 'session-vision' }, evidence, bytes: png }
-const derived = { kind: 'derived-text', backendId: 'ocr-text', requestedRefId: refId, evidence,
-  text: 'Recognized words', provenance: { backendId: 'ocr-text', mode: 'ocr-text' },
-  limitations: 'Text only.' }
+const derived = { kind: 'derived-text', backendId: 'fixture.vision', requestedRefId: refId, evidence,
+  text: 'Chart interpretation', provenance: { backendId: 'fixture.vision', mode: 'image-description' },
+  limitations: 'Generated description.' }
 
 test('prepare-reference sends only the Host reference and returns its exact verified PNG bytes', async () => {
   const calls: unknown[][] = []
@@ -48,19 +48,18 @@ test('prepare-reference sends only the Host reference and returns its exact veri
     'a Host-reissued ref for byte-identical source remains valid')
 })
 
-test('prepare-reference preserves an OCR or auxiliary derived-text route without pixels', async () => {
-  for (const backendId of ['ocr-text', 'auxiliary-vision']) {
-    const value = { ...derived, backendId,
-      provenance: { backendId, mode: backendId === 'ocr-text' ? 'ocr-text' : 'image-description' } }
-    const prepared = await createImageUnderstandingApi({ rpc: { async call() {
-      return { ok: true, value }
-    } } }, new AbortController().signal).prepareReference(request)
-    assert.equal(prepared.kind, 'derived-text')
-    if (prepared.kind !== 'derived-text') assert.fail('Expected derived text')
-    assert.equal(prepared.text, 'Recognized words')
-    assert.equal(prepared.limitations, 'Text only.')
-    assert.equal('image' in prepared, false)
-  }
+test('prepare-reference preserves a vision interpretation without pixels and rejects an OCR bridge response', async () => {
+  const api = createImageUnderstandingApi({ rpc: { async call() { return { ok: true, value: derived } } } },
+    new AbortController().signal)
+  const prepared = await api.prepareReference(request)
+  assert.equal(prepared.kind, 'derived-text')
+  if (prepared.kind !== 'derived-text') assert.fail('Expected derived text')
+  assert.equal(prepared.text, 'Chart interpretation'); assert.equal(prepared.limitations, 'Generated description.')
+  assert.equal('image' in prepared, false)
+  const obsolete = createImageUnderstandingApi({ rpc: { async call() {
+    return { ok: true, value: { ...derived, provenance: { backendId: 'ocr-text', mode: 'ocr-text' } } }
+  } } }, new AbortController().signal)
+  await assert.rejects(obsolete.prepareReference(request))
 })
 
 test('a forged, expired, or malformed reference response cannot become image evidence', async () => {

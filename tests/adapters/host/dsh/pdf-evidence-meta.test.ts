@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { contextPresentationMeta, locatePresentationMeta, readPagePresentationMeta } from
+import { evidenceReadPresentationMeta, keywordSearchPresentationMeta, readPagePresentationMeta } from
   '../../../../src/adapters/host/dsh/pdf-evidence-meta.ts'
 import { evidenceSha256, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
 
@@ -34,11 +34,10 @@ test('read-page presentation metadata preserves a bounded exact snapshot indepen
   assert.equal(short.snapshot.truncated, false)
 })
 
-test('locate and context metadata retain exact bounded evidence without PDF image bytes or stale geometry', () => {
+test('search and evidence metadata retain exact bounded evidence without PDF image bytes or stale geometry', () => {
   const long = evidence('X'.repeat(10_000))
-  const located = locatePresentationMeta({ status: 'ambiguous', documentId: 'document-1',
-    matches: [{ evidence: long }, { evidence: evidence('second', 'pdfref_other') }],
-    coverage: { pagesScanned: [7], noTextPages: [], truncated: false } })
+  const located = keywordSearchPresentationMeta({ documentId: 'document-1', hasMore: false,
+    matches: [{ evidence: long }, { evidence: evidence('second', 'pdfref_other') }] })
   assert.equal(located.matches[0]?.snapshot.text.length, 512)
   assert.equal(located.matches[0]?.snapshot.truncated, true)
   assert.equal(located.matches[1]?.snapshot.truncated, false)
@@ -46,13 +45,12 @@ test('locate and context metadata retain exact bounded evidence without PDF imag
   assert.equal(located.matches[0]?.pageTextDigest, evidenceSha256('X'.repeat(10_000)))
   assert.ok(!JSON.stringify(located).includes('rectsPdf'))
 
-  const context = contextPresentationMeta({ status: 'ok', documentId: 'document-1',
-    chunks: [{ evidence: long }, { evidence: evidence('Y'.repeat(10_000), 'pdfref_two') }], candidates: [] })
+  const context = evidenceReadPresentationMeta({ status: 'text', documentId: 'document-1',
+    pages: [long, evidence('Y'.repeat(10_000), 'pdfref_two')] })
   assert.equal(context.chunks[0]?.snapshot.text.length, 8_000)
   assert.equal(context.chunks[1]?.snapshot.text.length, 0)
   assert.ok(JSON.stringify(context).length < 25_000)
   assert.deepEqual(context.candidates, [])
-  const ambiguous = contextPresentationMeta({ status: 'ambiguous', documentId: 'document-1',
-    chunks: [], candidates: [{ evidence: evidence('phrase') }] })
-  assert.equal(ambiguous.candidates[0]?.snapshot.text, 'phrase')
+  const empty = evidenceReadPresentationMeta({ status: 'text', documentId: 'document-1', pages: [] })
+  assert.deepEqual(empty.chunks, [])
 })

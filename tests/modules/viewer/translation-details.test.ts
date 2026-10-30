@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TranslationContent, TranslationErrorNotice, TranslationPanel } from '../../../src/modules/viewer/components/TranslationPanel.js'
+import { TranslationContent } from '../../../src/modules/viewer/components/TranslationPanel.js'
 import { translationEn, translationZh } from '../../../src/translation/index.js'
 
 const translate = (dictionary: typeof translationEn) => (key: string) =>
@@ -10,7 +10,6 @@ const translate = (dictionary: typeof translationEn) => (key: string) =>
 
 test('word detail displays pronunciation, each meaning, and example translations', () => {
   const html = renderToStaticMarkup(React.createElement(TranslationContent, {
-    sourceText: 'enter',
     t: translate(translationZh),
     value: {
       source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
@@ -29,7 +28,7 @@ test('word detail displays pronunciation, each meaning, and example translations
   }))
 
   assert.match(html, /data-translation-kind="word"/)
-  assert.match(html, /enter/)
+  assert.doesNotMatch(html, /dsh-pdf-translation-term/)
   assert.match(html, /音标/)
   assert.match(html, /ˈentər/)
   assert.match(html, /进入/)
@@ -52,7 +51,6 @@ test('word detail renders all 25 meanings, including the final example, without 
     exampleTranslation: `例句 ${index + 1}。`,
   }))
   const html = renderToStaticMarkup(React.createElement(TranslationContent, {
-    sourceText: 'on',
     t: translate(translationZh),
     value: {
       source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
@@ -70,9 +68,8 @@ test('word detail renders all 25 meanings, including the final example, without 
   assert.doesNotMatch(html, /SERIALIZED_TEXT_SHOULD_NOT_BE_REPEATED/)
 })
 
-test('phrase detail shows multiple meanings without a pronunciation row', () => {
+test('phrase presentation displays model-supplied pronunciation as well as meanings', () => {
   const html = renderToStaticMarkup(React.createElement(TranslationContent, {
-    sourceText: 'take off',
     t: translate(translationEn),
     value: {
       source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
@@ -81,6 +78,7 @@ test('phrase detail shows multiple meanings without a pronunciation row', () => 
       warnings: [],
       detail: {
         kind: 'phrase',
+        pronunciation: '/teɪk ɒf/',
         meanings: [
           { partOfSpeech: 'phrasal verb', meaning: 'leave the ground', example: 'The plane took off.', exampleTranslation: '飞机起飞了。' },
         ],
@@ -89,16 +87,16 @@ test('phrase detail shows multiple meanings without a pronunciation row', () => 
   }))
 
   assert.match(html, /data-translation-kind="phrase"/)
-  assert.match(html, /take off/)
+  assert.doesNotMatch(html, /dsh-pdf-translation-term|take off: leave the ground/)
   assert.match(html, /Phrase/)
   assert.match(html, /phrasal verb/)
   assert.match(html, /The plane took off\./)
-  assert.doesNotMatch(html, /dsh-pdf-translation-pronunciation/)
+  assert.match(html, /dsh-pdf-translation-pronunciation/)
+  assert.match(html, /teɪk ɒf/)
 })
 
 test('sentence translation keeps the plain-text result', () => {
   const html = renderToStaticMarkup(React.createElement(TranslationContent, {
-    sourceText: 'Please enter the room.',
     t: translate(translationZh),
     value: {
       source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
@@ -113,25 +111,49 @@ test('sentence translation keeps the plain-text result', () => {
   assert.doesNotMatch(html, /dsh-pdf-translation-details/)
 })
 
-test('a suspected fragment keeps the exact selected text without a preflight block', () => {
-  const html = renderToStaticMarkup(React.createElement(TranslationPanel, {
-    selection: { text: 'btracti', selectionBefore: 'su', selectionAfter: 'ons', pages: [380], targetLanguage: 'zh' },
-    engineName: 'DSH',
-    translate: async () => { throw new Error('SSR does not run effects') },
-    onClose: () => {},
-    t: translate(translationZh),
+test('presentation of supplied lexical data identifies the interpretation and escapes its explanation', () => {
+  const html = renderToStaticMarkup(React.createElement(TranslationContent, {
+    t: translate(translationZh), value: {
+      source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
+      text: '相减', status: 'complete', warnings: [],
+      interpretation: { text: 'subtract', kind: 'completion', certainty: 'tentative',
+        explanation: '<img src=x onerror=alert(1)> 可能是缺少词尾。' },
+      detail: { kind: 'word', meanings: [{ partOfSpeech: '动词', meaning: '减去',
+        example: 'Subtract two from five.', exampleTranslation: '五减二。' }] },
+    },
   }))
-
-  assert.match(html, /btracti/)
-  assert.match(html, /正在翻译/)
-  assert.match(html, /class="dsh-pdf-translation-result"/)
-  assert.doesNotMatch(html, /subtractions|翻译完整单词|选区可能不完整/)
+  assert.match(html, /role="note"/)
+  assert.match(html, /data-certainty="tentative"/)
+  assert.match(html, /推测补全/)
+  assert.match(html, /class="dsh-pdf-translation-interpreted-text" dir="auto">subtract</)
+  assert.equal((html.match(/>subtract</g) ?? []).length, 1, 'the completed text belongs only to its qualified notice')
+  assert.doesNotMatch(html, /dsh-pdf-translation-term/)
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/)
+  assert.doesNotMatch(html, /<img\b|>subtrac</)
 })
 
-test('unrecognized model output has a clear reselect message', () => {
-  const html = renderToStaticMarkup(React.createElement(TranslationErrorNotice, {
-    code: 'unrecognized-selection', t: translate(translationZh),
+test('readable sentence fragments render a direct translation without a repair notice', () => {
+  const html = renderToStaticMarkup(React.createElement(TranslationContent, {
+    t: translate(translationZh), value: {
+      source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
+      text: '我们希望计算', status: 'complete', warnings: [],
+    },
   }))
-  assert.match(html, /无法可靠翻译/)
-  assert.match(html, /重新选择/)
+  assert.match(html, /我们希望计算/)
+  assert.doesNotMatch(html, /role="note"|dsh-pdf-translation-interpretation|推测|纠正|补全/)
+})
+
+test('confident correction and completion have distinct localized labels', () => {
+  for (const [kind, expected] of [['correction', 'Corrected text'], ['completion', 'Completed text']] as const) {
+    const html = renderToStaticMarkup(React.createElement(TranslationContent, {
+      t: translate(translationEn), value: {
+        source: { engineId: 'dsh-model', engineVersion: '1', instanceId: 'test', configurationRevision: 'test' },
+        text: 'Result', status: 'complete', warnings: [], interpretation: { kind, certainty: 'confident',
+          text: 'reconstructed source', explanation: 'Recovered using the nearby words.' },
+      },
+    }))
+    assert.match(html, new RegExp(expected))
+    assert.match(html, /reconstructed source/)
+    assert.doesNotMatch(html, /Possible correction|Possible completion/)
+  }
 })

@@ -23,6 +23,13 @@ function localTarget(file: string, specifier: string, files: ReadonlySet<string>
   }
 }
 
+function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause
+  const named = clause?.namedBindings
+  return !!(clause?.isTypeOnly || (named && ts.isNamedImports(named)
+    && !clause.name && named.elements.length > 0 && named.elements.every(element => element.isTypeOnly)))
+}
+
 function imports(file: string, files: ReadonlySet<string>, includeTypes = false): string[] {
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
     extname(file) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
@@ -34,11 +41,7 @@ function imports(file: string, files: ReadonlySet<string>, includeTypes = false)
   }
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node)) {
-      const clause = node.importClause
-      const named = clause?.namedBindings
-      const typeOnly = clause?.isTypeOnly || (named && ts.isNamedImports(named)
-        && !clause.name && named.elements.length > 0 && named.elements.every(element => element.isTypeOnly))
-      if (includeTypes || !typeOnly) add(node.moduleSpecifier)
+      if (includeTypes || !isTypeOnlyImport(node)) add(node.moduleSpecifier)
     }
     if (ts.isExportDeclaration(node) && (includeTypes || !node.isTypeOnly)) add(node.moduleSpecifier)
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) add(node.arguments[0])
@@ -139,41 +142,14 @@ test('feature-module dependencies form a directed acyclic graph', () => {
   for (const name of graph.keys()) walk(name)
 })
 
-test('non-viewer feature modules do not depend on Cordis or DSH at runtime', () => {
-  const modulesRoot = join(sourceRoot, 'modules') + sep
+test('feature modules use ports instead of importing Cordis or DSH at runtime', () => {
   for (const file of sourceFiles(join(sourceRoot, 'modules'))) {
-    if (!file.startsWith(modulesRoot) || file.startsWith(join(modulesRoot, 'viewer') + sep)) continue
     const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
       extname(file) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
     const inspect = (node: ts.Node): void => {
-      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
-        const clause = node.importClause
-        const named = clause?.namedBindings
-        const typeOnly = clause?.isTypeOnly || (named && ts.isNamedImports(named)
-          && !clause.name && named.elements.length > 0 && named.elements.every(element => element.isTypeOnly))
-        if (!typeOnly && /^@deepseek-ai\/(?:cordis|dsh-)/.test(node.moduleSpecifier.text)) {
-          assert.fail(`${display(file)} imports ${node.moduleSpecifier.text} at runtime; use an adapter port`)
-        }
-      }
-      ts.forEachChild(node, inspect)
-    }
-    inspect(source)
-  }
-})
-
-test('Viewer controllers use ports instead of importing Cordis or DSH at runtime', () => {
-  for (const file of sourceFiles(join(sourceRoot, 'modules', 'viewer'))) {
-    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
-      extname(file) === '.tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
-    const inspect = (node: ts.Node): void => {
-      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
-        const clause = node.importClause
-        const named = clause?.namedBindings
-        const typeOnly = clause?.isTypeOnly || (named && ts.isNamedImports(named)
-          && !clause.name && named.elements.length > 0 && named.elements.every(element => element.isTypeOnly))
-        if (!typeOnly && /^@deepseek-ai\/(?:cordis|dsh-)/.test(node.moduleSpecifier.text)) {
-          assert.fail(`${display(file)} imports ${node.moduleSpecifier.text} at runtime; inject an adapter port`)
-        }
+      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)
+        && !isTypeOnlyImport(node) && /^@deepseek-ai\/(?:cordis|dsh-)/.test(node.moduleSpecifier.text)) {
+        assert.fail(`${display(file)} imports ${node.moduleSpecifier.text} at runtime; inject an adapter port`)
       }
       ts.forEachChild(node, inspect)
     }

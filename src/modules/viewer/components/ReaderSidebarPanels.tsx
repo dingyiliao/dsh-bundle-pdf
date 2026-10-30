@@ -5,6 +5,7 @@ import type { NativeDocument } from '../rendering/document.js'
 import type { useReaderOcr } from '../controllers/use-reader-ocr.js'
 import type { useReaderSearch } from '../controllers/use-reader-search.js'
 import type { useReaderTranslation } from '../controllers/use-reader-translation.js'
+import type { ReaderIndexingControl } from '../controllers/use-reader-indexing.js'
 import { AnnotationList } from './AnnotationList.js'
 import { OcrTranscriptPanel } from './OcrTranscriptPanel.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
@@ -24,6 +25,7 @@ export interface ReaderSidebarPanelsOptions {
   jump(page: number, point?: { x?: number; y?: number }): void
   ocrTranscript: OcrTranscript
   search: Search
+  indexing?: ReaderIndexingControl
   translation: Translation
   rememberTargetLanguage?: (language: string) => Promise<boolean>
   translationEngine: string
@@ -34,7 +36,7 @@ export interface ReaderSidebarPanelsOptions {
 /** Four independent feature panels sharing the same Reader sidebar chrome. */
 export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
   const { snapshot, pdf, annotations, selectedAnnotation, clearAnnotation, selectAnnotation,
-    jump, ocrTranscript, search, translation, rememberTargetLanguage, translationEngine,
+    jump, ocrTranscript, search, indexing, translation, rememberTargetLanguage, translationEngine,
     translationRegistry, t } = options
   const activeTranscript = snapshot && ocrTranscript
     && ocrTranscript.result.documentId === snapshot.id
@@ -46,11 +48,11 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
         onSelect={annotation => { selectAnnotation(annotation.id)
           jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }} />,
     ocr: <ScrollablePanel className="dsh-pdf-ocr-scroll" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
-      header={<div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.ocr')}</h3></div>}>
+      title={t('reader.sidebar.ocr')}>
       <OcrTranscriptPanel result={activeTranscript?.result ?? null} region={!!activeTranscript?.region} t={t} />
     </ScrollablePanel>,
     search: <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
-      header={<div className="dsh-pdf-panel-heading"><h3>{t('reader.search')}</h3></div>}>
+      title={t('reader.search')}>
       <form onSubmit={event => { event.preventDefault(); void search.run() }}>
         <input aria-label={t('reader.search')} placeholder={t('reader.searchPlaceholder')}
           value={search.query} onChange={event => search.setQuery(event.target.value)} />
@@ -58,6 +60,14 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
           {search.searching ? t('reader.searching') : t('reader.search')}</button>
       </form>
       <p className="dsh-pdf-muted">{t('reader.searchCoverage')}</p>
+      {indexing && <section className="dsh-pdf-search-indexing" aria-label={t('reader.indexing.title')}>
+        <div className="dsh-pdf-search-indexing-heading">
+          <strong>{t('reader.indexing.title')}</strong>
+          {indexing.enabled && <button type="button" disabled={indexing.disabled} onClick={indexing.onStart}>{indexing.label}</button>}
+        </div>
+        <p className="dsh-pdf-muted" role="status">{indexing.statusLabel}</p>
+        <p className="dsh-pdf-muted">{t('reader.indexing.searchHint')}</p>
+      </section>}
       {search.searched && <p>{search.hits.length ? `${search.hits.length}${search.hits.length >= 500 ? '+' : ''} ${t('reader.results')}` : t('reader.noResults')}</p>}
       {search.hits.map((hit, index) => <button className="dsh-pdf-search-hit" key={index}
         onClick={() => jump(hit.page, hit.x === undefined || hit.y === undefined ? {} : { x: hit.x, y: hit.y })}>
@@ -70,8 +80,8 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
       rememberTargetLanguage={rememberTargetLanguage} onClose={translation.close} t={t}
       engineName={translationEngine === 'dsh-model' ? t('reader.translationDshModel')
         : translationRegistry.list().find(engine => engine.id === translationEngine)?.name ?? translationEngine} />
-      : <ScrollablePanel className="dsh-pdf-translation-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
-        <div className="dsh-pdf-panel-heading"><h3>{t('reader.sidebar.translation')}</h3></div>
+      : <ScrollablePanel className="dsh-pdf-translation-panel" title={t('reader.sidebar.translation')}
+        verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
         <p className="dsh-pdf-muted">{t('reader.sidebar.translationHint')}</p>
       </ScrollablePanel>,
   }

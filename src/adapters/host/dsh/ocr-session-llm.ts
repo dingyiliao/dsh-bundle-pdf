@@ -1,6 +1,7 @@
 import { OcrError, type OcrOutput } from '../../../ocr/types.js'
 import type { HostOcrBackend, HostOcrRequest } from '../../../modules/ocr/index.js'
 import type { OcrModelRoute } from './ocr-model-route.js'
+import { sessionModelCacheIdentity, type SessionModelInfo } from './model-cache-identity.js'
 
 interface ImageReference {
   attachmentId: string
@@ -15,9 +16,7 @@ export interface SessionOcrAttachmentStore {
 }
 
 export interface SessionOcrLlm {
-  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{
-    inputModalities?: readonly string[]
-  }>
+  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<SessionModelInfo>
   stream(options: {
     provider: string
     model: string
@@ -87,7 +86,7 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
     throw new RangeError('OCR model output limits must be positive integers.')
   }
   const capability = async (sessionId: string, signal: AbortSignal): Promise<{
-    route: OcrModelRoute; llm: SessionOcrLlm; attachments: SessionOcrAttachmentStore
+    route: OcrModelRoute; llm: SessionOcrLlm; attachments: SessionOcrAttachmentStore; info: SessionModelInfo
   }> => {
     const llm = dependencies.getLlm()
     const attachments = dependencies.getAttachments()
@@ -97,7 +96,7 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
     if (!route.provider?.trim() || !route.model?.trim()) {
       throw new OcrError('not-configured', 'Choose a model for this session before using OCR.')
     }
-    let info: { inputModalities?: readonly string[] }
+    let info: SessionModelInfo
     try { info = await waitFor(llm.resolveModelInfo(route.provider, route.model, signal), signal) }
     catch (cause) {
       if (signal.aborted) throw signal.reason
@@ -106,12 +105,16 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
     if (!info.inputModalities?.includes('image')) {
       throw new OcrError('engine-unavailable', 'The selected model has no declared image-input capability.')
     }
-    return { route, llm, attachments }
+    return { route, llm, attachments, info }
   }
   return {
     descriptor: {
       id: 'session-llm', name: 'Current session model', version: '1',
-      execution: 'remote', geometry: [], confidence: false,
+      execution: 'remote', capabilities: ['ocr-text'], geometry: [], confidence: false,
+    },
+    async cacheIdentity(sessionId, signal) {
+      const { route, llm, info } = await capability(sessionId, signal)
+      return sessionModelCacheIdentity(llm, route, info, { system, maxOutputTokens, maxOutputCharacters })
     },
     async availability(sessionId, signal) {
       try { await capability(sessionId, signal); return { status: 'available' } }

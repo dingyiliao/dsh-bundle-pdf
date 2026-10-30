@@ -15,6 +15,7 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
   const firstFile = 'dsh-resource://file/session/shared-session/first.pdf'
   const secondFile = 'dsh-resource://file/session/shared-session/second.pdf'
   let width = 800
+  let toolRailWidth = 0
   let resize = () => {}
   class Observer {
     constructor(callback: () => void) { resize = callback }
@@ -36,7 +37,11 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     const bodyRef = useRef<HTMLDivElement>(null)
     const navigationLock = useRef(false)
     state = useReaderSidebarLayout({ bodyRef, navigationLock, navigating: false, resourceAddress, visible })
-    return React.createElement('div', { ref: bodyRef })
+    return React.createElement('div', { ref: bodyRef }, React.createElement('nav', {
+      'data-pdf-tool-rail': '', ref: (element: HTMLElement | null) => {
+        if (element) element.getBoundingClientRect = () => ({ width: toolRailWidth }) as DOMRect
+      },
+    }))
   }
   try {
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: firstFile })))
@@ -115,6 +120,14 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     await act(async () => root.render(React.createElement(Harness, { resourceAddress: malformedFile })))
     assert.equal(state?.section, 'annotations', 'invalid saved layout falls back to the default section')
     assert.equal(state?.expanded, true)
+
+    await act(async () => { toolRailWidth = 56; resize() })
+    assert.equal(state?.expanded, false, 'the tool rail is deducted before applying the narrow-pane threshold')
+    await act(async () => { width = 816; resize() })
+    await act(async () => { state?.changeExpanded(true) })
+    assert.equal(state?.expanded, true, '760px remains available beside the actual 56px rail')
+    await act(async () => { toolRailWidth = 100; resize() })
+    assert.equal(state?.expanded, false, 'changing the measured rail width recalculates the available reading area')
   } finally {
     await act(async () => root.unmount())
     dom.close()

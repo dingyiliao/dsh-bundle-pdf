@@ -35,7 +35,7 @@ async function setup(source?: Uint8Array) {
     inspectFormPage(current.document, page), current.document)
   }
   const inspectAll = () => opened.document.pages.map(page => refresh(page.page))
-  return { state, opened, labels, inspection, refresh, inspectAll, inspectionId: refresh(), fill: tools.get('pdf_fill_form')!,
+  return { state, opened, labels, inspection, refresh, inspectAll, inspectionId: refresh(), fill: tools.get('pdf_form_fill')!,
     async dispose() { dispose(); await state.workspaces.dispose() } }
 }
 
@@ -524,7 +524,7 @@ for (const teardown of ['unload', 'delete-session'] as const) test(`${teardown} 
   const identity = { sessionId, documentId: env.opened.id, revision: env.opened.revision,
     contentVersion: env.opened.contentVersion, sourceDigest: digest(env.opened.bytes) }
   const inspectionId = inspections.issue(identity, env.inspection, env.opened.document)
-  const fill = tools.get('pdf_fill_form')!
+  const fill = tools.get('pdf_form_fill')!
   try {
     const result = await fill.execute({ documentId: env.opened.id, expectedRevision: env.opened.revision,
       inspectionId, fields: [{ label: env.labels.accepted, value: true }] }, { agent, signal }) as {
@@ -566,7 +566,7 @@ test('a Reader edit while source inspection is pending wins CAS and invalidates 
     contentVersion: env.opened.contentVersion, sourceDigest: digest(env.opened.bytes) }
   const ids = env.opened.document.pages.map(page => inspections.issue(identity,
     inspectFormPage(env.opened.document, page.page), env.opened.document))
-  const fill = tools.get('pdf_fill_form')!, input = { documentId: env.opened.id, expectedRevision: env.opened.revision }
+  const fill = tools.get('pdf_form_fill')!, input = { documentId: env.opened.id, expectedRevision: env.opened.revision }
   try {
     const failed = await fill.execute({ ...input, inspectionId: ids[0], fields: [{ label: 'F01', value: 'Model loses' }] },
       { agent, signal }) as Failure

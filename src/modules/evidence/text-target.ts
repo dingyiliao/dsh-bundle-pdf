@@ -4,7 +4,7 @@ import { joinPageText } from '../../shared/page-text.js'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
 import type { AgentPageReadPort } from './agent-page-read.js'
 import { evidenceSha256 } from './provenance.js'
-import { savedTextReferenceSchema, type EvidenceReferenceStore } from './reference-store.js'
+import { savedTextReferenceSchema, savedTextRangeReferenceSchema, type EvidenceReferenceStore } from './reference-store.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
 
 /** Reusable, current native geometry; stored approximate boxes never authorize a mark or jump. */
@@ -28,6 +28,8 @@ export interface ResolvedTextReference {
 export interface TextReferenceResolverPort {
   resolve(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
     readSource?: FreshSourceRead, quote?: string): Promise<ResolvedTextReference>
+  resolveRange(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
+    readSource?: FreshSourceRead): Promise<{ refId: string; pages: ResolvedTextReference[] }>
 }
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
@@ -59,8 +61,43 @@ function quotedRange(text: string, start: number, end: number, quote?: string): 
 
 /** A ref is evidence, not a file-access grant. Reauthorize the live document and all text before use. */
 export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
-  references: EvidenceReferenceStore): TextReferenceResolverPort {
-  return {
+  references: EvidenceReferenceStore): TextReferenceResolverPort & {
+    resolveRange: NonNullable<TextReferenceResolverPort['resolveRange']>
+  } {
+  const resolver: TextReferenceResolverPort & { resolveRange: NonNullable<TextReferenceResolverPort['resolveRange']> } = {
+    async resolveRange(sessionId, documentId, refId, signal, readSource) {
+      const raw = references.get(refId)
+      const range = savedTextRangeReferenceSchema.safeParse(raw)
+      if (!range.success) return { refId, pages: [await resolver.resolve(sessionId, documentId, refId, signal, readSource)] }
+      if (range.data.sessionId !== sessionId || range.data.evidence.refId !== refId) {
+        fail('pdf/reference-unavailable', 'PDF text range is unavailable in this session')
+      }
+      const saved = range.data.evidence
+      const initial = workspaces.readSnapshot(sessionId, documentId)
+      const initialIdentity = identity(initial)
+      if (saved.sourcePath !== initial.path || saved.pages.reduce((n, p) => n + p.evidence.snapshot.text.length,
+        saved.pages.length - 1) > 8000) fail('pdf/invalid-evidence', 'Stored text range has an invalid source or size')
+      const resolved: ResolvedTextReference[] = []
+      for (const [index, entry] of saved.pages.entries()) {
+        if (entry.evidence.sourcePath !== saved.sourcePath || entry.evidence.documentId !== saved.documentId
+          || entry.evidence.sourceDigest !== saved.sourceDigest || entry.evidence.contentVersion !== saved.contentVersion
+          || entry.evidence.revision !== saved.revision || entry.evidence.sourceVersion !== saved.sourceVersion
+          || index > 0 && entry.evidence.page !== saved.pages[index - 1]!.evidence.page + 1) {
+          fail('pdf/invalid-evidence', 'Stored text range has inconsistent page identities')
+        }
+        // Embedded page records survive bounded eviction of standalone child refs.
+        const embedded: EvidenceReferenceStore = { ...references,
+          get(key) { return key === entry.evidence.refId
+            ? { sessionId, ...entry, createdAt: range.data.createdAt } : references.get(key) } }
+        resolved.push(await createTextReferenceResolver(workspaces, pages, embedded)
+          .resolve(sessionId, documentId, entry.evidence.refId, signal, readSource))
+        signal.throwIfAborted()
+        if (JSON.stringify(identity(workspaces.readSnapshot(sessionId, documentId))) !== JSON.stringify(initialIdentity)) {
+          fail('pdf/stale-reader', 'PDF changed while resolving the continuous text range')
+        }
+      }
+      return { refId, pages: resolved }
+    },
     async resolve(sessionId, documentId, refId, signal, readSource, quote) {
       signal.throwIfAborted()
       const parsed = savedTextReferenceSchema.safeParse(references.get(refId))
@@ -126,4 +163,5 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
         textSha256: evidenceSha256(geometry.text), text: geometry.text }
     },
   }
+  return resolver
 }

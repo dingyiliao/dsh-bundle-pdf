@@ -1,5 +1,5 @@
 import type { NativeTextContent, NativeTileRequest } from '../../../shared/native.ts'
-import type { NativeViewport } from '../rendering/viewport.js'
+import type { NativeViewport } from '../../../shared/geometry/native-viewport.js'
 
 /** Document operations used by the native reader and its UI. */
 export interface ReaderDocument {
@@ -34,7 +34,6 @@ export interface ReaderRenderOptions {
   viewport: NativeViewport
   transform?: number[]
   annotations?: boolean
-  background?: string
 }
 
 export interface ReaderRenderTask {
@@ -50,7 +49,7 @@ export interface ReaderPage {
   readonly view: number[]
   getViewport(options: { scale: number; rotation?: number; offsetX?: number; offsetY?: number; dontFlip?: boolean }): NativeViewport
   getTextContent(): Promise<NativeTextContent>
-  getAnnotations(options?: { intent?: string }): Promise<ReaderAnnotation[]>
+  getAnnotations(): Promise<ReaderAnnotation[]>
   tile(tile: Omit<NativeTileRequest, 'page'>, signal: AbortSignal): Promise<ImageBitmap>
   render(options: ReaderRenderOptions): ReaderRenderTask
 }

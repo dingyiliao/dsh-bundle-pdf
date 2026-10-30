@@ -19,11 +19,13 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     clientExtensions: { slots: string[] }
   }
   const current = JSON.parse(execFileSync(process.execPath, [script], { encoding: 'utf8' })) as typeof expected
-  // V2 adds bounded evidence reads, direct draft edits and approved saves;
-  // existing read-tool names remain; intentional surface removals are listed below.
-  const addedTools = ['pdf_annotate', 'pdf_annotation_update', 'pdf_annotation_delete',
-    'pdf_context', 'pdf_find_related', 'pdf_image_context', 'pdf_locate', 'pdf_navigate', 'pdf_outline_edit', 'pdf_save', 'pdf_status',
-    'pdf_form_inspect_page', 'pdf_fill_form']
+  // Model tools deliberately use a new atomic contract. Durable file/storage,
+  // RPC and plugin identities below still compare with the frozen V1 fixture.
+  const atomicTools = ['pdf_current', 'pdf_open', 'pdf_close', 'pdf_status', 'pdf_info', 'pdf_save',
+    'pdf_page_read', 'pdf_page_render', 'pdf_page_jump', 'pdf_keyword_search', 'pdf_semantic_search',
+    'pdf_evidence_read', 'pdf_form_inspect', 'pdf_form_fill', 'pdf_annotation_create',
+    'pdf_annotation_list', 'pdf_annotation_update', 'pdf_annotation_delete',
+    'pdf_bookmark_list', 'pdf_bookmark_edit', 'ocr_recognize', 'image_understand']
   assert.deepEqual(current, { ...expected,
     // The npm release changes package identity, while preserving every plugin row ID.
     patch: expected.patch.map(row => ({ ...row,
@@ -32,8 +34,9 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
     storage: { ...expected.storage,
       domains: expected.storage.domains.filter(domain => !domain.name.startsWith('pdf_bookmarks_')),
       keyExpressions: Object.fromEntries(Object.entries(expected.storage.keyExpressions).filter(([key]) => key !== 'bookmark')) },
-    toolNames: [...expected.toolNames, ...addedTools].sort(),
-    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.navigation', 'pdf.region', 'pdf.selection', 'pdf.watch'].sort(),
+    toolNames: atomicTools.sort(),
+    // Read-only model choices add a settings endpoint; existing resource methods stay unchanged.
+    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.indexing', 'pdf.model-options', 'pdf.navigation', 'pdf.region', 'pdf.retrieval.rebuild', 'pdf.selection', 'pdf.watch'].sort(),
     providedServices: [...expected.providedServices, 'pdfAiSettings', 'pdfCapabilities', 'pdfImageEvidence', 'pdfEmbedding'].sort(),
     package: { ...expected.package, name: '@dylanl1/dsh-plugin-pdf', exports: { ...expected.package.exports,
       './capabilities': { types: './dist/types/modules/capabilities/index.d.ts', import: './dist/capabilities.js' },

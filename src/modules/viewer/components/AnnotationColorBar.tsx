@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { ReaderPopover } from './ReaderPopover.js'
 import {
   addHighlightQuickColor,
   editHighlightQuickColor,
@@ -42,8 +43,7 @@ export function AnnotationColorBar({ palette = 'markup', value, disabled = false
   const [colors, setColors] = useState(readColors)
   const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [menuError, setMenuError] = useState('')
-  const menuRef = useRef<HTMLDivElement>(null)
-  const swatchRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const menuAnchor = useRef<HTMLButtonElement | null>(null)
   const chosen = normalizeHighlightColor(value)
   const isDuplicate = chosen !== null && colors.includes(chosen)
   const isFull = colors.length >= MAX_HIGHLIGHT_QUICK_COLORS
@@ -70,27 +70,8 @@ export function AnnotationColorBar({ palette = 'markup', value, disabled = false
 
   useEffect(() => {
     if (menuIndex === null) return
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target
-      if (!(target instanceof Node) || (!menuRef.current?.contains(target) && !swatchRefs.current[menuIndex]?.contains(target))) {
-        setMenuIndex(null)
-        setMenuError('')
-      }
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setMenuIndex(null)
-      setMenuError('')
-      swatchRefs.current[menuIndex]?.focus()
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [menuIndex])
+    if (disabled) { setMenuIndex(null); setMenuError('') }
+  }, [menuIndex, disabled])
 
   const updateColors = (next: string[]) => {
     setColors(next)
@@ -100,7 +81,7 @@ export function AnnotationColorBar({ palette = 'markup', value, disabled = false
   return <div className="dsh-pdf-highlight-colors" data-testid={palette === 'note' ? 'pdf-note-colors' : 'pdf-highlight-colors'} role="group" aria-label={t('reader.quickColor')}>
     {colors.length > 0 && <div className="dsh-pdf-highlight-swatches">
       {colors.map((hex, index) => <span className="dsh-pdf-highlight-swatch-wrap" key={index}>
-        <button type="button" ref={(element) => { swatchRefs.current[index] = element }}
+        <button type="button"
           className="dsh-pdf-highlight-swatch" data-testid={`pdf-highlight-swatch-${index}`}
           disabled={disabled} aria-pressed={chosen === hex}
           aria-label={`${t('reader.quickColor')} ${index + 1}: ${hex}`}
@@ -108,10 +89,11 @@ export function AnnotationColorBar({ palette = 'markup', value, disabled = false
           onClick={() => { setMenuIndex(null); onQuickColor(hex) }}
           onContextMenu={(event) => {
             event.preventDefault()
-            if (!disabled) { setMenuIndex(index); setMenuError('') }
+            if (!disabled) { menuAnchor.current = event.currentTarget; setMenuIndex(index); setMenuError('') }
           }}><span className="dsh-pdf-highlight-swatch-core" style={{ backgroundColor: hex }} aria-hidden="true" /></button>
-        {menuIndex === index && <div ref={menuRef} className="dsh-pdf-highlight-menu" data-testid="pdf-highlight-color-menu"
-          role="dialog" aria-label={`${t('reader.quickColor')} ${index + 1}`} style={index >= 3 ? { right: 0 } : { left: 0 }}>
+        {menuIndex === index && <ReaderPopover anchor={menuAnchor} open onClose={() => { setMenuIndex(null); setMenuError('') }}
+          className="dsh-pdf-highlight-menu" data-testid="pdf-highlight-color-menu"
+          role="dialog" aria-label={`${t('reader.quickColor')} ${index + 1}`}>
           <label className="dsh-pdf-highlight-menu-edit">{t('reader.editQuickColor')}
             <input type="color" data-testid="pdf-highlight-edit-color" aria-label={t('reader.editQuickColor')}
               value={hex} onChange={(event) => {
@@ -127,7 +109,7 @@ export function AnnotationColorBar({ palette = 'markup', value, disabled = false
             setMenuError('')
           }}>{t('reader.deleteQuickColor')}</button>
           {menuError && <span className="dsh-pdf-highlight-menu-error" role="status">{menuError}</span>}
-        </div>}
+        </ReaderPopover>}
       </span>)}
     </div>}
     <span className="dsh-pdf-highlight-palette-wrap" title={t('reader.colorPalette')}>

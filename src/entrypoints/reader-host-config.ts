@@ -3,11 +3,14 @@ import { defaultSettings, effectiveTranslationEngine, translationTargetLanguages
 import { explanationTemplatePattern, MAX_EXPLANATION_PROMPT_TEMPLATE_LENGTH,
   MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.ts'
 import { engineConfigurationsSchema } from '../modules/engines/index.js'
+import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
 
 export const Config = z.object({
   ocrEngine: z.string().pattern(/\S/).default('session-llm').volatile(),
-  imageEngine: z.string().pattern(/\S/).default('session-vision').volatile(),
+  imageEngine: z.string().pattern(/\S/).default('dsh-vision').volatile(),
   embeddingEngine: z.string().pattern(/\S/).default('none').volatile(),
+  indexScanPages: z.boolean().default(true).volatile(),
+  indexImageDescriptions: z.boolean().default(false).volatile(),
   engineConfigurations: z.dict(z.dict(z.dict(z.union([z.string(), z.number(), z.boolean()])))).default({}).volatile(),
   ocrTimeoutMs: z.natural().min(1000).max(600000).default(defaultSettings.ocrTimeoutMs).volatile(),
   translationEngine: z.string().pattern(/\S/).default(defaultSettings.translationEngine).volatile(),
@@ -29,11 +32,15 @@ export function readConfig(config: HostConfig): PdfSettings {
   // pass the strict configuration schema and retain their saved values.
   const engineConfigurations = { ...(config.engineConfigurations?.get() ?? {}) }
   delete engineConfigurations.form
+  const configurations = engineConfigurationsSchema.parse(engineConfigurations)
+  const imageEngine = config.imageEngine?.get() ?? defaultSettings.imageEngine!
   return {
     ocrEngine: config.ocrEngine?.get() ?? defaultSettings.ocrEngine,
-    imageEngine: config.imageEngine?.get() ?? defaultSettings.imageEngine,
+    imageEngine: migrateImageEngine(imageEngine, configurations),
     embeddingEngine: config.embeddingEngine?.get() ?? defaultSettings.embeddingEngine,
-    engineConfigurations: engineConfigurationsSchema.parse(engineConfigurations),
+    indexScanPages: config.indexScanPages?.get() ?? defaultSettings.indexScanPages,
+    indexImageDescriptions: config.indexImageDescriptions?.get() ?? defaultSettings.indexImageDescriptions,
+    engineConfigurations: migrateEngineConfigurations(configurations, imageEngine),
     ocrTimeoutMs: config.ocrTimeoutMs.get(),
     translationEngine: effectiveTranslationEngine(config.translationEngine.get()),
     translationTargetLanguage: config.translationTargetLanguage.get(), translationTimeoutMs: config.translationTimeoutMs.get(),

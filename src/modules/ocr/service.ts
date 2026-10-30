@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto'
-import { EngineDirectory, engineProbe, validateEngineConfiguration, type EngineBinding, type EngineConfiguration } from '../engines/index.js'
+import { createHash, randomUUID } from 'node:crypto'
+import { EngineDirectory, engineProbe, engineCacheIdentity, validateEngineConfiguration,
+  type BackendCacheIdentity, type EngineCacheIdentity, type EngineBinding, type EngineConfiguration } from '../engines/index.js'
 import { validateOcrOutput, validateOcrRequest } from '../../ocr/validation.js'
 import {
   OcrError, type OcrAvailability, type OcrEngineDescriptor, type OcrOutput, type OcrRequest,
@@ -17,11 +18,52 @@ export interface HostOcrRequest extends OcrRequest {
 export interface HostOcrBackend {
   readonly descriptor: OcrEngineDescriptor
   availability(sessionId: string, signal: AbortSignal, config?: EngineConfiguration): Promise<OcrAvailability>
+  cacheIdentity?(sessionId: string, signal: AbortSignal, config?: EngineConfiguration): Promise<BackendCacheIdentity>
   recognize(request: HostOcrRequest, config?: EngineConfiguration): Promise<OcrOutput>
 }
 
 export interface HostOcrResult extends OcrOutput {
   source: { backendId: string; backendVersion: string }
+}
+
+/** Producers may bind their own authorization/version checks without coupling OCR to PDFs. */
+export interface StagedImageHooks {
+  /** Producer runtime/session lifetime; propagated into every consumer operation. */
+  signal?: AbortSignal
+  acquire?(signal: AbortSignal): Promise<() => void>
+  validate(signal: AbortSignal): Promise<void>
+  recordDerived?(result: StagedImageDerivative, signal: AbortSignal): Promise<StagedImageEvidence>
+}
+
+export interface StagedImageEvidence {
+  refId: string
+  documentId?: string
+  page?: number
+  snapshotChars?: number
+  truncated?: boolean
+}
+
+export interface StagedImageDerivative {
+  text: string
+  source: { backendId: string; backendVersion?: string; mode: 'ocr-text' | 'image-description'; model?: string }
+  limitations?: string
+}
+
+export type StagedImageRequest = Omit<HostOcrRequest, 'signal' | 'timeoutMs'>
+export type StagedImageRecorder = (result: StagedImageDerivative) => Promise<StagedImageEvidence | undefined>
+/** An immutable transcript can outlive its input pixels without losing producer authorization. */
+export interface ImageResultGuard {
+  run<T>(sessionId: string, signal: AbortSignal, read: (signal: AbortSignal) => Promise<T>): Promise<T>
+}
+export interface StagedOcrResult extends HostOcrResult {
+  image: { width: number; height: number }
+  evidence?: StagedImageEvidence
+}
+
+function invalidProducer(error: unknown): boolean {
+  const code = error instanceof Error && 'code' in error ? String(error.code) : ''
+  return code.startsWith('pdf/source-') || code.startsWith('pdf/stale-') || code.startsWith('pdf/session-')
+    || code === 'pdf/unavailable'
 }
 
 function checkImageLimits(request: HostOcrRequest): void {
@@ -48,9 +90,13 @@ function checkOutputLimits(output: OcrOutput): void {
 
 /** The selected backend is application configuration; session identity stays per call. */
 export class HostOcrService {
-  private readonly backends = new EngineDirectory<HostOcrBackend>(backend => backend.descriptor)
+  // The typed OCR contract guarantees text extraction, regardless of legacy contributor metadata.
+  private readonly backends = new EngineDirectory<HostOcrBackend>(backend => ({
+    ...backend.descriptor, capabilities: ['ocr-text'],
+  }))
   private readonly tasks = new Map<AbortController, HostOcrBackend>()
-  private readonly staged = new Map<string, { request: HostOcrRequest; expiresAt: number }>()
+  private readonly imageTasks = new Set<AbortController>()
+  private readonly staged = new Map<string, { request: HostOcrRequest; expiresAt: number; hooks?: StagedImageHooks }>()
   private readonly expiryTimer: NodeJS.Timeout
   private disposed = false
 
@@ -71,7 +117,9 @@ export class HostOcrService {
   }
 
   list(): OcrEngineDescriptor[] {
-    return [...this.backends.values()].map(backend => structuredClone(backend.descriptor))
+    return this.backends.list().map(descriptor => structuredClone({
+      ...this.backends.get(descriptor.id)!.descriptor, ...descriptor,
+    }))
   }
 
   subscribe(listener: () => void): () => void { return this.backends.subscribe(listener) }
@@ -82,12 +130,13 @@ export class HostOcrService {
   }
 
   selectedDescriptor(binding?: EngineBinding): OcrEngineDescriptor | undefined {
-    const descriptor = this.backends.get(this.selection(binding).engineId)?.descriptor
-    return descriptor ? structuredClone(descriptor) : undefined
+    const id = this.selection(binding).engineId
+    const backend = this.backends.get(id)
+    return backend ? structuredClone({ ...backend.descriptor, ...this.backends.descriptor(id)! }) : undefined
   }
 
   /** Stage bounded image bytes for an agent tool, without exposing a filesystem path or base64 to the model. */
-  async stageImage(request: Omit<HostOcrRequest, 'signal' | 'timeoutMs'>): Promise<string> {
+  async stageImage(request: StagedImageRequest, hooks?: StagedImageHooks): Promise<string> {
     validateOcrRequest(request)
     if (this.disposed) throw new OcrError('engine-unavailable', 'The OCR service is disposed.')
     if (!request.sessionId?.trim() || request.sessionId.length > 512) {
@@ -110,18 +159,79 @@ export class HostOcrService {
     this.staged.set(handle, { request: { ...request, image: bytes, languages: [...request.languages],
       options: request.options ? structuredClone(request.options) : undefined,
       binding: request.binding ? structuredClone(request.binding) : undefined },
-      expiresAt: Date.now() + 5 * 60_000 })
+      expiresAt: Date.now() + 5 * 60_000, hooks })
     return handle
   }
 
   /** A model may use only an unexpired handle staged for its own Session. */
-  async recognizeStaged(handle: string, sessionId: string, signal: AbortSignal): Promise<HostOcrResult> {
+  private stagedImage(handle: string, sessionId: string) {
+    if (this.disposed) throw new OcrError('engine-unavailable', 'The image service is disposed.')
     this.pruneStaged()
     const staged = this.staged.get(handle)
     if (!staged || staged.request.sessionId !== sessionId) {
       throw new OcrError('invalid-request', 'The OCR image handle is missing, expired, or belongs to another session.')
     }
-    return this.recognize({ ...staged.request, signal })
+    return staged
+  }
+
+  /** Capture only owner/lease checks, never the staged request or its image bytes. */
+  imageResultGuard(handle: string, sessionId: string): ImageResultGuard {
+    const { hooks, request: { sessionId: owner } } = this.stagedImage(handle, sessionId)
+    const checks = hooks ? { acquire: hooks.acquire, validate: hooks.validate, signal: hooks.signal } : undefined
+    return { run: async (caller, signal, read) => {
+      try { return await this.withImageOwner(owner, checks, caller, signal, read) }
+      catch (error) { if (invalidProducer(error)) this.staged.delete(handle); throw error }
+    } }
+  }
+
+  private async withImageOwner<T>(owner: string, hooks: Pick<StagedImageHooks, 'acquire' | 'validate' | 'signal'> | undefined,
+    sessionId: string, signal: AbortSignal, consume: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    signal.throwIfAborted()
+    if (this.disposed) throw new OcrError('engine-unavailable', 'The image service is disposed.')
+    if (owner !== sessionId) throw new OcrError('invalid-request', 'The image result belongs to another session.')
+    const controller = new AbortController()
+    this.imageTasks.add(controller)
+    const activeSignal = AbortSignal.any([signal, controller.signal, ...hooks?.signal ? [hooks.signal] : []])
+    let release: (() => void) | undefined
+    try {
+      release = await hooks?.acquire?.(activeSignal)
+      await hooks?.validate(activeSignal)
+      activeSignal.throwIfAborted()
+      const result = await consume(activeSignal)
+      activeSignal.throwIfAborted()
+      if (this.disposed) throw new OcrError('engine-unavailable', 'The image service was disposed.')
+      await hooks?.validate(activeSignal)
+      return result
+    } finally { this.imageTasks.delete(controller); release?.() }
+  }
+
+  async withStagedImage<T>(handle: string, sessionId: string, signal: AbortSignal,
+    consume: (request: StagedImageRequest, record: StagedImageRecorder, signal: AbortSignal) => Promise<T>): Promise<T> {
+    signal.throwIfAborted()
+    const staged = this.stagedImage(handle, sessionId)
+    try { return await this.withImageOwner(staged.request.sessionId, staged.hooks, sessionId, signal, async activeSignal => {
+      const request = { ...staged.request, image: (staged.request.image as Uint8Array).slice(),
+        languages: [...staged.request.languages],
+        options: staged.request.options ? structuredClone(staged.request.options) : undefined,
+        binding: staged.request.binding ? structuredClone(staged.request.binding) : undefined }
+      return consume(request, async derivative => {
+        activeSignal.throwIfAborted()
+        await staged.hooks?.validate(activeSignal)
+        return staged.hooks?.recordDerived?.(derivative, activeSignal)
+      }, activeSignal)
+    }) } catch (error) { if (invalidProducer(error)) this.staged.delete(handle); throw error }
+  }
+
+  async recognizeStaged(handle: string, sessionId: string, signal: AbortSignal): Promise<StagedOcrResult> {
+    return this.withStagedImage(handle, sessionId, signal, async (request, record, activeSignal) => {
+      const available = await this.availability(sessionId, activeSignal, request.binding)
+      if (available.status !== 'available') {
+        throw new OcrError('engine-unavailable', available.reason ?? `OCR is ${available.status}.`)
+      }
+      const result = await this.recognize({ ...request, signal: activeSignal })
+      const evidence = await record({ text: result.text, source: { ...result.source, mode: 'ocr-text' } })
+      return { ...result, image: { width: request.width, height: request.height }, ...(evidence ? { evidence } : {}) }
+    })
   }
 
   private pruneStaged(): void {
@@ -148,6 +258,33 @@ export class HostOcrService {
       return { status: error instanceof OcrError ? 'unavailable' : 'not-configured',
         reason: error instanceof OcrError ? error.message : 'The selected OCR configuration or backend is unavailable.' }
     }
+  }
+
+  /** Synchronous fence for consumers retaining an asynchronous identity snapshot. */
+  generation(binding?: EngineBinding): string | undefined {
+    return this.disposed ? undefined : this.backends.generation(this.selection(binding).engineId)
+  }
+
+  async cacheIdentity(sessionId: string, signal: AbortSignal, binding?: EngineBinding): Promise<EngineCacheIdentity> {
+    signal.throwIfAborted()
+    const selected = this.selection(binding)
+    const backend = this.backends.get(selected.engineId)
+    const generation = this.backends.generation(selected.engineId)
+    if (!backend || !generation || this.disposed) throw new OcrError('engine-unavailable', 'The selected OCR backend is not installed.')
+    if (!sessionId?.trim() || sessionId.length > 512) throw new OcrError('invalid-request', 'OCR requires a valid session identity.')
+    let config: EngineConfiguration
+    try { config = validateEngineConfiguration(backend.descriptor, selected.config) }
+    catch (cause) { throw new OcrError('not-configured', 'The selected OCR configuration is invalid.', { cause }) }
+    const identity = await engineProbe(this.tasks, backend, signal, {
+      cancelled: () => new OcrError('cancelled', 'OCR identity resolution was cancelled.'),
+      timeout: () => new OcrError('timeout', 'OCR identity resolution timed out.'),
+    }, probe => backend.cacheIdentity?.(sessionId, probe, config) ?? Promise.resolve(undefined))
+    signal.throwIfAborted()
+    if (this.disposed || this.backends.generation(selected.engineId) !== generation) {
+      throw new OcrError('engine-unavailable', 'The OCR backend was removed.')
+    }
+    return engineCacheIdentity(this.backends.descriptor(selected.engineId)!, config, generation, sessionId, identity,
+      canonical => createHash('sha256').update(canonical).digest('hex'))
   }
 
   async recognize(request: HostOcrRequest): Promise<HostOcrResult> {
@@ -211,6 +348,7 @@ export class HostOcrService {
     this.disposed = true
     clearInterval(this.expiryTimer)
     for (const controller of this.tasks.keys()) controller.abort(new OcrError('cancelled', 'The OCR service was disposed.'))
+    for (const controller of this.imageTasks) controller.abort(new OcrError('cancelled', 'The image service was disposed.'))
     this.backends.dispose()
     this.staged.clear()
   }

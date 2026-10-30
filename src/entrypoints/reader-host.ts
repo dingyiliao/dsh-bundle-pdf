@@ -5,17 +5,23 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { createEvidenceReferenceStore } from '../adapters/host/storage/evidence-references.js'
 import { createRetrievalCache, retrievalCacheRecordSchema } from '../adapters/host/storage/retrieval-cache.js'
 import { createPdfRetrieval } from '../adapters/host/dsh/retrieval.js'
+import { createPdfPageContent } from '../adapters/host/dsh/page-content.js'
+import { createRetrievalPrefetch } from '../adapters/host/dsh/retrieval-prefetch.js'
+import { createPdfIndexing } from '../adapters/host/dsh/indexing.js'
 import { EmbeddingRegistry, createDisabledEmbeddingEngine } from '../embedding/index.js'
 import { createOpenAiCompatibleEmbeddingEngine } from '../adapters/host/embedding/openai-compatible.js'
-import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation,
+import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation, assertFreshSource,
   savedReferenceSchema } from '../modules/evidence/index.js'
 import { Config, readConfig, type HostConfig } from './reader-host-config.js'
+import { defaultSettings } from '../shared/contracts.js'
 import { createHostTranslations, createPdfOcrDispatch, createPdfRegionDispatch, createPdfSelectionDispatch,
   createPdfImageEvidenceResolver, freshSourceReader,
   registerAssets, registerPdfAgentTools,
   registerPdfSystemPrompt, registerPdfTransport,
   type PdfImageEvidenceResolver, type TranslationHostContext } from '../adapters/host/dsh/index.js'
 import { createPdfInfoRoute } from '../adapters/host/dsh/info-route.js'
+import { createPdfModelOptions, type PdfModelOptionsController } from '../adapters/host/dsh/model-options.js'
+import { PDF_MODEL_OPTIONS_METHOD } from '../contracts/model-options.js'
 import { retainPdfDocument } from '../adapters/host/dsh/transport.js'
 import { createLocalFiles } from '../adapters/host/filesystem/local-files.js'
 import { pdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter.js'
@@ -30,6 +36,7 @@ import { ImageUnderstandingError } from '../modules/image-understanding/index.js
 import { CapabilityRegistry } from '../modules/capabilities/index.js'
 import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
 import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../modules/engines/index.js'
+import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildRequestSchema } from '../contracts/retrieval-index.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -37,6 +44,9 @@ export const inject = ['connection', 'sessionController', 'fs', 'sandboxPolicy',
 
 type TransportContext = Parameters<typeof registerPdfTransport>[0]
 type LocalContext = Parameters<typeof createLocalFiles>[0]
+interface CredentialResolver {
+  resolve(reference: string): Promise<{ value: string } | undefined>
+}
 interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext, TranslationHostContext {
   pdfNative: PdfNativeService
   tools: Context['tools']
@@ -54,6 +64,8 @@ interface HostContext extends Omit<TransportContext, 'connection'>, LocalContext
   }
   loader: { locate(): string | undefined; resolve(id: string): { options: { id: string } } }
   effect: Context['effect']
+  /** Loader's volatile-update seam is optional in standalone Host integrations. */
+  on?: Context['on'] & ((event: 'loader/volatile-update', listener: (paths: readonly (readonly string[])[]) => void) => () => unknown)
   /** Contributes reader prompt guidance only when the system-prompt service exists. */
   inject: Context['inject']
   storageDomain: Context['storageDomain']
@@ -117,9 +129,28 @@ export async function apply(
   const translations = createHostTranslations(ctx, namespace, () => readConfig(config))
   const embeddings = new EmbeddingRegistry()
   embeddings.register(createDisabledEmbeddingEngine())
-  embeddings.register(createOpenAiCompatibleEmbeddingEngine())
+  embeddings.register(createOpenAiCompatibleEmbeddingEngine({
+    async resolveCredential(reference, signal) {
+      signal.throwIfAborted()
+      // Resolve the optional Host seam per operation so rotations and provider
+      // unloads are visible without retaining credentials in settings or Client.
+      const credentials = ctx.get('credentials') as CredentialResolver | undefined
+      if (typeof credentials?.resolve !== 'function') return undefined
+      const resolved = await credentials.resolve(reference)
+      signal.throwIfAborted()
+      return resolved?.value
+    },
+  }))
+  const pageContent = createPdfPageContent(workspaces, pdfService, { cache: retrievalCache, settings: () => readConfig(config),
+    ocr: () => ctx.get('ocr'), image: () => ctx.get('imageUnderstanding') })
   const retrieval = createPdfRetrieval(workspaces, pdfService, referenceStore,
-    { cache: retrievalCache, embeddings, settings: () => readConfig(config),
+    { cache: retrievalCache, embeddings, settings: () => readConfig(config), content: pageContent,
+      async freshSource(sessionId, documentId, signal) {
+        const resolved = await ctx.sessionController.resolveAgent(sessionId)
+        if ('error' in resolved) throw resolved.error
+        await assertFreshSource(sessionId, workspaces.readSnapshot(sessionId, documentId),
+          freshSourceReader(files, resolved.agent), signal)
+      },
       async retain(sessionId, documentId, signal) {
         const resolved = await ctx.sessionController.resolveAgent(sessionId)
         if ('error' in resolved) throw resolved.error
@@ -127,9 +158,47 @@ export async function apply(
         return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
       },
     })
+  const prefetch = createRetrievalPrefetch({
+    documents: workspaces.listOpenDocuments,
+    subscribe: workspaces.onDocumentsChanged,
+    selection() {
+      const settings = readConfig(config)
+      if (!settings.embeddingEngine || settings.embeddingEngine === 'none') return undefined
+      const binding = engineBinding('embedding', settings.embeddingEngine, settings.engineConfigurations)
+      // Discovery can learn a service revision during prepare. Only saved
+      // configuration or provider replacement changes this scheduling identity.
+      embeddings.describe(binding)
+      const ocr = engineBinding('ocr', settings.ocrEngine ?? defaultSettings.ocrEngine!, settings.engineConfigurations)
+      const image = engineBinding('image', settings.imageEngine ?? defaultSettings.imageEngine!, settings.engineConfigurations)
+      const identity = createHash('sha256').update(JSON.stringify([binding, embeddings.generation(binding),
+        settings.indexScanPages, settings.indexImageDescriptions,
+        settings.indexScanPages ? [ocr, ctx.get('ocr')?.generation(ocr)] : null,
+        settings.indexImageDescriptions ? [image, ctx.get('imageUnderstanding')?.generation(image)] : null])).digest('hex')
+      return { identity }
+    },
+    prepare: retrieval.prepare,
+  })
+  const indexing = createPdfIndexing(prefetch, { documents: workspaces.listOpenDocuments,
+    enabled() {
+      try {
+        const settings = readConfig(config)
+        if (!settings.embeddingEngine || settings.embeddingEngine === 'none') return false
+        embeddings.describe(engineBinding('embedding', settings.embeddingEngine, settings.engineConfigurations))
+        return true
+      } catch { return false }
+    },
+  })
+  const stopIndexingDocuments = workspaces.onDocumentsChanged(indexing.changed)
+  const stopPrefetchEngines = embeddings.subscribe(() => { prefetch.refresh(); indexing.changed() })
+  const stopPrefetchConfig = ctx.on?.('loader/volatile-update', paths => {
+    if (paths.some(path => ['embeddingEngine', 'engineConfigurations', 'ocrEngine', 'imageEngine', 'indexScanPages', 'indexImageDescriptions'].includes(String(path[0])))) {
+      prefetch.refresh(); indexing.changed()
+    }
+  })
   const engineCatalog = new EngineCatalog()
   const stopTranslations = engineCatalog.attach('translation', translations.registry)
   const stopEmbeddings = engineCatalog.attach('embedding', embeddings)
+  const stopContentEngines = engineCatalog.subscribe(() => { prefetch.refresh(); indexing.changed() })
   // The image-understanding plugin may start before or after this reader.
   // Resolve the current agent and attachment store for each request, not at
   // plugin startup, so neither mounting order nor an old Session grants access.
@@ -162,12 +231,18 @@ export async function apply(
     // Close operation admission synchronously, then release transports. Domain
     // writes remain available until every already-admitted operation settles.
     transportLifetime.abort(new DOMException('PDF reader is unloading', 'AbortError'))
+    stopPrefetchConfig?.()
+    stopPrefetchEngines()
+    stopIndexingDocuments()
+    indexing.dispose()
+    const prefetchDrain = prefetch.dispose()
     const retrievalDrain = retrieval.dispose()
     const drain = workspaces.dispose()
     translations.registry.dispose()
     embeddings.dispose()
     stopEmbeddings()
     stopTranslations()
+    stopContentEngines()
     engineCatalog.dispose()
     readerContexts.dispose()
     agentNavigation.dispose()
@@ -178,7 +253,7 @@ export async function apply(
       // observation failure; otherwise one failed wait would retain both stores.
       // Draining queued position writes comes first: they resolve the working
       // copy they belong to, so releasing workspaces first would drop them.
-      for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, async () => { await retrievalDrain },
+      for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, async () => { await prefetchDrain }, async () => { await retrievalDrain },
         () => positions.dispose(), () => drain, () => pdfService.dispose(), () => retrievalCache.dispose(),
         () => retrievalDomain.close(), () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }
@@ -217,6 +292,16 @@ export async function apply(
       disposers.push(registerPdfTransport(ctx, retain((sessionId, input, _agent, signal) =>
         agentNavigation.dispatch(sessionId, input, signal)),
       { endpoint: 'pdf.navigation', maxRequestBytes: 4096 }))
+      disposers.push(registerPdfTransport(ctx, track(async (sessionId, input, _agent, signal) => {
+        const result = await indexing.dispatch(sessionId, input, signal)
+        // A long poll can outlive the agent that admitted it. Do not publish
+        // task names/progress after the resource Session has been retired.
+        const current = await ctx.sessionController.resolveAgent(sessionId)
+        signal.throwIfAborted()
+        if ('error' in current) throw current.error
+        if (current.agent.session.id !== sessionId) throw Object.assign(new Error('Session identity mismatch'), { code: 'pdf/session-mismatch' })
+        return result
+      }), { endpoint: 'pdf.indexing', maxRequestBytes: 4096 }))
       // A tool-result card may request navigation only after the currently
       // authorized working copy passes a fresh, whole-page evidence check.
       disposers.push(registerPdfTransport(ctx, retain(async (_sessionId, input, agent, signal) => {
@@ -238,6 +323,21 @@ export async function apply(
         const { revision } = engineCatalogRequestSchema.parse(payload)
         return engineCatalog.wait(revision, signal)
       }, 'pdf.engines')))
+      disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(
+        createPdfModelOptions(ctx.sessionController as PdfModelOptionsController, () => ctx.get('llm'), transportLifetime.signal),
+        PDF_MODEL_OPTIONS_METHOD, { code: 'pdf/model-options-unavailable', message: 'Model choices are unavailable. Please retry.' })))
+      disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(async (payload, signal) => {
+        retrievalRebuildRequestSchema.parse(payload)
+        const active = AbortSignal.any([signal, transportLifetime.signal])
+        active.throwIfAborted()
+        // Once admitted, finish the cache reset even if this settings view closes.
+        // Retrieval owns its lifetime and drains it before storage is disposed.
+        await prefetch.suspend()
+        await retrieval.rebuild()
+        prefetch.resume()
+        active.throwIfAborted()
+        return { status: 'invalidated' as const }
+      }, RETRIEVAL_REBUILD_METHOD, { code: 'pdf/retrieval-rebuild-failed', message: 'Could not rebuild PDF search indexes. Please retry.' })))
       return dispose
     }, 'pdf: routes, working copies and draft storage')
     ctx.effect(() => ctx.reflect.provide('pdfTranslation', translations.registry), 'pdf: Host translation engines')

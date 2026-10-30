@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises'
 import { performance } from 'node:perf_hooks'
 import { parseArgs } from 'node:util'
 import { EmbeddingRegistry, type EmbeddingBinding } from '../src/embedding/index.ts'
-import { createOpenAiCompatibleEmbeddingEngine } from '../src/adapters/host/embedding/openai-compatible.ts'
+import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../src/adapters/host/embedding/openai-compatible.ts'
 import { rankRelatedText } from './legacy-related-text.ts'
 import { chunkPage, RETRIEVAL_TEXT_VERSION, type RetrievalChunk } from '../src/modules/retrieval/text.ts'
 import { createBm25Index, hybridCandidates, rankVectors, reciprocalRankFusion, searchBm25, type RankedChunk } from '../src/modules/retrieval/ranking.ts'
@@ -12,7 +12,7 @@ import { environmentMetadata } from './metadata.ts'
 import { complexPageLimitations, retrievalCorpusVersion, retrievalPassages, retrievalQueries, type RetrievalQuery } from './retrieval-corpus.ts'
 
 const { values } = parseArgs({ options: {
-  'embedding-endpoint': { type: 'string' }, 'model-revision': { type: 'string', default: 'local' },
+  'embedding-endpoint': { type: 'string' },
   'max-input-characters': { type: 'string', default: '16000' }, repeats: { type: 'string', default: '3' },
   out: { type: 'string' },
 } })
@@ -74,7 +74,7 @@ type QueryResult = { queryId: string; kind: RetrievalQuery['kind']; query: strin
 const registry = new EmbeddingRegistry()
 const binding: EmbeddingBinding | undefined = values['embedding-endpoint'] ? {
   engineId: 'local-qwen3-embedding', config: {
-    endpoint: values['embedding-endpoint'], modelRevision: values['model-revision'], maxInputCharacters,
+    endpoint: values['embedding-endpoint'], maxInputCharacters, queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION,
   },
 } : undefined
 if (binding) registry.register(createOpenAiCompatibleEmbeddingEngine())
@@ -82,7 +82,8 @@ if (binding) registry.register(createOpenAiCompatibleEmbeddingEngine())
 try {
   // No backend probe is hidden in benchmark timing: first actual embedding is
   // measured below. An explicitly requested endpoint must succeed or this run fails.
-  const model = binding ? registry.describe(binding) : undefined
+  let model = binding ? registry.describe(binding) : undefined
+  let verifiedModel = false
   const preparation = await measure(() => {
     const chunks = retrievalPassages.flatMap((passage, index) => chunkPage(index + 1, passage.text, 'pdf-text', {
       maxCharacters: Math.min(1200, model?.maxInputCharacters ?? 1200),
@@ -97,7 +98,10 @@ try {
     const vectors: number[][] = []
     for (let offset = 0; offset < texts.length; offset += model.maxBatchSize) {
       const result = await registry.embed({ texts: texts.slice(offset, offset + model.maxBatchSize), purpose }, binding)
-      if (result.model.fingerprint !== model.fingerprint) throw new Error('Embedding model identity changed during the run.')
+      // The first measured operation can discover service-provided metadata.
+      // Subsequent batches and queries must retain that verified identity.
+      if (!verifiedModel) { model = result.model; verifiedModel = true }
+      else if (result.model.fingerprint !== model.fingerprint) throw new Error('Embedding model identity changed during the run.')
       vectors.push(...result.vectors)
     }
     return vectors

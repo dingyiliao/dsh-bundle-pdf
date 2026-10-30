@@ -1,39 +1,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { encodeExplanationImage, encodeExplanationImageBytes, MAX_EXPLANATION_IMAGE_BYTES } from '../../../src/modules/explanation/index.ts'
+import { encodeExplanationImageBytes, MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../src/modules/explanation/index.ts'
 
-test('explanation image encodes PNG bytes without changing the payload', async () => {
+test('explanation image encodes verified PNG bytes without changing the payload', () => {
   const bytes = Uint8Array.from({ length: 16_385 }, (_, index) => index & 0xff)
-  const encoded = await encodeExplanationImage(new Blob([bytes], { type: 'image/png' }))
+  const encoded = encodeExplanationImageBytes(bytes)
   assert.deepEqual(Buffer.from(encoded, 'base64'), Buffer.from(bytes))
-})
-
-test('explanation image rejects unsupported, empty and oversized blobs', async () => {
-  await assert.rejects(encodeExplanationImage(new Blob(['x'], { type: 'image/jpeg' })), TypeError)
-  await assert.rejects(encodeExplanationImage(new Blob([], { type: 'image/png' })), RangeError)
-  await assert.rejects(encodeExplanationImage(new Blob([new Uint8Array(MAX_EXPLANATION_IMAGE_BYTES + 1)], {
-    type: 'image/png',
-  })), RangeError)
 })
 
 test('Host-verified image bytes are size-checked before Base64 encoding', () => {
   assert.throws(() => encodeExplanationImageBytes(new Uint8Array()), RangeError)
-  assert.throws(() => encodeExplanationImageBytes(new Uint8Array(MAX_EXPLANATION_IMAGE_BYTES + 1)), RangeError)
+  assert.throws(() => encodeExplanationImageBytes(new Uint8Array(MAX_EXPLANATION_REGION_IMAGE_BYTES + 1)), RangeError)
   assert.equal(encodeExplanationImageBytes(Uint8Array.of(1, 2, 3)), 'AQID')
 })
 
-test('explanation image rejects cancellation before or during the byte read', async () => {
+test('explanation image rejects cancellation before encoding', () => {
   const before = new AbortController()
   before.abort()
-  await assert.rejects(encodeExplanationImage(new Blob(['x'], { type: 'image/png' }), before.signal), {
+  assert.throws(() => encodeExplanationImageBytes(Uint8Array.of(1), before.signal), {
     name: 'AbortError',
   })
 
-  const during = new AbortController()
-  const blob = new Blob(['x'], { type: 'image/png' })
-  blob.arrayBuffer = async () => {
-    during.abort()
-    return Uint8Array.of(1).buffer
-  }
-  await assert.rejects(encodeExplanationImage(blob, during.signal), { name: 'AbortError' })
 })

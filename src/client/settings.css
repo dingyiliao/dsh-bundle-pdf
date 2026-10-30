@@ -6,7 +6,7 @@
   max-width: 760px;
   min-width: 0;
   color: var(--dsw-alias-label-primary);
-  font-family: inherit;
+  font-family: var(--pdf-font-ui);
 }
 
 .dsh-pdf-settings-header h2 {
@@ -97,6 +97,16 @@
   font: inherit;
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* Match DSH settings: reserve an inset arrow cell instead of the OS edge arrow. */
+.dsh-pdf-settings select.dsh-pdf-settings-control {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 12px;
 }
 
 .dsh-pdf-settings-control:focus-visible {

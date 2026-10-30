@@ -133,7 +133,6 @@ export async function capturePdfRegion(
       viewport,
       transform: [1, 0, 0, 1, -left, -top],
       annotations: false,
-      background: '#ffffff',
     })
     await task.promise
     renderFinished = true

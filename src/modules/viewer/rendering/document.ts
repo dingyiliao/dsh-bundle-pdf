@@ -2,7 +2,7 @@ import { ByteCache } from '../../../shared/cache/index.ts'
 import type { NativeReaderApi, NativeTextContent, NativeTileRequest } from '../../../shared/native.ts'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import type { ReaderAnnotation, ReaderDocument, ReaderOutlineItem, ReaderPage, ReaderRenderOptions } from '../ports/reader-document.ts'
-import { NativeViewport } from './viewport.ts'
+import { NativeViewport } from '../../../shared/geometry/native-viewport.ts'
 
 /** Native PDFium document exposed to the reader. */
 export class NativeDocument implements ReaderDocument {

@@ -2,12 +2,6 @@ export type ImageUnderstandingAvailability =
   | { status: 'available'; kind: 'direct-image' | 'derived-text'; backendId: string; limitation?: string }
   | { status: 'unavailable'; reason: string }
 
-export type PreparedImageUnderstanding =
-  | { kind: 'direct-image'; backendId: string; provenance: { backendId: string; mode: 'session-vision' } }
-  | { kind: 'derived-text'; text: string;
-    provenance: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string };
-    limitations?: string }
-
 export interface ImageEvidenceIdentity {
   refId: string
   documentId: string
@@ -30,15 +24,12 @@ export type PreparedImageReference =
     evidence: ImageEvidenceIdentity;
     image: { mediaType: 'image/png'; data: Uint8Array; width: number; height: number } }
   | { kind: 'derived-text'; backendId: string; requestedRefId: string; text: string;
-    provenance: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string };
+    provenance: { backendId: string; mode: 'image-description'; backendVersion?: string; model?: string };
     limitations?: string; evidence: ImageEvidenceIdentity }
 
 /** Viewer-facing image port, independent of the DSH RPC carrier. */
 export interface ImageUnderstandingApi {
   availability(sessionId: string, signal?: AbortSignal): Promise<ImageUnderstandingAvailability>
-  /** Legacy caller-supplied PNG path, retained for tools and non-explanation callers. */
-  prepare(request: { sessionId: string; image: { mediaType: 'image/png'; data: string; width: number; height: number };
-    question: string }, signal?: AbortSignal): Promise<PreparedImageUnderstanding>
   /** Resolve a Host evidence ref; the image bytes never come from Client state. */
   prepareReference(request: { sessionId: string; documentId: string; refId: string; question: string },
     signal?: AbortSignal): Promise<PreparedImageReference>

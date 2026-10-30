@@ -1,0 +1,27 @@
+{
+  "name": "@example/dsh-pdf-http-engines",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": ["dist", "cordis.patch.yml"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@dylanl1/dsh-plugin-pdf": "^0.1.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@dylanl1/dsh-plugin-pdf": "^0.1.2",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -71,7 +71,8 @@ export interface OcrEngineDescriptor {
   id: string
   name: string
   version: string
-  execution: 'disabled' | 'local' | 'remote'
+  execution: import('../modules/engines/types.js').EngineDescriptor['execution']
+  capabilities?: import('../modules/engines/types.js').EngineCapability[]
   languages?: readonly string[]
   geometry: readonly ('block' | 'line' | 'word')[]
   confidence: boolean

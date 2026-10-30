@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, resolve } from 'node:path'
+import { basename, isAbsolute, resolve } from 'node:path'
+import { PASSIVE_POLL_TIMEOUT_MS } from '../../shared/passive-poll.js'
 import { decodePdfBaseline, digestPdfBytes, encodePdfBaseline } from '../document/index.js'
 import { appendGroup, moveCursor, projectedDocument, projectWorkingCopyOperations } from './history.js'
 import { saveWorkingCopy } from './save.js'
@@ -7,7 +8,7 @@ import { freshRecord, workspaceSnapshot, type WorkingCopyState } from './state.j
 import type { PdfDocumentInfo } from '../../core/pdf-types.js'
 import type {
   HostWorkspaceSnapshot, PdfDocumentPort, WorkingCopyDraftPort, WorkingCopyAgent, WorkingCopyFilePort, WorkingCopyFileRead,
-  DocumentReleaseStatus, DocumentResidency,
+  DocumentReleaseStatus, DocumentResidency, OpenWorkingCopyDocument,
 } from './ports.js'
 import { sessionFile } from '../../shared/address.js'
 import { beginPdfSpan } from '../../shared/performance.js'
@@ -32,12 +33,37 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   const temporaryBaselines = new Set<string>()
   const releasedReferences = new Set<string>()
   const idleListeners = new Set<(sessionId: string, id: string) => void>()
+  const documentListeners = new Set<() => void>()
   const pinWaiters = new Set<() => void>()
   const queues = new Map<string, Promise<unknown>>()
   const revisionListeners = new Map<string, Set<() => void>>()
   const hashes = new WeakMap<Uint8Array, string>()
   let closing = false
   let disposal: Promise<void> | undefined
+  let documentSignature = '[]'
+
+  function listOpenDocuments(): OpenWorkingCopyDocument[] {
+    if (closing) return []
+    return [...references].flatMap(([id, refs]) => {
+      if (!refs.ui.size && refs.modelReferenceId === undefined) return []
+      const active = copies.get(id), dormant = suspended.get(id)
+      const record = active?.record ?? dormant?.record
+      if (!record) return []
+      return [{ sessionId: record.sessionId, id, contentVersion: record.contentVersion,
+        sourceDigest: record.sourceHash, conflict: active?.snapshot.conflict ?? dormant!.conflict,
+        title: (basename(record.path) || 'PDF').slice(0, 512) }]
+    })
+  }
+
+  function notifyDocuments(): void {
+    const signature = JSON.stringify(listOpenDocuments())
+    if (signature === documentSignature) return
+    documentSignature = signature
+    for (const listener of [...documentListeners]) {
+      try { void Promise.resolve(listener()).catch(() => undefined) }
+      catch { /* Passive observers cannot fail or delay a completed document operation. */ }
+    }
+  }
 
   function recordFor(sessionId: string, id: string): WorkspaceRecord {
     const record = copies.get(id)?.record ?? suspended.get(id)?.record
@@ -448,10 +474,24 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       throw error
     } finally {
       span.end()
+      notifyDocuments()
     }
   }
   return {
     execute,
+    /** Inspect source bytes without acquiring an owner or creating a durable draft. */
+    async inspectFile(sessionId: string, path: string, agent: WorkingCopyAgent, signal: AbortSignal) {
+      if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
+      if (sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
+      return serialize(sessionId, async () => {
+        signal.throwIfAborted()
+        const source = await files.read(agent, path, signal)
+        const document = await pdf.inspect(source.bytes)
+        signal.throwIfAborted()
+        return { path: source.path, size: source.size, sourceVersion: source.fsVersion,
+          sourceDigest: source.version, document }
+      })
+    },
     /** Pin the whole operation, including image decoding or save approval waits. */
     async acquire(sessionId: string, id: string, agent: WorkingCopyAgent, signal: AbortSignal): Promise<() => void> {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
@@ -479,11 +519,19 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         signal.throwIfAborted()
         return release
       } catch (error) { release(); throw error }
+      finally { notifyDocuments() }
     },
     touch(sessionId: string, id: string): void { recordFor(sessionId, id); touch(id) },
     onIdle(listener: (sessionId: string, id: string) => void): () => void {
       idleListeners.add(listener)
       return () => { idleListeners.delete(listener) }
+    },
+    listOpenDocuments,
+    /** Passive ownership/source notifications; subscribers schedule their own asynchronous work. */
+    onDocumentsChanged(listener: () => void): () => void {
+      if (closing) return () => {}
+      documentListeners.add(listener)
+      return () => { documentListeners.delete(listener) }
     },
     listDocuments(): DocumentResidency[] {
       return [...references.entries()].map(([id, refs]) => {
@@ -521,7 +569,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
           } catch (error) { cleanup(); reject(error) }
         }
         const onAbort = () => { cleanup(); reject(signal.reason) }
-        const timer = setTimeout(() => { cleanup(); resolve(knownRevision) }, 15_000)
+        const timer = setTimeout(() => { cleanup(); resolve(knownRevision) }, PASSIVE_POLL_TIMEOUT_MS)
         set.add(onChange)
         signal.addEventListener('abort', onAbort, { once: true })
         // Close the race between the first revision check and registration.
@@ -539,18 +587,21 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     async releaseBackground(sessionId: string, id: string, evict?: () => Promise<unknown>,
       expectedReferenceId?: string | null): Promise<DocumentReleaseStatus> {
       if (closing) return 'already-closed'
-      return serialize(sessionId, async () => {
-        const record = copies.get(id)?.record ?? suspended.get(id)?.record
-        if (!record) return 'already-closed'
-        recordFor(sessionId, id)
-        const refs = references.get(id)!
-        // Runtime detach/close may wait behind a different document's native
-        // eviction. It must not release a newer open admitted in that interval.
-        if (expectedReferenceId !== undefined && (refs.modelReferenceId ?? null) !== expectedReferenceId) return 'retained-model'
-        refs.modelReferenceId = undefined
-        touch(id)
-        return suspendCopy(sessionId, id, evict)
-      })
+      try {
+        return await serialize(sessionId, async () => {
+          const record = copies.get(id)?.record ?? suspended.get(id)?.record
+          if (!record) return 'already-closed'
+          recordFor(sessionId, id)
+          const refs = references.get(id)!
+          // Runtime detach/close may wait behind a different document's native
+          // eviction. It must not release a newer open admitted in that interval.
+          if (expectedReferenceId !== undefined && (refs.modelReferenceId ?? null) !== expectedReferenceId) return 'retained-model'
+          refs.modelReferenceId = undefined
+          touch(id)
+          notifyDocuments()
+          return suspendCopy(sessionId, id, evict)
+        })
+      } finally { notifyDocuments() }
     },
     readSnapshot(sessionId: string, id: string): HostWorkspaceSnapshot {
       if (closing) fail('pdf/unavailable', 'The PDF plugin is unloading')
@@ -566,6 +617,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     dispose(): Promise<void> {
       if (disposal) return disposal
       closing = true
+      notifyDocuments()
       for (const listeners of [...revisionListeners.values()]) {
         for (const listener of [...listeners]) listener()
       }
@@ -580,7 +632,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         const durableBaselines = new Set([...copies.values(), ...suspended.values()]
           .filter(value => value.record.groups.length).map(value => value.record.baseKey))
         await Promise.allSettled([...temporaryBaselines].filter(key => !durableBaselines.has(key)).map(key => drafts.delete(key)))
-        copies.clear(); suspended.clear(); byPath.clear(); references.clear(); releasedReferences.clear(); queues.clear(); revisionListeners.clear(); idleListeners.clear(); pinWaiters.clear(); temporaryBaselines.clear()
+        copies.clear(); suspended.clear(); byPath.clear(); references.clear(); releasedReferences.clear(); queues.clear(); revisionListeners.clear(); idleListeners.clear(); documentListeners.clear(); pinWaiters.clear(); temporaryBaselines.clear()
       })()
       return disposal
     },

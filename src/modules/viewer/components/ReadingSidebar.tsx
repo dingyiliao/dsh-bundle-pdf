@@ -2,6 +2,8 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import type { ReaderDocument } from '../ports/reader-document.js'
 import { BookmarkPanel, type OutlineAccess } from './BookmarkPanel.js'
 import { PageThumbnailPanel } from './PageThumbnailPanel.js'
+import { readerPaneWidth } from '../rendering/reader-pane-layout.js'
+import { ToolbarTooltip } from './ToolbarTooltip.js'
 
 export const readingSidebarSections = ['pages', 'bookmarks', 'annotations', 'search', 'translation', 'ocr'] as const
 export type ReadingSidebarSection = typeof readingSidebarSections[number]
@@ -27,7 +29,7 @@ export interface ReadingSidebarProps {
 }
 
 const sections = readingSidebarSections
-const railWidth = 44
+const railWidth = 56
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
   return <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
@@ -46,9 +48,9 @@ function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
   </svg>
 }
 
-function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPageInputChange,
+function PageNavigation({ pdf, currentPage, pageInput, navigating, onPageInputChange,
   onPageInputSubmit, onPageInputReset, onStepPage, t }: Pick<ReadingSidebarProps,
-  'pdf' | 'currentPage' | 'pageInput' | 'navigating' | 'onPageInputChange' | 'onPageInputSubmit' | 'onPageInputReset' | 'onStepPage' | 't'> & { compact: boolean }) {
+  'pdf' | 'currentPage' | 'pageInput' | 'navigating' | 'onPageInputChange' | 'onPageInputSubmit' | 'onPageInputReset' | 'onStepPage' | 't'>) {
   const count = pdf?.numPages
   const skipBlur = useRef(false)
   const submittedPage = useRef<number | null>(null)
@@ -63,17 +65,17 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
     submittedPage.current = page
     onPageInputSubmit(raw)
   }
-  return <div className={`dsh-pdf-sidebar-page-nav${compact ? ' is-compact' : ''}`}
+  return <div className="dsh-pdf-sidebar-page-nav is-compact"
     role="group" aria-label={t('reader.navigation')}>
     {/* A step stays enabled while a jump is in flight: the reader coalesces page
         requests anyway, and dimming these buttons for the length of a load reads
         as a flicker. Only the page field is locked, so a half-typed number is not
         lost when the layout changes under it. */}
-    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.previous')} title={t('reader.previous')}
+    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.previous')} data-tooltip={t('reader.previous')}
       disabled={!pdf || currentPage <= 1} onClick={() => onStepPage(currentPage - 1)}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8"
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d={compact ? 'm5 14 7-7 7 7' : 'm14 5-7 7 7 7'} />
+        <path d="m5 14 7-7 7 7" />
       </svg>
     </button>
     <form className="dsh-pdf-page-form" onSubmit={event => { event.preventDefault(); submit() }}>
@@ -111,14 +113,14 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, compact, onPa
         }} />
       <span className="dsh-pdf-page-total" title={`${currentPage} / ${count ?? '—'}`}
         aria-label={`${t('reader.totalPages')} ${count ?? '—'}`}>
-        {compact ? count ?? '—' : `/ ${count ?? '—'}`}
+        {count ?? '—'}
       </span>
     </form>
-    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.next')} title={t('reader.next')}
+    <button type="button" className="dsh-pdf-page-step" aria-label={t('reader.next')} data-tooltip={t('reader.next')}
       disabled={!pdf || currentPage >= (count ?? 0)} onClick={() => onStepPage(currentPage + 1)}>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8"
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d={compact ? 'm5 10 7 7 7-7' : 'm10 5 7 7-7 7'} />
+        <path d="m5 10 7 7 7-7" />
       </svg>
     </button>
   </div>
@@ -133,11 +135,11 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
   const tabs = useRef(new Map<ReadingSidebarSection, HTMLButtonElement>())
   const drag = useRef<{ pointerId: number; x: number; width: number }>()
   const frame = useRef(0)
-  const requestedWidth = useRef(320)
-  const [width, setWidth] = useState(320)
-  const [maximumWidth, setMaximumWidth] = useState(420)
+  const requestedWidth = useRef(296)
+  const [width, setWidth] = useState(296)
+  const [maximumWidth, setMaximumWidth] = useState(396)
   const panelId = useId()
-  const minimumWidth = Math.min(220, maximumWidth)
+  const minimumWidth = Math.min(196, maximumWidth)
   const expandedWidth = Math.max(minimumWidth, Math.min(width, maximumWidth))
   const currentWidth = expanded ? expandedWidth : railWidth
 
@@ -145,12 +147,14 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     const parent = root.current?.parentElement
     if (!parent) return
     const updateLimits = () => {
-      const available = parent.clientWidth
+      const available = readerPaneWidth(parent)
       // Small hosts keep a useful reading column. CSS applies the same bound before this effect runs.
-      setMaximumWidth(Math.max(railWidth, Math.min(420, Math.floor(available * .45), available - 180)))
+      setMaximumWidth(Math.max(railWidth, Math.min(396, Math.floor(available * .45), available - 180)))
     }
     const observer = new ResizeObserver(updateLimits)
     observer.observe(parent)
+    const toolRail = parent.querySelector('[data-pdf-tool-rail]')
+    if (toolRail) observer.observe(toolRail)
     updateLimits()
     return () => observer.disconnect()
   }, [])
@@ -188,7 +192,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     onExpandedChange(true)
   }
 
-  return <aside ref={root} className={`dsh-pdf-sidebar dsh-pdf-glass${expanded ? '' : ' is-collapsed'}`}
+  return <ToolbarTooltip><aside ref={root} className={`dsh-pdf-sidebar${expanded ? '' : ' is-collapsed'}`}
     style={{ '--pdf-sidebar-width': `${currentWidth}px`, '--pdf-sidebar-expanded-width': `${expandedWidth}px` } as React.CSSProperties}
     aria-label={t('reader.sidebar.title')}>
     <div className="dsh-pdf-sidebar-shell">
@@ -223,7 +227,7 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           resize(event.key === 'Home' ? minimumWidth : maximumWidth)
         }
       }} />
-    <div className="dsh-pdf-sidebar-main" aria-hidden={!expanded}
+    <div className="dsh-pdf-sidebar-main dsh-pdf-glass" aria-hidden={!expanded}
       ref={element => { if (element) element.inert = !expanded }}>
       <div className="dsh-pdf-sidebar-panels" id={panelId}>
         {sections.map(section => <div key={section} className="dsh-pdf-sidebar-panel"
@@ -235,16 +239,13 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
               currentPage={currentPage} outlineAccess={outlineAccess} onNavigateDestination={onNavigateDestination} t={t} /> : panels[section]}
         </div>)}
       </div>
-      <div className="dsh-pdf-sidebar-footer">
-        <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
-          compact={false} onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
-          onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />
-      </div>
     </div>
     <div className="dsh-pdf-sidebar-rail">
+      <div className="dsh-pdf-sidebar-rail-shell dsh-pdf-rail-shell dsh-pdf-glass">
+      <div className="dsh-pdf-sidebar-toggle-section">
       <button type="button" className="dsh-pdf-sidebar-toggle" aria-controls={panelId} aria-expanded={expanded}
         aria-label={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')}
-        title={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => {
+        data-tooltip={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => {
           onExpandedChange(!expanded)
         }}>
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
@@ -252,13 +253,15 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           <path d="m9 5 7 7-7 7" />
         </svg>
       </button>
+      </div>
+      <div className="dsh-pdf-sidebar-sections">
       <div className="dsh-pdf-sidebar-tabs" role="tablist" aria-orientation="vertical" aria-label={t('reader.sidebar.title')}>
         {sections.map(section => <button key={section} type="button" role="tab" id={`${panelId}-tab-${section}`}
           ref={element => { if (element) tabs.current.set(section, element); else tabs.current.delete(section) }}
           className={`dsh-pdf-sidebar-tab${activeSection === section && expanded ? ' is-active' : ''}`}
           aria-label={t(`reader.sidebar.${section}`)} aria-selected={activeSection === section}
           aria-controls={`${panelId}-${section}`} tabIndex={activeSection === section ? 0 : -1}
-          title={t(`reader.sidebar.${section}`)}
+          data-tooltip={t(`reader.sidebar.${section}`)}
           onClick={() => select(section)} onKeyDown={event => {
             const current = sections.indexOf(section)
             let next = current
@@ -276,13 +279,14 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
           <span className="dsh-pdf-visually-hidden">{t(`reader.sidebar.${section}`)}</span>
         </button>)}
       </div>
-      <div className="dsh-pdf-sidebar-compact-nav" aria-hidden={expanded}
-        ref={element => { if (element) element.inert = expanded }}>
+      </div>
+      <div className="dsh-pdf-sidebar-compact-nav">
         <PageNavigation pdf={pdf} currentPage={currentPage} pageInput={pageInput} navigating={navigating}
-          compact onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
+          onPageInputChange={onPageInputChange} onPageInputSubmit={onPageInputSubmit}
           onPageInputReset={onPageInputReset} onStepPage={onStepPage} t={t} />
+      </div>
       </div>
     </div>
     </div>
-  </aside>
+  </aside></ToolbarTooltip>
 }

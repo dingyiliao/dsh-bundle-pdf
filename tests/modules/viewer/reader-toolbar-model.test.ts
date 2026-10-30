@@ -76,6 +76,14 @@ test('toolbar back target and active explanation route to their owners', () => {
   assert.deepEqual(calls, ['explain-cancel', 'back:2:7', 'close-menu', 'back::'])
 })
 
+test('toolbar reload confirms staged form input before a clean snapshot can be replaced', () => {
+  const { options, calls } = toolbarFixture()
+  const model = readerToolbarModel({ ...options, formPending: true })
+  model.actions.onReload()
+  assert.deepEqual(calls, ['confirm-reload', 'close-menu'])
+  assert.equal(model.state.formPending, true)
+})
+
 function floatingFixture(): ReaderFloatingStatusesOptions {
   return {
     saveFeedback: null, documentPath: '/document.pdf', mode: 'text', explanationActive: false,
@@ -87,7 +95,7 @@ function floatingFixture(): ReaderFloatingStatusesOptions {
 test('activity statuses preserve save occurrence while input modes stay separate', () => {
   const expired: number[] = []
   const statuses = readerFloatingStatuses({ ...floatingFixture(), mode: 'note',
-    saveFeedback: { kind: 'saved', durationMs: 2600, occurrence: 9 },
+    saveFeedback: { kind: 'saved', durationMs: 2000, occurrence: 9 },
     ocrProgress: 'recognizing', onSaveExpired: occurrence => expired.push(occurrence) })
   assert.deepEqual(statuses.map(item => item.id), ['save', 'ocr'])
   const mode = readerModeStatus({ ...floatingFixture(), mode: 'note' })
@@ -95,9 +103,29 @@ test('activity statuses preserve save occurrence while input modes stay separate
   assert.equal(mode?.label, 'reader.placeNote')
   assert.equal(statuses[0].title, '/document.pdf')
   assert.equal(statuses[0].content, 'reader.saved')
+  assert.equal(statuses[0].tone, 'success')
   statuses[0].onExpire?.()
   assert.deepEqual(expired, [9])
   assert.equal(statuses[1].actions?.[0].disabled, false)
+})
+
+test('saving and unsaved feedback use progress and neutral semantics', () => {
+  const saving = readerFloatingStatuses({ ...floatingFixture(), saveFeedback: { kind: 'saving', durationMs: 0, occurrence: 1 } })
+  const unsaved = readerFloatingStatuses({ ...floatingFixture(), saveFeedback: { kind: 'unsaved', durationMs: 0, occurrence: 2 } })
+  assert.equal(saving[0].tone, 'progress')
+  assert.equal(unsaved[0].tone, 'neutral')
+})
+
+test('a failed save remains an error task until its owner clears the feedback', () => {
+  const statuses = readerFloatingStatuses({ ...floatingFixture(),
+    saveFeedback: { kind: 'failed', durationMs: 0, occurrence: 3, path: '/failed.pdf' } })
+  assert.equal(statuses[0].id, 'save')
+  assert.equal(statuses[0].kind, 'error')
+  assert.equal(statuses[0].tone, 'error')
+  assert.equal(statuses[0].content, 'reader.saveFailed')
+  assert.equal(statuses[0].durationMs, 0)
+  assert.equal(statuses[0].title, '/failed.pdf')
+  assert.deepEqual(readerFloatingStatuses(floatingFixture()), [])
 })
 
 test('floating statuses suppress conflicting mode hints and disable cancel while stopping', () => {

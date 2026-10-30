@@ -2,8 +2,9 @@ import type { PdfRect } from '../../core/pdf-types.js'
 import type { NativeTextContent } from '../native.js'
 import { joinPositionedText } from '../page-text.js'
 
-export interface TextTargetGeometry { rect: PdfRect; quadPoints: number[] }
-export interface TextTargetRange extends TextTargetGeometry {
+export interface TextTargetRange {
+  rect: PdfRect
+  quadPoints: number[]
   startUtf16: number
   endUtf16: number
   text: string
@@ -20,7 +21,7 @@ function uniqueOffset(text: string, quote: string): number {
   return start
 }
 
-/** Resolve bounded start/end anchors against the same joined text exposed by pdf_read_page. */
+/** Resolve bounded start/end anchors against the same joined text exposed by pdf_page_read. */
 export function locateTextRange(content: NativeTextContent, startQuote?: string,
   endQuote?: string, requireReadingOrder = true): TextTargetRange {
   const text = joinPositionedText(content.items)
@@ -97,8 +98,8 @@ export function locateTextOffsetRange(content: NativeTextContent, start: number,
     const runStart = starts[index]!, runEnd = runStart + item.str.length
     if (runStart >= end || runEnd <= start) continue
     const chars = Array.from(item.str)
-    // PDFium omits its per-character array for a one-scalar text object. Its
-    // native origin and positive width already describe exactly that glyph;
+    // When a one-scalar text object has no per-character array, its native
+    // origin and positive width already describe exactly that glyph;
     // never apply this fallback to a multi-character run or malformed array.
     const singleGlyph = item.glyphs === undefined && chars.length === 1
       && item.transform.length >= 6 && [item.transform[4], item.transform[5], item.width].every(Number.isFinite)
@@ -148,10 +149,4 @@ export function locateTextOffsetRange(content: NativeTextContent, start: number,
   if (!quads.length) fail('pdf/text-geometry-unavailable', 'No positioned glyphs matched the quote; no annotation was created')
   return { rect: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], quadPoints: quads,
     startUtf16: start, endUtf16: end, text: text.slice(start, end) }
-}
-
-/** Resolve an exact, unique quote to PDF-space glyph geometry, never to a guessed page rectangle. */
-export function locateTextTarget(content: NativeTextContent, quote: string): TextTargetGeometry {
-  const { rect, quadPoints } = locateTextRange(content, quote, quote, true)
-  return { rect, quadPoints }
 }

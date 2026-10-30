@@ -63,19 +63,17 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
       const bounds = viewport.getBoundingClientRect()
       if (anchor.bottom <= bounds.top || anchor.top >= bounds.bottom
         || anchor.right <= bounds.left || anchor.left >= bounds.right) { setPlacement(null); return }
-      const width = Math.max(0, Math.min(360, bounds.width - EDGE_GAP * 2, window.innerWidth - EDGE_GAP * 2))
-      if (!width) { setPlacement(null); return }
-      editor.style.width = `${width}px`
-
       const leftEdge = Math.max(bounds.left + EDGE_GAP, EDGE_GAP)
       const rightEdge = Math.min(bounds.right - EDGE_GAP, window.innerWidth - EDGE_GAP)
+      const topEdge = Math.max(bounds.top + EDGE_GAP, EDGE_GAP)
+      const bottomEdge = Math.min(bounds.bottom - EDGE_GAP, window.innerHeight - EDGE_GAP)
+      const width = Math.max(0, Math.min(360, rightEdge - leftEdge))
+      if (!width || bottomEdge <= topEdge) { setPlacement(null); return }
+      editor.style.width = `${width}px`
+      editor.style.maxHeight = `${Math.min(260, bottomEdge - topEdge)}px`
       const height = editor.offsetHeight
       const center = anchor.left + anchor.width / 2
       const left = Math.min(Math.max(center - width / 2, leftEdge), Math.max(leftEdge, rightEdge - width))
-      const controls = viewport.closest('.dsh-pdf-reader')?.querySelector<HTMLElement>('.dsh-pdf-floating-controls-layout')
-      const controlsBottom = controls?.getBoundingClientRect().bottom ?? 0
-      const topEdge = Math.max(bounds.top + EDGE_GAP, controlsBottom + (controls ? 8 : 0))
-      const bottomEdge = Math.min(bounds.bottom - EDGE_GAP, window.innerHeight - EDGE_GAP)
       const above = anchor.top - height - ANCHOR_GAP
       const below = anchor.bottom + ANCHOR_GAP
       const fitsAbove = above >= topEdge
@@ -101,16 +99,15 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
     observer?.observe(viewport)
     observer?.observe(editor)
     observer?.observe(portalRoot)
-    const controls = portalRoot.querySelector<HTMLElement>('.dsh-pdf-floating-controls-layout')
-    if (controls) observer?.observe(controls)
-    const controlsObserver = controls ? new MutationObserver(schedule) : null
-    if (controls) controlsObserver?.observe(controls, { childList: true, subtree: true, characterData: true })
+    viewport.addEventListener('pdfviewchange', schedule)
+    viewport.addEventListener('pdflayoutchange', schedule)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     return () => {
       if (frame) cancelAnimationFrame(frame)
       observer?.disconnect()
-      controlsObserver?.disconnect()
+      viewport.removeEventListener('pdfviewchange', schedule)
+      viewport.removeEventListener('pdflayoutchange', schedule)
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
     }

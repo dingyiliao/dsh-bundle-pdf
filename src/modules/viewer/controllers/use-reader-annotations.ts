@@ -195,10 +195,10 @@ export function useReaderAnnotations(options: ReaderAnnotationsOptions) {
   }
 
   const updateColor = (nextColor: string) => {
-    if (!selected || isStandaloneNote(selected) || selected.subtype === 'Text'
+    if (!selected || selected.subtype === 'Text'
       || !snapshot || snapshot.document.readOnly || !selected.editable) return
     setAnnotationColor(nextColor)
-    if (selected.subtype !== 'Text') setColor(nextColor)
+    setColor(nextColor)
     const firstChange = colorChanges.current.size === 0
     const key = `${ownerSequence.current}:${snapshot.id}:${selected.id}`
     colorChanges.current.set(key, { owner: ownerSequence.current, documentId: snapshot.id, annotationId: selected.id, color: nextColor })

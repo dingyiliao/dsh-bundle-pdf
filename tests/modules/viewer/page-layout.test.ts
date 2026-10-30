@@ -39,7 +39,8 @@ test('virtual layout preserves mixed page geometry and rotation without loading 
   assert.deepEqual(inset.map(page => page.top), [READING_TOP_INSET, READING_TOP_INSET + 400 + PAGE_GAP])
 })
 
-test('a page aligned below the floating toolbar remains the detected current page', () => {
+test('docked tools leave a regular page inset and navigation detects the page at that edge', () => {
+  assert.equal(READING_TOP_INSET, 16, 'the old 72px floating-toolbar reservation is gone')
   const pages: PdfPageInfo[] = Array.from({ length: 128 }, (_, index) => ({
     page: index + 1, cropBox: [0, 0, 400, 560], rotation: 0, userUnit: 1,
   }))
@@ -49,7 +50,8 @@ test('a page aligned below the floating toolbar remains the detected current pag
   // Navigation aligns the page stage directly with the safe top.
   const scrollTop = target.top - readingSafeTop(viewportHeight)
   assert.equal(layout[pageIndexAtOffset(layout, scrollTop + readingPageProbe(viewportHeight))]!.page, 115)
-  assert.equal(layout[pageIndexAtOffset(layout, scrollTop + 40)]!.page, 114)
+  assert.equal(layout[pageIndexAtOffset(layout, scrollTop + readingSafeTop(viewportHeight) - 1)]!.page, 114)
+  assert.equal(readingSafeTop(24), 8, 'a short scrollport keeps its reading edge inside the viewport')
 })
 
 test('a 1001-page layout keeps distant viewport windows small and indexed correctly', () => {

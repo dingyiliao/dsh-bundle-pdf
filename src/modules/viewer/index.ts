@@ -5,7 +5,7 @@ export type { ReaderDocument, ReaderPage as ReaderPagePort, ReaderRenderTask, Re
   ReaderOutlineItem, ReaderAnnotation } from './ports/reader-document.js'
 export type { HostOcrApi, HostOcrAvailability, HostOcrRecognition } from './ports/ocr.js'
 export type { ImageUnderstandingApi, ImageUnderstandingAvailability, ImageEvidenceIdentity,
-  PreparedImageUnderstanding, PreparedImageReference } from './ports/image-understanding.js'
+  PreparedImageReference } from './ports/image-understanding.js'
 export type { ReaderContentLease, PdfReadingContextUpdate, ReaderContextReporter, PdfAgentNavigationApi,
   ReaderPromptExplanation, PdfRegionEvidence, PdfRegionEvidenceApi,
   PdfTextSelectionEvidence, PdfTextSelectionEvidenceApi } from './ports/reader.js'
@@ -22,6 +22,8 @@ export { readerToolbarModel, type ReaderToolbarModelOptions } from './controller
 export { readerFloatingStatuses, readerModeStatus, type ReaderFloatingStatusesOptions } from './controllers/reader-floating-statuses.js'
 export { readerOverlayModel, type ReaderOverlayModelOptions } from './controllers/reader-overlay-model.js'
 export { useReaderOcr, type ReaderOcrOptions } from './controllers/use-reader-ocr.js'
+export { useReaderIndexing, type ReaderIndexingOptions, type ReaderIndexingControl } from './controllers/use-reader-indexing.js'
+export type { PdfIndexingApi, PdfIndexingClientSnapshot } from './ports/indexing.js'
 export { ReaderToolbar, type ReaderToolbarState, type ReaderToolbarActions } from './components/ReaderToolbar.js'
 export { ReaderView, type ReaderViewProps } from './components/ReaderView.js'
 export { ReaderCommentEditor, type ReaderCommentEditorProps } from './components/ReaderCommentEditor.js'
@@ -43,7 +45,7 @@ export { useReaderTranslation, type ReaderTranslationOptions } from './controlle
 export { useReaderDocument, type ReaderDocumentOptions } from './controllers/use-reader-document.js'
 export { useReaderPages, readerPagePins, namedPageActionTarget, type ReaderPagesOptions } from './controllers/use-reader-pages.js'
 export { NativeDocument, NativePage, openNativeDocument } from './rendering/document.js'
-export { NativeViewport } from './rendering/viewport.js'
+export { NativeViewport } from '../../shared/geometry/native-viewport.js'
 export { TileSurface, type TileSurfaceProps } from './rendering/TileSurface.js'
 export { ReaderPage } from './rendering/ReaderPage.js'
 export { WindowedPages, type WindowedPagesProps } from './rendering/WindowedPages.js'
@@ -52,3 +54,4 @@ export { PAGE_GAP, READING_TOP_INSET, readingSafeTop, readingPageProbe, pagePixe
   buildPageLayout, windowForViewport, type PageGeometry, type PageWindow } from './rendering/page-layout.js'
 export { setWindowLayout, clearWindowLayout, windowLayout, pageIndexAtOffset } from './rendering/window-layout.js'
 export { pageAtPointer, suspendScrollAnchoring } from './rendering/pdf-viewport-geometry.js'
+export { ReaderFormCommitProvider, useReaderFormCommits } from './rendering/FormCommitContext.js'

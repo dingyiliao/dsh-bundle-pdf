@@ -33,12 +33,17 @@ const errorKeys: Readonly<Record<TranslationErrorCode, string>> = {
   'invalid-model-output': 'errorInvalidModelOutput',
   'incomplete-model-output': 'errorIncompleteModelOutput',
   'empty-model-output': 'errorEmptyModelOutput',
-  'incomplete-selection': 'errorIncompleteSelection',
-  'unrecognized-selection': 'errorUnrecognizedSelection',
 }
 
-interface PanelResult { value: TranslationResult }
+interface PanelResult { value: TranslationResult; sourceText: string }
 type PanelStatus = 'loading' | 'complete' | 'cancelled' | 'error'
+
+function interpretationLabel(interpretation: NonNullable<TranslationResult['interpretation']>, t: (key: string) => string): string {
+  const key = interpretation.kind === 'correction'
+    ? interpretation.certainty === 'tentative' ? 'interpretationPossibleCorrection' : 'interpretationCorrection'
+    : interpretation.certainty === 'tentative' ? 'interpretationPossibleCompletion' : 'interpretationCompletion'
+  return t(`reader.translation.${key}`)
+}
 
 /** Show only classified, localized failures; Remote error messages may contain provider diagnostics. */
 export function TranslationErrorNotice({ code, t }: { code: TranslationErrorCode; t: (key: string) => string }) {
@@ -53,18 +58,14 @@ export function TranslationErrorNotice({ code, t }: { code: TranslationErrorCode
 }
 
 /** Render lexical translations without repeating their serialized copy text. */
-export function TranslationDetails({ detail, sourceText, t }: {
+export function TranslationDetails({ detail, t }: {
   detail: NonNullable<TranslationResult['detail']>
-  sourceText: string
   t: (key: string) => string
 }) {
   const label = (key: string) => t(`reader.translation.${key}`)
   return <div className="dsh-pdf-translation-details" data-translation-kind={detail.kind} tabIndex={0}>
-    <div className="dsh-pdf-translation-lexical-heading">
-      <strong className="dsh-pdf-translation-term" dir="auto">{sourceText}</strong>
-      <span className="dsh-pdf-translation-kind">{label(detail.kind)}</span>
-    </div>
-    {detail.kind === 'word' && detail.pronunciation && <p className="dsh-pdf-translation-pronunciation">
+    <div className="dsh-pdf-translation-kind">{label(detail.kind)}</div>
+    {detail.pronunciation && <p className="dsh-pdf-translation-pronunciation">
       <span>{label('pronunciation')}</span> <span dir="auto">{detail.pronunciation}</span>
     </p>}
     <ol className="dsh-pdf-translation-meanings">
@@ -82,14 +83,22 @@ export function TranslationDetails({ detail, sourceText, t }: {
   </div>
 }
 
-export function TranslationContent({ value, sourceText, t }: {
+export function TranslationContent({ value, t }: {
   value: TranslationResult
-  sourceText: string
   t: (key: string) => string
 }) {
-  return value.detail
-    ? <TranslationDetails detail={value.detail} sourceText={sourceText} t={t} />
-    : <div className="dsh-pdf-translation-text" dir="auto" tabIndex={0}>{value.text}</div>
+  const interpretation = value.interpretation
+  return <>
+    {interpretation && <aside className="dsh-pdf-translation-interpretation" role="note"
+      data-certainty={interpretation.certainty} data-interpretation-kind={interpretation.kind}>
+      <strong>{interpretationLabel(interpretation, t)}</strong>
+      <p className="dsh-pdf-translation-interpreted-text" dir="auto">{interpretation.text}</p>
+      <p className="dsh-pdf-translation-interpretation-explanation" dir="auto">{interpretation.explanation}</p>
+    </aside>}
+    {value.detail
+      ? <TranslationDetails detail={value.detail} t={t} />
+      : <div className="dsh-pdf-translation-text" dir="auto" tabIndex={0}>{value.text}</div>}
+  </>
 }
 
 /** An explicit, cancellable translation of the selection captured by the reader. */
@@ -144,7 +153,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
           signal: controller.signal,
         })
         if (!current()) return
-        const completed = { value }
+        const completed = { value, sourceText: source.text }
         latestResult.current = completed
         setResult(completed)
         setStatus('complete')
@@ -191,9 +200,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
   const changeTargetLanguage = (language: string) => {
     if (language === targetLanguage) return
     setTargetLanguage(language)
-    if (errorCode !== 'incomplete-selection' && errorCode !== 'unrecognized-selection') {
-      startTranslation(selection, language)
-    }
+    startTranslation(selection, language)
     const generation = ++preferenceGeneration.current
     setPreferenceStatus('saving')
     void (async () => {
@@ -224,7 +231,13 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
       }
       setCopyState('copying')
       // Begin the clipboard write in the click gesture, before awaiting anything.
-      await navigator.clipboard.writeText(captured.value.text)
+      const interpretation = captured.value.interpretation
+      const copied = interpretation ? [
+        `${callbacks.current.t('reader.translation.original')}: ${captured.sourceText}`,
+        `${interpretationLabel(interpretation, callbacks.current.t)}: ${interpretation.text}`,
+        interpretation.explanation, '', captured.value.text,
+      ].join('\n') : captured.value.text
+      await navigator.clipboard.writeText(copied)
       if (current()) setCopyState('copied')
     } catch {
       if (current()) {
@@ -239,11 +252,11 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
     ? label(`language.${language}`) : language
   const pages = [...new Set(selection.pages)].join(', ')
   const loading = status === 'loading'
-  const needsNewSelection = errorCode === 'incomplete-selection' || errorCode === 'unrecognized-selection'
 
   return <ScrollablePanel className="dsh-pdf-translation-panel" verticalLabel={t('reader.verticalScroll')}
-    horizontalLabel={t('reader.horizontalScroll')}>
-    <section className="dsh-pdf-translation-content" aria-labelledby={titleId} onKeyDown={(event) => {
+    horizontalLabel={t('reader.horizontalScroll')} title={label('title')} titleId={titleId}
+    actions={<button type="button" onClick={requestClose} aria-label={label('close')}>×</button>}
+    onKeyDown={(event) => {
       // Shortcuts inside the panel must not edit the PDF behind it.
       event.stopPropagation()
       if (event.key === 'Escape') {
@@ -251,10 +264,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
         requestClose()
       }
     }}>
-      <div className="dsh-pdf-panel-heading">
-        <h3 id={titleId}>{label('title')}</h3>
-        <button type="button" onClick={requestClose} aria-label={label('close')}>×</button>
-      </div>
+    <section className="dsh-pdf-translation-content" aria-labelledby={titleId}>
       <div className="dsh-pdf-translation-source">
         <span className="dsh-pdf-translation-source-label">{label('original')}</span>
         <p className="dsh-pdf-translation-source-text" dir="auto">{selection.text}</p>
@@ -273,7 +283,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
           {label(copyState === 'copied' ? 'copied' : copyState === 'copying' ? 'copying' : 'copy')}
         </button>}
         {loading && <button type="button" onClick={cancel}>{label('cancel')}</button>}
-        {(status === 'error' || status === 'cancelled') && !needsNewSelection &&
+        {(status === 'error' || status === 'cancelled') &&
           <button type="button" onClick={() => startTranslation(selection, targetLanguage)}>{label('retry')}</button>}
       </div>
       {preferenceStatus === 'saving' && <p className="dsh-pdf-translation-preference" role="status">{label('languageSaving')}</p>}
@@ -294,11 +304,9 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
                 {warning === 'max-tokens' ? label('warningMaxTokens') : <>{label('warningUnknown')} {warning}</>}
               </li>)}
             </ul>}
-            <TranslationContent value={result.value} sourceText={selection.text} t={t} />
+            <TranslationContent value={result.value} t={t} />
           </>}
           {copyErrorKey && <p className="dsh-pdf-translation-copy-error" role="alert">{label(copyErrorKey)}</p>}
-          {needsNewSelection &&
-            <button type="button" className="dsh-pdf-translation-reselect" onClick={requestClose}>{label('reselect')}</button>}
         </div>
       </section>
       <p className="dsh-pdf-translation-note">{label('selectionOnly')}</p>

@@ -10,7 +10,8 @@ export interface NativeTileRequest {
 export interface NativeTile { bytes: Uint8Array; width: number; height: number; mime: 'image/png' }
 export interface NativeTextContent {
   items: { str: string; transform: number[]; width: number; height: number; dir: string; fontName: string; hasEOL: boolean;
-    /** PDF-space origin and advance for each Unicode scalar; omitted for oversized pages. */
+    /** One PDF-space origin/advance per Unicode scalar, including single-scalar runs.
+     * Omitted only when native positioning is unavailable or the page exceeds the frame budget. */
     glyphs?: [x: number, y: number, advance: number][] }[]
   styles: Record<string, { fontFamily: string; ascent: number; descent: number; vertical: boolean }>
   lang: string | null

@@ -68,9 +68,12 @@ The tested model revision is `b8d7100604f51da6d14eab4dd1805f596fa1ce3f`, produci
 instruction; document encoding does not. The launcher permits at most 8 inputs,
 8,192 tokens per input and 16,384 padded tokens per batch. The adapter also bounds
 each original input to 16,000 UTF-16 units. Character limits do not replace the
-server's token check. Model metadata and response revision must match the selected
-encoding identity; an arbitrary endpoint with an OpenAI-shaped response alone is
-not sufficient.
+server's token check. This launcher reports model metadata and the response
+revision; the adapter learns `/models`' `embedding.revision` and includes it in
+the internal cache fingerprint, while checking response consistency within each
+operation. A reported model revision change automatically separates old indexes;
+no user-configured revision is needed. The generic service adapter also accepts
+standard OpenAI-compatible model lists and embedding responses without those extensions.
 
 Synthetic runtime probes encoded 2,028 tokens across long inputs, including
 different tails after token 512; those tails produced distinct vectors (L2
@@ -92,19 +95,56 @@ their dependencies, with the pinned model cached. The launcher binds only
 separate process whose startup/shutdown remains the operator's responsibility,
 not a cross-platform bundled embedding runtime.
 
-In PDF settings select **Local Qwen3 embedding**. The built-in defaults target
-`http://127.0.0.1:8001/v1/embeddings` and the revision above. `embeddingEngine: none`
-is the default: ordinary use starts no model and performs no download. The
-conversation model is not assumed to support embeddings. A third-party engine
-uses the same typed registration contract; see [engine extensions](ENGINE_EXTENSIONS.md).
+In PDF settings select **Embedding service**. Qwen3 is the default
+configuration example: the built-in defaults target
+`http://127.0.0.1:8001/v1/embeddings` and the model above. The stable engine ID
+remains `local-qwen3-embedding` so existing configurations keep working; the
+descriptor uses `execution: 'service'`. The same settings accept a local HTTP
+service or a third-party HTTPS service implementing OpenAI-compatible `/models`
+and `/embeddings` endpoints. Configure that service's model, vector dimensions
+and limits; optional `apiKeyRef` points to a DSH Host credential. Custom model
+metadata is not required; reported limits and truncation are checked against the
+configuration. The adapter includes a learned service revision in the cache
+fingerprint and checks revision consistency within the operation, so reported
+version changes automatically separate old indexes. Cache identity is managed
+internally; there is no `modelRevision` setting. If a service changes the model
+behind the same name without reporting a new revision, use **Rebuild index** in
+PDF settings. It clears this profile's retrieval caches and invalidates old searches;
+background preparation is drained before clearing and resumes for still-open PDFs
+when embedding is enabled. Other documents are indexed on their next open or
+search, leaving PDFs and drafts unchanged.
+`queryInstruction` defaults to an empty string for every model; configure it according to the model's
+requirements. To reproduce this Qwen3 experiment, enter
+`Given a search query, retrieve relevant passages from the document that answer the query`.
+The benchmark runner supplies that instruction explicitly. Clearing the setting
+disables the instruction.
+
+`embeddingEngine: none` is the default: ordinary use starts no model and performs
+no download. The conversation model is not assumed to support embeddings. Other
+protocols can use the same typed registration contract; see
+[engine extensions](ENGINE_EXTENSIONS.md). The measurements below use only the
+local launcher, not a third-party service.
+
+The current Host also prepares opened PDFs in the background when the configured
+embedding engine is enabled and available. Reader opens and `pdf_open` share this
+path. Preparation extracts native page text and document vectors only, reusing the
+same index, cache and build jobs as search; it does not generate query vectors or
+automatically run OCR. Opening does not wait for preparation. A search issued
+before it finishes may still wait for the remaining work. With a third-party
+service, extracted text is sent at open-time preparation, not only after a query.
+The task panel retains green **Index ready** records until Host removes the
+closed PDF's task; other short-lived save notices retain their existing timers.
+The historical benchmarks below do not measure this opening/background behavior.
 
 ## Data flow and ownership
 
 ```mermaid
 flowchart LR
-  Tool["pdf_find_related"] --> Host["Authorized Host adapter"]
+  Tool["pdf_semantic_search"] --> Host["Authorized Host adapter"]
+  Open["Reader / pdf_open<br/>Shared document ownership"] --> Background["Enabled embedding<br/>Background preparation queue"]
+  Background --> Host
   Host --> Copy["Existing shared working copy"]
-  Host --> Index["Retrieval service<br/>Page-local exact text chunks"]
+  Host --> Index["Shared derived index<br/>Page-local exact text chunks"]
   Index --> Lexical["BM25 postings"]
   Index --> Vectors["Typed embedding provider<br/>Document / query encodings"]
   Lexical --> Fuse["RRF + branch coverage protection"]
@@ -122,9 +162,18 @@ typed provider registry. Host adapters own DSH authorization, provider selection
 storage, model-facing search sessions and evidence signing. There is no second
 document table or anchor store.
 
+Resident indexes and in-flight build steps are shared across authorized Sessions
+within one Host instance by source-byte digest, page count, retrieval
+scope/versions and embedding fingerprint/registration generation. Session-local document IDs, paths and
+`contentVersion` are not shared-index keys. Each caller still validates its own
+document binding and authorization; drafts, queries, continuation handles, results
+and evidence references stay Session-scoped. Shared derived data grants no access
+to the underlying file. Ready indexes remain bounded LRU residents and may be
+evicted; this is not a permanent on-disk index.
+
 ### Public tool continuation
 
-Start `pdf_find_related` with `documentId`, `query` and its optional `terms`,
+Start `pdf_semantic_search` with `documentId`, `query` and its optional `terms`,
 `mode`, `topK`, `fromPage` and `maxPages`. The response contains `searchId: "rel_…"`
 and a boolean `hasMore`. While `hasMore` is true, call the same tool with only
 `{"searchId":"rel_…"}`. Do not repeat the query, document or options. The public
@@ -133,15 +182,17 @@ request, source/engine constraints and internal continuation progress.
 
 `building` and `incomplete` still report progress and coverage without globally
 ranked candidates. Only `complete` returns rankings for the requested scope and
-sets `hasMore: false`. Inspect `effectiveMode`, `fallbackReason` and `coverage`
-before describing the result as semantic retrieval or complete text coverage.
+sets `hasMore: false`. Inspect `effectiveMode` and `coverage` before describing a result as complete
+text coverage. The current semantic-search tool requires an available embedding
+engine; it does not expose the experiment's automatic lexical fallback.
 
-The exact, case-sensitive `pdf_search` uses the same initial-call pattern, with
+The exact, case-sensitive `pdf_keyword_search` uses the same initial-call pattern, with
 its optional `fromPage` and `offset`, then only `{"searchId":"txt_…"}` on that
 same tool. Its results are paginated matches; `hasMore: false` means that search
 has finished. It does not use related-index build statuses. Neither search ID is
-a page-list cursor, and `pdf_bookmarks`, `pdf_locate` and `pdf_context` retain
-their existing cursor contracts.
+a page-list cursor, and list tools such as `pdf_bookmark_list` retain their own cursor contracts.
+The former locate/context model entrances are replaced by keyword search and
+`pdf_evidence_read`; evidence replay remains source-bound.
 
 Search IDs are opaque, session-scoped and tool-scoped. Reset, TTL expiry or budget
 eviction invalidates them; unknown or expired IDs require a new initial call.
@@ -161,7 +212,7 @@ and index caches; matching text/model fingerprints can still reuse vectors.
 A reference denotes its entire stored quote, not an implicitly selected answer.
 Check that scope before marking it. A reference annotation target may include
 an exact `quote` to select a unique substring inside that parent reference;
-`pdf_navigate` accepts the same `refId` and `quote` to preserve the selected range.
+`pdf_page_jump` accepts the same `refId` and `quote` to preserve the selected range.
 The shared resolver revalidates the source and full page before deriving native
 geometry for that subrange. Missing or ambiguous quotes fail without a draft
 edit. Omitting `quote` deliberately keeps the full parent range; annotation does
@@ -175,36 +226,68 @@ missing geometry. OCR-derived candidates are not promoted to native coordinates.
 
 ## Budgets and lifecycle
 
-- Index only after an explicit search; embedding is disabled by default.
+- Embedding is disabled by default. When enabled and available, opened PDFs are
+  prepared in the background; explicit searches reuse the same progress and cache.
+  Background preparation runs at most one document at a time and tracks up to 64
+  open documents, with excess documents left to on-demand retrieval.
+- Only UI/model owners keep preparation eligible. Last-owner close or cancellation
+  detaches that Session's preparation without stopping other authorized subscribers
+  to the same build. Shared work aborts once no subscribers remain. Disabled or
+  changed embedding settings, source changes and provider unload cancel obsolete
+  work. Source changes can queue a replacement; unchanged annotation edits do not.
+  Failed preparations do not retry indefinitely. Rebuild suspends and drains this
+  queue before clearing caches, then resumes eligible still-open documents.
 - The default search scope is the whole document; `fromPage/maxPages` restrict
   the scope, not the amount processed per call. This intentionally changes the
-  old `pdf_find_related` page-window meaning of `maxPages`.
+  old `pdf_semantic_search` page-window meaning of `maxPages`.
 - Process at most 20 pages and 4 embedding batches per indexing step, yielding
   between work units. The model continues with only `searchId` while `hasMore`
   is true; short public handles do not remove the internal bounded steps.
 - Host retains query continuation state and validates scope, query, source and
   engine generation. Incomplete coverage produces progress, not a global
   best-match or no-answer claim.
-- Runtime defaults cap indexes at 5,000 chunks each, 8 resident indexes, an
+- Runtime defaults cap indexes at 20,000 chunks each, 8 resident indexes, an
   estimated 64 MiB total index budget, 2 simultaneous build jobs and 8 admitted
   queries. Active indexes cannot be evicted mid-query; each build step retains
   its own document lease. These are
   admission limits, not a guarantee of total process RSS; larger scopes may need
   to be split explicitly.
+  Lexical estimates count one posting per distinct term/chunk pair. Resident
+  cosine-search vectors use normalized Float32 storage shared by identical text;
+  persisted vectors use versioned little-endian Float32/Base64 records with an
+  integrity checksum. Existing numeric-array records migrate on a valid hit
+  without requesting another embedding.
 - The separate `pdf_retrieval_<profile>` Storage Domain stores derived text and
   vectors with default limits of 64 MiB serialized data, 12,000 records and 7 days.
   Individual records are limited to 2 MiB. Cache loss/corruption can be rebuilt
   and must not damage drafts. The cache may contain document text; it is local
   plugin storage, not an encrypted vault or an authorization token.
+- Derived record keys use filename-safe `retrieval_<digest>` identifiers, as
+  required by DSH's per-record JSON backend. Persistence is verified against the
+  real backend, including closing and recreating the domain and retrieval
+  service. An earlier colon-prefixed key was rejected by that backend; affected
+  installations need one initial build because those records were never saved.
+- After restart, the service restores text and vectors and reconstructs its
+  in-memory search structures; it does not persist Session authorization or query
+  cursors. The task panel distinguishes restoration, native page extraction and
+  new embedding requests, and reports reused/newly computed passage counts.
+  Missing, expired, evicted or invalid records are rebuilt individually. Unchanged
+  valid records require neither source extraction nor document embedding.
 - Reuse vectors by text/model identity after source revalidation; annotation-only
   edits do not rebuild the text index.
+- Extraction-version changes invalidate cached page text and quality metadata.
+  The native-quality revision excludes PDFium's recognized U+0002 line-wrap
+  hyphen marker from invalid-control-character warnings; actual Unicode mapping
+  errors still report a warning. Existing indexes re-extract page metadata, while
+  unchanged text can reuse its document vectors.
 - A save can change PDF bytes. Page text is verified/re-extracted for the new
   source, while unchanged text may reuse vectors. Changes in weights, tokenizer,
   query instruction, dimensions or provider configuration change the model
   fingerprint; unloading/re-registering also fences the runtime generation.
-- Closing a session or unloading the plugin cancels queued work and fences late
-  results. Cancellation of an HTTP request does not imply a running external model
-  computation has stopped immediately.
+- Closing a Session cancels its queued work and fences its late results without
+  cancelling another Session's shared build subscription or ready index. Plugin
+  unload cancels all work. Cancellation of an HTTP request does not imply a running
+  external model computation has stopped immediately.
 
 Native PDFium calls and active Metal kernels are not preempted halfway through;
 their bounded operation retains its execution slot until it finishes. No claim
@@ -363,7 +446,6 @@ After starting the cached local model:
 ```sh
 npm run bench:retrieval -- \
   --embedding-endpoint http://127.0.0.1:8001/v1/embeddings \
-  --model-revision b8d7100604f51da6d14eab4dd1805f596fa1ce3f \
   --repeats 3 --out /tmp/retrieval-qwen.json
 ```
 

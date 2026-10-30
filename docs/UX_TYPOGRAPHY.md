@@ -4,7 +4,7 @@ This is the typography contract for the PDF reader UI. PDF page content is rende
 
 ## Typeface and language
 
-- Inherit the application font from DSH so the reader stays aligned with the host UI. Let the operating system provide native Chinese glyph fallback; do not hard-code a second font stack in the plugin.
+- Use the shared `--pdf-font-ui` system sans-serif stack, matching Codex's default UI font stack. On macOS the system supplies San Francisco and native Chinese fallback; other platforms use their native UI fonts. Do not inherit the host's chat or code font for plugin UI.
 - Chinese and English use the same semantic size and weight. Do not add locale-specific size overrides or tracking: mixed-language controls should remain aligned.
 - Keep tracking at the platform default for body text and Chinese. Only introduce display tracking after checking both scripts together.
 - Use a monospace face only for code or machine-readable data whose character alignment matters. Page numbers, dates, and counts stay in the UI font with tabular numerals.
@@ -17,7 +17,7 @@ This is the typography contract for the PDF reader UI. PDF page content is rende
 | `label` | 13px / 1.4 | Compact controls, field labels, sidebar section headings |
 | `body-compact` | 13px / 1.5 | Dense result summaries, dictionary meanings, and examples |
 | `body` | 14px / 1.5 | Default reader UI, buttons, inputs, and comment text |
-| `section` | 16px / 1.4 | Translation terms and prominent section headings |
+| `section` | 16px / 1.4 | Prominent section headings |
 | `title` | 20px / 1.3 | Major dialog or panel title only |
 
 Use regular (400) for reading, medium (500) for quiet emphasis, semibold (600) for headings and primary actions, and bold (700) only for strong status emphasis. Avoid intermediate weights such as 550 or 650; use the closest supported semantic weight.
@@ -36,4 +36,4 @@ Long explanatory/helper copy may use 1.6 leading for easier reading; the compact
 
 ## Source of truth
 
-The semantic CSS variables live in the plugin stylesheet's `:root` in `src/client/reader.css` so both the reader and its evidence cards can consume them. Component styles should use those variables instead of introducing new pixel sizes. When adding a new text role, choose an existing token first; extend the scale only for a demonstrated need.
+The font family and semantic CSS variables live in the plugin stylesheet's `:root` in `src/client/reader.css` so the reader, settings, evidence cards, and body-mounted tooltips can consume them. Set the family on these UI roots, not on every descendant: PDF text-layer spans must retain their document-defined fonts, and raw structured output keeps its monospace font. Component styles should use those variables instead of introducing new pixel sizes. When adding a new text role, choose an existing token first; extend the scale only for a demonstrated need.

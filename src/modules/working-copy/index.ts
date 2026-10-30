@@ -1,4 +1,4 @@
-export type { HostWorkspaceSnapshot, WorkingCopyReadPort, DocumentResidency, DocumentReleaseStatus } from './ports.js'
+export type { HostWorkspaceSnapshot, WorkingCopyReadPort, DocumentResidency, DocumentReleaseStatus, OpenWorkingCopyDocument } from './ports.js'
 export { createWorkingCopyService } from './service.js'
 export type {
   PdfDocumentPort, V1DraftPort, WorkingCopyDraftPort, WorkingCopyAgent, WorkingCopyFilePort, WorkingCopyFileRead,

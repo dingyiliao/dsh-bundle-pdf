@@ -73,8 +73,8 @@ test('short-page semantic evidence highlights only the matched wrapped paragraph
     const run = (name: string, input: unknown) => tools.get(name)!.execute(input, { agent, signal })
     try {
       const opened = await run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
-      const related = await run('pdf_find_related', { documentId: opened.documentId,
-        query: '为什么练习题都能做对，换一批题就不行了？', mode: 'semantic', topK: 1 }) as {
+      const related = await run('pdf_semantic_search', { documentId: opened.documentId,
+        query: '为什么练习题都能做对，换一批题就不行了？', topK: 1 }) as {
         status: string; effectiveMode: string; revision: number
         coverage: { totalChunks: number }
         candidates: { page: number; quote: string; evidence: PdfTextEvidence }[]
@@ -86,7 +86,7 @@ test('short-page semantic evidence highlights only the matched wrapped paragraph
       assert.equal(hit.page, 2)
       assert.equal(hit.quote, paragraph, 'the retrieval reference must exclude the heading, adjacent paragraphs and footer')
       assert.equal(hit.evidence.snapshot.text, paragraph)
-      const changed = await run('pdf_annotate', { documentId: opened.documentId,
+      const changed = await run('pdf_annotation_create', { documentId: opened.documentId,
         expectedRevision: related.revision, subtype: 'Highlight',
         target: { kind: 'reference', refId: hit.evidence.refId } }) as {
         revision: number; dirty: boolean; canUndo: boolean; savedToFile: boolean; annotationId: string
@@ -109,7 +109,7 @@ test('short-page semantic evidence highlights only the matched wrapped paragraph
       const lease = { sessionId, tabId: 'reader', leaseId: 'lease', documentId: ui.id, contentVersion: ui.contentVersion }
       contexts.update(sessionId, { action: 'set', ...lease, sequence: 1, page: 1 })
       const pending = navigation.dispatch(sessionId, { action: 'wait', ...lease }, signal)
-      const jump = run('pdf_navigate', { documentId: ui.id, refId: hit.evidence.refId })
+      const jump = run('pdf_page_jump', { documentId: ui.id, refId: hit.evidence.refId })
       const request = await pending as AgentNavigationRequest
       assert.equal(request.page, 2)
       assert.deepEqual(request.target!.rectPdf, mark.rect)
@@ -123,25 +123,22 @@ test('short-page semantic evidence highlights only the matched wrapped paragraph
 
       // Context deliberately retains a whole page. Selecting a subquote must
       // retain that parent anchor while narrowing both markup and navigation.
-      const context = await run('pdf_context', { documentId: ui.id,
-        focus: { kind: 'page-window', page: 2 }, maxPages: 1 }) as {
-        chunks: { evidence: PdfTextEvidence }[]
-      }
-      const parent = context.chunks[0]!.evidence
+      const context = await run('pdf_page_read', { documentId: ui.id, page: 2 }) as { evidence: PdfTextEvidence }
+      const parent = context.evidence
       assert.match(parent.snapshot.text, /MACHINE LEARNING/)
       assert.match(parent.snapshot.text, /EXAMPLE DOCUMENT/)
-      const refined = await run('pdf_annotate', { documentId: ui.id,
+      const narrowed = await run('pdf_evidence_read', { documentId: ui.id, refId: parent.refId, quote: paragraph }) as { refId: string }
+      const refined = await run('pdf_annotation_create', { documentId: ui.id,
         expectedRevision: undone.revision, subtype: 'Highlight',
-        target: { kind: 'reference', refId: parent.refId, quote: paragraph } }) as {
+        target: { kind: 'reference', refId: narrowed.refId } }) as {
         revision: number; annotationId: string
         resolvedTarget: { refId: string; quote: string; rectPdf: number[] }
         coverage: { pages: { text: string }[] }
       }
-      assert.equal(refined.resolvedTarget.refId, parent.refId)
-      assert.equal(refined.resolvedTarget.quote, paragraph)
+      assert.equal(refined.resolvedTarget.refId, narrowed.refId)
       assert.deepEqual(refined.coverage.pages.map(page => page.text), [paragraph])
       const nextRequest = navigation.dispatch(sessionId, { action: 'wait', ...lease }, signal)
-      const preciseJump = run('pdf_navigate', { documentId: ui.id, refId: parent.refId, quote: paragraph })
+      const preciseJump = run('pdf_page_jump', { documentId: ui.id, refId: narrowed.refId })
       const preciseRequest = await nextRequest as AgentNavigationRequest
       assert.deepEqual(preciseRequest.target!.rectPdf, refined.resolvedTarget.rectPdf)
       await navigation.dispatch(sessionId, { action: 'complete', ...lease, requestId: preciseRequest.requestId,
@@ -151,7 +148,7 @@ test('short-page semantic evidence highlights only the matched wrapped paragraph
       const unrefined = await state.workspaces.execute(sessionId, { action: 'undo', sessionId,
         id: ui.id, revision: refined.revision }, agent, signal)
       assert.ok('bytes' in unrefined)
-      const wholePage = await run('pdf_annotate', { documentId: ui.id,
+      const wholePage = await run('pdf_annotation_create', { documentId: ui.id,
         expectedRevision: unrefined.revision, subtype: 'Highlight',
         target: { kind: 'reference', refId: parent.refId } }) as {
         revision: number; coverage: { pages: { text: string }[] }

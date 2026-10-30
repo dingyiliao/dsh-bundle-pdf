@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { formValueContract, validateFormChanges, FormValidationError, resolveFormField,
+import { formValueType, validateFormChanges, FormValidationError, resolveFormField,
   inspectFormPage, modelFormInspectionFields } from '../../../src/modules/forms/index.ts'
 import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
 import type { PdfDocumentInfo, PdfFormField } from '../../../src/core/pdf-types.ts'
@@ -10,14 +10,11 @@ const field = (type: PdfFormField['type'], extra: Partial<PdfFormField> = {}): P
   widgets: [{ page: 2, rect: [10, 10, 30, 30] }], ...extra,
 })
 
-test('inspection contracts explain exact values without interpreting labels or guessing booleans', () => {
-  assert.deepEqual(formValueContract(field('checkbox')).examples, [true, false])
-  assert.equal(formValueContract(field('text', { maxLength: 2 })).examples[1], 'Ex')
-  assert.equal(formValueContract(field('text')).valueType, 'string')
-  assert.deepEqual(formValueContract(field('radio', { options: ['yes-code'] })).examples, ['yes-code'])
-  assert.deepEqual(formValueContract(field('dropdown')).examples, [])
-  assert.equal(formValueContract(field('option-list')).valueType, 'string[]')
-  assert.equal(formValueContract(field('unsupported')).valueType, 'unsupported')
+test('form input types stay explicit without interpreting labels or guessing booleans', () => {
+  for (const [type, expected] of [['text', 'string'], ['checkbox', 'boolean'], ['radio', 'string'],
+    ['dropdown', 'string'], ['option-list', 'string[]'], ['unsupported', 'unsupported']] as const) {
+    assert.equal(formValueType(field(type)), expected)
+  }
   const checkbox = field('checkbox')
   for (const value of ['Yes', 'false', 'true', 1, null, undefined, []]) {
     const [issue] = validateFormChanges([checkbox], [{ fieldId: checkbox.id!, value }])
@@ -25,7 +22,6 @@ test('inspection contracts explain exact values without interpreting labels or g
   }
   assert.deepEqual(validateFormChanges([checkbox], [{ fieldId: checkbox.id!, value: false }]), [])
   for (const type of ['radio', 'dropdown'] as const) {
-    assert.match(formValueContract(field(type)).hint, /empty string clears/)
     assert.deepEqual(validateFormChanges([field(type)], [{ fieldId: `id-${type}`, value: '' }]), [])
   }
 })

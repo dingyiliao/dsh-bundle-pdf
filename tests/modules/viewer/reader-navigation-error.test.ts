@@ -85,6 +85,7 @@ test('Reader restores the origin and reports a non-timeout layout read failure d
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
     const scrollRoot = container.querySelector<HTMLElement>('.dsh-pdf-scroll')!
     assert.ok(scrollRoot, 'the Reader has mounted its scrollport')
+    Object.defineProperties(scrollRoot, { clientWidth: { value: 600 }, clientHeight: { value: 700 } })
     scrollRoot.scrollTop = originalScrollTop
     const layout = windowLayout(scrollRoot)!
     assert.equal(layout.length, 2)

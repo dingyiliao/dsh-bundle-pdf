@@ -2,21 +2,18 @@ import type { PdfPageInfo } from '../../core/pdf-types.js'
 
 /** PDF user space to CSS pixels; crop, UserUnit, rotation and Y inversion occur once. */
 export class NativeViewport {
-  readonly viewBox: number[]
   readonly userUnit: number
   readonly width: number
   readonly height: number
   readonly transform: number[]
-  readonly rawDims: { pageWidth: number; pageHeight: number; pageX: number; pageY: number }
-  constructor(readonly geometry: PdfPageInfo, readonly scale: number, readonly rotation = geometry.rotation,
-    readonly offsetX = 0, readonly offsetY = 0, readonly dontFlip = false) {
+  constructor(geometry: PdfPageInfo, readonly scale: number, readonly rotation = geometry.rotation,
+    offsetX = 0, offsetY = 0, dontFlip = false) {
     if (!(scale > 0) || !Number.isFinite(scale)) throw new RangeError('Invalid viewport scale')
     const angle = (rotation % 360 + 360) % 360
     if (angle % 90) throw new RangeError('Rotation must be a multiple of 90 degrees')
     this.rotation = angle
     const [left, bottom, right, top] = geometry.cropBox
-    this.viewBox = [...geometry.cropBox]; this.userUnit = geometry.userUnit
-    this.rawDims = { pageWidth: right - left, pageHeight: top - bottom, pageX: left, pageY: bottom }
+    this.userUnit = geometry.userUnit
     const s = scale * this.userUnit
     const matrices: Record<number, number[]> = {
       0: [s, 0, 0, -s, -left * s, top * s],
@@ -34,10 +31,6 @@ export class NativeViewport {
     this.transform[4] += offsetX; this.transform[5] += offsetY
     this.width = (angle % 180 ? top - bottom : right - left) * s
     this.height = (angle % 180 ? right - left : top - bottom) * s
-  }
-  clone(options: { scale?: number; rotation?: number; offsetX?: number; offsetY?: number; dontFlip?: boolean } = {}): NativeViewport {
-    return new NativeViewport(this.geometry, options.scale ?? this.scale, options.rotation ?? this.rotation,
-      options.offsetX ?? this.offsetX, options.offsetY ?? this.offsetY, options.dontFlip ?? false)
   }
   convertToViewportPoint(x: number, y: number): [number, number] {
     const [a, b, c, d, e, f] = this.transform

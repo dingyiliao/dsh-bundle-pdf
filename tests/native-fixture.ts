@@ -1,9 +1,18 @@
 import { PDFDocument, PDFName, PDFString, StandardFonts, degrees, rgb } from 'pdf-lib'
 import { createHash } from 'node:crypto'
-import { createWorkspaces } from '../src/host/workspaces.ts'
+import { createWorkspaces } from './fixtures/working-copy-service.ts'
 import type { DraftRecord } from '../src/modules/working-copy/index.ts'
 
 export const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+
+/** PDFium replaces an ordinary end-of-line hyphen with its U+0002 layout marker. */
+export async function hyphenatedTextPdf(): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
+  const page = pdf.addPage([400, 300])
+  page.drawText('understand-', { x: 40, y: 200, size: 12, font })
+  page.drawText('ing the model', { x: 40, y: 180, size: 12, font })
+  return pdf.save({ useObjectStreams: false })
+}
 
 /** A Type 1 glyph can map to a two-unit UTF-16 value through ToUnicode. */
 export function supplementaryTextPdf(): Uint8Array {

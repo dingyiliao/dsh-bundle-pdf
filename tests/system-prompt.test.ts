@@ -24,7 +24,7 @@ test('form guidance requires full contextual understanding, a coverage inventory
     'Report remaining missing information', 'single inspectionId', 'original inspected', 'NOT semantic labels',
     'independent checkbox fields', 'choiceGroups', 'onInactive:"preserve"', 'TWO phases',
     'selected AND unselected', 'NOT semantic verification']) assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
-  assert.doesNotMatch(PDF_INTENT_PROMPT, /pdf_fill_form with exact field IDs/)
+  assert.doesNotMatch(PDF_INTENT_PROMPT, /pdf_form_fill with exact field IDs/)
 })
 
 test('form understanding crosses page boundaries before filling while allowing relevant context reuse', () => {
@@ -34,7 +34,7 @@ test('form understanding crosses page boundaries before filling while allowing r
     [/Before writing any field.*form-level instructions.*complete section context/, 'Understand form and section scope before writing'],
     [/subject.*column header.*applicability rule.*preceding pages/, 'Recognize headings and rules inherited from earlier pages'],
     [/units, date formats/, 'Retain units and formatting requirements'],
-    [/pdf_read_page.*preceding and referenced pages/, 'Read missing context using actual document tools'],
+    [/pdf_page_read.*preceding and referenced pages/, 'Read missing context using actual document tools'],
     [/current controls.*governing headings, subject and instructions/, 'Connect inherited context to the target controls'],
     [/page images.*extracted text or layout is insufficient/, 'Use images when text alone cannot establish context'],
     [/Reuse already established context.*do not reread the entire PDF/, 'Reuse understanding without mandatory whole-document rereads'],
@@ -53,10 +53,10 @@ test('form workflow uses numbered controls, explicit caller rules and direct dra
   for (const fragment of ['INSIDE its writable control', 'fields [{label,value}]',
     'checks only these model-supplied conditions', 'including existing values',
     'does not infer field meanings or missing rules', 'directly writes an undoable unsaved draft',
-    'without further confirmation', 'pdf_render_page', 'blank numbered image cannot verify appearance']) assert.ok(guidance.includes(fragment), fragment)
+    'without further confirmation', 'pdf_page_render', 'blank numbered image cannot verify appearance']) assert.ok(guidance.includes(fragment), fragment)
   assert.doesNotMatch(guidance, /understanding\.analysis|semanticQuestions|dryRun|purpose:|context\.text|verification\.evidence/)
-  assert.match(guidance, /pdf_render_page renders the source baseline, not unsaved draft overlays/)
-  assert.doesNotMatch(guidance, /pdf_render_page for an actual draft image/)
+  assert.match(guidance, /pdf_page_render renders the source baseline, not unsaved draft overlays/)
+  assert.doesNotMatch(guidance, /pdf_page_render for an actual draft image/)
   assert.match(guidance, /pdf_save still requires separate user approval/)
 })
 
@@ -66,7 +66,7 @@ test('single-page fills keep original inspection credentials for independent pag
     'Do not supply page numbers or an inspectionIds array', 'Host recovers the page and field mappings',
     'inspect multiple pages at one revision', 'each original inspectionId and expectedRevision',
     'Host serializes resolution, conflict checks and draft writes',
-    'Known pdf_fill_form edits to independent pages', 'changed target page, shared field or declared dependency',
+    'Known pdf_form_fill edits to independent pages', 'changed target page, shared field or declared dependency',
     'UI edit, undo or redo', 'changed source, structure or content version',
     'Do not merely replace expectedRevision', 'Reinspect an edited page before writing it again']) {
     assert.ok(guidance.includes(fragment), fragment)
@@ -137,11 +137,11 @@ test('reader guidance is a literal instruction, not a reader-state provider', as
 
 test('ambiguous references suggest checking current PDFs before reading a page', () => {
   for (const fragment of ['referent remains unclear', 'this passage', 'consider that they may mean a PDF',
-    'possible interpretation, not evidence that a PDF is open', 'If pdf_current and pdf_read_page are available']) {
+    'possible interpretation, not evidence that a PDF is open', 'If pdf_current and pdf_page_read are available']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), `guidance should include: ${fragment}`)
   }
   const check = PDF_INTENT_PROMPT.indexOf('check pdf_current')
-  const read = PDF_INTENT_PROMPT.indexOf('call pdf_read_page')
+  const read = PDF_INTENT_PROMPT.indexOf('call pdf_page_read')
   assert.ok(check >= 0 && read > check)
   assert.match(PDF_INTENT_PROMPT, /documentId and the current page reported by pdf_current/)
 })
@@ -156,53 +156,83 @@ test('the heuristic does not presume a document or an exact selected passage', (
   }
 })
 
-test('evidence guidance closes retrieval, exact annotation and navigation without guessing geometry', () => {
-  for (const fragment of ['read nearby context', 'assess meaning',
+test('atomic evidence guidance composes reading, editing and navigation around the same resolved reference', () => {
+  for (const fragment of ['Compose independent tools', 'search, read evidence, annotate and jump are separate actions',
+    'pdf_evidence_read', 'read nearby context and assess meaning',
     'Only create or change annotations when the user asks', 'current working-copy revision',
-    'target {kind:"reference",refId}', 'pdf_search, pdf_find_related, pdf_locate or pdf_context',
-    'exact stored range even when the same words repeat', 'full page text and native glyphs',
-    'never copy approximate evidence rectangles or guess coordinates',
-    'Only call pdf_navigate when the user asks', '{documentId,refId}',
+    'ENTIRE snapshot.text', 'do not include headings, footers or other context unless requested',
+    'continuous range reference', 'every intervening page', 'never omit middle pages or guess text coordinates',
+    'exact same resolved reference for annotation and navigation', 'exact stored range even when the same words repeat',
+    'pdf_annotation_list', 'pdf_annotation_update', 'pdf_annotation_delete',
+    'never substitute deletion and recreation', 'pdf_bookmark_list', 'pdf_bookmark_edit',
+    'Only call pdf_page_jump when the user asks', '{documentId,refId}',
     'page plus current contentVersion', 'never mix those forms', 'tabId from pdf_current',
     'annotation-only draft edit', 'reverify the original text and source',
     'does not open a Reader tab', 'report failure', 'including same-page positions',
     'multi-step Reader back history', 'do not invent a model back tool']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
   }
-  assert.doesNotMatch(PDF_INTENT_PROMPT, /references? (?:cannot|must not) (?:be used|be passed)/i)
+  assert.doesNotMatch(PDF_INTENT_PROMPT, /\b(?:pdf_locate|pdf_context|pdf_image_context|pdf_ocr_page|pdf_annotate|pdf_navigate)\b/)
 })
 
-test('annotation guidance distinguishes a full evidence snapshot from the intended subpassage', () => {
-  for (const fragment of ['ENTIRE snapshot.text', 'extra context',
-    'only when every part of that snapshot is intended', '{kind:"reference",refId,quote:',
-    'do not include headings, footers or other context unless requested',
-    'unique within that reference', 'retain the same quote as {documentId,refId,quote}']) {
+test('search tools have distinct matching intent, opaque continuations and truthful semantic coverage', () => {
+  for (const fragment of ['pdf_keyword_search for literal text or explicitly normalized matching',
+    'pdf_semantic_search for a concept or question only when the configured embedding engine is actually available',
+    'documentId, query and its initial options', 'Both return searchId and hasMore',
+    'continue the SAME tool with ONLY its returned {searchId}',
+    'do not repeat documentId, query, page options or other initial arguments',
+    'Host retains the query, scope and progress', 'opaque and scoped to this session and tool',
+    'reset, expiry or budget eviction', 'unknown or expired searchId, restart with the initial arguments',
+    'Complete the requested search coverage before claiming absence or uniqueness',
+    'only complete ranks the entire requested scope; building/incomplete reports progress and coverage',
+    'Similarity scores are leads, not confidence or proof',
+    'enabled scanned-page OCR', 'optional generated image descriptions',
+    'image-description is a generated interpretation rather than a PDF quotation',
+    'Never describe keyword fallback as semantic search']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
   }
 })
 
-test('search tools continue with only a session-scoped search ID and preserve retrieval coverage limits', () => {
-  for (const [pattern, purpose] of [
-    [/Start pdf_find_related or pdf_search with documentId, query and any initial query options/, 'Initial calls carry the search request'],
-    [/Both return searchId and hasMore, not nextCursor/, 'Search output exposes a short handle and progress flag'],
-    [/While hasMore is true, call the SAME tool with ONLY \{searchId:"rel_\.\.\."\} for pdf_find_related or \{searchId:"txt_\.\.\."\} for pdf_search/, 'Continuation uses the matching tool and its handle alone'],
-    [/do not repeat documentId, query, page options or other initial arguments/, 'Continuation cannot replay initial fields'],
-    [/Host retains the query, scope and progress/, 'Host owns continuation state'],
-    [/opaque and scoped to this session and tool.*reset, expiry or budget eviction/, 'Search handles have bounded ownership and lifetime'],
-    [/unknown or expired searchId, restart with the initial arguments/, 'Missing handles require a fresh search'],
-    [/pdf_search returns paginated matches; hasMore:false means that search is complete/, 'Exact search completion is distinct from related-index status'],
-    [/Only complete ranks the entire requested scope; building\/incomplete reports progress and coverage/, 'Partial related indexes do not produce global rankings'],
-    [/effectiveMode and coverage.*lexical fallback is not semantic search/, 'Models must inspect the actual search mode'],
-    [/indexed text does not cover diagrams, formulas or image-only pages/, 'Text indexing makes no visual coverage claim'],
-  ] as const) assert.match(PDF_INTENT_PROMPT, pattern, purpose)
-  assert.doesNotMatch(PDF_INTENT_PROMPT, /Candidate ranking is lexical|same arguments and nextCursor|continue its page cursor|pdf_search continuation omit fromPage and offset/)
+test('semantic search requires a status observation and unavailable engines preserve user configuration', () => {
+  for (const fragment of ['Before starting pdf_semantic_search, call pdf_status with the documentId',
+    'check capabilities.semanticSearch; proceed only when it is true',
+    'When false, read capabilityDetails.semanticSearch.reason',
+    'semantic retrieval is disabled or unavailable',
+    'use pdf_keyword_search with relevant terms and pdf_page_read',
+    'do not describe those results as semantic search',
+    'Do not enable or change the embedding engine or its configuration without an explicit user request']) {
+    assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+  }
 })
 
-test('other tools retain opaque cursors and capability presence is different from availability', () => {
-  for (const fragment of ['For pdf_bookmarks, pdf_locate and pdf_context, treat nextCursor as opaque',
-    "that tool's cursor contract", 'cursor is stale', 'pdf_bookmarks pass back its cursor, not a numeric list offset',
+test('image production is distinct from OCR and auxiliary interpretation and region OCR remains a UI feature', () => {
+  for (const fragment of ['pdf_page_render only produces a page image and imageHandle',
+    'text-only model may request a handle but must not claim it saw the image',
+    'pass that imageHandle to ocr_recognize', 'pass it to image_understand',
+    'SAME tool using resultId and offset:nextOffset', 'do not rerun recognition to continue an existing result',
+    'vision-capable current model can understand a delivered image directly',
+    'OCR and auxiliary descriptions are derived evidence',
+    'Region selection and region OCR belong to the Reader UI', 'no region OCR model tool exists',
+    'pdf_evidence_read for saved image/OCR evidence rather than rerunning recognition']) {
+    assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+  }
+})
+
+test('metadata and ownership instructions do not substitute state reads with repeated resource acquisition', () => {
+  for (const fragment of ['pdf_info for file metadata without taking a persistent model reference',
+    'pdf_open acquires the model reference', 'repeated opens of the same canonical file reuse its draft',
+    'pdf_close releases that reference, not Reader tabs or persisted drafts',
+    'pdf_status observes the opened working copy, revision, conflicts and capabilities',
+    'separate human approval, bound to the reviewed revision and source']) {
+    assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+  }
+})
+
+test('list cursors remain opaque and a configured or registered feature is not automatically usable', () => {
+  for (const fragment of ['For list tools, treat nextCursor as opaque',
+    "that tool's cursor contract", 'cursor is stale',
     'capability booleans mean observed availability', 'capabilityDetails', 'supported, available and reason',
-    'instead of assuming that a registered service is usable', 'operations recheck availability']) {
+    'instead of assuming that a registered service or a stored configuration is usable', 'operations recheck availability']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
   }
 })

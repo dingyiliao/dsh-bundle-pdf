@@ -60,8 +60,7 @@ test('the authenticated translation wire rejects an omitted part of speech', asy
 })
 
 test('the authenticated translation wire preserves model-output failure codes for the UI', async () => {
-  for (const code of ['invalid-model-output', 'incomplete-model-output', 'empty-model-output',
-    'incomplete-selection', 'unrecognized-selection'] as const satisfies readonly TranslationErrorCode[]) {
+  for (const code of ['invalid-model-output', 'incomplete-model-output', 'empty-model-output'] as const satisfies readonly TranslationErrorCode[]) {
     const engine = createHostTranslationEngine({ rpc: { async call() {
       return { ok: false, error: { code, message: 'Sensitive provider diagnostic; do not show in the UI.' } }
     } } }, new AbortController().signal,
@@ -72,4 +71,58 @@ test('the authenticated translation wire preserves model-output failure codes fo
       timeoutMs: 30_000, maxOutputCharacters: 32768 }, {}), error =>
       error instanceof TranslationError && error.code === code)
   }
+})
+
+test('translation wire preserves validated interpreted source text independently from the original request', async () => {
+  const interpretation = { text: 'calculate', kind: 'correction' as const, certainty: 'confident' as const,
+    explanation: 'Corrected a character recognized incorrectly.' }
+  let captured: unknown
+  const engine = createHostTranslationEngine({ rpc: { async call(_path, _method, payload) {
+    captured = payload
+    return { ok: true, value: { text: '计算', status: 'complete', warnings: [], interpretation } }
+  } } }, new AbortController().signal,
+  { id: 'dsh-model', name: 'DSH Model', version: '1', execution: 'remote' })
+  const result = await engine.translate({ text: 'calcuiate', sourceLanguage: 'auto', targetLanguage: 'zh',
+    context: { sessionId: 'session' }, signal: new AbortController().signal, timeoutMs: 30_000, maxOutputCharacters: 32768 }, {})
+  assert.equal((captured as { text: string }).text, 'calcuiate')
+  assert.deepEqual(result.interpretation, interpretation)
+  assert.notEqual(result.interpretation, interpretation)
+  interpretation.text = 'mutated after the response'
+  assert.equal(result.interpretation?.text, 'calculate')
+})
+
+test('translation wire rejects malformed and incomplete recovery metadata', async () => {
+  const valid = { text: 'calculate', kind: 'correction', certainty: 'confident', explanation: 'OCR correction.' }
+  for (const interpretation of [null, {}, { ...valid, text: '' }, { ...valid, text: 'x'.repeat(8193) },
+    { ...valid, kind: 'normalized' }, { ...valid, certainty: 0.9 }, { ...valid, explanation: 'x'.repeat(501) },
+    { ...valid, extra: true }]) {
+    const engine = createHostTranslationEngine({ rpc: { async call() {
+      return { ok: true, value: { text: '计算', status: 'complete', warnings: [], interpretation } }
+    } } }, new AbortController().signal,
+    { id: 'dsh-model', name: 'DSH Model', version: '1', execution: 'remote' })
+    await assert.rejects(engine.translate({ text: 'calcuiate', sourceLanguage: 'auto', targetLanguage: 'zh',
+      context: { sessionId: 'session' }, signal: new AbortController().signal, timeoutMs: 30_000, maxOutputCharacters: 32768 }, {}))
+  }
+  const partial = createHostTranslationEngine({ rpc: { async call() {
+    return { ok: true, value: { text: '计算', status: 'partial', warnings: [], interpretation: valid } }
+  } } }, new AbortController().signal,
+  { id: 'dsh-model', name: 'DSH Model', version: '1', execution: 'remote' })
+  await assert.rejects(partial.translate({ text: 'calcuiate', sourceLanguage: 'auto', targetLanguage: 'zh',
+    context: { sessionId: 'session' }, signal: new AbortController().signal, timeoutMs: 30_000, maxOutputCharacters: 32768 }, {}),
+  error => error instanceof TranslationError && error.code === 'invalid-model-output')
+})
+
+test('translation wire preserves same-text interpretation and phrase pronunciation without semantic classification', async () => {
+  const interpretation = { text: 'reduces a tensor', kind: 'completion' as const, certainty: 'tentative' as const,
+    explanation: 'A model-supplied explanation of this fragment.' }
+  const detail = { kind: 'phrase' as const, pronunciation: '/rɪˈdjuːsɪz ə ˈtensə/', meanings: [{ partOfSpeech: '动词短语',
+    meaning: '对张量进行归约', example: 'The operation reduces a tensor.', exampleTranslation: '此操作对张量进行归约。' }] }
+  const engine = createHostTranslationEngine({ rpc: { async call() {
+    return { ok: true, value: { text: '对张量进行归约', status: 'complete', warnings: [], interpretation, detail } }
+  } } }, new AbortController().signal,
+  { id: 'dsh-model', name: 'DSH Model', version: '1', execution: 'remote' })
+  const result = await engine.translate({ text: interpretation.text, sourceLanguage: 'auto', targetLanguage: 'zh',
+    context: { sessionId: 'session' }, signal: new AbortController().signal, timeoutMs: 30_000, maxOutputCharacters: 32768 }, {})
+  assert.deepEqual(result.interpretation, interpretation)
+  assert.deepEqual(result.detail, detail)
 })

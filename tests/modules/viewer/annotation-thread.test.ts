@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { annotationRoot, annotationThread, createAnnotationThreadIndex, isReply, isStandaloneNote } from '../../../src/modules/viewer/model/annotation-thread.ts'
+import { createAnnotationThreadIndex, isReply, isStandaloneNote } from '../../../src/modules/viewer/model/annotation-thread.ts'
 
 const mark = (id: string, overrides: Partial<PdfAnnotation> = {}): PdfAnnotation => ({
   id, page: 1, subtype: 'Highlight', flags: 4, supported: true, editable: true,
@@ -14,14 +14,14 @@ test('PDF IRT replies belong to one markup thread, including nested replies', ()
   const second = mark('second', { subtype: 'Text', replyToId: 'first', contents: 'Nested reply', author: 'Bob' })
   const group = mark('group', { subtype: 'Text', replyToId: 'mark', replyType: 'Group', contents: 'Grouped mark' })
   const all = [second, first, root, group]
-  const byId = new Map(all.map(item => [item.id, item]))
-  assert.equal(annotationRoot(second, byId), root)
-  assert.deepEqual(annotationThread(root, all).comments.map(item => item.id), ['mark', 'first', 'second'])
+  const index = createAnnotationThreadIndex(all)
+  assert.equal(index.rootOf(second), root)
+  assert.deepEqual(index.thread(root).comments.map(item => item.id), ['mark', 'first', 'second'])
   assert.equal(isReply(group), false)
   assert.equal(isStandaloneNote(root), false)
   assert.equal(isStandaloneNote(mark('note', { subtype: 'Text', contents: 'Sticky note' })), true)
   assert.equal(isStandaloneNote(first), false, 'Text replies belong to the markup thread, not the standalone-note feature')
-  assert.deepEqual(annotationThread(mark('note', { subtype: 'Text', contents: 'Sticky note' }), []).comments, [],
+  assert.deepEqual(index.thread(mark('note', { subtype: 'Text', contents: 'Sticky note' })).comments, [],
     'standalone note contents are not projected as a markup comment thread')
 })
 
@@ -46,10 +46,8 @@ test('blank root can still expose replies while broken and cyclic links remain b
   const a = mark('a', { subtype: 'Text', replyToId: 'b', contents: 'A' })
   const b = mark('b', { subtype: 'Text', replyToId: 'a', contents: 'B' })
   const all = [root, reply, crossPage, a, b]
-  const byId = new Map(all.map(item => [item.id, item]))
-  assert.deepEqual(annotationThread(root, all).comments.map(item => item.id), ['reply'])
-  assert.equal(annotationRoot(crossPage, byId), crossPage)
-  assert.equal(annotationRoot(a, byId).id, annotationRoot(b, byId).id)
   const index = createAnnotationThreadIndex(all)
+  assert.deepEqual(index.thread(root).comments.map(item => item.id), ['reply'])
+  assert.equal(index.rootOf(crossPage), crossPage)
   assert.equal(index.rootOf(a).id, index.rootOf(b).id)
 })

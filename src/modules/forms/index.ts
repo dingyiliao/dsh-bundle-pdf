@@ -12,9 +12,9 @@ export { createFormInspectionRegistry, FormInspectionReferenceError, formControl
   modelFormInspectionFields } from './inspection-references.js'
 export type { FormInspectionRegistry, FormInspectionIdentity, FormControlReference,
   FormInspectionTarget } from './inspection-references.js'
-export { formValueContract, validateFormChanges, projectedFormValue, FormValidationError } from './validation.js'
-export type { FormValueContract, FormValidationIssue } from './validation.js'
-import { formValueContract, type FormValueContract } from './validation.js'
+export { formValueType, validateFormChanges, projectedFormValue, FormValidationError } from './validation.js'
+export type { FormValueType, FormValidationIssue } from './validation.js'
+import { formValueType, type FormValueType } from './validation.js'
 
 export type FormControlMarker = {
   label: string
@@ -37,7 +37,7 @@ export type FormPageInspection = {
     fieldId: string
     name: string
     type: PdfFormField['type']
-    valueContract: FormValueContract
+    valueType: FormValueType
     required: boolean
     options?: string[]
     maxLength?: number
@@ -84,7 +84,7 @@ export function inspectFormPage(document: PdfDocumentInfo, page: number, maxEdge
     if (!controls.length) continue
     if (fieldId.length > 2048 || field.name.length > 2048 || (field.options?.length ?? 0) > 1000
       || field.options?.some(option => option.length > 2048)) fail('Field metadata exceeds the model tool limits')
-    result.fields.push({ fieldId, name: field.name, type: field.type, valueContract: formValueContract(field), required: field.required, controls,
+    result.fields.push({ fieldId, name: field.name, type: field.type, valueType: formValueType(field), required: field.required, controls,
       ...(field.options ? { options: [...field.options] } : {}),
       ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
       ...(field.multiline !== undefined ? { multiline: field.multiline } : {}),

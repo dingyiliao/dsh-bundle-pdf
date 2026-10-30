@@ -45,7 +45,9 @@ export class OcrRegistry {
   }
 
   list(): OcrEngineDescriptor[] {
-    return [...this.engines.values()].map((engine) => structuredClone(engine.descriptor))
+    return [...this.engines.values()].map((engine) => structuredClone({
+      ...engine.descriptor, capabilities: ['ocr-text'],
+    }))
   }
 
   select(instance: OcrInstance): void {

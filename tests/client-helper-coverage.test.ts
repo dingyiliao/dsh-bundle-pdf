@@ -37,20 +37,12 @@ test('reader waits clean up if the event source refuses listener registration', 
     error => error === reason)
 })
 
-test('native viewport clones the current layout and converts rectangles without changing its source', () => {
+test('native viewport converts rectangles with crop, rotation, scale and offsets without changing its source', () => {
   const geometry = { page: 1, cropBox: [10, 20, 110, 220] as [number, number, number, number],
     rotation: 90, userUnit: 2 }
-  const original = new NativeViewport(geometry, 1.5, 90, 4, 8, true)
-  const clone = original.clone()
-  assert.notEqual(clone, original)
-  assert.deepEqual([clone.scale, clone.rotation, clone.offsetX, clone.offsetY], [1.5, 90, 4, 8])
-  assert.equal(clone.dontFlip, false, 'a plain clone uses the normal PDF Y orientation')
-  const changed = original.clone({ scale: 2, rotation: 180, offsetX: -2, offsetY: 3, dontFlip: true })
-  assert.deepEqual([changed.scale, changed.rotation, changed.offsetX, changed.offsetY, changed.dontFlip],
-    [2, 180, -2, 3, true])
-  assert.deepEqual(changed.convertToViewportRectangle([10, 20, 110, 220]),
-    [...changed.convertToViewportPoint(10, 20), ...changed.convertToViewportPoint(110, 220)])
-  assert.equal(original.rotation, 90)
+  const viewport = new NativeViewport(geometry, 2, 180, -2, 3, true)
+  assert.deepEqual(viewport.convertToViewportRectangle([10, 20, 110, 220]), [398, 803, -2, 3])
+  assert.deepEqual(geometry, { page: 1, cropBox: [10, 20, 110, 220], rotation: 90, userUnit: 2 })
 })
 
 test('native document forwards destination lookups and validates zero-based page indices', async () => {

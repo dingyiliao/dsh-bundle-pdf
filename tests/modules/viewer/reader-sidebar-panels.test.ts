@@ -63,6 +63,16 @@ function options(): ReaderSidebarPanelsOptions {
 test('sidebar panels render their empty states with shared scrolling chrome', async () => {
   await withPanel(async ({ container, render }) => {
     const panels = readerSidebarPanels(options())
+    const sharedLayout = () => {
+      const panel = container.querySelector('.dsh-pdf-panel')
+      const heading = panel?.querySelector('.dsh-pdf-panel-heading')
+      const scroll = panel?.querySelector('.dsh-pdf-panel-scroll')
+      assert.ok(panel && heading && scroll)
+      assert.equal(heading.parentElement, panel)
+      assert.equal(scroll.parentElement, panel)
+      assert.equal(scroll.contains(heading), false, 'the heading must never be inside scrolling content')
+      assert.equal(panel.querySelectorAll('.dsh-pdf-panel-heading').length, 1)
+    }
     await render(panels.annotations)
     const annotationsPanel = container.querySelector('.dsh-pdf-comments')
     const heading = annotationsPanel?.querySelector('.dsh-pdf-annotations-heading')
@@ -71,6 +81,7 @@ test('sidebar panels render their empty states with shared scrolling chrome', as
     assert.equal(heading.parentElement, annotationsPanel)
     assert.equal(scroll.parentElement, annotationsPanel)
     assert.equal(scroll.contains(heading), false)
+    sharedLayout()
     await render(panels.ocr)
     assert.match(container.textContent ?? '', /reader\.ocrHint/)
     const ocrPanel = container.querySelector('.dsh-pdf-ocr-scroll')
@@ -79,11 +90,26 @@ test('sidebar panels render their empty states with shared scrolling chrome', as
     assert.ok(ocrHeading && ocrScroll)
     assert.equal(ocrHeading.parentElement, ocrPanel)
     assert.equal(ocrScroll.contains(ocrHeading), false)
+    sharedLayout()
     await render(panels.search)
     assert.equal(container.querySelector('input')?.placeholder, 'reader.searchPlaceholder')
     assert.equal(container.querySelector('button')?.disabled, true)
+    sharedLayout()
     await render(panels.translation)
     assert.match(container.textContent ?? '', /reader\.sidebar\.translationHint/)
+    sharedLayout()
+
+    const base = options()
+    await render(readerSidebarPanels({ ...base, translation: { ...base.translation,
+      selection: { text: 'Selected original '.repeat(100), pages: [1], targetLanguage: 'zh',
+        owner: 1, documentId: 'doc-1', contentVersion: 'v1' },
+      async translate() { return { text: 'A long translation '.repeat(100), status: 'complete', warnings: [],
+        document: { documentId: 'doc-1', contentVersion: 'v1' }, requestId: 1,
+        source: { engineId: 'fixture', engineVersion: '1', instanceId: 'test', configurationRevision: '1' } } },
+    } }).translation)
+    sharedLayout()
+    assert.ok(container.querySelector('.dsh-pdf-translation-text'))
+    assert.ok(container.querySelector('.dsh-pdf-panel-heading button'), 'translation close action belongs to the fixed heading')
   })
 })
 
@@ -127,5 +153,38 @@ test('search results and form route user actions to the Reader controllers', asy
     const form = container.querySelector('form')!
     await act(async () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })))
     assert.deepEqual(actions, ['jump:7:10:20', 'search'])
+  })
+})
+
+test('semantic index commands belong to search and do not submit a keyword search', async () => {
+  await withPanel(async ({ container, render }) => {
+    const calls: string[] = []
+    const base = options()
+    const indexing = { label: 'Index PDF', statusLabel: 'Not indexed', enabled: true, disabled: false,
+      onStart: () => { calls.push('index') } }
+    const props = { ...base, indexing, search: { ...base.search, async run() { calls.push('search') } } }
+    await render(readerSidebarPanels(props).search)
+    const section = () => container.querySelector<HTMLElement>('[aria-label="reader.indexing.title"]')!
+    const button = section().querySelector<HTMLButtonElement>('button')!
+    assert.equal(button.type, 'button')
+    assert.equal(button.closest('form'), null)
+    assert.equal(button.textContent, 'Index PDF')
+    await act(async () => { button.click() })
+    assert.deepEqual(calls, ['index'])
+
+    await render(readerSidebarPanels({ ...props, indexing: { ...indexing, label: 'Rebuild index', statusLabel: 'Index ready' } }).search)
+    assert.equal(section().querySelector('button')?.textContent, 'Rebuild index')
+    assert.match(section().textContent ?? '', /Index ready/)
+    await render(readerSidebarPanels({ ...props, indexing: { ...indexing, disabled: true, statusLabel: 'Indexing PDF…' } }).search)
+    assert.equal(section().querySelector('button')?.disabled, true)
+    await act(async () => { section().querySelector<HTMLButtonElement>('button')!.click() })
+    assert.deepEqual(calls, ['index'])
+
+    await render(readerSidebarPanels({ ...props, indexing: { ...indexing, enabled: false, disabled: true,
+      statusLabel: 'Enable semantic search in PDF settings first' } }).search)
+    assert.equal(section().querySelector('button'), null, 'unconfigured engines do not get an unusable command')
+    assert.match(section().textContent ?? '', /Enable semantic search/)
+    await render(readerSidebarPanels(base).search)
+    assert.equal(container.querySelector('.dsh-pdf-search-indexing'), null)
   })
 })

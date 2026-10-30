@@ -1,13 +1,13 @@
 import { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { createAuxiliaryVisionBackend, createImageUnderstandingDispatch, createOcrTextBackend,
-  createSessionVisionBackend, MAX_IMAGE_REQUEST_BYTES, registerPdfTransport,
+import { createImageUnderstandingDispatch, MAX_IMAGE_REQUEST_BYTES, registerPdfTransport,
   type PdfImageEvidenceResolver, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
+import { createDshVisionBackend, resolveSessionVisionModel, supportsSessionImages } from '../adapters/host/dsh/image-backends.js'
 import { HostImageUnderstandingService, ImageUnderstandingError } from '../modules/image-understanding/index.js'
 import { pdfCapabilities } from '../modules/capabilities/index.js'
 import { createPdfEngineRouting } from '../adapters/host/dsh/engine-routing.js'
 
-export type { ImageUnderstandingBackend, ImageUnderstandingAvailability, ImageUnderstandingPreparation,
+export type { ImageUnderstandingBackend, ImageUnderstandingAvailability, ImageUnderstandingResult,
   ImageUnderstandingRequest } from '../modules/image-understanding/index.js'
 export { HostImageUnderstandingService } from '../modules/image-understanding/index.js'
 
@@ -18,19 +18,12 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Independent Host extension. Other plugins may register a derived-text backend. */
+/** Independent Host extension. Other plugins register image-to-text implementations. */
 export const name = 'image-understanding'
 export const provide = 'imageUnderstanding'
 export const inject = ['connection', 'sessionController']
-export const Config = z.object({
-  backend: z.string().min(1).max(128).default('session-vision'),
-  auxiliaryVision: z.object({
-    provider: z.string().min(1).max(128), model: z.string().min(1).max(256),
-    reasoningEffort: z.string().min(1).max(128).optional(),
-    maxOutputTokens: z.number().int().min(1).max(16_384).optional(),
-  }).optional(),
-})
-  .default({ backend: 'session-vision' })
+export const Config = z.object({ backend: z.string().min(1).max(128).default('dsh-vision') })
+  .default({ backend: 'dsh-vision' })
 export type Config = z.infer<typeof Config>
 
 export function apply(ctx: Context, config: Config): void {
@@ -47,14 +40,11 @@ export function apply(ctx: Context, config: Config): void {
   }
   ctx.reflect.provide('imageUnderstanding', service)
   ctx.effect(() => () => service.dispose(), 'image-understanding: dispose requests')
-  ctx.effect(() => service.register(createSessionVisionBackend(ctx)), 'image-understanding: session vision backend')
-  ctx.effect(() => service.register(createOcrTextBackend(ctx)), 'image-understanding: OCR text backend')
-  ctx.effect(() => service.register(createAuxiliaryVisionBackend({
-    selectedModel: () => config.auxiliaryVision,
+  ctx.effect(() => service.register(createDshVisionBackend({
+    selectedModel: (sessionId, signal) => resolveSessionVisionModel(ctx, sessionId, signal),
     getLlm: () => ctx.get('llm') as SessionOcrLlm | undefined,
     getAttachments: () => ctx.get('attachments') as SessionOcrAttachmentStore | undefined,
-    maxOutputTokens: config.auxiliaryVision?.maxOutputTokens,
-  })), 'image-understanding: optional auxiliary vision backend')
+  })), 'image-understanding: DSH visual-model backend')
   ctx.effect(() => {
     const fiber = ctx.inject(['pdfCapabilities'], scope => {
       scope.effect(() => scope.pdfCapabilities.register({ id: 'image.selected',
@@ -69,7 +59,10 @@ export function apply(ctx: Context, config: Config): void {
     return () => fiber.dispose()
   }, 'image-understanding: optional capability catalog')
   ctx.effect(() => registerPdfTransport(ctx as unknown as Parameters<typeof registerPdfTransport>[0],
-    createImageUnderstandingDispatch(service, references, routing.bindings),
+    createImageUnderstandingDispatch(service, references, {
+      binding: () => routing.bindings()?.binding,
+      canDeliverImage: (sessionId, signal) => supportsSessionImages(ctx, sessionId, signal),
+    }),
     { endpoint: 'pdf.image', maxRequestBytes: MAX_IMAGE_REQUEST_BYTES }),
   'image-understanding: authenticated PDF image route')
 }

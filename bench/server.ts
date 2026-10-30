@@ -1,7 +1,7 @@
 /** Loopback-only synthetic fixture adapter; intentionally does not model DSH authorization/durable I/O. */
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { createWorkspaces } from '../src/host/workspaces.ts'
+import { createWorkspaces } from '../tests/fixtures/working-copy-service.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
 import type { DraftRecord } from '../src/modules/working-copy/index.ts'
 import { sha256 } from './metadata.ts'

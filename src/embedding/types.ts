@@ -15,7 +15,7 @@ export interface EmbeddingModel {
   engineId: string
   engineVersion: string
   model: string
-  /** Change whenever the served weights/tokenizer change, including local replacements. */
+  /** Provider-owned version/encoding identity; never requires a user-facing revision setting. */
   modelRevision: string
   dimensions: number
   maxBatchSize: number
@@ -45,8 +45,11 @@ export interface EmbeddingEngine {
   /** Synchronous, side-effect-free description used to key derived indexes. */
   describe(config: EngineConfiguration): EmbeddingModel
   availability?(config: EngineConfiguration, signal: AbortSignal): Promise<EmbeddingAvailability>
-  embed(request: EmbeddingEngineRequest, config: EngineConfiguration): Promise<readonly (readonly number[])[]>
+  embed(request: EmbeddingEngineRequest, config: EngineConfiguration): Promise<EmbeddingEngineOutput>
 }
+/** A provider may report the exact model identity verified for this operation. */
+export type EmbeddingEngineOutput = readonly (readonly number[])[]
+  | { vectors: readonly (readonly number[])[]; model: EmbeddingModel }
 export interface EmbeddingLimits {
   timeoutMs: number
   maxBatchSize: number

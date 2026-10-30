@@ -19,6 +19,7 @@ const engine = (recognize: OcrEngine['recognize']): OcrEngine => ({
 test('default OCR registry advertises both installed engines but selects disabled OCR', async () => {
   const registry = createOcrRegistry()
   assert.deepEqual(registry.list().map(item => item.id), ['none', 'local'])
+  assert.deepEqual(registry.list().map(item => item.capabilities), [['ocr-text'], ['ocr-text']])
   assert.equal(registry.getSelection()?.engineId, 'none')
   assert.equal((await registry.availability()).status, 'disabled')
   registry.dispose()

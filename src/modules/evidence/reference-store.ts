@@ -86,6 +86,19 @@ export const savedTextReferenceSchema = z.object({
 }).strict()
 export type SavedTextReference = z.infer<typeof savedTextReferenceSchema>
 
+/** One continuous, bounded passage. Embedded pages keep it valid if child refs are evicted. */
+export const savedTextRangeReferenceSchema = z.object({
+  sessionId: z.string().min(1).max(512),
+  evidence: z.object({
+    refId, source: z.literal('pdf-text-range'), documentId: z.string().min(1).max(512), sourcePath,
+    sourceDigest: digest, sourceVersion: z.string().min(1).max(4096), contentVersion: z.string().min(1).max(512),
+    revision: z.number().int().nonnegative(),
+    pages: z.array(z.object({ evidence: textEvidenceSchema, pageTextDigest: digest }).strict()).min(1).max(10),
+  }).strict(),
+  createdAt: z.number().int().nonnegative(),
+}).strict()
+export type SavedTextRangeReference = z.infer<typeof savedTextRangeReferenceSchema>
+
 export const savedImageReferenceSchema = z.object({
   sessionId: z.string().min(1).max(512),
   evidence: imageEvidenceSchema,
@@ -94,15 +107,12 @@ export const savedImageReferenceSchema = z.object({
 export type SavedImageReference = z.infer<typeof savedImageReferenceSchema>
 
 /** Existing text records keep their exact shape; new image records share the same bounded domain. */
-export const savedReferenceSchema = z.union([savedTextReferenceSchema, savedImageReferenceSchema])
+export const savedReferenceSchema = z.union([savedTextReferenceSchema, savedImageReferenceSchema, savedTextRangeReferenceSchema])
 export type SavedReference = z.infer<typeof savedReferenceSchema>
 
-export function isSavedTextReference(record: SavedReference): record is SavedTextReference {
-  return record.evidence.source === 'pdf-text'
-}
-
 export function isSavedImageReference(record: SavedReference): record is SavedImageReference {
-  return record.evidence.source !== 'pdf-text'
+  return record.evidence.source === 'direct-image' || record.evidence.source === 'ocr-text'
+    || record.evidence.source === 'auxiliary-vision'
 }
 
 /** Reads are synchronous so a ref may be resolved without trusting a model-supplied path. */

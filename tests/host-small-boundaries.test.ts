@@ -98,9 +98,9 @@ test('Host OCR stage handles evict the oldest item when bounded capacity is reac
   } finally { service.dispose() }
 })
 
-test('image transport rejects padded Base64 with nonzero discarded bits', async () => {
-  const dispatch = createImageUnderstandingDispatch({ async prepare() {
-    throw new Error('noncanonical image should not reach the model')
+test('image transport rejects obsolete raw-image requests without reaching an engine', async () => {
+  const dispatch = createImageUnderstandingDispatch({ async understand() {
+    throw new Error('unattested raw image should not reach the model')
   } } as never)
   await assert.rejects(dispatch('session', { action: 'prepare', sessionId: 'session',
     image: { mediaType: 'image/png', data: 'Zh==', width: 1, height: 1 }, question: 'What is this?' },

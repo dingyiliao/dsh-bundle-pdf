@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
 import { loadPdfDocument, PdfDocumentError } from '../src/adapters/host/pdf-lib/pdf-document.ts'
-import { createWorkspaces } from '../src/host/workspaces.ts'
+import { createWorkspaces } from './fixtures/working-copy-service.ts'
 
 async function fixture(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(`./fixtures/${name}.pdf`, import.meta.url)))

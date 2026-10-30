@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useRef, useState, type RefObject } from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import { formatAnnotationDate } from '../model/reader-dates.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 import { AnnotationColorBar } from './AnnotationColorBar.js'
+import { ReaderPopover } from './ReaderPopover.js'
 
 export interface ReaderNoteEditorProps {
   note?: PdfAnnotation
@@ -29,15 +30,7 @@ export function ReaderNoteEditor(props: ReaderNoteEditorProps) {
   const canWrite = editable && !readOnly
   const date = note?.modifiedAt || note?.createdAt
   const [colorsOpen, setColorsOpen] = useState(false)
-  const colorsRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!colorsOpen) return
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !colorsRef.current?.contains(event.target)) setColorsOpen(false)
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [colorsOpen])
+  const colorsRef = useRef<HTMLButtonElement>(null)
   return <section className="dsh-pdf-note-editor" onKeyDown={event => {
     if (event.key === 'Escape') { event.stopPropagation(); onCancel() }
   }}>
@@ -46,20 +39,18 @@ export function ReaderNoteEditor(props: ReaderNoteEditorProps) {
         <ToolbarIcon name="note" />{t('reader.note')}
       </span>
       <div className="dsh-pdf-comment-editor-header-actions">
-        {canWrite && mode !== 'new' && <div ref={colorsRef} className="dsh-pdf-note-color-control">
-          <button type="button" className="dsh-pdf-note-color" aria-label={t('reader.changeNoteColor')}
+        {canWrite && mode !== 'new' && <div className="dsh-pdf-note-color-control">
+          <button ref={colorsRef} type="button" className="dsh-pdf-note-color" aria-label={t('reader.changeNoteColor')}
             title={t('reader.changeNoteColor')} aria-expanded={colorsOpen} aria-haspopup="dialog"
             onClick={() => setColorsOpen(open => !open)}>
             <span className="dsh-pdf-note-color-core" style={{ backgroundColor: color }} aria-hidden="true" />
           </button>
-          {colorsOpen && <div className="dsh-pdf-note-color-popover" role="dialog" aria-label={t('reader.changeNoteColor')}
-            onKeyDown={event => {
-              if (event.key === 'Escape') { event.stopPropagation(); setColorsOpen(false) }
-            }}>
+          {colorsOpen && <ReaderPopover anchor={colorsRef} open onClose={() => setColorsOpen(false)}
+            className="dsh-pdf-note-color-popover dsh-pdf-glass" role="dialog" aria-label={t('reader.changeNoteColor')}>
             <AnnotationColorBar palette="note" value={color} label={t('reader.colorPalette')} t={t}
               onQuickColor={hex => { onColorChange(hex); setColorsOpen(false) }}
               onPaletteColor={onColorChange} />
-          </div>}
+          </ReaderPopover>}
         </div>}
         {canWrite && mode !== 'new' && <button type="button" className="dsh-pdf-comment-editor-delete"
           title={t('reader.delete')} aria-label={t('reader.delete')} onClick={onDelete}><ToolbarIcon name="discard" /></button>}

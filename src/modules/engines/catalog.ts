@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { PASSIVE_POLL_TIMEOUT_MS } from '../../shared/passive-poll.js'
 import type { EngineDirectorySource } from './directory.js'
 import { engineDescriptorSchema, engineKinds, type EngineKind } from './types.js'
 
@@ -37,7 +38,7 @@ export class EngineCatalog {
       const changed = () => { cleanup(); this.disposed ? reject(new Error('Engine catalog is disposed')) : resolve(this.read()) }
       const aborted = () => { cleanup(); reject(signal.reason) }
       const stop = this.subscribe(changed)
-      const timer = setTimeout(changed, 15_000)
+      const timer = setTimeout(changed, PASSIVE_POLL_TIMEOUT_MS)
       signal.addEventListener('abort', aborted, { once: true })
       if (revision !== this.snapshot.revision || this.disposed) changed()
     })

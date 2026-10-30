@@ -6,5 +6,5 @@ export { addExplanationExcerpt, addExplanationRegion, explanationPages, updateEx
 export { buildMixedExplanationPrompt, type ExplanationImageReferencePreparation,
   type ExplanationImageReferenceRequest, type MixedExplanationPromptOptions,
   type PromptContentPart } from './prompt.js'
-export { encodeExplanationImage, encodeExplanationImageBytes, MAX_EXPLANATION_IMAGE_BYTES } from './image.js'
+export { encodeExplanationImageBytes } from './image.js'
 export { explanationSourceIdentity, sameExplanationSource, type ExplanationSourceIdentity } from './source.js'

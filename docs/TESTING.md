@@ -27,3 +27,22 @@ npm run bench                  # 性能基准，结果不计入正确性覆盖�
 ```
 
 项目覆盖率运行期间不要修改 `src/`、`tests/` 或构建配置；脚本会验证输入指纹，并在结束后恢复普通 Desktop 构建。局部调试可用 `node --import tsx --test tests/<path>.test.ts`，但最终仍需跑完整套件。
+
+## Desktop 更新与 SDK 兼容
+
+`tests/shared/passive-poll.test.ts` 使用真实引擎目录、工作副本、索引和导航服务，在模拟时钟下验证五种被动订阅均于 5 秒内返回；索引关闭、导航任务仍在执行、取消清理和重新订阅也包含在内。测试不依赖相邻 DSH 源码，也不触发实际安装更新。
+
+与 Desktop 更新锁集成验证时，使用待支持版本的 `installDesktopUpdateTaskControl`：接纳一个 PDF 状态查询后调用 `lock`，断言它在 10 秒期限前完成；另接纳一个尚未提交的写入，断言观察请求结束后锁仍等待该写入。真实安装更新验收还须确认旧 Host 退出、安装器完成交接、新进程正常启动，不能用前面的排空测试替代。
+
+`tests/adapters/dsh/runtime-compatibility.test.ts` 验证实际 SDK 的工具执行、Fiber 注销和存储写入边界；`tests/dsh-version-compatibility.test.ts` 检查声明的版本准入。添加支持版本时需要同时验证 API 和 Loader 装配，不能只修改版本范围。
+
+## 翻译功能的验证边界
+
+翻译是否可理解、属于哪类词句、如何纠正或补全均由模型决定。自动化测试不得继续把残词、短片段、纯标点或相同修复文本应被拒绝作为预期结果。
+
+- `translation-model-modes.test.ts` 验证原始选区及邻近文字确实发送给受控模型流，并按其返回类型解析；`translation-model-contract.test.ts` 另接入真实 DSH `LlmRuntime` 与受控 Adapter，验证请求投影和完成／失败协议。它们不访问在线模型，也不证明模型理解正确。
+- `reader-selection-geometry.test.ts` 验证跨字体文字块时仍收集边界两侧各最多 80 字符，保留缺失词尾后的原文，不取控件文字。
+- 浏览器的 `forwards exact selections through the real translation adapter … (not online semantics)` 用例走 UI、注册表、Host 翻译适配器、受控原始模型流和解析器，断言实际发出的选区及返回后的展示；不直接向面板注入最终 `TranslationResult`。
+- 在线验收须在加载当前构建的 DSH 中实际拖选并翻译，记录实际原文、上下文、模型返回和 UI。至少包含普通片段、跨字体的残词及无法确定含义的内容；模型表达不确定性也应显示为内容。一次在线成功不能证明所有模型和选区都可靠。
+
+运行报告须分别说明模拟／受控测试、真实 Runtime 集成、浏览器链路和在线模型验收。过滤运行时跳过的用例不算通过；相邻 DSH 的版本门禁、构建或测试夹具导致全量 Web 回归失败时，也不能用独立面板用例代替全量通过结论。

@@ -85,7 +85,7 @@ export async function resolvePdfDestination(document: NativeDocument, snapshot: 
     const page = await document.getPage(pageIndex + 1)
     const base = page.getViewport({ scale: 1, rotation: geometry.rotation })
     options.fit = 'custom'
-    options.scale = Math.max(0.1, (size.height - 56) / base.height)
+    options.scale = Math.max(0.1, (size.height - READING_TOP_INSET - 16) / base.height)
     if (typeof destination[2] === 'number') options.x = destination[2]
   } else if (kind === 'FitR') {
     if (![destination[2], destination[3], destination[4], destination[5]].every(Number.isFinite)) throw new Error(invalidDestination)
@@ -94,7 +94,8 @@ export async function resolvePdfDestination(document: NativeDocument, snapshot: 
     const box = pdfRectToViewport(base, [destination[2], destination[3], destination[4], destination[5]])
     if (box[2] <= box[0] || box[3] <= box[1]) throw new Error(invalidDestination)
     options.fit = 'custom'
-    options.scale = Math.max(0.1, Math.min((size.width - 32) / (box[2] - box[0]), (size.height - 56) / (box[3] - box[1])))
+    options.scale = Math.max(0.1, Math.min((size.width - 32) / (box[2] - box[0]),
+      (size.height - READING_TOP_INSET - 16) / (box[3] - box[1])))
     const [x, y] = base.convertToPdfPoint(box[0], box[1]); options.x = x; options.y = y
   } else throw new Error(invalidDestination)
   return { page: pageIndex + 1, options }

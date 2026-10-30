@@ -13,7 +13,7 @@ import { CapabilityRegistry, pdfCapabilities } from '../src/modules/capabilities
 import { registerPdfTransport } from '../src/adapters/host/dsh/index.ts'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 import { PDFDocument, PDFHexString, PDFName, PDFString, rgb } from 'pdf-lib'
-import { memoryWorkspace, nativeFixture, supplementaryTextPdf } from './native-fixture.ts'
+import { hyphenatedTextPdf, memoryWorkspace, nativeFixture, supplementaryTextPdf } from './native-fixture.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import { brokenTextMappingFixture } from './fixtures/broken-text-mapping.ts'
 
@@ -30,6 +30,25 @@ test('native text reports invalid real-glyph Unicode mappings without confusing 
     await worker.request({ command: 'open', documentId: 'ordinary-unicode' }, await nativeFixture())
     const good = (await worker.request({ command: 'text', documentId: 'ordinary-unicode', pageIndex: 0 })).value as { quality?: unknown }
     assert.equal(good.quality, undefined)
+  } finally { await worker.dispose() }
+})
+
+test('PDFium layout hyphens do not report invalid Unicode while real control-code mappings still do', { skip }, async () => {
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    await worker.request({ command: 'open', documentId: 'layout-hyphen' }, await hyphenatedTextPdf())
+    const good = (await worker.request({ command: 'text', documentId: 'layout-hyphen', pageIndex: 0 })).value as {
+      quality?: unknown; items: { str: string }[]
+    }
+    // These same text runs previously reported one unmapped character. Keep
+    // extraction unchanged: only the interpretation of PDFium's marker changes.
+    assert.deepEqual(good.items.map(item => item.str), ['understand', 'ing the model'])
+    assert.equal(good.quality, undefined)
+    await worker.request({ command: 'open', documentId: 'bad-controls' }, await brokenTextMappingFixture())
+    const bad = (await worker.request({ command: 'text', documentId: 'bad-controls', pageIndex: 0 })).value as {
+      quality?: { unmappedCharacters: number }
+    }
+    assert.ok(bad.quality!.unmappedCharacters > 0, 'real glyphs mapped to control codes must still trigger recovery')
   } finally { await worker.dispose() }
 })
 

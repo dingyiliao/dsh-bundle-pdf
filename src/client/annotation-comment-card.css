@@ -6,7 +6,8 @@
 .dsh-pdf-comment-connector > path { fill: none; stroke: currentColor; stroke-width: 1.35; opacity: .8; }
 .dsh-pdf-page-comment-card {
   position: absolute; z-index: 24; width: 300px; min-width: 0; max-width: calc(100% - 24px);
-  padding: 11px 12px; overflow: auto; overscroll-behavior: contain;
+  padding: 11px 12px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain;
+  container: pdf-comment-card / inline-size;
   border: 1px solid var(--pdf-glass-edge); border-radius: 18px;
   background: linear-gradient(155deg, var(--pdf-glass-top), var(--pdf-glass-fill));
   -webkit-backdrop-filter: var(--pdf-glass-control-filter); backdrop-filter: var(--pdf-glass-control-filter);
@@ -39,7 +40,7 @@
 .dsh-pdf-page-comment-card:focus-within { border-color: color-mix(in srgb, var(--pdf-accent) 38%, var(--pdf-glass-edge)); }
 .dsh-pdf-page-comment-card[data-card-kind="note"]:focus-within { border-color: var(--pdf-note-border); }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor {
-  display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; border: 0;
+  display: flex; flex-direction: column; flex-wrap: nowrap; gap: 7px; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0;
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-note-editor {
   display: flex; flex-direction: column; gap: 7px; height: 100%; min-height: 0; margin: 0; padding: 0; border: 0;
@@ -68,12 +69,12 @@
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions {
   display: flex; align-items: center; gap: 8px; min-width: 0;
 }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header { justify-content: space-between; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); cursor: grab; user-select: none; -webkit-user-select: none; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header { justify-content: space-between; flex-wrap: wrap; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title { gap: 6px; max-width: 100%; flex-wrap: wrap; overflow-wrap: anywhere; font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); cursor: grab; user-select: none; -webkit-user-select: none; }
 .dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-title,
 .dsh-pdf-page-comment-card[data-dragging="true"] .dsh-pdf-comment-editor-move { cursor: grabbing; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-title svg { display: block; width: 15px; height: 15px; color: var(--pdf-muted); }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header-actions { display: flex; align-items: center; gap: 2px; }
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-header-actions { display: flex; align-items: center; flex: none; gap: 2px; margin-left: auto; }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-move {
   display: grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0;
   border: 0; border-radius: 8px; background: transparent; color: var(--pdf-muted); cursor: grab; touch-action: none;
@@ -88,11 +89,6 @@
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-close:hover:not(:disabled) { color: var(--pdf-text); }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-close svg { display: block; width: 15px; height: 15px; }
-.dsh-pdf-page-comment-card .dsh-pdf-comment-details {
-  display: flex; flex-direction: row; flex-wrap: wrap; gap: 2px 7px;
-  color: var(--pdf-muted); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-caption);
-}
-.dsh-pdf-page-comment-card .dsh-pdf-comment-details strong { color: var(--pdf-muted); font-weight: var(--pdf-weight-semibold); }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-field { display: flex; flex-direction: column; align-items: stretch; }
 .dsh-pdf-note-editor .dsh-pdf-comment-editor-field { flex: 1; min-height: 0; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-field > span {
@@ -108,7 +104,12 @@
 }
 .dsh-pdf-reader .dsh-pdf-page-comment-card textarea:focus-visible { outline: none; }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions {
-  justify-content: flex-end; gap: 5px; padding-top: 8px; border-top: 1px solid var(--pdf-border);
+  justify-content: flex-end; flex-wrap: wrap; gap: 5px; padding-top: 8px; border-top: 1px solid var(--pdf-border);
+}
+.dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+@container pdf-comment-card (max-width: 180px) {
+  .dsh-pdf-comment-editor-header-actions { width: 100%; justify-content: flex-end; }
+  .dsh-pdf-comment-editor-actions > button { flex: 1 1 100%; }
 }
 .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-actions:has(.dsh-pdf-comment-editor-add) { justify-content: flex-start; }
 .dsh-pdf-reader .dsh-pdf-page-comment-card .dsh-pdf-comment-editor-delete {
@@ -126,7 +127,7 @@
 }
 .dsh-pdf-note-color-core { width: 19px; height: 19px; border: 1px solid color-mix(in srgb, var(--pdf-note-ink) 35%, transparent); border-radius: 5px; }
 .dsh-pdf-note-color-popover {
-  position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; width: max-content; max-width: min(250px, 80vw);
+  width: 220px; min-width: 0;
   padding: 7px; border: 1px solid var(--pdf-glass-edge); border-radius: 10px;
   background: var(--pdf-panel); box-shadow: var(--pdf-glass-shadow); color: var(--pdf-text);
 }

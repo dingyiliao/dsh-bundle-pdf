@@ -27,6 +27,10 @@ export interface PdfSettings {
   ocrEngine?: string
   imageEngine?: string
   embeddingEngine?: string
+  /** Recognize scanned or damaged pages with the selected OCR engine while indexing. */
+  indexScanPages?: boolean
+  /** Optional generated whole-page visual descriptions, independently of OCR. */
+  indexImageDescriptions?: boolean
   engineConfigurations?: import('../modules/engines/types.js').EngineConfigurations
   ocrTimeoutMs: number
   translationEngine: string
@@ -42,7 +46,8 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
-  ocrEngine: 'session-llm', imageEngine: 'session-vision', embeddingEngine: 'none', engineConfigurations: {},
+  ocrEngine: 'session-llm', imageEngine: 'dsh-vision', embeddingEngine: 'none', engineConfigurations: {},
+  indexScanPages: true, indexImageDescriptions: false,
   ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,
   historyCapacity: 100, maxFileBytes: 64 * 1024 * 1024,

@@ -1,11 +1,11 @@
 import { z } from 'zod'
-import { MAX_EXPLANATION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
+import { MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
 import { inspectPng } from '../../../shared/png.js'
 import type { ImageUnderstandingApi,
   PreparedImageReference } from '../../../modules/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
-export type { ImageUnderstandingApi, ImageUnderstandingAvailability, PreparedImageUnderstanding,
+export type { ImageUnderstandingApi, ImageUnderstandingAvailability,
   PreparedImageReference } from '../../../modules/viewer/index.js'
 
 const reply = z.discriminatedUnion('ok', [
@@ -17,14 +17,6 @@ const availability = z.discriminatedUnion('status', [
     backendId: z.string(), limitation: z.string().optional() }),
   z.object({ status: z.literal('unavailable'), reason: z.string() }),
 ])
-const prepared = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('direct-image'), backendId: z.string(),
-    provenance: z.object({ backendId: z.string(), mode: z.literal('session-vision') }) }),
-  z.object({ kind: z.literal('derived-text'), text: z.string().max(32_768),
-    provenance: z.object({ backendId: z.string(), mode: z.enum(['ocr-text', 'image-description']), model: z.string().optional() }),
-    limitations: z.string().optional() }),
-])
-
 const identity = z.string().min(1).max(512)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const referenceId = z.string().regex(/^pdfref_[0-9a-f-]{36}$/)
@@ -47,13 +39,13 @@ const referencePreparation = z.discriminatedUnion('kind', [
     bytes: z.instanceof(Uint8Array) }).strict(),
   z.object({ kind: z.literal('derived-text'), backendId: z.string(),
     requestedRefId: referenceId, evidence, text: z.string().max(32_768),
-    provenance: z.object({ backendId: z.string(), mode: z.enum(['ocr-text', 'image-description']), model: z.string().optional() }),
+    provenance: z.object({ backendId: z.string(), mode: z.literal('image-description'), backendVersion: z.string().optional(), model: z.string().optional() }),
     limitations: z.string().optional() }).strict(),
 ])
 
 /** Read and validate the PNG container returned for a Host-verified reference. */
 function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
-  return inspectPng(bytes, { maxBytes: MAX_EXPLANATION_IMAGE_BYTES,
+  return inspectPng(bytes, { maxBytes: MAX_EXPLANATION_REGION_IMAGE_BYTES,
     maxWidth: 8192, maxHeight: 8192, maxPixels: 24_000_000 })
 }
 
@@ -94,7 +86,6 @@ export function createImageUnderstandingApi(connection: PdfConnection, lifetime:
   }
   return {
     availability: async (sessionId, signal) => availability.parse(await call({ action: 'availability', sessionId }, signal)),
-    prepare: async (request, signal) => prepared.parse(await call({ action: 'prepare', ...request }, signal)),
     prepareReference: async (request, signal) => {
       const value = referencePreparation.parse(await call({
         action: 'prepare-reference', sessionId: request.sessionId, documentId: request.documentId,

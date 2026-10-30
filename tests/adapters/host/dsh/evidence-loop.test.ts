@@ -65,7 +65,7 @@ async function fixture() {
     documentId: string; revision: number; contentVersion: string; readerUiOpened: boolean
   }
   assert.equal(opened.readerUiOpened, false)
-  const search = await run('pdf_search', { documentId: opened.documentId, query: quote }) as SearchResult
+  const search = await run('pdf_keyword_search', { documentId: opened.documentId, query: quote }) as SearchResult
   assert.match(search.searchId, /^txt_[a-f0-9]{12}$/)
   assert.equal(search.hasMore, false)
   assert.equal('nextCursor' in search, false)
@@ -95,7 +95,7 @@ async function fixture() {
 test('registered tools search the exact duplicate, annotate the shared draft, then revalidate the old reference for an acknowledged precise jump', native, async () => {
   const f = await fixture(), waitLifetime = new AbortController()
   try {
-    const result = await f.run('pdf_annotate', f.annotation) as AnnotationResult
+    const result = await f.run('pdf_annotation_create', f.annotation) as AnnotationResult
     assert.equal(result.status, 'updated')
     assert.equal(result.revision, f.search.revision + 1)
     assert.equal(result.dirty, true)
@@ -113,7 +113,7 @@ test('registered tools search the exact duplicate, annotate the shared draft, th
     assert.equal(f.state.writes(), 0)
     const lease = await f.showReader()
     const waiting = f.navigation.dispatch(sessionId, { action: 'wait', ...lease }, waitLifetime.signal)
-    const jump = f.run('pdf_navigate', { documentId: f.opened.documentId, refId: f.refId })
+    const jump = f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: f.refId })
     const request = await waiting as AgentNavigationRequest
     assert.equal(request.documentId, f.opened.documentId)
     assert.equal(request.page, 1)
@@ -151,9 +151,9 @@ test('registered reference tools reject another session even when it opens the i
       documentId: string; revision: number
     }
     await f.showReader(owner, foreign.documentId)
-    await assert.rejects(f.run('pdf_annotate', { ...f.annotation, documentId: foreign.documentId,
+    await assert.rejects(f.run('pdf_annotation_create', { ...f.annotation, documentId: foreign.documentId,
       expectedRevision: foreign.revision }, signal, owner), { code: 'pdf/reference-unavailable' })
-    await assert.rejects(f.run('pdf_navigate', { documentId: foreign.documentId, refId: f.refId }, signal, owner),
+    await assert.rejects(f.run('pdf_page_jump', { documentId: foreign.documentId, refId: f.refId }, signal, owner),
       { code: 'pdf/reference-unavailable' })
     assert.equal(f.navigationCalls(), 0)
     assert.equal(f.state.workspaces.readSnapshot(owner, foreign.documentId).revision, foreign.revision)
@@ -169,8 +169,8 @@ test('an external source replacement cannot be annotated or shown as still-curre
     const replacement = Buffer.concat([await pdfFixture(), Buffer.from('\n% external revision\n')])
     await f.state.files.save(caller(), '/fixtures/native.pdf', replacement,
       evidenceSha256(f.state.current()), { signal })
-    await assert.rejects(f.run('pdf_annotate', f.annotation), { code: 'pdf/stale-reader' })
-    await assert.rejects(f.run('pdf_navigate', { documentId: f.opened.documentId, refId: f.refId }), { code: 'pdf/stale-reader' })
+    await assert.rejects(f.run('pdf_annotation_create', f.annotation), { code: 'pdf/stale-reader' })
+    await assert.rejects(f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: f.refId }), { code: 'pdf/stale-reader' })
     assert.equal(f.navigationCalls(), 0)
     assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.documentId).revision, f.opened.revision)
     assert.equal(f.state.writes(), 1, 'only the simulated external writer changed the source')
@@ -181,10 +181,10 @@ test('cancelling registered reference resolution during native extraction neithe
   const f = await fixture()
   try {
     await f.showReader()
-    for (const tool of ['pdf_annotate', 'pdf_navigate'] as const) {
+    for (const tool of ['pdf_annotation_create', 'pdf_page_jump'] as const) {
       const controller = new AbortController()
       f.afterRead(() => controller.abort())
-      await assert.rejects(f.run(tool, tool === 'pdf_annotate' ? f.annotation
+      await assert.rejects(f.run(tool, tool === 'pdf_annotation_create' ? f.annotation
         : { documentId: f.opened.documentId, refId: f.refId }, controller.signal), { name: 'AbortError' })
       assert.equal(f.state.workspaces.listDocuments().find(item => item.id === f.opened.documentId)!.pins, 0)
     }
@@ -199,9 +199,9 @@ test('a newer shared-draft revision during the Reader handoff cannot be acknowle
   try {
     const lease = await f.showReader()
     const waiting = f.navigation.dispatch(sessionId, { action: 'wait', ...lease }, waitLifetime.signal)
-    const jump = f.run('pdf_navigate', { documentId: f.opened.documentId, refId: f.refId })
+    const jump = f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: f.refId })
     const request = await waiting as AgentNavigationRequest
-    await f.run('pdf_annotate', f.annotation)
+    await f.run('pdf_annotation_create', f.annotation)
     assert.deepEqual(await f.navigation.dispatch(sessionId, { action: 'complete', ...lease,
       requestId: request.requestId, targetRevision: request.target!.revision,
       sourceDigest: request.target!.sourceDigest, status: 'opened' }, signal), { accepted: true })

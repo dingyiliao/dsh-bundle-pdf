@@ -130,7 +130,11 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
   const start = (initialSelection?: ReaderSelection) => {
     if (!key || !promptExplanation || !allowReadingContext || screenshotBusy) return
     const source = explanationSourceIdentity(sessionId, currentSnapshot())
-    if (!source || !sameExplanationSource(source, sessionId, snapshot)
+    // A global command can flush form edits before invoking this render's
+    // start callback. Fresh mode entry accepts that newer working revision;
+    // an existing selection still has to match its exact original source.
+    const renderedSource = source && snapshot && !initialSelection ? { ...snapshot, revision: source.revision } : snapshot
+    if (!source || !sameExplanationSource(source, sessionId, renderedSource)
       || initialSelection && initialSelection.revision !== source.revision) {
       setError(t('reader.explain.sourceChanged'))
       return
@@ -247,7 +251,14 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
         setError('')
         clearSelection()
       } catch (failure) {
-        if (!signal.aborted) setError(failure instanceof Error ? failure.message : String(failure))
+        if (!signal.aborted) {
+          const code = failure && typeof failure === 'object' && 'code' in failure ? failure.code : undefined
+          const key = code === 'pdf/selection-unverifiable' ? 'selectionUnverifiable'
+            : code === 'pdf/selection-ocr-unverifiable' ? 'selectionOcr'
+              : code === 'pdf/selection-mismatch' ? 'selectionMismatch'
+                : code === 'pdf/stale-reader' ? 'sourceChanged' : undefined
+          setError(key ? t(`reader.explain.${key}`) : failure instanceof Error ? failure.message : String(failure))
+        }
       } finally {
         if (captureTask.current === pending) captureTask.current = null
         if (captureController.current === controller) {

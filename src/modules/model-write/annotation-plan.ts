@@ -28,27 +28,9 @@ function textGeometryPages(pages: AgentPageReadPort | undefined): AgentPageReadP
 }
 
 async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
-  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal,
-  references?: TextReferenceResolverPort, readSource?: FreshSourceRead): Promise<AnnotationPlan> {
+  sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<AnnotationPlan> {
   if (input.subtype === 'Text' && !input.comment?.trim()) fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
-  if (input.target.kind === 'reference') {
-    if (input.subtype === 'Text') fail('pdf/invalid-target', 'A standalone note requires a PDF position, not a text reference')
-    if (!references) fail('pdf/reference-unavailable', 'PDF text reference verification is unavailable')
-    const resolved = await references.resolve(sessionId, snapshot.id, input.target.refId, signal, readSource, input.target.quote)
-    signal.throwIfAborted()
-    if (resolved.documentId !== snapshot.id || resolved.revision !== snapshot.revision
-      || resolved.contentVersion !== snapshot.contentVersion || resolved.sourceDigest !== evidenceSha256(snapshot.bytes)) {
-      fail('pdf/stale-revision', 'The PDF changed while locating the referenced text; read its status again')
-    }
-    assertPageRect(snapshot, resolved.page, resolved.rectPdf)
-    return { operation: { type: 'add', annotation: {
-      id: `ai_${randomUUID()}`, page: resolved.page, subtype: input.subtype,
-      rect: [...resolved.rectPdf] as PdfRect, quadPoints: [...resolved.quadPoints],
-      ...(input.color ? { color: [...input.color] as PdfColor } : {}),
-      ...(input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
-    } }, covered: { page: resolved.page, startUtf16: resolved.startUtf16, endUtf16: resolved.endUtf16,
-      text: resolved.text, refId: resolved.refId } }
-  }
+  if (input.target.kind === 'reference') fail('pdf/invalid-target', 'A reference must use the reference annotation path')
   if (input.target.kind === 'pdf-text-range') fail('pdf/invalid-target', 'A text range must use the range annotation path')
   const { page } = input.target
   if (!snapshot.document.pages[page - 1]) fail('pdf/invalid-page', 'Annotation page is outside this document')
@@ -78,6 +60,40 @@ async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnn
     ...(input.color ? { color: [...input.color] as PdfColor } : {}),
     ...(input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
   } }, ...(covered ? { covered } : {}) }
+}
+
+/** The complete range is reverified before producing any draft operation. */
+async function referenceAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+  sessionId: string, signal: AbortSignal, references?: TextReferenceResolverPort,
+  readSource?: FreshSourceRead): Promise<AnnotationPlan[]> {
+  if (input.target.kind !== 'reference') fail('pdf/invalid-target', 'A text reference target is required')
+  if (input.subtype === 'Text') fail('pdf/invalid-target', 'A standalone note requires a PDF position, not a text reference')
+  if (!references) fail('pdf/reference-unavailable', 'PDF text reference verification is unavailable')
+  const resolved = await references.resolveRange(sessionId, snapshot.id, input.target.refId, signal, readSource)
+  signal.throwIfAborted()
+  if (!resolved.pages.length || resolved.pages.length > 10) fail('pdf/invalid-text-range', 'A reference must contain one to ten PDF pages')
+  const sourceDigest = evidenceSha256(snapshot.bytes)
+  let totalChars = resolved.pages.length - 1, previousPage: number | undefined
+  return resolved.pages.map((page, index) => {
+    if (page.documentId !== snapshot.id || page.revision !== snapshot.revision
+      || page.contentVersion !== snapshot.contentVersion || page.sourceDigest !== sourceDigest) {
+      fail('pdf/stale-revision', 'The PDF changed while locating the referenced text; read its status again')
+    }
+    if (previousPage !== undefined && page.page !== previousPage + 1) {
+      fail('pdf/invalid-text-range', 'A continuous reference must include every intervening page exactly once')
+    }
+    previousPage = page.page
+    totalChars += page.text.length
+    if (totalChars > 8000) fail('pdf/text-range-too-large', 'Text range exceeds 8000 characters; resolve a smaller range')
+    assertPageRect(snapshot, page.page, page.rectPdf)
+    return { operation: { type: 'add', annotation: {
+      id: `ai_${randomUUID()}`, page: page.page, subtype: input.subtype,
+      rect: [...page.rectPdf] as PdfRect, quadPoints: [...page.quadPoints],
+      ...(input.color ? { color: [...input.color] as PdfColor } : {}),
+      ...(index === 0 && input.comment !== undefined ? { contents: input.comment } : {}), author: 'AI suggestion',
+    } }, covered: { page: page.page, startUtf16: page.startUtf16, endUtf16: page.endUtf16,
+      text: page.text, refId: resolved.refId } }
+  })
 }
 
 async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
@@ -119,7 +135,8 @@ async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnn
 export async function buildAnnotationPlans(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
   sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal,
   references?: TextReferenceResolverPort, readSource?: FreshSourceRead): Promise<AnnotationPlan[]> {
+  if (input.target.kind === 'reference') return referenceAnnotations(snapshot, input, sessionId, signal, references, readSource)
   return input.target.kind === 'pdf-text-range'
     ? rangeAnnotations(snapshot, input, sessionId, pages, signal)
-    : [await singleAnnotation(snapshot, input, sessionId, pages, signal, references, readSource)]
+    : [await singleAnnotation(snapshot, input, sessionId, pages, signal)]
 }

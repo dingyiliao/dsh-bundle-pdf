@@ -35,8 +35,10 @@ export function readerFloatingStatuses(options: ReaderFloatingStatusesOptions): 
   const statuses: FloatingStatus[] = []
   if (saveFeedback) {
     const { kind, durationMs, occurrence } = saveFeedback
-    statuses.push({ id: 'save', kind, className: 'dsh-pdf-save-feedback', activity: 'dot',
-      content: t(kind === 'saving' ? 'reader.saving' : kind === 'saved' ? 'reader.saved' : 'reader.unsaved'),
+    statuses.push({ id: 'save', kind: kind === 'failed' ? 'error' : kind, className: 'dsh-pdf-save-feedback', activity: 'dot',
+      tone: kind === 'saving' ? 'progress' : kind === 'saved' ? 'success' : kind === 'failed' ? 'error' : 'neutral',
+      content: t(kind === 'saving' ? 'reader.saving' : kind === 'saved' ? 'reader.saved'
+        : kind === 'failed' ? 'reader.saveFailed' : 'reader.unsaved'),
       title: saveFeedback.path ?? documentPath, durationMs, occurrence,
       onExpire: () => onSaveExpired(occurrence) })
   }

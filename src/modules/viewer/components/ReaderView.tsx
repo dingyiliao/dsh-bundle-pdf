@@ -80,7 +80,7 @@ export function ReaderView(props: ReaderViewProps) {
     question, comment, note, pages, sidebar, screenshot } = props
   return <div className="dsh-pdf-reader" ref={readerElement} aria-label={t('reader.title')} onPointerDown={event => {
     if (event.button !== 0 || !(event.target instanceof Element) || scrollRoot?.contains(event.target)) return
-    if (!event.target.closest('button,a,input,textarea,select,summary,.dsh-pdf-context-toolbar,.dsh-pdf-sidebar-divider,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) onDismissContext()
+    if (!event.target.closest('button,a,input,textarea,select,summary,[data-pdf-tool-rail],.dsh-pdf-reader-popover,.dsh-pdf-context-toolbar,.dsh-pdf-sidebar-divider,.dsh-pdf-translation-text,.dsh-pdf-translation-original')) onDismissContext()
   }} onKeyDown={event => {
     if (event.target instanceof Element && event.target.closest('.dsh-pdf-translation-panel')) {
       if (event.key === 'Escape') { event.preventDefault(); onCloseTranslation() }
@@ -103,12 +103,8 @@ export function ReaderView(props: ReaderViewProps) {
     <ReaderAnnotationBar {...annotationBar} />
     <ReaderAlerts {...alerts} />
     <div className="dsh-pdf-body" ref={readerBody}>
-      <div className="dsh-pdf-floating-controls">
-        <div className="dsh-pdf-floating-controls-layout">
-          <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions}
-            mode={floating.mode} explanation={floating.explanation} statuses={floating.statuses} />
-        </div>
-      </div>
+      <ReaderToolbar t={t} menuRef={menuRef} state={toolbar.state} actions={toolbar.actions}
+        mode={floating.mode} explanation={floating.explanation} statuses={floating.statuses} />
       <div className="dsh-pdf-content" aria-label={t('reader.sidebar.pdfContent')}>
         {question && <ExplanationQuestionEditor key={question.key} {...question.props} />}
         {comment && <AnnotationCommentCard key={comment.key} viewport={comment.viewport} getAnchor={comment.getAnchor}

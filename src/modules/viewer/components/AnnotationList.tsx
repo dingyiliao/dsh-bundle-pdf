@@ -275,9 +275,7 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
   const visibleStart = Math.max(0, viewport.top - overscan)
   const visibleEnd = Math.max(0, viewport.top + viewport.height + overscan)
 
-  const heading = <div className="dsh-pdf-panel-heading dsh-pdf-annotations-heading">
-      <h3>{t('reader.comments')} <span className="dsh-pdf-annotation-count">{annotations.length}</span></h3>
-      <select aria-label={t('reader.filterAnnotations')} value={filter} onChange={event => {
+  const actions = <select aria-label={t('reader.filterAnnotations')} value={filter} onChange={event => {
         const next = event.target.value as AnnotationFilter
         setFilter(next)
         setFocusedId(null)
@@ -287,8 +285,9 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
       }}>
         {filters.map(value => <option key={value} value={value}>{value === 'all' ? t('reader.allAnnotations') : t(`reader.type.${value}`)}</option>)}
       </select>
-    </div>
-  return <ScrollablePanel className="dsh-pdf-comments" header={heading}
+  return <ScrollablePanel className="dsh-pdf-comments" headingClassName="dsh-pdf-annotations-heading"
+    title={<>{t('reader.comments')} <span className="dsh-pdf-annotation-count">{annotations.length}</span></>}
+    actions={actions}
     verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
     {details}
     {!!layout.groups.length && <div ref={list} className="dsh-pdf-annotation-virtual" role="list" tabIndex={0}

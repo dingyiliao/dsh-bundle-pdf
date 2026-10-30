@@ -27,7 +27,7 @@ export type ExplanationImageReferencePreparation =
     evidence: { refId: string; documentId: string };
     image: { mediaType: 'image/png'; data: Uint8Array; width: number; height: number } }
   | { kind: 'derived-text'; backendId: string; text: string;
-    provenance: { backendId: string; mode: 'ocr-text' | 'image-description'; model?: string };
+    provenance: { backendId: string; mode: 'image-description'; model?: string };
     limitations?: string; evidence: { refId: string; documentId: string } }
 
 export interface MixedExplanationPromptOptions {
@@ -45,7 +45,7 @@ export interface MixedExplanationPromptOptions {
 /**
  * Build one user turn in excerpt order. Image routing is decided by the Host:
  * direct images reach only a visual Session using Host-verified bytes, while a
- * derived result is clearly identified as untrusted OCR/auxiliary-model text,
+ * derived result is clearly identified as untrusted model-derived text,
  * never as seen pixels.
  */
 export async function buildMixedExplanationPrompt(
@@ -111,7 +111,7 @@ export async function buildMixedExplanationPrompt(
       throw new Error('PDF image reference does not belong to this document')
     }
     const evidenceLine = `PDF image evidence reference: ${JSON.stringify(prepared.evidence.refId)}.`
-      + ' The pdf_image_context tool can revalidate this reference against the current document.'
+      + ' The pdf_evidence_read tool can revalidate this reference against the current document.'
 
     if (prepared.kind === 'direct-image') {
       if (prepared.image.mediaType !== 'image/png') throw new Error('PDF image reference is not a PNG')
@@ -124,8 +124,7 @@ export async function buildMixedExplanationPrompt(
 
     const derived = prepared.text.trim()
     if (!derived) throw new Error('The image backend returned no usable text')
-    const source = t(prepared.provenance.mode === 'ocr-text'
-      ? 'reader.explain.derivedOcrWarning' : 'reader.explain.derivedAuxWarning')
+    const source = t('reader.explain.derivedImageWarning')
     parts.push({ type: 'text', text: `${location}:\n${guidance.image ? `${guidance.image}\n` : ''}${questionLine}\n${evidenceLine}\n`
       + `${t('reader.explain.derivedSource')} (${JSON.stringify(prepared.provenance.backendId)}, ${prepared.provenance.mode}`
       + `${prepared.provenance.model ? `, model ${JSON.stringify(prepared.provenance.model)}` : ''}): ${source}\n`

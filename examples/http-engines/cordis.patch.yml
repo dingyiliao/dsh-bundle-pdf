@@ -1,0 +1,3 @@
+- insert:
+    - id: example-pdf-http-engines
+      name: '@example/dsh-pdf-http-engines'

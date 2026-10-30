@@ -40,3 +40,32 @@ test('expanded explanation mode shows its title and selected question count', ()
   assert.match(html, /reader\.explain\.title/)
   assert.match(html, /dsh-pdf-explanation-status-count">2\/5</)
 })
+
+test('task outcomes have independent tones without changing task identity or labels', () => {
+  const html = renderToStaticMarkup(React.createElement(FloatingStatusRail, { t: key => key, statuses: [
+    { id: 'working', kind: 'indexing', content: 'Indexing', activity: 'progress', tone: 'progress' },
+    { id: 'done', kind: 'indexing', content: 'Ready', activity: 'dot', tone: 'success' },
+    { id: 'failed', kind: 'error', content: 'Failed', activity: 'dot', tone: 'error' },
+    { id: 'cancelled', kind: 'indexing', content: 'Cancelled', activity: 'dot', tone: 'neutral' },
+  ] }))
+  assert.match(html, /data-status-id="working" data-kind="indexing" data-tone="progress"/)
+  assert.match(html, /data-status-id="done" data-kind="indexing" data-tone="success"/)
+  assert.match(html, /data-status-id="failed" data-kind="error" data-tone="error"/)
+  assert.match(html, /data-status-id="cancelled" data-kind="indexing" data-tone="neutral"/)
+  assert.match(html, /dsh-pdf-activity-trigger" data-kind="error" data-tone="error"/)
+})
+
+test('the task badge counts active work, including saves, without counting retained ready states', () => {
+  const html = renderToStaticMarkup(React.createElement(FloatingStatusRail, { t: key => key, statuses: [
+    { id: 'ready', kind: 'indexing', tone: 'success', activity: 'dot', content: 'Index ready' },
+    { id: 'saved', kind: 'saved', tone: 'success', activity: 'dot', content: 'Saved' },
+    { id: 'save', kind: 'saving', tone: 'progress', activity: 'dot', content: 'Saving' },
+    { id: 'ocr', activity: 'progress', content: 'Recognizing' },
+  ] }))
+  assert.match(html, /dsh-pdf-activity-count" aria-hidden="true">2</)
+  assert.match(html, /Index ready/)
+  const ready = renderToStaticMarkup(React.createElement(FloatingStatusRail, { t: key => key, statuses: [
+    { id: 'ready', kind: 'indexing', tone: 'success', activity: 'dot', content: 'Index ready' },
+  ] }))
+  assert.doesNotMatch(ready, /dsh-pdf-activity-count/)
+})

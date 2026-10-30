@@ -246,17 +246,19 @@ json text_content(Document& doc, const json& request) {
         {"height", size}, {"hasEOL", eol}, {"dir", "ltr"}, {"fontName", "nativeSans"}};
       // One positioned glyph per Unicode scalar lets the browser's selectable
       // layer follow PDFium's advances instead of a substituted font's widths.
-      if (positioned && glyphs.size() > 1) run["glyphs"] = glyphs;
+      if (positioned && !glyphs.empty()) run["glyphs"] = glyphs;
       runs.push_back(std::move(run));
     }
     value.clear(); owner = nullptr; width = 0; glyphs.clear(); positioned = true;
   };
   for (int i = 0; i < chars; i++) {
     const auto cp = FPDFText_GetUnicode(text_page, i);
-    // Real glyphs can be encoded as CIDs/control codes when both ToUnicode
-    // and the font's cmap are absent. Generated CR/LF are not broken glyphs.
+    // PDFium uses U+0002 for a removed line-wrap hyphen. Unlike generated
+    // CR/LF, it remains a real character, so check its explicit hyphen flag.
+    // A real glyph wrongly mapped to U+0002 must still report a map error.
+    const bool layout_hyphen = cp == 0x0002 && FPDFText_IsHyphen(text_page, i) == 1;
     if (FPDFText_IsGenerated(text_page, i) == 0
-      && (FPDFText_HasUnicodeMapError(text_page, i) == 1 || cp < 32 || cp == 0xfffd)) unmapped++;
+      && (FPDFText_HasUnicodeMapError(text_page, i) == 1 || (cp < 32 && !layout_hyphen) || cp == 0xfffd)) unmapped++;
     if (cp == '\r' || cp == '\n') { flush(true); continue; }
     if (!cp || cp < 32) continue;
     // PDFium exposes supplementary characters as adjacent UTF-16 surrogates.

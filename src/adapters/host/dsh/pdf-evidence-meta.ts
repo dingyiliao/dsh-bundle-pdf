@@ -1,4 +1,4 @@
-import { evidenceSha256, type DerivedPageValue, type ImageEvidenceSource,
+import { evidenceSha256, type ImageEvidenceSource,
   type PdfTextEvidence, type RenderedPageValue } from '../../../modules/evidence/index.js'
 
 const MAX_PATH_CHARS = 512
@@ -30,7 +30,7 @@ export function readPagePresentationMeta(value: {
   totalChars: number; status: string; extraction?: 'local-ocr'; limitations?: string[]
 }) {
   const text = value.text.slice(0, MAX_REPLAY_TEXT_CHARS)
-  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_read_page',
+  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_page_read',
     documentId: value.documentId, sourcePath: value.path.slice(0, MAX_PATH_CHARS),
     sourcePathDigest: evidenceSha256(value.path),
     sourceDigest: value.sourceDigest, sourceVersion: value.sourceVersion,
@@ -44,30 +44,26 @@ export function readPagePresentationMeta(value: {
     limitations: [...(value.limitations ?? []).slice(0, 3), 'This is the text sent to the model at tool completion; it is not a live or authorized PDF position.'] }
 }
 
-export function locatePresentationMeta(value: {
-  status: string; documentId: string; matches: readonly { evidence: PdfTextEvidence }[];
-  coverage: { pagesScanned: readonly number[]; noTextPages: readonly number[]; truncated: boolean }
+/** New atomic search/read tools share bounded, per-page evidence presentation. */
+export function keywordSearchPresentationMeta(value: {
+  documentId: string; matches: readonly { evidence?: PdfTextEvidence }[]; nextCursor?: string | null; hasMore?: boolean
 }) {
-  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_locate',
-    documentId: value.documentId, status: value.status,
-    matches: value.matches.slice(0, 5).map(item => snapshot(item.evidence, 512)),
-    coverage: { pagesScanned: value.coverage.pagesScanned.slice(0, 10),
-      noTextPages: value.coverage.noTextPages.slice(0, 10), truncated: value.coverage.truncated } }
+  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_keyword_search',
+    documentId: value.documentId, status: value.hasMore || value.nextCursor ? 'partial' : 'ok',
+    matches: value.matches.flatMap(item => item.evidence ? [snapshot(item.evidence, 512)] : []).slice(0, 20) }
 }
 
-export function contextPresentationMeta(value: {
-  status: string; documentId: string; chunks: readonly { evidence: PdfTextEvidence }[];
-  candidates: readonly { evidence: PdfTextEvidence }[]
+export function evidenceReadPresentationMeta(value: {
+  documentId: string; status: string; pages: readonly PdfTextEvidence[]
 }) {
   let remaining = MAX_REPLAY_TEXT_CHARS
-  const chunks = value.chunks.slice(0, 10).map(item => {
-    const projected = snapshot(item.evidence, remaining)
-    remaining -= projected.snapshot.text.length
-    return projected
-  })
-  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_context',
-    documentId: value.documentId, status: value.status, chunks,
-    candidates: value.candidates.slice(0, 5).map(item => snapshot(item.evidence, 512)) }
+  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_evidence_read',
+    documentId: value.documentId, status: value.status,
+    chunks: value.pages.slice(0, 10).map(evidence => {
+      const projected = snapshot(evidence, remaining)
+      remaining -= projected.snapshot.text.length
+      return projected
+    }), candidates: [] }
 }
 
 function imageSource(source: ImageEvidenceSource) {
@@ -78,45 +74,18 @@ function imageSource(source: ImageEvidenceSource) {
     precision: source.precision, limitations: source.limitations.slice(0, 3) }
 }
 
-/** Persist only the protected attachment reference or bounded derived text, never PNG bytes. */
-export function renderPagePresentationMeta(value: (RenderedPageValue | DerivedPageValue) & { refId?: string }) {
-  const base = { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_render_page',
+/** Persist only the protected attachment reference, never PNG bytes or inferred text. */
+export function renderPagePresentationMeta(value: RenderedPageValue & { refId?: string }) {
+  const base = { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_page_render',
     ...(value.refId ? { refId: value.refId } : {}),
     documentId: value.documentId, sourcePath: value.path.slice(0, MAX_PATH_CHARS),
     sourcePathDigest: evidenceSha256(value.path),
     sourceVersion: value.sourceVersion, contentVersion: value.contentVersion,
     revision: value.revision, page: value.page,
     pageCount: value.pageCount, evidenceSource: imageSource(value.evidenceSource) }
-  if (!('image' in value)) {
-    const text = value.text.slice(0, MAX_REPLAY_TEXT_CHARS)
-    return { ...base, status: 'derived-text', source: { backendId: value.source.backendId,
-      mode: value.source.mode, ...(value.source.model ? { model: value.source.model } : {}) },
-      totalChars: value.totalChars,
-      snapshot: { text, sha256: evidenceSha256(text), truncated: value.truncated || text.length < value.text.length },
-      limitations: value.limitations ? [value.limitations.slice(0, 512)] : [] }
-  }
   return { ...base, status: 'direct-image', attachment: {
     attachmentId: value.image.attachmentId, mediaType: value.image.mediaType,
     width: value.image.width, height: value.image.height, bytes: value.image.bytes } }
-}
-
-export function ocrPagePresentationMeta(value: {
-  status: string; refId?: string; documentId: string; path: string; page: number; pageCount: number;
-  sourceVersion: string; contentVersion: string; revision: number; evidenceSource: ImageEvidenceSource;
-  source: { backendId: string; backendVersion: string; kind: string };
-  text: string; totalChars: number; geometry: { status: string; coordinateSpace: string }
-}) {
-  const text = value.text.slice(0, MAX_REPLAY_TEXT_CHARS)
-  return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_ocr_page',
-    ...(value.refId ? { refId: value.refId } : {}),
-    status: value.status, documentId: value.documentId, sourcePath: value.path.slice(0, MAX_PATH_CHARS),
-    sourcePathDigest: evidenceSha256(value.path),
-    sourceVersion: value.sourceVersion, contentVersion: value.contentVersion,
-    revision: value.revision, page: value.page,
-    pageCount: value.pageCount, evidenceSource: imageSource(value.evidenceSource),
-    source: value.source, geometry: value.geometry,
-    snapshot: { text, sha256: evidenceSha256(text), truncated: text.length < value.text.length },
-    totalChars: value.totalChars }
 }
 
 type ImageContextMetaBase = {
@@ -136,7 +105,7 @@ type ImageContextMetaValue = ImageContextMetaBase & (
 
 /** A replay snapshot of an already reauthorized image ref; never inline raster bytes. */
 export function imageContextPresentationMeta(value: ImageContextMetaValue) {
-  const base = { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_image_context',
+  const base = { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_evidence_read',
     status: value.status, refId: value.refId,
     ...(value.revalidatedReference ? { revalidatedReference: value.revalidatedReference } : {}),
     documentId: value.documentId, sourcePath: value.sourcePath.slice(0, MAX_PATH_CHARS),

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { EngineCatalog, EngineDirectory, engineProbe, validateEngineConfiguration, engineBinding,
-  engineConfigurationsSchema, engineConfigurationSchema } from '../../../src/modules/engines/index.ts'
+  engineConfigurationsSchema, engineConfigurationSchema, engineCatalogSchema, engineDescriptorSchema } from '../../../src/modules/engines/index.ts'
 import { HostOcrService, type HostOcrRequest } from '../../../src/modules/ocr/index.ts'
+import { HostImageUnderstandingService } from '../../../src/modules/image-understanding/index.ts'
 import { TranslationRegistry } from '../../../src/translation/index.ts'
 import { EmbeddingRegistry } from '../../../src/embedding/index.ts'
 import type { OcrOutput } from '../../../src/ocr/types.ts'
@@ -14,6 +15,43 @@ const output: OcrOutput = { text: 'Synthetic text', blocks: [], lines: [], words
   coverage: [], status: 'complete', warnings: [] }
 const request: HostOcrRequest = { sessionId: 'fixture-session', image: new Uint8Array([1]), mediaType: 'image/png',
   width: 1, height: 1, languages: ['auto'] }
+
+test('typed image engines publish consistent capability metadata through catalog serialization and unload', () => {
+  const images = new HostImageUnderstandingService(() => 'contributor'), catalog = new EngineCatalog()
+  catalog.attach('image', images)
+  const make = (id: string) => ({
+    descriptor: { id, name: 'Third-party vision', version: '1', execution: 'remote' as const },
+    async availability() { return { available: true as const } },
+    async understand() { return { text: 'A chart.' } },
+  })
+  const remove = images.register(make('contributor'))
+  images.register(make('another'))
+  try {
+    const roundtrip = engineCatalogSchema.parse(JSON.parse(JSON.stringify(catalog.read())))
+    assert.deepEqual(roundtrip.engines.image.map(item => item.capabilities), [['image-description'], ['image-description']])
+    roundtrip.engines.image[0]!.capabilities!.push('ocr-text')
+    assert.deepEqual(images.selectedDescriptor()?.capabilities, ['image-description'])
+    assert.equal(images.selectedDescriptor({ engineId: 'another' })?.id, 'another')
+    remove()
+    assert.equal(images.selectedDescriptor(), undefined)
+    assert.equal(catalog.read().engines.image.some(item => item.id === 'contributor'), false)
+    assert.equal(catalog.read().engines.image.some(item => item.id === 'another'), true)
+  } finally { images.dispose(); catalog.dispose() }
+})
+
+test('capability metadata validates supported unique values and OCR contracts advertise text extraction only', () => {
+  assert.throws(() => engineDescriptorSchema.parse({ ...descriptor, capabilities: ['image-description', 'image-description'] }), /Duplicate/)
+  assert.throws(() => engineDescriptorSchema.parse({ ...descriptor, capabilities: ['unknown'] }))
+  const ocr = new HostOcrService(() => descriptor.id), catalog = new EngineCatalog()
+  catalog.attach('ocr', ocr)
+  ocr.register({ descriptor: { ...descriptor, capabilities: ['image-description'] },
+    async availability() { return { status: 'available' } }, async recognize() { return output } })
+  try {
+    assert.deepEqual(ocr.list()[0]?.capabilities, ['ocr-text'])
+    assert.deepEqual(ocr.selectedDescriptor()?.capabilities, ['ocr-text'])
+    assert.deepEqual(engineCatalogSchema.parse(JSON.parse(JSON.stringify(catalog.read()))).engines.ocr[0]?.capabilities, ['ocr-text'])
+  } finally { ocr.dispose(); catalog.dispose() }
+})
 
 test('an embedding contributor uses the same Cordis lifecycle and dynamic settings catalog', async () => {
   const root = new Context(), registry = new EmbeddingRegistry(), catalog = new EngineCatalog()
@@ -71,6 +109,17 @@ test('catalog observes the authoritative directory, unloads and successor regist
   catalog.dispose()
   await assert.rejects(unloaded, /disposed/)
   directory.dispose()
+})
+
+test('service embedding descriptors cross the catalog boundary without claiming a deployment location', () => {
+  const directory = new EngineDirectory<{ descriptor: { id: string; name: string; version: string; execution: 'service' } }>(value => value.descriptor)
+  const catalog = new EngineCatalog(), detach = catalog.attach('embedding', directory)
+  const remove = directory.register({ descriptor: { id: 'fixture.embedding-service', name: 'Embedding service', version: '1', execution: 'service' } })
+  try {
+    const snapshot = engineCatalogSchema.parse(JSON.parse(JSON.stringify(catalog.read())))
+    assert.equal(snapshot.engines.embedding?.[0]?.execution, 'service')
+    assert.equal(snapshot.engines.embedding?.[0]?.name, 'Embedding service')
+  } finally { remove(); detach(); catalog.dispose(); directory.dispose() }
 })
 
 test('real Cordis contributor Fiber registers dynamically and aborts only its own OCR tasks when unloaded', async () => {
@@ -174,6 +223,10 @@ test('contributor configuration is bounded, type checked and declared; bindings 
   const secret = { ...descriptor, configurationFields: [{ key: 'credential', label: 'Credential reference', type: 'secret-reference' as const }] }
   assert.throws(() => validateEngineConfiguration(secret, { credential: 'invalid ref with spaces' }), /reference/)
   assert.deepEqual(validateEngineConfiguration(secret, { credential: 'fixture.reference' }), { credential: 'fixture.reference' })
+  assert.deepEqual(validateEngineConfiguration(secret, { credential: '_EMBEDDING_API_KEY' }), { credential: '_EMBEDDING_API_KEY' })
+  for (const credential of ['Bearer fake-key', 'key\nvalue', '=fake-key', 'https://user:secret@example.com']) {
+    assert.throws(() => validateEngineConfiguration(secret, { credential }), /reference/)
+  }
   assert.throws(() => engineConfigurationSchema.parse({ a: 'x'.repeat(8192), b: 'x'.repeat(8192), c: 'x' }), /limit/)
   assert.throws(() => engineConfigurationsSchema.parse({ ocr: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [String(index), {}])) }), /Too many/)
   assert.throws(() => engineConfigurationsSchema.parse({ ocr: Object.fromEntries(Array.from({ length: 10 }, (_, index) => [String(index), { x: 'x'.repeat(8000) }])) }), /limit/)
@@ -209,7 +262,7 @@ test('catalog long poll expires with the unchanged snapshot rather than inventin
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const catalog = new EngineCatalog(), before = catalog.read()
   const result = catalog.wait(before.revision, new AbortController().signal)
-  t.mock.timers.tick(15_000)
+  t.mock.timers.tick(5_000)
   assert.deepEqual(await result, before)
   catalog.dispose()
 })

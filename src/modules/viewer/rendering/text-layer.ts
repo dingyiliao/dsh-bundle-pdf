@@ -1,5 +1,5 @@
 import type { NativeTextContent } from '../../../shared/native.ts'
-import type { NativeViewport } from './viewport.ts'
+import type { NativeViewport } from '../../../shared/geometry/native-viewport.ts'
 
 export function positionedTextSegments(item: NativeTextContent['items'][number]): [text: string, x: number, y: number, width: number][] {
   const characters = Array.from(item.str)

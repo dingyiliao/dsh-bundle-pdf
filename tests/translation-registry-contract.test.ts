@@ -70,7 +70,7 @@ test('registry validates requests, takes configuration snapshots, and preserves 
   await assert.rejects(registry.translate(request), hasCode('engine-unavailable'))
   registry.select(instance)
   for (const invalid of [
-    { text: '  ', targetLanguage: 'zh' }, { text: 'x', targetLanguage: '  ' },
+    { text: '', targetLanguage: 'zh' }, { text: 'x', targetLanguage: '  ' },
     { text: 'x', targetLanguage: 'a'.repeat(101) }, { text: 'x', targetLanguage: 'zh', sourceLanguage: ' ' },
     { text: 'x', targetLanguage: 'zh', sourceLanguage: 'a'.repeat(101) },
     { ...request, timeoutMs: 0 }, { ...request, timeoutMs: 1.5 },
@@ -90,6 +90,24 @@ test('registry validates requests, takes configuration snapshots, and preserves 
   assert.notEqual(sent.input.context, context)
   assert.deepEqual(sent.config, { token: 'original' })
   registry.dispose()
+})
+
+test('registry forwards nonempty selections verbatim and never decides whether their content is meaningful', async () => {
+  const registry = new TranslationRegistry(limits)
+  const seen: string[] = []
+  registry.register(fakeEngine(async input => {
+    seen.push(input.text)
+    return { ...complete, text: 'Engine-owned response, including any uncertainty.' }
+  }))
+  registry.select(instance)
+  const selections = [' reduces a tenso', 'reduces a tensor', 'a', '...', '\uFFFD', '  \t\n']
+  try {
+    for (const text of selections) {
+      const output = await registry.translate({ ...request, text })
+      assert.equal(output.text, 'Engine-owned response, including any uncertainty.')
+    }
+    assert.deepEqual(seen, selections)
+  } finally { registry.dispose() }
 })
 
 test('changing selection, removing engine, disposing, timing out, and caller cancellation stop in-flight work', async () => {

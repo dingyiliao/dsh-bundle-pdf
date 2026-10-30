@@ -2,10 +2,10 @@ import type { PdfPageInfo } from '../../../core/pdf-types.js'
 
 /** Vertical space between neighboring PDF pages. */
 export const PAGE_GAP = 16
-/** Space above the first page for the floating reader controls. */
-export const READING_TOP_INSET = 72
+/** Canvas breathing room; docked reader controls reserve their own column. */
+export const READING_TOP_INSET = 16
 
-/** Keep page detection below the floating controls, including in short viewports. */
+/** Share the visible reading edge between navigation, page detection and reflow. */
 export const readingSafeTop = (viewportHeight: number): number => Math.min(READING_TOP_INSET, viewportHeight / 3)
 export const readingPageProbe = (viewportHeight: number): number => readingSafeTop(viewportHeight) + 1
 

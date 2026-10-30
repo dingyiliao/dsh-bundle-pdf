@@ -88,7 +88,7 @@ test('cold background form edits are adopted by the UI and both entrances keep t
       assert.equal(env.state.workspaces.isUiOwned(sessionId, id), false,
         'the first open must come only from the model, without an implicit Reader')
       assert.equal(env.pdf.diagnostics().documents, 0, 'Host open does not require a pre-existing native/UI handle')
-      const inspect = env.tools.get('pdf_form_inspect_page')!, fill = env.tools.get('pdf_fill_form')!
+      const inspect = env.tools.get('pdf_form_inspect')!, fill = env.tools.get('pdf_form_fill')!
       const initial = await inspect.execute({ documentId: id, page: 1 }, { agent, signal }) as Result
       const text = initial.fields.find(field => field.type === 'text')!
       const changed = await fill.execute({ documentId: id, expectedRevision: initial.revision,
@@ -125,7 +125,7 @@ test('two discoverable form tools return real numbered native images and edit th
     try {
       const source = env.state.current().slice()
       const baselinePage = await env.pdf.renderPage(sessionId, env.opened.id, 1, 1024, signal)
-      const inspect = env.tools.get('pdf_form_inspect_page')!, fill = env.tools.get('pdf_fill_form')!
+      const inspect = env.tools.get('pdf_form_inspect')!, fill = env.tools.get('pdf_form_fill')!
       assert.ok(inspect); assert.ok(fill); assert.equal(env.tools.has('pdf_form_fields'), false)
       assert.deepEqual(Object.keys((inspect.parameters as { properties: Record<string, unknown> }).properties).sort(),
         ['documentId', 'includeValues', 'page'])
@@ -202,7 +202,7 @@ test('two discoverable form tools return real numbered native images and edit th
 test('form inspection rejects non-visual models, foreign sessions, invalid input and stale delivery',
   { skip: !existsSync(executable) }, async () => {
     const env = await setup()
-    const inspect = env.tools.get('pdf_form_inspect_page')!
+    const inspect = env.tools.get('pdf_form_inspect')!
     const args = { documentId: env.opened.id, page: 1 }
     try {
       await assert.rejects(inspect.execute(args, { signal }), { code: 'pdf/session-required' })
@@ -223,7 +223,7 @@ test('form inspection rejects non-visual models, foreign sessions, invalid input
       await assert.rejects(inspect.execute(args, { agent, signal }), { code: 'pdf/stale-revision' })
       assert.equal(env.state.writes(), 0)
       env.beforeStore()
-      const fill = env.tools.get('pdf_fill_form')!
+      const fill = env.tools.get('pdf_form_fill')!
       const conflict = await fill.execute({ documentId: env.opened.id, expectedRevision: env.opened.revision,
         inspectionId: 'form-inspect_00000000-0000-0000-0000-000000000000',
         fields: [{ label: 'F01', value: 'value' }] }, { agent, signal }) as { status: string; recovery: { action: string } }
@@ -235,7 +235,7 @@ test('parallel native inspections followed by queued single-page fills retain ev
   { skip: !existsSync(executable) }, async () => {
     const env = await setup(await formPageBatchesFixture())
     try {
-      const inspect = env.tools.get('pdf_form_inspect_page')!, fill = env.tools.get('pdf_fill_form')!
+      const inspect = env.tools.get('pdf_form_inspect')!, fill = env.tools.get('pdf_form_fill')!
       assert.deepEqual(Object.keys((fill.parameters as { properties: Record<string, unknown> }).properties).sort(),
         ['choiceGroups', 'conditions', 'documentId', 'expectedRevision', 'fields', 'inspectionId'])
       const inspected = await Promise.all([1, 2, 3].map(page => inspect.execute({ documentId: env.opened.id, page },
@@ -263,7 +263,7 @@ test('empty and selected dropdown inspection values round-trip directly through 
   { skip: !existsSync(executable) }, async () => {
     const env = await setup()
     try {
-      const inspect = env.tools.get('pdf_form_inspect_page')!, fill = env.tools.get('pdf_fill_form')!
+      const inspect = env.tools.get('pdf_form_inspect')!, fill = env.tools.get('pdf_form_fill')!
       const args = { documentId: env.opened.id, page: 1, includeValues: true }
       const inspectCurrent = async () => {
         const result = await inspect.execute(args, { agent, signal }) as Result
@@ -322,7 +322,7 @@ test('dense inspection puts small IDs inside widgets, omits appearances and pres
     }
     try {
       const clean = decode((await reference.pdf.renderFormPage(sessionId, reference.opened.id, 1, 2048, false, signal)).png)
-      const inspect = env.tools.get('pdf_form_inspect_page')!
+      const inspect = env.tools.get('pdf_form_inspect')!
       const result = await inspect.execute({ documentId: env.opened.id, page: 1 }, { agent, signal }) as Result
       const png = env.images.get(result.image.attachmentId)!, marked = decode(png)
       if (process.env.PDF_DENSE_FORM_SCREENSHOT) await writeFile(process.env.PDF_DENSE_FORM_SCREENSHOT, png)
@@ -359,7 +359,7 @@ test('numbered form tools distinguish same-name fields and native appearances af
   { skip: !existsSync(executable) }, async () => {
     const env = await setup(await duplicateFieldNamesFixture())
     try {
-      const inspect = env.tools.get('pdf_form_inspect_page')!, fill = env.tools.get('pdf_fill_form')!
+      const inspect = env.tools.get('pdf_form_inspect')!, fill = env.tools.get('pdf_form_fill')!
       const args = { documentId: env.opened.id, page: 1 }
       const initial = await inspect.execute(args, { agent, signal }) as Result
       assertCompactInspection(initial)
@@ -400,7 +400,7 @@ test('form inspection fails closed on external source changes, canceled requests
   { async renderFormPage() { calls++; return { snapshot: opened, png: new Uint8Array(), width: 512, height: 768,
     formInspection: inspectFormPage(opened.document, 1, 768) } } }, async () => {}, () => {}, createFormInspectionRegistry())
   try {
-    const inspect = tools.get('pdf_form_inspect_page')!, args = { documentId: opened.id, page: 1 }
+    const inspect = tools.get('pdf_form_inspect')!, args = { documentId: opened.id, page: 1 }
     sourceChanged = true
     await assert.rejects(inspect.execute(args, { agent, signal }), { code: 'pdf/source-conflict' })
     assert.equal(calls, 0)
@@ -429,7 +429,7 @@ test('read-only inspection preserves its reason and compact envelope without adv
   { async renderFormPage() { return { snapshot, png: new Uint8Array(), width: formInspection.width,
     height: formInspection.height, formInspection } } }, async () => {}, () => {}, inspections)
   try {
-    const inspect = tools.get('pdf_form_inspect_page')!
+    const inspect = tools.get('pdf_form_inspect')!
     const result = await inspect.execute({ documentId: snapshot.id, page: 1 }, { agent, signal }) as Result
     assertCompactInspection(result)
     assert.equal(result.readOnly, true); assert.equal(result.readOnlyReason, snapshot.document.readOnlyReason)
