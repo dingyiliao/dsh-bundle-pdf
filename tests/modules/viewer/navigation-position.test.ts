@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { NativeDocument } from '../../../src/modules/viewer/index.ts'
-import { setWindowLayout } from '../../../src/modules/viewer/index.ts'
+import type { NativeDocument, PageView } from '../../../src/modules/viewer/index.ts'
+import { NativeViewport, setWindowLayout } from '../../../src/modules/viewer/index.ts'
 import { captureReaderPosition, readerPageScale, resolvePdfDestination } from '../../../src/modules/viewer/index.ts'
 
 const pages: PdfPageInfo[] = [1, 2].map(page => ({ page, cropBox: [0, 0, 400, 600], rotation: 0, userUnit: 1 }))
@@ -30,6 +30,32 @@ test('capture chooses distant numeric layout while its PageView is still unmount
   assert.equal(captured.documentVersion, 'content-1')
   assert.equal(captured.x, 0)
   assert.ok(captured.y < 600 && captured.y > 400)
+})
+
+test('history captures the explicitly current visible page when the last-page jump is scroll-clamped', () => {
+  const bounds = (top: number, height: number) => ({ left: 0, top, right: 400,
+    bottom: top + height, width: 400, height } as DOMRect)
+  const root = { scrollTop: 348, scrollLeft: 0, scrollWidth: 400, clientHeight: 900,
+    getBoundingClientRect: () => bounds(0, 900),
+  } as unknown as HTMLDivElement
+  const numeric = [
+    { page: 1, top: 16, width: 400, height: 600, outerHeight: 616, scale: 1 },
+    { page: 2, top: 632, width: 400, height: 600, outerHeight: 616, scale: 1 },
+  ]
+  setWindowLayout(root, numeric)
+  const loaded = new Map<number, PageView>(numeric.map(item => [item.page, {
+    element: { getBoundingClientRect: () => bounds(item.top - root.scrollTop, item.height) } as HTMLElement,
+    viewport: new NativeViewport(pages[item.page - 1], 1, 0),
+  } as PageView]))
+  const state = { snapshot, scrollRoot: root, fit: 'width' as const, zoom: 1,
+    size: { width: 432, height: 900 }, currentPage: 2 }
+  for (const views of [loaded, new Map<number, PageView>()]) {
+    const position = captureReaderPosition(state, views, 'not ready')
+    assert.equal(position.page, 2)
+    assert.equal(position.y, 600)
+    assert.equal(position.viewportAnchor?.y, 284 / 900,
+      'restoring this point must retain the same clamped scroll position and selected page')
+  }
 })
 
 test('PDF destinations remain one-based and reject invalid targets before navigation', async () => {

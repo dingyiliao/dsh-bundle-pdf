@@ -309,17 +309,21 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     const vertical = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Vertical scrollbar' })
     const horizontal = reader.locator('.dsh-pdf-content').getByRole('scrollbar', { name: 'Horizontal scrollbar' })
     await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
-    const [bodyBounds, contentBounds, sidebarBounds, scrollBounds, verticalBounds] = await Promise.all([
-      reader.locator('.dsh-pdf-body').boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
+    const [bodyBounds, toolRailBounds, contentBounds, sidebarBounds, scrollBounds, verticalBounds] = await Promise.all([
+      reader.locator('.dsh-pdf-body').boundingBox(), reader.locator('[data-pdf-tool-rail]').boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
       sidebar.boundingBox(), scroller.boundingBox(), vertical.boundingBox(),
     ])
     expect(bodyBounds).not.toBeNull()
+    expect(toolRailBounds).not.toBeNull()
     expect(contentBounds).not.toBeNull()
     expect(sidebarBounds).not.toBeNull()
     expect(scrollBounds).not.toBeNull()
     expect(verticalBounds).not.toBeNull()
     expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('relative')
-    expect(Math.abs(contentBounds!.width + sidebarBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(toolRailBounds!.width).toBe(56)
+    expect(Math.abs(toolRailBounds!.x - bodyBounds!.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(toolRailBounds!.x + toolRailBounds!.width - contentBounds!.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(toolRailBounds!.width + contentBounds!.width + sidebarBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
     expect(Math.abs(contentBounds!.x + contentBounds!.width - sidebarBounds!.x)).toBeLessThanOrEqual(1)
     expect(Math.abs(sidebarBounds!.x + sidebarBounds!.width - bodyBounds!.x - bodyBounds!.width)).toBeLessThanOrEqual(1)
     expect(Math.abs(sidebarBounds!.y - contentBounds!.y)).toBeLessThanOrEqual(1)
@@ -331,7 +335,7 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     const collapsedSidebar = (await sidebar.boundingBox())!
     expect(collapsedContent.width).toBeGreaterThan(contentBounds!.width + 100)
     expect(Math.abs(collapsedContent.x + collapsedContent.width - collapsedSidebar.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(collapsedContent.width + collapsedSidebar.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(toolRailBounds!.width + collapsedContent.width + collapsedSidebar.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
     await toggle.click()
     await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - sidebarBounds!.width)).toBeLessThanOrEqual(1)
     expect(Math.abs(verticalBounds!.x - scrollBounds!.x - 2)).toBeLessThanOrEqual(1)

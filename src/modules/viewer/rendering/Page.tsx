@@ -20,7 +20,7 @@ export interface PageProps {
   mode: 'text' | 'region' | 'note'
   annotations: PdfAnnotation[]
   formFields?: readonly PdfFormField[]
-  onFormChange?(fieldId: string, value: string | boolean | string[]): Promise<void>
+  onFormChange?(fieldId: string, value: string | boolean | string[]): Promise<boolean | void>
   /** Annotation models baked into this immutable native document. */
   renderedAnnotations?: PdfAnnotation[]
   selectedAnnotation?: string

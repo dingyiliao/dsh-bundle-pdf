@@ -94,3 +94,84 @@ test('page tracking follows the visible page but preserves a user-edited page nu
     }
   }
 })
+
+test('a clamped explicit jump survives queued scroll events while real movement and document replacement resume tracking', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, Event: dom.Event,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
+    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const root = createRoot(dom.document.getElementById('root')!)
+  let snapshot = { id: 'doc-1', contentVersion: 'v1' } as WorkspaceSnapshot
+  let tracking!: ReturnType<typeof useReaderPageTracking>
+  const Harness = () => {
+    const readerElement = useRef<HTMLDivElement>(null)
+    tracking = useReaderPageTracking({ snapshot, readerElement, scrollportRef: () => {} })
+    return React.createElement('div', { ref: readerElement }, React.createElement('div', { ref: tracking.scrollRef }))
+  }
+  const tick = () => new Promise(resolve => setTimeout(resolve, 5))
+  try {
+    await act(async () => root.render(React.createElement(Harness)))
+    const scroll = tracking.scrollRoot!
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 175 })
+    setWindowLayout(scroll, [1, 2, 3].map((page, index) => ({ page, top: index * 100,
+      width: 80, height: 90, outerHeight: 100, scale: 1 })))
+    // The browser clamps the final page's requested top to 300 - 175 = 125.
+    // The leading-edge probe still sees page 2, but this explicit jump chose 3.
+    scroll.scrollTop = 125
+    await act(async () => {
+      tracking.updateScrolledPage()
+      tracking.setCurrentPage(3)
+      tracking.setPageInput('3')
+      await tick()
+    })
+    assert.equal(tracking.currentPage, 3)
+    assert.equal(tracking.pageInput, '3')
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 3, 'a later event at the committed offset still belongs to that jump')
+
+    scroll.scrollTop = 25
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 1)
+    assert.equal(tracking.pageInput, '1', 'actual scrolling resumes ordinary visible-page tracking')
+
+    scroll.scrollTop = 125
+    await act(async () => { tracking.setCurrentPage(3); tracking.setPageInput('3') })
+    snapshot = { id: 'doc-2', contentVersion: 'v1' } as WorkspaceSnapshot
+    await act(async () => root.render(React.createElement(Harness)))
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 2, 'a replacement document cannot inherit an old explicit page commitment')
+
+    await act(async () => { tracking.setCurrentPage(3); tracking.setPageInput('3') })
+    snapshot = { id: 'doc-2', contentVersion: 'v2' } as WorkspaceSnapshot
+    await act(async () => root.render(React.createElement(Harness)))
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 2, 'a reloaded content version cannot reuse an old page commitment')
+
+    await act(async () => { tracking.setCurrentPage(3); tracking.setPageInput('3') })
+    setWindowLayout(scroll, [1, 2, 3].map((page, index) => ({ page, top: index * 100,
+      width: 100, height: 90, outerHeight: 100, scale: 1 })))
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 3, 'equivalent resize layouts retain the explicit target while it remains visible')
+
+    setWindowLayout(scroll, [1, 2, 3].map((page, index) => ({ page, top: index * 210,
+      width: 160, height: 200, outerHeight: 210, scale: 2 })))
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 1, 'a changed layout resumes geometric tracking when the committed target leaves the viewport')
+
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 800 })
+    scroll.scrollTop = 0
+    await act(async () => { tracking.updateScrolledPage(); await tick() })
+    assert.equal(tracking.currentPage, 1, 'a fully visible document starts at page 1 rather than selecting its last page')
+  } finally {
+    await act(async () => root.unmount())
+    dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
+})

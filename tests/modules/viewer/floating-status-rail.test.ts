@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import test from 'node:test'
-import React from 'react'
+import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { FloatingStatusRail, floatingStatusOrder } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
 import { ExplanationStatusBar } from '../../../src/modules/viewer/components/ExplanationStatusBar.tsx'
@@ -68,4 +69,50 @@ test('the task badge counts active work, including saves, without counting retai
     { id: 'ready', kind: 'indexing', tone: 'success', activity: 'dot', content: 'Index ready' },
   ] }))
   assert.doesNotMatch(ready, /dsh-pdf-activity-count/)
+})
+
+test('a standalone activity popover retains inside actions and closes on an outside pointer', async () => {
+  const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
+    JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } }
+  }
+  const dom = new JSDOM('<!doctype html><div id="root"></div><button id="outside">Outside</button>').window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const globals = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element,
+    Node: dom.Node, IS_REACT_ACT_ENVIRONMENT: true }
+  for (const [key, value] of Object.entries(globals)) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const { createRoot } = await import('react-dom/client')
+  const mount = dom.document.getElementById('root')!, root = createRoot(mount)
+  let cancelled = 0
+  try {
+    await act(async () => root.render(React.createElement(FloatingStatusRail, { t: key => key, statuses: [
+      { id: 'ocr', content: 'Recognizing text', activity: 'progress',
+        actions: [{ label: 'Cancel OCR', onClick: () => { cancelled++ } }] },
+    ] })))
+    const trigger = mount.querySelector<HTMLButtonElement>('.dsh-pdf-activity-trigger')!
+    const popover = mount.querySelector<HTMLElement>('.dsh-pdf-activity-popover')!
+    assert.equal(popover.hidden, true)
+    await act(async () => { trigger.click() })
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true')
+    assert.equal(popover.hidden, false)
+    const cancel = popover.querySelector<HTMLButtonElement>('button')!
+    await act(async () => {
+      cancel.dispatchEvent(new dom.Event('pointerdown', { bubbles: true }))
+      cancel.click()
+    })
+    assert.equal(cancelled, 1, 'an inside pointer must retain the action until its click is delivered')
+    assert.equal(popover.hidden, false)
+    await act(async () => { dom.document.getElementById('outside')!.dispatchEvent(new dom.Event('pointerdown', { bubbles: true })) })
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false')
+    assert.equal(popover.hidden, true)
+  } finally {
+    await act(async () => root.unmount())
+    dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
 })

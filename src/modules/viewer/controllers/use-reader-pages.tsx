@@ -29,7 +29,7 @@ export interface ReaderPagesOptions {
   size: { width: number; height: number }
   scrollRoot: HTMLDivElement | null
   mode: 'text' | 'region' | 'note'
-  onFormChange(fieldId: string, value: string | boolean | string[]): Promise<void>
+  onFormChange(fieldId: string, value: string | boolean | string[]): Promise<boolean | void>
   t(key: string): string
   pageScale(page: PdfPageInfo): number
   registerView(page: number, view: PageView | null): void

@@ -81,14 +81,14 @@ export function Reader(props: ReaderProps) {
     acceptSnapshot: next => { state.current.snapshot = next; setSnapshot(next) },
     clearError: () => setError(''), onError: notifyError })
   const formIdentity = formCommitIdentity(sessionId, snapshot)
-  const formCommits = useReaderFormCommits({ identity: formIdentity, onError: notifyError,
-    commit: async (fieldId, value) => {
-      const current = state.current.snapshot
-      if (!current || current.document.readOnly || tab.signal.aborted
-        || displayOwner?.token !== ownerSequence.current
-        || formCommitIdentity(callbacks.current.sessionId, current) !== formIdentity) return false
-      return !!await change([{ type: 'set-field', fieldId, value }])
-    } })
+  const changeFormField = useCallback(async (fieldId: string, value: string | boolean | string[]) => {
+    const current = state.current.snapshot
+    if (!current || current.document.readOnly || tab.signal.aborted
+      || displayOwner?.token !== ownerSequence.current
+      || formCommitIdentity(callbacks.current.sessionId, current) !== formIdentity) return false
+    return !!await change([{ type: 'set-field', fieldId, value }])
+  }, [change, tab.signal, displayOwner?.token, ownerSequence, formIdentity])
+  const formCommits = useReaderFormCommits({ identity: formIdentity, onError: notifyError, commit: changeFormField })
   const runAfterFormFlush = useCallback(async <Result,>(operation: () => Result | Promise<Result>): Promise<Result | undefined> => {
     const owner = ownerSequence.current
     const ownsDocument = () => !tab.signal.aborted && owner === ownerSequence.current
@@ -174,9 +174,6 @@ export function Reader(props: ReaderProps) {
     screenshotCtl.reset()
     explanation.captureController.current?.abort()
   }, [snapshot?.revision, snapshot?.id])
-  const changeFormField = useCallback(async (fieldId: string, value: string | boolean | string[]) => {
-    await change([{ type: 'set-field', fieldId, value }])
-  }, [change])
   const annotations = useReaderAnnotations({ snapshot, pdfAnnotations, selection, setSelection, setMode,
     ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, change, t })
   const { color, setColor, selectedAnnotation, setSelectedAnnotation, selected, selectedNote,

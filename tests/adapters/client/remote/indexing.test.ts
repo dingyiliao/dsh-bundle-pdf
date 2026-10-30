@@ -134,3 +134,46 @@ test('completion dismissal is shared by views, survives status refreshes and nev
     assert.equal(api.getSnapshot('session').dismissed?.document, undefined, 'failures remain visible')
   } finally { stop(); stopAgain(); stopOther(); api.dispose(); lifetime.abort() }
 })
+
+test('indexing snapshot capacity evicts an inactive session without losing an active view or watch', async () => {
+  const lifetime = new AbortController()
+  const activeRequests: AbortSignal[] = []
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input, signal) {
+    if ((input as { action: string }).action === 'status') {
+      assert.ok(signal); activeRequests.push(signal)
+      return new Promise<unknown>(() => {})
+    }
+    return ok(snapshot('running'))
+  } } }, lifetime.signal)
+  const stop = api.subscribe('visible-session', () => {})
+  try {
+    const active = api.getSnapshot('visible-session')
+    await api.start('closed-session', 'document', lifetime.signal)
+    const inactive = api.getSnapshot('closed-session')
+    assert.equal(inactive.status, 'ready')
+    for (let index = 0; index < 30; index++) api.getSnapshot(`dormant-${index}`)
+    api.getSnapshot('new-session')
+    assert.equal(api.getSnapshot('visible-session'), active)
+    assert.equal(activeRequests.length, 1, 'capacity pressure must not replace an active subscription')
+    assert.equal(activeRequests[0]!.aborted, false)
+    const reopened = api.getSnapshot('closed-session')
+    assert.notEqual(reopened, inactive, 'the oldest inactive snapshot is evicted at the directory limit')
+    assert.equal(reopened.status, 'loading', 'a retired session cannot expose stale progress when opened again')
+  } finally { stop(); api.dispose(); lifetime.abort(); await turn() }
+})
+
+test('indexing snapshot capacity preserves every live subscription when no inactive entry can be evicted', async () => {
+  const lifetime = new AbortController(), requests: AbortSignal[] = [], stops: (() => void)[] = []
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, _input, signal) {
+    assert.ok(signal); requests.push(signal)
+    return new Promise<unknown>(() => {})
+  } } }, lifetime.signal)
+  try {
+    for (let index = 0; index < 32; index++) stops.push(api.subscribe(`visible-${index}`, () => {}))
+    const snapshots = Array.from({ length: 32 }, (_, index) => api.getSnapshot(`visible-${index}`))
+    stops.push(api.subscribe('additional-visible-session', () => {}))
+    for (let index = 0; index < 32; index++) assert.equal(api.getSnapshot(`visible-${index}`), snapshots[index])
+    assert.equal(requests.length, 33)
+    assert.ok(requests.every(signal => !signal.aborted), 'the inactive cache budget must never cancel a live view')
+  } finally { stops.forEach(stop => stop()); api.dispose(); lifetime.abort(); await turn() }
+})

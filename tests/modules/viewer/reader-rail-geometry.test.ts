@@ -23,6 +23,7 @@ async function withReader(run: (fixture: {
   mount: HTMLElement
   render(node: React.ReactElement): Promise<void>
   resize(target: Element): Promise<void>
+  flushFrames(): Promise<void>
 }) => Promise<void>) {
   const dom = new JSDOM('<!doctype html><div class="dsh-pdf-reader"><nav data-pdf-tool-rail class="dsh-pdf-floating-controls"><div class="dsh-pdf-floating-controls-layout"><div class="dsh-pdf-main-toolbar"></div></div></nav><div id="viewport" tabindex="0"></div><div id="mount"></div></div>',
     { url: 'http://localhost' }).window
@@ -35,11 +36,17 @@ async function withReader(run: (fixture: {
     disconnect() { observers.delete(this) }
   }
   const saved = new Map<string, PropertyDescriptor | undefined>()
+  const frames = new Map<number, FrameRequestCallback>()
+  let nextFrame = 0, frameTime = 0
   const globals = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element,
     Node: dom.Node, Event: dom.Event, ResizeObserver: Observer, localStorage: dom.localStorage,
     MutationObserver: dom.MutationObserver, getComputedStyle: dom.getComputedStyle.bind(dom),
-    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0),
-    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true }
+    requestAnimationFrame: (callback: FrameRequestCallback) => {
+      const id = ++nextFrame
+      frames.set(id, callback)
+      return id
+    },
+    cancelAnimationFrame: (id: number) => { frames.delete(id) }, IS_REACT_ACT_ENVIRONMENT: true }
   for (const [key, value] of Object.entries(globals)) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
     Object.defineProperty(globalThis, key, { configurable: true, value })
@@ -66,17 +73,41 @@ async function withReader(run: (fixture: {
   for (const controls of reader.querySelectorAll<HTMLElement>('nav, .dsh-pdf-floating-controls-layout, .dsh-pdf-main-toolbar'))
     controls.getBoundingClientRect = () => rect(30, 40, 80, 400)
   const root = createRoot(mount)
+  const flushFrames = async () => {
+    // Layout is a frame pipeline: the toolbar commits bounds, dispatches
+    // pdfcontextchange, then the comment measures those bounds in a later frame.
+    // Drain that pipeline explicitly instead of guessing how many Windows timer
+    // ticks fit into a 10ms sleep. New callbacks wait for the next frame, and a
+    // callback cancelled by an earlier callback in this frame never runs.
+    let count = 0
+    do {
+      assert.ok(count++ < 20, 'reader geometry must settle without an animation-frame loop')
+      await act(async () => {
+        frameTime += 16
+        for (const id of [...frames.keys()]) {
+          const callback = frames.get(id)
+          if (!callback) continue
+          frames.delete(id)
+          callback(frameTime)
+        }
+      })
+    } while (frames.size)
+  }
   try {
     await run({ dom, reader, viewport, mount,
-      render: async node => { await act(async () => root.render(node)) },
-      resize: async target => { await act(async () => {
-        for (const observer of observers) if (observer.targets.has(target))
-          observer.callback([], observer as unknown as ResizeObserver)
-        await new Promise(resolve => setTimeout(resolve, 10))
-      }) },
+      render: async node => { await act(async () => root.render(node)); await flushFrames() },
+      resize: async target => {
+        await act(async () => {
+          for (const observer of observers) if (observer.targets.has(target))
+            observer.callback([], observer as unknown as ResizeObserver)
+        })
+        await flushFrames()
+      },
+      flushFrames,
     })
   } finally {
     await act(async () => root.unmount())
+    frames.clear()
     dom.close()
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)
@@ -86,7 +117,7 @@ async function withReader(run: (fixture: {
 }
 
 test('page action bars remain visible beside a full-height rail and follow the actual PDF bounds', async () => {
-  await withReader(async ({ reader, viewport, render, dom }) => {
+  await withReader(async ({ reader, viewport, render, dom, flushFrames }) => {
     let anchor = rect(114, 94, 80, 18)
     await render(React.createElement(FloatingToolbar, { viewport, getAnchor: () => anchor,
       label: 'Selection actions', children: React.createElement('button', null, 'Highlight') }))
@@ -97,8 +128,8 @@ test('page action bars remain visible beside a full-height rail and follow the a
     anchor = rect(490, 420, 20, 14)
     await act(async () => {
       viewport.dispatchEvent(new dom.Event('pdflayoutchange'))
-      await new Promise(resolve => setTimeout(resolve, 10))
     })
+    await flushFrames()
     assert.equal(toolbar.dataset.visible, 'true')
     assert.ok(Number.parseFloat(toolbar.style.left) + 200 <= 472, 'the right reading sidebar is excluded')
     assert.ok(Number.parseFloat(toolbar.style.top) + 40 < anchor.top - 40, 'bottom-edge actions flip above their anchor')
@@ -122,7 +153,7 @@ test('comment and note cards at the page top are bounded by the PDF instead of t
 })
 
 for (const annotation of [false, true]) test(`a short narrow column scrolls its comment clear of ${annotation ? 'annotation' : 'selection'} actions`, async () => {
-  await withReader(async ({ dom, reader, viewport, render, resize }) => {
+  await withReader(async ({ dom, reader, viewport, render, resize, flushFrames }) => {
     reader.getBoundingClientRect = () => rect(0, 0, 240, 320)
     viewport.getBoundingClientRect = () => rect(80, 0, 116, 320)
     let anchor = rect(108, 40, 58, 42)
@@ -168,8 +199,8 @@ for (const annotation of [false, true]) test(`a short narrow column scrolls its 
     await act(async () => {
       card.dispatchEvent(new dom.Event('scroll'))
       card.querySelector('textarea')!.dispatchEvent(new dom.Event('scroll'))
-      await new Promise(resolve => setTimeout(resolve, 10))
     })
+    await flushFrames()
     assert.equal(anchorReads, readsBeforeScroll, 'internal editor scrolling cannot feed back into anchor layout')
     await resize(card)
     await resize(card)

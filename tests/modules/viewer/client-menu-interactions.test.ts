@@ -7,6 +7,8 @@ import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderN
 import { HIGHLIGHT_QUICK_COLORS_KEY, NOTE_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
 import { TranslationLanguageMenu } from '../../../src/modules/viewer/components/TranslationLanguageMenu.tsx'
 import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.tsx'
+import { ZoomMenu } from '../../../src/modules/viewer/components/ZoomMenu.tsx'
+import { ToolbarDisclosure } from '../../../src/modules/viewer/components/ToolbarDisclosure.tsx'
 import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
 
 const testRequire = createRequire(import.meta.url)
@@ -156,6 +158,120 @@ test('translation language menu positions above a clipped panel and supports Esc
     assert.deepEqual(selected, [], 'reselecting current language does not issue an update')
     await act(async () => { details.open = true; details.querySelector<HTMLButtonElement>('button[aria-label="ZH"]')!.click() })
     assert.deepEqual(selected, ['zh'], 'choosing another language issues one update')
+  })
+})
+
+test('embedded Zoom menus follow the Reader height and release resize observers when closed or unmounted', async () => {
+  await withDom(async (dom, container, render) => {
+    class ObservedResize {
+      targets: Element[] = []
+      disconnected = false
+      constructor(private callback: ResizeObserverCallback) { observers.push(this) }
+      observe(target: Element) { this.targets.push(target) }
+      disconnect() { this.disconnected = true }
+      notify() { this.callback([], this as unknown as ResizeObserver) }
+    }
+    const observers: ObservedResize[] = []
+    const previousObserver = globalThis.ResizeObserver
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: ObservedResize })
+    try {
+      const choices: Array<number | 'width' | 'page'> = []
+      await render(React.createElement(ZoomMenu, { fit: 'custom', zoom: 1, t: key => key,
+        onSelect: value => choices.push(value) }))
+      const details = container.querySelector<HTMLDetailsElement>('details')!
+      const summary = details.querySelector('summary')!
+      const menu = details.querySelector<HTMLElement>('.dsh-pdf-zoom-menu')!
+      let bottom = 420.8, menuTop = 80.1
+      container.getBoundingClientRect = () => new dom.DOMRect(0, 0, 320, bottom)
+      menu.getBoundingClientRect = () => new dom.DOMRect(0, menuTop, 188, 400)
+      const toggled = () => new Promise<void>(resolve => details.addEventListener('toggle', () => resolve(), { once: true }))
+      const toggle = async (open: boolean) => {
+        await act(async () => { const committed = toggled(); details.open = open; await committed })
+      }
+      await toggle(true)
+      assert.equal(summary.getAttribute('aria-expanded'), 'true')
+      assert.equal(menu.style.maxHeight, '328px', 'the embedded menu leaves 12px below its actual Reader')
+      const first = observers.at(-1)!
+      assert.deepEqual(first.targets, [container])
+      bottom = 260
+      await act(async () => { dom.dispatchEvent(new dom.Event('resize')) })
+      assert.equal(menu.style.maxHeight, '167px', 'window resize uses the current Reader bounds')
+      bottom = 170; menuTop = 90.1
+      await act(async () => { first.notify() })
+      assert.equal(menu.style.maxHeight, '67px', 'Reader-only resize does not require a window event')
+      bottom = 80
+      await act(async () => { first.notify() })
+      assert.equal(menu.style.maxHeight, '0px', 'no available space cannot produce a negative CSS height')
+
+      await act(async () => {
+        const selected = [...menu.querySelectorAll<HTMLButtonElement>('button')]
+          .find(button => button.textContent === '150%')!
+        const committed = toggled()
+        selected.click()
+        await committed
+      })
+      assert.deepEqual(choices, [1.5])
+      assert.equal(details.open, false)
+      assert.equal(summary.getAttribute('aria-expanded'), 'false')
+      assert.equal(dom.document.activeElement, summary, 'choosing a zoom restores its trigger focus')
+      assert.equal(first.disconnected, true)
+      bottom = 600
+      await act(async () => { dom.dispatchEvent(new dom.Event('resize')) })
+      assert.equal(menu.style.maxHeight, '0px', 'a closed menu no longer listens to viewport resize')
+
+      await toggle(true)
+      const reopened = observers.at(-1)!
+      assert.notEqual(reopened, first)
+      assert.equal(menu.style.maxHeight, '497px')
+      await render(React.createElement(React.Fragment))
+      assert.equal(reopened.disconnected, true, 'unmount releases the active Reader observer')
+      bottom = 200
+      await act(async () => { dom.dispatchEvent(new dom.Event('resize')) })
+      assert.equal(menu.style.maxHeight, '497px', 'unmount also removes the global resize listener')
+    } finally {
+      Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: previousObserver })
+    }
+  })
+})
+
+test('embedded toolbar disclosures preserve internal interaction and close on outside pointer or focus', async () => {
+  await withDom(async (dom, container, render) => {
+    const detailsRef = createRef<HTMLDetailsElement>(), triggerRef = createRef<HTMLElement>()
+    const transitions: boolean[] = []
+    let openings = 0
+    await render(React.createElement(React.Fragment, null,
+      React.createElement(ToolbarDisclosure, { detailsRef, triggerRef, className: 'embedded-tools', label: 'Files',
+        menuLabel: 'File actions', trigger: 'Files', onOpen: () => { openings++ },
+        onOpenChange: open => { transitions.push(open) },
+        children: [React.createElement('button', { key: 'save' }, 'Save'), React.createElement('button', { key: 'reload' }, 'Reload')] }),
+      React.createElement('button', { id: 'outside-disclosure' }, 'Outside')))
+    const details = detailsRef.current!
+    const [save, reload] = [...details.querySelectorAll<HTMLButtonElement>('button')]
+    const outside = container.querySelector<HTMLButtonElement>('#outside-disclosure')!
+    assert.equal(triggerRef.current, details.querySelector('summary'))
+    const toggled = () => new Promise<void>(resolve => details.addEventListener('toggle', () => resolve(), { once: true }))
+    const toggle = async (open: boolean) => {
+      await act(async () => { const committed = toggled(); details.open = open; await committed })
+    }
+    await toggle(true)
+    await act(async () => { save!.dispatchEvent(new dom.Event('pointerdown', { bubbles: true })) })
+    assert.equal(details.open, true, 'pointer presses inside the inline menu keep its choices reachable')
+    await act(async () => { save!.focus(); reload!.focus() })
+    assert.equal(details.open, true, 'moving focus between menu actions does not dismiss it')
+    await act(async () => {
+      const committed = toggled()
+      outside.dispatchEvent(new dom.Event('pointerdown', { bubbles: true }))
+      await committed
+    })
+    assert.equal(details.open, false)
+    assert.equal(triggerRef.current?.getAttribute('aria-expanded'), 'false')
+    await toggle(true)
+    await act(async () => { const committed = toggled(); reload!.focus(); outside.focus(); await committed })
+    assert.equal(details.open, false, 'keyboard focus leaving the embedded disclosure dismisses it')
+    assert.equal(dom.document.activeElement, outside, 'dismissal does not steal the new focus')
+    assert.equal(triggerRef.current?.getAttribute('aria-expanded'), 'false')
+    assert.equal(openings, 2)
+    assert.deepEqual(transitions, [true, false, true, false])
   })
 })
 

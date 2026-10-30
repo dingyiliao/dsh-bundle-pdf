@@ -143,10 +143,17 @@ function canvasBytes() { return [...document.querySelectorAll('canvas')].reduce(
 async function selectZoom100(timeout: number) {
   const menu = document.querySelector<HTMLDetailsElement>('.dsh-pdf-toolbar-zoom')
   const trigger = menu?.querySelector<HTMLElement>('summary')
-  const preset = [...(menu?.querySelectorAll<HTMLButtonElement>('.dsh-pdf-zoom-menu button') ?? [])]
-    .find(button => button.textContent?.trim() === '100%')
-  if (!trigger || !preset) throw new Error('The Reader 100% zoom control is unavailable')
-  trigger.click(); preset.click()
+  if (!trigger) throw new Error('The Reader zoom control is unavailable')
+  trigger.click()
+  const opened = performance.now()
+  let preset: HTMLButtonElement | undefined
+  while (!preset && performance.now() - opened < timeout) {
+    await frame(); checkError()
+    preset = [...document.querySelectorAll<HTMLButtonElement>('.dsh-pdf-zoom-menu button')]
+      .find(button => button.textContent?.trim() === '100%')
+  }
+  if (!preset) throw new Error('The Reader 100% zoom control is unavailable')
+  preset.click()
   await frame()
   await waitQuality(performance.now(), timeout,
     () => trigger.getAttribute('aria-label')?.endsWith('100%') === true,

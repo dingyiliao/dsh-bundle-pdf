@@ -626,7 +626,7 @@ async function expectIndependentToolRail(reader: Locator) {
 
 async function captureToolbarEditsAria(page: BrowserPage, workspaceCwd: string) {
   return [await captureStableAria(page, '.dsh-pdf-tool-history', workspaceCwd),
-    await captureStableAria(page, '.dsh-pdf-toolbar-save', workspaceCwd)].map(value => value.trim()).join('\n') + '\n'
+    await captureStableAria(page, '.dsh-pdf-toolbar-save', workspaceCwd)].map(value => value.trim()).join('\n')
 }
 
 /** All persistent actions in the one-piece rail remain icon-only at every width. */
@@ -638,6 +638,7 @@ async function expectIconOnlyMainToolbar(toolbar: Locator) {
     const actions = [...element.querySelectorAll<HTMLElement>(
       '[data-tool-group] > button, [data-tool-group] > .dsh-pdf-toolbar-disclosure > summary, '
       + '.dsh-pdf-toolbar-back-split > button, .dsh-pdf-tool-availability > button, '
+      + '.dsh-pdf-tool-middle > button, .dsh-pdf-explanation-area-action > button, .dsh-pdf-save-control > button, '
       + '.dsh-pdf-tool-history > button, .dsh-pdf-activity-trigger, '
       + '.dsh-pdf-document-direct > button',
     )]
@@ -651,9 +652,14 @@ async function expectIconOnlyMainToolbar(toolbar: Locator) {
           visibleLabel: !!labelBox && labelBox.width > 4 && labelBox.height > 4,
         }
       })
-    return { actions, directCommands: [...element.querySelectorAll<HTMLElement>('.dsh-pdf-document-direct > button')].filter(visible).length }
+    return { actions,
+      historyCommands: [...element.querySelectorAll<HTMLElement>('.dsh-pdf-tool-history > button')].filter(visible).length,
+      directCommands: [...element.querySelectorAll<HTMLElement>('.dsh-pdf-document-direct > button')].filter(visible).length,
+      documentMenu: [...element.querySelectorAll<HTMLElement>('.dsh-pdf-document-menu > summary')].filter(visible).length }
   })
-  expect(presentation.actions).toHaveLength(presentation.directCommands ? 11 + presentation.directCommands : 12)
+  // Nine persistent navigation/interaction/save/task actions; document history
+  // and file commands move into the document menu at short container heights.
+  expect(presentation.actions).toHaveLength(9 + presentation.historyCommands + presentation.directCommands + presentation.documentMenu)
   expect(presentation.actions.every(action => action.ariaLabel?.trim())).toBe(true)
   expect(presentation.actions.every(action => action.tooltip?.trim())).toBe(true)
   expect(presentation.actions.every(action => action.hasIcon)).toBe(true)
@@ -2193,7 +2199,11 @@ it('requires a question before saving an explanation passage, then edits or remo
     await status.waitFor({ state: 'visible' })
     expect(await statusRail.locator('[data-status-id="region-selection"]').count()).toBe(0)
     expect(await mainToolbar.getByRole('button', { name: 'Note', exact: true }).isDisabled()).toBe(true)
-    expect(await mainToolbar.getByRole('button', { name: 'Region screenshot' }).isDisabled()).toBe(true)
+    // Explanation replaces the ordinary capture action with its own image
+    // question entry. The text-only session keeps that sole action disabled.
+    expect(await mainToolbar.getByRole('button', { name: 'Region screenshot' }).count()).toBe(0)
+    expect(await mainToolbar.getByRole('button', { name: 'Select image region' }).isDisabled()).toBe(true)
+    expect(await status.getByRole('button', { name: 'Select image region' }).count()).toBe(0)
     expect(await status.getByRole('button', { name: 'Send for explanation' }).isDisabled()).toBe(true)
     const [toolbarBox, statusBox, modeBox, contentBox, controlsBox] = await Promise.all([
       mainToolbar.boundingBox(), status.boundingBox(), modeControl.boundingBox(), reader.locator('.dsh-pdf-content').boundingBox(),
@@ -2369,8 +2379,10 @@ it('requires a question before saving an explanation passage, then edits or remo
     // after reconnecting rather than reconstructing the PDF selection.
     await page.context().setOffline(true)
     await status.getByRole('button', { name: 'Send for explanation' }).click()
-    await status.getByRole('alert').waitFor({ state: 'visible', timeout: 10_000 })
-    expect((await status.getByRole('alert').textContent())?.trim()).toBeTruthy()
+    const explanationError = reader.locator('.dsh-pdf-mode-error-popover[role="alert"]')
+    await explanationError.waitFor({ state: 'visible', timeout: 10_000 })
+    expect((await explanationError.textContent())?.trim()).toBeTruthy()
+    expect(await modeControl.getByRole('button', { expanded: true }).count()).toBe(1)
     expect(await reader.locator('[data-pdf-explanation-mark]').count()).toBe(1)
     await expect.poll(() => status.getByRole('button', { name: 'Send for explanation' }).isEnabled()).toBe(true)
     await page.context().setOffline(false)
@@ -2422,8 +2434,10 @@ it('captures an explanation image on another page only after a vision model is s
     const toolbar = reader.getByRole('toolbar', { name: 'PDF reading and editing' })
     await toolbar.getByRole('button', { name: 'Start explanation mode' }).click()
     const status = reader.getByRole('region', { name: 'Explain passages' })
-    const imageRegion = status.getByRole('button', { name: 'Select image region' })
+    const imageRegion = toolbar.getByRole('button', { name: 'Select image region' })
     await status.waitFor({ state: 'visible' })
+    expect(await imageRegion.count()).toBe(1)
+    expect(await status.getByRole('button', { name: 'Select image region' }).count()).toBe(0)
     // The seeded text-only model must not offer a screenshot it cannot read.
     await expect.poll(() => imageRegion.isDisabled()).toBe(true)
     await status.getByRole('button', { name: 'Exit explanation mode' }).click()
@@ -2438,8 +2452,8 @@ it('captures an explanation image on another page only after a vision model is s
     // Area selection is a reversible mode; cancelling it must leave the
     // explanation draft available for the next actual region selection.
     await imageRegion.click()
-    await expect.poll(() => status.getByRole('button', { name: 'Cancel region selection' }).getAttribute('aria-pressed')).toBe('true')
-    await status.getByRole('button', { name: 'Cancel region selection' }).click()
+    await expect.poll(() => toolbar.getByRole('button', { name: 'Cancel region selection' }).getAttribute('aria-pressed')).toBe('true')
+    await toolbar.getByRole('button', { name: 'Cancel region selection' }).click()
     await expect.poll(() => imageRegion.getAttribute('aria-pressed')).toBe('false')
 
     const secondPage = reader.locator('[data-pdf-page="2"]')
@@ -2553,14 +2567,18 @@ it('stops accepting explanation passages and image regions at the visible item l
       await editor.waitFor({ state: 'hidden' })
       await expect.poll(() => modeControl.textContent()).toContain(`${index}/20`)
     }
-    await expect.poll(() => status.getByRole('button', { name: 'Select image region' }).isEnabled()).toBe(true)
+    const imageRegion = toolbar.getByRole('button', { name: 'Select image region' })
+    await expect.poll(() => imageRegion.isEnabled()).toBe(true)
     await selectPassage()
-    await expect.poll(() => status.getByRole('alert').textContent())
+    const explanationError = reader.locator('.dsh-pdf-mode-error-popover[role="alert"]')
+    await explanationError.waitFor({ state: 'visible' })
+    await expect.poll(() => explanationError.textContent())
       .toContain('Up to 20 passages or regions can be explained together.')
     expect(await editor.count()).toBe(0)
-    await status.getByRole('button', { name: 'Select image region' }).click()
+    await imageRegion.click()
     await expect.poll(() => reader.locator('.dsh-pdf-mode-region').count()).toBe(0)
     expect(await modeControl.textContent()).toContain('20/20')
+    expect(await reader.locator('[data-pdf-explanation-mark]').count()).toBe(20)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -2759,7 +2777,7 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     }
     const assertBackdropTint = async () => {
       const toolbar = (await reader.locator('[data-tool-group="navigation"]').boundingBox())!
-      const sidebarBox = (await sidebar.locator('.dsh-pdf-sidebar-toggle-pod').boundingBox())!
+      const sidebarBox = (await sidebar.locator('.dsh-pdf-sidebar-rail-shell').boundingBox())!
       const [toolbarTint, sidebarTint] = await Promise.all([
         sampleMaterial(toolbar.x + 5, toolbar.y + toolbar.height - 12),
         sampleMaterial(sidebarBox.x + 5, sidebarBox.y + sidebarBox.height - 12),
@@ -2770,6 +2788,9 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
         JSON.stringify({ toolbarTint, sidebarTint })).toBeLessThanOrEqual(18)
     }
     const assertSharedGlass = async (dark: boolean) => {
+      // Compare idle surfaces. Hover intentionally strengthens only the rail
+      // beneath the pointer and is covered separately by interaction tests.
+      await page.mouse.move(0, 0)
       const surfaces = await reader.evaluate(element => {
         const describe = (selector: string, pseudo: string) => {
           const surface = element.querySelector(selector)!
@@ -2878,7 +2899,10 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await reader.getByRole('tab', { name: 'Annotations' }).click()
     const filter = reader.getByRole('combobox', { name: 'Filter annotations' })
     expect(await filter.evaluate(element => getComputedStyle(element).borderRadius)).toBe('6px')
-    await sidebar.evaluate(element => { (element as HTMLElement).style.width = '220px' })
+    // Resize through the real divider so the revealed panel shell and reserved
+    // column use the same width; overriding the outer column alone clips it.
+    await sidebar.locator('.dsh-pdf-sidebar-divider').press('Home')
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
     const annotationBounds = await reader.locator('.dsh-pdf-annotations-heading').evaluate(element => {
       const title = element.querySelector('h3')!.getBoundingClientRect()
       const control = element.querySelector('select')!.getBoundingClientRect()
@@ -2887,7 +2911,8 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     })
     expect(annotationBounds.titleRight).toBeLessThanOrEqual(annotationBounds.controlLeft)
     expect(annotationBounds.controlRight).toBeLessThanOrEqual(annotationBounds.headingRight - 11)
-    await sidebar.evaluate(element => { (element as HTMLElement).style.width = '' })
+    await sidebar.locator('.dsh-pdf-sidebar-divider').press('End')
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
 
     await reader.getByRole('tab', { name: 'Search' }).click()
     const searchPanel = reader.locator('.dsh-pdf-search-panel')
@@ -2906,7 +2931,8 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
 
     // The heading belongs to the fixed panel shell, not the scrolling results.
     // A narrow, short viewport reproduces the overlap seen after scrolling hits.
-    await sidebar.evaluate(element => { (element as HTMLElement).style.width = '220px' })
+    await sidebar.locator('.dsh-pdf-sidebar-divider').press('Home')
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
     const searchScroll = searchPanel.locator(':scope > .dsh-pdf-panel-scroll')
     const searchHeading = searchPanel.locator(':scope > .dsh-pdf-panel-heading')
     await searchPanel.locator('form input').fill('Browser')
@@ -2923,9 +2949,11 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await searchPanel.locator('form button').click()
     await expect.poll(() => searchPanel.locator('.dsh-pdf-search-hit').count()).toBe(2)
     const headingBeforeScroll = await searchHeading.boundingBox()
+    // Constrain the shared panel, whose flex scrollport otherwise consumes all
+    // remaining height regardless of a height written on that flex child.
+    await searchPanel.evaluate(element => { (element as HTMLElement).style.height = '218px' })
     await searchScroll.evaluate(element => {
       const scroll = element as HTMLElement
-      scroll.style.height = '170px'
       scroll.scrollTop = scroll.scrollHeight
     })
     await expect.poll(() => searchScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
@@ -2945,7 +2973,9 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     if (process.env.PDF_SIDEBAR_SCREENSHOT_DIR) {
       await sidebar.screenshot({ path: join(process.env.PDF_SIDEBAR_SCREENSHOT_DIR, 'search-narrow-scrolled.png') })
     }
-    await sidebar.evaluate(element => { (element as HTMLElement).style.width = '' })
+    await searchPanel.evaluate(element => { (element as HTMLElement).style.height = '' })
+    await sidebar.locator('.dsh-pdf-sidebar-divider').press('End')
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
 
     const toggle = sidebar.locator('.dsh-pdf-sidebar-toggle')
     const main = sidebar.locator('.dsh-pdf-sidebar-main')
@@ -3686,13 +3716,15 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     const zoomIdleBackground = await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)
     await zoomControl.hover()
     await expect.poll(() => zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(zoomIdleBackground)
+    await zoomControl.evaluate(element => Promise.allSettled(element.getAnimations().map(animation => animation.finished)))
+    const zoomHoverBackground = await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)
     expect(await zoomControl.evaluate(element => getComputedStyle(element).cursor)).toBe('pointer')
     await zoomControl.click()
     const zoomMenu = reader.locator('.dsh-pdf-zoom-menu')
     expect(await zoomMenu.getByRole('button', { name: 'Fit width' }).getAttribute('aria-pressed')).toBe('true')
     expect(await zoomMenu.getByRole('button', { name: 'Fit page' }).count()).toBe(1)
     await page.mouse.move(0, 0)
-    expect(await zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(zoomHoverBackground)
+    await expect.poll(() => zoomControl.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(zoomHoverBackground)
     const [zoomMenuBox, zoomToolbarBox] = await Promise.all([zoomMenu.boundingBox(), toolbar.boundingBox()])
     expect(zoomMenuBox).not.toBeNull()
     expect(zoomToolbarBox).not.toBeNull()
@@ -3704,7 +3736,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
     })).toBe(true)
     await zoomMenu.getByRole('button', { name: '100%' }).click()
-    expect(await zoomMenu.isVisible()).toBe(false)
+    await zoomMenu.waitFor({ state: 'hidden' })
     expect(await zoomControl.getAttribute('aria-label')).toBe('Zoom: 100%')
     // Both dropdowns use the same decorative arrow inside one click target.
     const zoomArrow = zoomControl.locator('.dsh-pdf-toolbar-chevron')
@@ -3713,9 +3745,9 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     expect(await toolbar.locator('.dsh-pdf-toolbar-zoom button.dsh-pdf-toolbar-chevron').count()).toBe(0)
     expect((await zoomArrow.boundingBox())!.width).toBeGreaterThan(2)
     await zoomArrow.click()
-    expect(await zoomMenu.isVisible()).toBe(true)
+    await zoomMenu.waitFor({ state: 'visible' })
     await zoomControl.click()
-    expect(await zoomMenu.isVisible()).toBe(false)
+    await zoomMenu.waitFor({ state: 'hidden' })
     await chooseZoom(reader, 'Fit width')
     expect(await zoomControl.getAttribute('aria-label')).toBe('Zoom: Fit width')
     await reader.evaluate(element => { element.style.maxHeight = '220px' })
@@ -3730,8 +3762,9 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await chooseZoom(reader, 'Fit width')
     await reader.evaluate(element => { element.style.maxHeight = '' })
     await page.mouse.move(0, 0)
-    const saveFeedback = reader.locator('.dsh-pdf-activity-trigger.dsh-pdf-save-feedback')
-    expect(await saveFeedback.count()).toBe(0)
+    const saveDescription = reader.locator('.dsh-pdf-save-control [role="status"]')
+    expect(await reader.locator('.dsh-pdf-save-feedback').count()).toBe(0)
+    expect(await save.getAttribute('data-save-state')).toBe('saved')
     expect(await save.isDisabled()).toBe(true)
     // This tab can mount below the responsive threshold. The wide-reader
     // scenario below owns the exact toolbar snapshot; here verify semantics.
@@ -3919,15 +3952,16 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       return { background: style.backgroundColor, foreground: style.color, border: style.borderTopColor }
     })
     expect(noteMarkerPalette).toEqual(noteCardPalette)
-    await expect.poll(() => saveFeedback.getAttribute('data-kind')).toBe('unsaved')
-    expect(await saveFeedback.locator('[role="status"]').textContent()).toBe('Unsaved changes')
+    await expect.poll(() => save.getAttribute('data-save-state')).toBe('dirty')
+    expect(await saveDescription.textContent()).toBe('Unsaved changes')
     const [feedbackBox, feedbackContentBox, feedbackToolbarBox, feedbackControlsBox] = await Promise.all([
-      saveFeedback.boundingBox(), content.boundingBox(), toolbar.boundingBox(), reader.locator('.dsh-pdf-tool-rail').boundingBox(),
+      save.boundingBox(), content.boundingBox(), toolbar.boundingBox(), reader.locator('.dsh-pdf-tool-rail').boundingBox(),
     ])
     expect(feedbackBox).not.toBeNull()
     expect(feedbackContentBox).not.toBeNull()
     expect(feedbackToolbarBox).not.toBeNull()
-    // The activity anchor stays in the document pod while the sidebar changes width.
+    // Save feedback stays in the command's fixed footprint, including while
+    // the right sidebar changes width; it never adds a separate status bar.
     expect(feedbackControlsBox).not.toBeNull()
     expect(feedbackBox!.x).toBeGreaterThanOrEqual(feedbackToolbarBox!.x)
     expect(feedbackBox!.x + feedbackBox!.width).toBeLessThanOrEqual(feedbackToolbarBox!.x + feedbackToolbarBox!.width)
@@ -3974,11 +4008,13 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       if (process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR)
         await toolbar.screenshot({ path: join(process.env.DSH_PDF_TOOLBAR_PREVIEW_DIR, `pdf-toolbar-${paneWidth}.png`) })
       await zoomControl.click()
+      await zoomMenu.waitFor({ state: 'visible' })
       const popup = (await reader.locator('.dsh-pdf-zoom-menu').boundingBox())!
       const readerBox = (await reader.boundingBox())!, railBox = (await toolbar.boundingBox())!
       expect(popup.x).toBeGreaterThanOrEqual(railBox.x + railBox.width)
       expect(popup.x + popup.width).toBeLessThanOrEqual(readerBox.x + readerBox.width - 7)
       await zoomControl.click()
+      await zoomMenu.waitFor({ state: 'hidden' })
       if (paneWidth === 400) {
         await toolbar.locator('.dsh-pdf-tools > summary').click()
         const menu = fileActions(reader)
@@ -4009,37 +4045,38 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       }
       sample()
     })
-    await reader.locator('.dsh-pdf-floating-status-rail').evaluate(element => {
+    await save.evaluate(element => {
       const owner = window as typeof window & {
-        __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null; at: number }[]
+        __pdfSaveFeedbackStates?: { state: string | null; at: number }[]
         __pdfSaveFeedbackObserver?: MutationObserver
       }
       owner.__pdfSaveFeedbackStates = []
       const record = () => {
-        const feedback = element.querySelector('.dsh-pdf-save-feedback')
         owner.__pdfSaveFeedbackStates!.push({
-          kind: feedback?.getAttribute('data-kind') ?? null, visible: feedback ? 'true' : 'false', at: performance.now(),
+          state: element.getAttribute('data-save-state'), at: performance.now(),
         })
       }
       owner.__pdfSaveFeedbackObserver = new MutationObserver(record)
-      owner.__pdfSaveFeedbackObserver.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-kind'] })
+      owner.__pdfSaveFeedbackObserver.observe(element, { attributes: true, attributeFilter: ['data-save-state'] })
     })
     await save.click()
     await expect.poll(() => page.evaluate(() => {
-      const owner = window as typeof window & { __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null }[] }
-      return owner.__pdfSaveFeedbackStates?.some(state => state.kind === 'saved' && state.visible === 'true') ?? false
+      const owner = window as typeof window & { __pdfSaveFeedbackStates?: { state: string | null }[] }
+      return owner.__pdfSaveFeedbackStates?.some(value => value.state === 'saved-success') ?? false
     }), { timeout: 5000 }).toBe(true).catch(async failure => {
       const states = await page.evaluate(() => {
-        const owner = window as typeof window & { __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null }[] }
+        const owner = window as typeof window & { __pdfSaveFeedbackStates?: { state: string | null }[] }
         return owner.__pdfSaveFeedbackStates
       })
       throw new Error(`${String(failure)}\nFeedback states: ${JSON.stringify(states)}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
     await expect.poll(() => save.isDisabled()).toBe(true)
-    await expect.poll(() => saveFeedback.count(), { timeout: 5000 }).toBe(0)
+    await expect.poll(() => save.getAttribute('data-save-state'), { timeout: 5000 }).toBe('saved')
+    expect(await saveDescription.textContent()).toBe('All changes saved')
+    expect(await reader.locator('.dsh-pdf-save-feedback').count()).toBe(0)
     const feedbackStates = await page.evaluate(() => {
       const owner = window as typeof window & {
-        __pdfSaveFeedbackStates?: { kind: string | null; visible: string | null; at: number }[]
+        __pdfSaveFeedbackStates?: { state: string | null; at: number }[]
         __pdfSaveFeedbackObserver?: MutationObserver
       }
       owner.__pdfSaveFeedbackObserver?.disconnect()
@@ -4048,10 +4085,11 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       delete owner.__pdfSaveFeedbackObserver
       return states
     })
-    const savedAt = feedbackStates.find(state => state.kind === 'saved' && state.visible === 'true')?.at
-    const hiddenAt = feedbackStates.find(state => savedAt !== undefined && state.at > savedAt && state.visible === 'false')?.at
+    const savedAt = feedbackStates.find(value => value.state === 'saved-success')?.at
+    const hiddenAt = feedbackStates.find(value => savedAt !== undefined && value.at > savedAt && value.state === 'saved')?.at
     expect(savedAt).toBeDefined()
-    expect(hiddenAt! - savedAt!).toBeGreaterThanOrEqual(2400)
+    expect(hiddenAt).toBeDefined()
+    expect(hiddenAt! - savedAt!).toBeGreaterThanOrEqual(1900)
     await expect.poll(() => savedNoteContents(path)).toEqual([NOTE])
     await expect.poll(() => reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
     const blankFrames = await page.evaluate(() => {
@@ -4375,9 +4413,11 @@ it('auto-collapses the reading sidebar below 760px without reopening it when spa
     await tooltip.waitFor({ state: 'hidden' })
     const disabledSave = toolbar.getByRole('button', { name: 'Save', exact: true })
     expect(await disabledSave.isDisabled()).toBe(true)
+    expect(await disabledSave.getAttribute('data-save-state')).toBe('saved')
     await disabledSave.hover()
     await tooltip.waitFor({ state: 'visible' })
-    expect(await tooltip.innerText()).toBe('Save')
+    expect(await tooltip.innerText()).toBe('All changes saved')
+    expect(await toolbar.locator('.dsh-pdf-save-control [role="status"]').textContent()).toBe('All changes saved')
     await page.mouse.move(0, 0)
     await tooltip.waitFor({ state: 'hidden' })
     await toolsControl.locator('.dsh-pdf-toolbar-chevron').click()
@@ -4730,7 +4770,9 @@ it('applies real FitV and FitR PDF outline destinations in the browser reader', 
     await reader.locator('[data-pdf-page="2"] canvas[data-pdf-raster-ready="true"]').first()
       .waitFor({ state: 'visible', timeout: 20_000 })
     const verticalScale = await reader.locator('[data-pdf-page="2"]').evaluate(element => element.getBoundingClientRect().height / 560)
-    const expectedVerticalScale = await scroll.evaluate(element => Math.max(0.1, (element.clientHeight - 56) / 560))
+    // Docked controls reserve a column; the page keeps 16px of breathing room
+    // above and below rather than the former floating toolbar's top reserve.
+    const expectedVerticalScale = await scroll.evaluate(element => Math.max(0.1, (element.clientHeight - 32) / 560))
     expect(Math.abs(verticalScale - expectedVerticalScale)).toBeLessThan(0.03)
     expect(await zoom.getAttribute('aria-label')).toBe(`Zoom: ${Math.round(expectedVerticalScale * 100)}%`)
 
@@ -4742,7 +4784,7 @@ it('applies real FitV and FitR PDF outline destinations in the browser reader', 
       .waitFor({ state: 'visible', timeout: 20_000 })
     const rectangleScale = await reader.locator('[data-pdf-page="3"]').evaluate(element => element.getBoundingClientRect().height / 560)
     const expectedRectangleScale = await scroll.evaluate(element => Math.max(0.1,
-      Math.min((element.clientWidth - 32) / 300, (element.clientHeight - 56) / 310)))
+      Math.min((element.clientWidth - 32) / 300, (element.clientHeight - 32) / 310)))
     expect(Math.abs(rectangleScale - expectedRectangleScale)).toBeLessThan(0.03)
     expect(await zoom.getAttribute('aria-label')).toBe(`Zoom: ${Math.round(expectedRectangleScale * 100)}%`)
     expect(tripwire.pageErrors).toEqual([])
@@ -4793,6 +4835,12 @@ it('navigates from the whole built-in bookmark item without hijacking item actio
       return page ? Math.abs(page.getBoundingClientRect().height - (root.clientWidth - 32) * 560 / 400) : Infinity
     })).toBeLessThan(2)
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    // Establish the document start through the same page field a user uses;
+    // opening the sidebar may otherwise leave a preserved, nonzero anchor.
+    await sidebarPage.fill('1')
+    await sidebarPage.press('Enter')
+    await expect.poll(() => sidebarPage.isEnabled()).toBe(true)
+    await expect.poll(scrollTop).toBeLessThan(2)
     const originScrollTop = await scrollTop()
     const atOrigin = async () => Math.abs(await scrollTop() - originScrollTop)
 
@@ -4806,15 +4854,24 @@ it('navigates from the whole built-in bookmark item without hijacking item actio
     expect(chapterBox).not.toBeNull()
     // Click the row's own padding, not its independent reorder/expand controls.
     await page.mouse.click(chapterBox!.x + 8, chapterBox!.y + 2)
-    // The final page cannot always align to the viewport top because scrolling
-    // clamps at the document end, so current-page tracking can remain on page 1.
-    // Scroll position directly proves that the bookmark navigated to page 2.
-    await expect.poll(scrollTop, { timeout: 20_000 }).toBeGreaterThan(200)
+    // The rail and sidebar determine the fit-width scale. Validate the actual
+    // PDF destination, including the browser's document-end clamp, rather than
+    // assuming its scroll distance is always more than 200 CSS pixels.
+    await expect.poll(() => scroll.evaluate(root => {
+      const target = root.querySelector<HTMLElement>('[data-page-number="2"]')!
+      const page = target.querySelector<HTMLElement>('[data-pdf-page="2"]')!
+      const destination = target.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop
+        + 70 * page.getBoundingClientRect().height / 560 - 16
+      const expected = Math.max(0, Math.min(root.scrollHeight - root.clientHeight, destination))
+      return Math.abs(root.scrollTop - expected)
+    }), { timeout: 20_000 }).toBeLessThan(2)
+    await expect.poll(() => sidebarPage.inputValue()).toBe('2')
     await reader.getByRole('button', { name: 'Back', exact: true }).click()
-    await expect.poll(atOrigin).toBeLessThan(20)
+    await expect.poll(atOrigin).toBeLessThan(2)
+    await expect.poll(() => sidebarPage.inputValue()).toBe('1')
     await chapter.getByRole('button', { name: 'Expand bookmark section' }).click()
     await reader.getByRole('treeitem', { name: 'Section 1' }).waitFor({ state: 'visible' })
-    expect(await atOrigin()).toBeLessThan(20)
+    expect(await atOrigin()).toBeLessThan(2)
 
     expect(tripwire.pageErrors).toEqual([])
   } finally {
@@ -5454,13 +5511,28 @@ it('keeps active pages bounded while navigating to a distant page through the in
     await reader.locator('.dsh-pdf-scroll').evaluate(scroll => {
       const source = scroll.querySelector<HTMLElement>('.dsh-pdf-windowed-pages > [data-page-number="81"]')
       if (!source) throw new Error('Page 81 is not mounted')
-      scroll.scrollTop = source.offsetTop - (81 - 24) * source.offsetHeight
+      // offsetHeight rounds each page to integer CSS pixels. Multiplying that
+      // rounded value by 57 pages can land on the preceding page; DOMRects
+      // retain the same fractional geometry used by the windowed layout.
+      const bounds = source.getBoundingClientRect()
+      scroll.scrollTop = bounds.top - scroll.getBoundingClientRect().top + scroll.scrollTop
+        - (81 - 24) * bounds.height
       scroll.dispatchEvent(new Event('scroll'))
     })
     await expect.poll(() => pageInput.getAttribute('title'), { timeout: 20_000 }).toBe(`24 / ${LARGE_PAGE_COUNT}`)
     await expect.poll(() => pageInput.inputValue()).toBe('24')
     await expect.poll(() => reader.getByRole('button', { name: `Page 24 / ${LARGE_PAGE_COUNT}` }).getAttribute('aria-current'))
       .toBe('page')
+
+    // A real wheel event must also release a prior explicit destination while
+    // leaving the committed page-number field focused and synchronized.
+    const pageStride = await reader.locator('.dsh-pdf-windowed-pages > [data-page-number="24"]')
+      .evaluate(element => element.getBoundingClientRect().height)
+    await reader.locator('.dsh-pdf-scroll').hover()
+    await page.mouse.wheel(0, pageStride * 2)
+    await expect.poll(() => pageInput.inputValue()).toBe('26')
+    await page.mouse.wheel(0, -pageStride * 2)
+    await expect.poll(() => pageInput.inputValue()).toBe('24')
 
     expect(tripwire.pageErrors).toEqual([])
   } finally {
@@ -5558,7 +5630,8 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     await expect.poll(() => noteToolbar.count()).toBe(0)
     const noteCard = reader.locator('.dsh-pdf-page-comment-card[data-card-kind="note"]')
     await noteCard.getByRole('button', { name: 'Change note color' }).click()
-    const noteColors = noteCard.locator('[data-testid="pdf-note-colors"]')
+    // The color menu shares the Reader's overlay portal with other tool menus.
+    const noteColors = reader.getByTestId('pdf-note-colors')
     await noteColors.waitFor({ state: 'visible' })
     expect(await noteColors.locator('.dsh-pdf-highlight-swatch').count()).toBe(5)
     await noteColors.locator('[data-testid="pdf-highlight-swatch-1"]').click()
@@ -6205,9 +6278,19 @@ it('keeps the last complete PDF frame through consecutive in-flight zoom renders
     await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
     const reader = page.locator('.dsh-pdf-reader')
     const surface = reader.locator('[data-pdf-page="1"] .dsh-pdf-tile-surface')
+    // Establish a fixed-scale frame before taking the baseline: the initial
+    // Fit-width frame can still be replaced as the Files column opens.
+    await chooseZoom(reader, '100%')
     await surface.locator('canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible', timeout: 20_000 })
     await expect.poll(() => surface.getAttribute('data-pdf-ready-epoch'), { timeout: 20_000 }).not.toBeNull()
     await expect.poll(() => reader.locator('[data-pdf-page="1"] .dsh-pdf-text-layer span').count()).toBeGreaterThan(0)
+    await expect.poll(() => surface.evaluate(host => {
+      const ready = (host as HTMLElement).dataset.pdfReadyEpoch
+      const canvases = [...host.querySelectorAll<HTMLCanvasElement>('canvas[data-pdf-raster-ready="true"]')]
+      return host.getBoundingClientRect().width === 400 && canvases.length > 0 && canvases.every(canvas =>
+        canvas.dataset.tileEpoch === ready && Number(canvas.dataset.pdfRasterScale) === window.devicePixelRatio
+          && canvas.width > 0 && canvas.height > 0)
+    }), { timeout: 20_000 }).toBe(true)
     const initialEpoch = await surface.getAttribute('data-pdf-ready-epoch')
     expect(initialEpoch).not.toBeNull()
 

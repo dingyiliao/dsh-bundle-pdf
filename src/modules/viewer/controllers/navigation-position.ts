@@ -32,14 +32,23 @@ export function captureReaderPosition(state: ReaderViewportState, views: Readonl
   if (!snapshot || !root) throw new Error(notReady)
   const outer = root.getBoundingClientRect()
   const visibleTop = outer.top + readingSafeTop(outer.height)
-  const pair = [...views.entries()].sort(([a], [b]) => a - b).find(([, view]) => {
+  const ordered = [...views.entries()].sort(([a], [b]) => a - b)
+  const visible = ([, view]: [number, PageView]) => {
     const box = view.element.getBoundingClientRect()
     return box.bottom > visibleTop && box.top < outer.bottom
-  })
+  }
+  // An explicit destination can be the lower of two visible pages when the
+  // browser clamps scrolling at the end. History must retain that page and its
+  // viewport anchor instead of silently recording the preceding page.
+  const pair = ordered.find(entry => entry[0] === state.currentPage && visible(entry)) ?? ordered.find(visible)
   if (!pair) {
     const numeric = windowLayout(root)
     if (numeric?.length) {
-      const item = numeric[pageIndexAtOffset(numeric, root.scrollTop + readingPageProbe(root.clientHeight))]
+      const preferred = numeric[state.currentPage - 1]
+      const item = preferred?.page === state.currentPage
+        && preferred.top + preferred.height > root.scrollTop + readingSafeTop(outer.height)
+        && preferred.top < root.scrollTop + root.clientHeight ? preferred
+        : numeric[pageIndexAtOffset(numeric, root.scrollTop + readingPageProbe(root.clientHeight))]
       const page = snapshot.document.pages[item.page - 1]
       const pageLeft = outer.left + (root.scrollWidth - item.width) / 2 - root.scrollLeft
       const pageTop = outer.top + item.top - root.scrollTop
