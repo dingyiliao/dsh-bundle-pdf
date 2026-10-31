@@ -6,7 +6,7 @@ import { readerLocales } from '../src/modules/viewer/index.js'
 import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
-import styles from '../src/client/reader.css'
+import { readerStyles } from '../src/client/reader-styles.js'
 import { pageIndexAtOffset, windowLayout } from '../src/modules/viewer/index.ts'
 
 interface Config { sessionId: string; token: string; pages: number; annotations: number }
@@ -15,7 +15,7 @@ interface Hook { run(scenario: string, timeout: number): Promise<Payload>; snaps
 declare global { interface Window { __PDF_BENCH_CONFIG__: Config; __PDF_BENCH__: Hook } }
 
 const config = window.__PDF_BENCH_CONFIG__
-const style = document.createElement('style'); style.textContent = styles; document.head.append(style)
+const style = document.createElement('style'); style.textContent = readerStyles; document.head.append(style)
 const owner = new AbortController(), root = createRoot(document.getElementById('root')!)
 const stages: PdfPerformanceEvent[] = []
 let stageOverflow = false
@@ -76,9 +76,10 @@ function coverage() {
   let expectedArea = 0
   if (numeric?.length) {
     for (let index = pageIndexAtOffset(numeric, scroll.scrollTop); index < numeric.length; index++) {
-      const item = numeric[index], top = bounds.top + item.top + 27 - scroll.scrollTop
+      const item = numeric[index], top = bounds.top + scroll.clientTop + item.top - scroll.scrollTop
       if (top >= bounds.bottom) break
-      const left = bounds.left + (scroll.scrollWidth - item.width) / 2 - scroll.scrollLeft
+      if (!Number.isFinite(item.left)) throw new Error('Reader page layout has no horizontal origin')
+      const left = bounds.left + scroll.clientLeft + item.left! - scroll.scrollLeft
       expectedArea += Math.max(0, Math.min(bounds.right, left + item.width) - Math.max(bounds.left, left))
         * Math.max(0, Math.min(bounds.bottom, top + item.height) - Math.max(bounds.top, top))
     }
@@ -97,13 +98,14 @@ function coverage() {
     area += a; visible.push(page)
     const expectedDpr = Math.min(devicePixelRatio || 1, 2, Math.sqrt(24_000_000 / (page.clientWidth * page.clientHeight)))
     const canvases = [...page.querySelectorAll<HTMLCanvasElement>('.dsh-pdf-canvas canvas')]
+    const previewing = !!page.style.transform || !!page.closest<HTMLElement>('.dsh-pdf-page-stage')?.style.transform
     const rectangles: { left: number; top: number; right: number; bottom: number; quality: boolean }[] = []
     for (const canvas of canvases) {
       if (canvas.dataset.pdfRasterReady !== 'true' || !canvas.width || !canvas.height) continue
       const rect = canvas.getBoundingClientRect(), left = Math.max(bounds.left, box.left, rect.left), right = Math.min(bounds.right, box.right, rect.right)
       const top = Math.max(bounds.top, box.top, rect.top), bottom = Math.min(bounds.bottom, box.bottom, rect.bottom)
       if (right > left && bottom > top) rectangles.push({ left, right, top, bottom,
-        quality: !page.style.transform && canvas.width / rect.width >= expectedDpr * .99 && canvas.height / rect.height >= expectedDpr * .99 })
+        quality: !previewing && canvas.width / rect.width >= expectedDpr * .99 && canvas.height / rect.height >= expectedDpr * .99 })
     }
     // A rectangle union counts overlapping retained zoom generations exactly once.
     const union = (rects: typeof rectangles) => {
@@ -159,19 +161,27 @@ async function selectZoom100(timeout: number) {
     () => trigger.getAttribute('aria-label')?.endsWith('100%') === true,
     () => trigger.getAttribute('aria-label')?.endsWith('100%') === true)
 }
-function searchPanel() {
+async function searchPanel(timeout: number) {
   const tab = [...document.querySelectorAll<HTMLButtonElement>('.dsh-pdf-sidebar-tab')]
     .find(button => button.getAttribute('aria-label') === t('reader.sidebar.search'))
   if (!tab) throw new Error('The Reader search tab is unavailable')
-  tab.click()
-  const panel = document.querySelector<HTMLElement>('.dsh-pdf-search-panel')
-  const form = panel?.querySelector<HTMLFormElement>('form')
-  const input = form?.querySelector<HTMLInputElement>('input')
-  if (!panel || !form || !input) throw new Error('The Reader search form is unavailable')
-  return { panel, form, input }
+  // Clicking the already-expanded tab collapses it. Wait for the real React
+  // transition instead of borrowing a mounted but hidden panel's form.
+  if (tab.getAttribute('aria-expanded') !== 'true') tab.click()
+  const start = performance.now()
+  while (performance.now() - start < timeout) {
+    await frame(); checkError()
+    const panel = document.querySelector<HTMLElement>('.dsh-pdf-search-panel')
+    const form = panel?.querySelector<HTMLFormElement>('form')
+    const input = form?.querySelector<HTMLInputElement>('input')
+    if (tab.getAttribute('aria-expanded') === 'true' && panel && !panel.closest('[hidden]') && form && input) {
+      return { panel, form, input }
+    }
+  }
+  throw new Error('The Reader search form is unavailable')
 }
 async function prepareSearch(timeout: number) {
-  const { panel, form, input } = searchPanel()
+  const { panel, form, input } = await searchPanel(timeout)
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
   if (!setter) throw new Error('The native search input setter is unavailable')
   setter.call(input, 'zz_pdf_benchmark_no_match_187')

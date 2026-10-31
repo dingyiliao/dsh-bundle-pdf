@@ -28,12 +28,7 @@ import { PdfEvidenceToolCard, type PdfToolCallProps } from '../client/toolview/P
 import { createPdfEvidenceNavigation } from '../client/toolview/pdf-evidence-navigation.js'
 import { createPdfSessionLifecycle, type PdfSessionOwner, type PdfSessionSource, type PdfSidebarNavigation } from '../client/pdf-session-lifecycle.js'
 import { sendExplanationPrompt, type CurrentSessionSource } from '../adapters/client/dsh/index.js'
-import styles from '../client/reader.css'
-import settingsStyles from '../client/settings.css'
-import readingSidebarStyles from '../client/reading-sidebar.css'
-import windowedPagesStyles from '../client/windowed-pages.css'
-import annotationCommentCardStyles from '../client/annotation-comment-card.css'
-import glassStyles from '../client/glass.css'
+import { readerStyles } from '../client/reader-styles.js'
 
 export const name = 'pdf-reader-client'
 export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms', 'uiSession', 'sidebarRight']
@@ -137,7 +132,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.dshPlugin = ID
-    style.textContent = `${styles}\n${settingsStyles}\n${readingSidebarStyles}\n${windowedPagesStyles}\n${annotationCommentCardStyles}\n${glassStyles}`
+    style.textContent = readerStyles
     document.head.append(style)
     return () => style.remove()
   }, 'pdf: reader stylesheet')
