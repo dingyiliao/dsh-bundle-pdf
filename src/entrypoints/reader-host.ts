@@ -8,12 +8,13 @@ import { createPdfRetrieval } from '../adapters/host/dsh/retrieval.js'
 import { createPdfPageContent } from '../adapters/host/dsh/page-content.js'
 import { createRetrievalPrefetch } from '../adapters/host/dsh/retrieval-prefetch.js'
 import { createPdfIndexing } from '../adapters/host/dsh/indexing.js'
+import { createDocumentIndexes } from '../adapters/host/dsh/document-indexes.js'
+import { createDocumentIndexPolicies, documentIndexRecordSchema, settingsForIndexPlan } from '../modules/retrieval/index.js'
 import { EmbeddingRegistry, createDisabledEmbeddingEngine } from '../embedding/index.js'
 import { createOpenAiCompatibleEmbeddingEngine } from '../adapters/host/embedding/openai-compatible.js'
 import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation, assertFreshSource,
   savedReferenceSchema } from '../modules/evidence/index.js'
 import { Config, readConfig, type HostConfig } from './reader-host-config.js'
-import { defaultSettings } from '../shared/contracts.js'
 import { createHostTranslations, createPdfOcrDispatch, createPdfRegionDispatch, createPdfSelectionDispatch,
   createPdfImageEvidenceResolver, freshSourceReader,
   registerAssets, registerPdfAgentTools,
@@ -103,7 +104,15 @@ export async function apply(
     name: `pdf_retrieval_${suffix}`, version: 1, layout: 'per-record', invalidRecords: 'backup-and-skip',
     tables: { cache: domainTable(retrievalCacheRecordSchema) },
   })).catch(async error => { await evidenceDomain.close(); await positionDomain.close(); await domain.close(); throw error })
+  const policyDomain = await ctx.storageDomain.open(defineDomain({
+    name: `pdf_index_policies_${suffix}`, version: 1, layout: 'per-record', invalidRecords: 'backup-and-skip',
+    tables: { policies: domainTable(documentIndexRecordSchema) },
+  })).catch(async error => { await retrievalDomain.close(); await evidenceDomain.close(); await positionDomain.close(); await domain.close(); throw error })
   const retrievalCache = createRetrievalCache(retrievalDomain.table('cache'))
+  const policyTable = policyDomain.table('policies')
+  const indexPolicies = createDocumentIndexPolicies({ get: key => policyTable.get(key), put: (key, value) => policyTable.put(key, value),
+    key: path => createHash('sha256').update(process.platform === 'win32' ? path.toLowerCase() : path).digest('hex'),
+  }, () => readConfig(config))
   const referenceStore = createEvidenceReferenceStore(evidenceDomain.table('references'))
   const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfLibDocumentAdapter)
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))
@@ -141,54 +150,39 @@ export async function apply(
       return resolved?.value
     },
   }))
-  const pageContent = createPdfPageContent(workspaces, pdfService, { cache: retrievalCache, settings: () => readConfig(config),
-    ocr: () => ctx.get('ocr'), image: () => ctx.get('imageUnderstanding') })
-  const retrieval = createPdfRetrieval(workspaces, pdfService, referenceStore,
-    { cache: retrievalCache, embeddings, settings: () => readConfig(config), content: pageContent,
-      async freshSource(sessionId, documentId, signal) {
-        const resolved = await ctx.sessionController.resolveAgent(sessionId)
-        if ('error' in resolved) throw resolved.error
-        await assertFreshSource(sessionId, workspaces.readSnapshot(sessionId, documentId),
-          freshSourceReader(files, resolved.agent), signal)
-      },
-      async retain(sessionId, documentId, signal) {
-        const resolved = await ctx.sessionController.resolveAgent(sessionId)
-        if ('error' in resolved) throw resolved.error
-        if (resolved.agent.session.id !== sessionId) throw new Error('PDF retrieval session identity mismatch')
-        return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
-      },
-    })
+  const retrieval = createDocumentIndexes({ documents: workspaces.listOpenDocuments, policies: indexPolicies,
+    clearCache: () => retrievalCache.clear(),
+    create(plan) {
+      const settings = settingsForIndexPlan(plan, readConfig(config))
+      const content = createPdfPageContent(workspaces, pdfService, { cache: retrievalCache, settings: () => settings,
+        ocr: () => ctx.get('ocr'), image: () => ctx.get('imageUnderstanding') })
+      return createPdfRetrieval(workspaces, pdfService, referenceStore,
+        { cache: retrievalCache, embeddings, settings: () => settings, content,
+          limits: { maxMemoryBytes: 64 * 1024 * 1024, maxIndexes: 2 },
+          async freshSource(sessionId, documentId, signal) {
+            const resolved = await ctx.sessionController.resolveAgent(sessionId)
+            if ('error' in resolved) throw resolved.error
+            await assertFreshSource(sessionId, workspaces.readSnapshot(sessionId, documentId),
+              freshSourceReader(files, resolved.agent), signal)
+          },
+          async retain(sessionId, documentId, signal) {
+            const resolved = await ctx.sessionController.resolveAgent(sessionId)
+            if ('error' in resolved) throw resolved.error
+            if (resolved.agent.session.id !== sessionId) throw new Error('PDF retrieval session identity mismatch')
+            return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
+          },
+        })
+    },
+  })
   const prefetch = createRetrievalPrefetch({
     documents: workspaces.listOpenDocuments,
     subscribe: workspaces.onDocumentsChanged,
-    selection() {
-      const settings = readConfig(config)
-      if (!settings.embeddingEngine || settings.embeddingEngine === 'none') return undefined
-      const binding = engineBinding('embedding', settings.embeddingEngine, settings.engineConfigurations)
-      // Discovery can learn a service revision during prepare. Only saved
-      // configuration or provider replacement changes this scheduling identity.
-      embeddings.describe(binding)
-      const ocr = engineBinding('ocr', settings.ocrEngine ?? defaultSettings.ocrEngine!, settings.engineConfigurations)
-      const image = engineBinding('image', settings.imageEngine ?? defaultSettings.imageEngine!, settings.engineConfigurations)
-      const identity = createHash('sha256').update(JSON.stringify([binding, embeddings.generation(binding),
-        settings.indexScanPages, settings.indexImageDescriptions,
-        settings.indexScanPages ? [ocr, ctx.get('ocr')?.generation(ocr)] : null,
-        settings.indexImageDescriptions ? [image, ctx.get('imageUnderstanding')?.generation(image)] : null])).digest('hex')
-      return { identity }
-    },
+    selection: retrieval.selection,
     prepare: retrieval.prepare,
   })
-  const indexing = createPdfIndexing(prefetch, { documents: workspaces.listOpenDocuments,
-    enabled() {
-      try {
-        const settings = readConfig(config)
-        if (!settings.embeddingEngine || settings.embeddingEngine === 'none') return false
-        embeddings.describe(engineBinding('embedding', settings.embeddingEngine, settings.engineConfigurations))
-        return true
-      } catch { return false }
-    },
-  })
-  const stopIndexingDocuments = workspaces.onDocumentsChanged(indexing.changed)
+  const indexing = createPdfIndexing(prefetch, { documents: workspaces.listOpenDocuments, indexes: retrieval, enabled: () => true })
+  const stopIndexPolicies = retrieval.subscribe(() => { prefetch.refresh(); indexing.changed() })
+  const stopIndexingDocuments = workspaces.onDocumentsChanged(() => { retrieval.refresh(); indexing.changed() })
   const stopPrefetchEngines = embeddings.subscribe(() => { prefetch.refresh(); indexing.changed() })
   const stopPrefetchConfig = ctx.on?.('loader/volatile-update', paths => {
     if (paths.some(path => ['embeddingEngine', 'engineConfigurations', 'ocrEngine', 'imageEngine', 'indexScanPages', 'indexImageDescriptions'].includes(String(path[0])))) {
@@ -234,6 +228,7 @@ export async function apply(
     stopPrefetchConfig?.()
     stopPrefetchEngines()
     stopIndexingDocuments()
+    stopIndexPolicies()
     indexing.dispose()
     const prefetchDrain = prefetch.dispose()
     const retrievalDrain = retrieval.dispose()
@@ -255,7 +250,7 @@ export async function apply(
       // copy they belong to, so releasing workspaces first would drop them.
       for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, async () => { await prefetchDrain }, async () => { await retrievalDrain },
         () => positions.dispose(), () => drain, () => pdfService.dispose(), () => retrievalCache.dispose(),
-        () => retrievalDomain.close(), () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
+        () => policyDomain.close(), () => retrievalDomain.close(), () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }
       }
       capabilities.dispose()

@@ -85,7 +85,7 @@
     "test:coverage:native": "node scripts/coverage-native.mjs",
     "test:coverage:project": "node scripts/coverage-project.mjs",
     "test:coverage": "npm run test:coverage:project",
-    "test:web": "npm run build && vitest run --config vitest.web.config.ts",
+    "test:web": "npm run build && node scripts/run-web-tests.mjs",
     "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test",
     "package:native": "node scripts/package-native.mjs",
     "package:main": "node scripts/package-main.mjs",

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
 import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
@@ -6,6 +6,8 @@ import { defaultExplanationPromptTemplate, explanationTemplateIssue,
   MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.js'
 import { engineBinding, validateEngineConfiguration, type EngineCatalogSnapshot, type EngineConfigurations,
   type EngineKind, type EngineDescriptor, type EngineJson } from '../modules/engines/index.js'
+import { mergeSettingsValue } from './settings-draft-merge.js'
+import { waitForSettingsAcknowledgement } from './settings-ack.js'
 import { EngineConfigurationFields } from './EngineConfigurationFields.js'
 import { DshVisionModelSettings, type VisionModelMode } from './DshVisionModelSettings.js'
 import type { ModelOptionsStore } from '../adapters/client/remote/model-options.js'
@@ -38,13 +40,13 @@ export const settingsLocales = {
     'settings.imageEngine': '图像理解引擎',
     'settings.embeddingEngine': '语义检索引擎',
     'settings.embeddingHelp': '启用后，打开 PDF 会在后台建立文字索引；第三方服务会收到抽取的文字。关键词搜索不受影响。',
-    'settings.indexScanPages': '文字识别索引',
-    'settings.indexScanPagesHelp': '原生文字缺失或编码损坏时，使用上方 OCR 引擎识别文字并加入索引。可与视觉描述索引同时开启；启用语义检索后自动处理。',
-    'settings.indexImageDescriptions': '视觉描述索引',
-    'settings.indexImageDescriptionsHelp': '使用上方图像理解引擎生成整页视觉描述，再将描述文字加入索引，并非直接嵌入原始图片。可与文字识别索引同时开启；会增加模型调用、等待时间和费用，暂不单独检测图表区域。',
-    'settings.rebuildIndex': '重建索引',
+    'settings.indexScanPages': '新文档默认启用文字识别索引',
+    'settings.indexScanPagesHelp': '新打开的文档在原生文字缺失或损坏时，默认使用所选 OCR 引擎。已有 PDF 的索引策略不会被覆盖，可在其搜索面板中单独调整。',
+    'settings.indexImageDescriptions': '新文档默认启用视觉描述索引',
+    'settings.indexImageDescriptionsHelp': '新打开的文档默认使用所选图像理解引擎生成整页描述并索引文字；会增加模型调用、等待时间和费用。已有 PDF 的索引策略不会被覆盖。',
+    'settings.rebuildIndex': '清除全部索引缓存',
     'settings.rebuildingIndex': '正在清除索引缓存…',
-    'settings.rebuildIndexHelp': '清除当前 profile 的检索索引。启用语义检索时，已打开的文档会在后台重建；其他文档按需处理，不会修改 PDF 或草稿。请先保存或撤销设置。',
+    'settings.rebuildIndexHelp': '清除当前 profile 中所有 PDF 的检索缓存。已启用索引的文档随后按各自策略重新建立；不会修改 PDF 或草稿。当前文档的重建请使用其搜索面板。',
     'settings.indexRebuilt': '索引缓存已清除，将在后台或下次检索时重建。',
     'settings.rebuildIndexFailed': '无法重建索引：',
     'settings.imageHelp': '用于图像理解和视觉描述索引。默认跟随当前会话，也可单独指定视觉模型；解释的最终回答仍由当前会话模型完成。',
@@ -98,23 +100,21 @@ export const settingsLocales = {
     'settings.invalidInstruction': '每个提示词最多 2000 个字符。',
     'settings.unsaved': '有未保存的修改',
     'settings.current': '设置已同步',
-    'settings.save': '保存设置',
     'settings.saving': '正在保存…',
+    'settings.retry': '重试保存',
     'settings.saved': '设置已保存',
     'settings.reset': '恢复默认',
     'settings.discard': '撤销修改',
-    'settings.resetHint': '默认值已填入，保存后生效。',
+    'settings.resetHint': '正在恢复默认设置…',
     'settings.conflict': '设置已在其他地方更新。你的修改已保留，请先选择如何处理。',
     'settings.latest': '载入最新设置',
     'settings.keep': '保留我的修改',
-    'settings.keepHint': '保留你修改过的字段，并采用其他字段的最新值；再次保存后生效。',
-    'settings.remoteChanges': '查看其他地方更新的字段',
+    'settings.keepHint': '保留你的修改并自动保存，其他字段采用最新值。',
+    'settings.remoteChanges': '对比我的修改与最新设置',
     'settings.refused': '设置未被接受。请检查字段或重新载入最新设置。',
     'settings.failed': '保存失败：',
     'settings.invalidNumber': '请输入大于 0 的整数。',
     'settings.invalidTimeout': '请输入 1000 到 600000 之间的整数。',
-    'settings.invalidTranslationEngine': '请选择一个可用的翻译引擎。',
-    'settings.validation': '请先修正标出的设置。',
   },
   en: {
     'settings.title': 'PDF',
@@ -126,13 +126,13 @@ export const settingsLocales = {
     'settings.imageEngine': 'Image understanding engine',
     'settings.embeddingEngine': 'Semantic search engine',
     'settings.embeddingHelp': 'When enabled, opening a PDF builds its text index in the background. Third-party services receive extracted text. Keyword search remains available.',
-    'settings.indexScanPages': 'Text recognition indexing',
-    'settings.indexScanPagesHelp': 'Uses the OCR engine above when native text is missing or damaged, then indexes the recognized text. Can run alongside visual description indexing. Automatic preparation requires semantic search.',
-    'settings.indexImageDescriptions': 'Visual description indexing',
-    'settings.indexImageDescriptionsHelp': 'Generates whole-page visual descriptions with the image understanding engine above and indexes that text, rather than embedding raw images. Can run alongside text recognition indexing. Adds model calls, waiting time and cost. Individual chart regions are not detected yet.',
-    'settings.rebuildIndex': 'Rebuild index',
+    'settings.indexScanPages': 'Text recognition indexing for new documents',
+    'settings.indexScanPagesHelp': 'Newly opened documents use the selected OCR engine when native text is missing or damaged. Existing PDFs keep their own indexing policy, adjustable in their Search panel.',
+    'settings.indexImageDescriptions': 'Visual description indexing for new documents',
+    'settings.indexImageDescriptionsHelp': 'Newly opened documents use the selected image engine to describe whole pages and index the text. Adds model calls, waiting time and cost. Existing PDFs keep their own indexing policy.',
+    'settings.rebuildIndex': 'Clear all index caches',
     'settings.rebuildingIndex': 'Clearing index cache…',
-    'settings.rebuildIndexHelp': 'Clears this profile’s retrieval indexes. Open documents rebuild in the background when semantic search is enabled; others rebuild on demand. PDFs and drafts are unchanged. Save or discard settings first.',
+    'settings.rebuildIndexHelp': 'Clears retrieval caches for all PDFs in this profile. Index-enabled documents subsequently rebuild with their own policies. PDFs and drafts are unchanged. Use the Search panel to rebuild only the current document.',
     'settings.indexRebuilt': 'Index cache cleared. Indexes rebuild in the background or when searched.',
     'settings.rebuildIndexFailed': 'Could not rebuild the index: ',
     'settings.imageHelp': 'Used for image understanding and visual description indexing. Follows the current session by default, or uses a specified visual model. The current chat model still provides the final explanation.',
@@ -186,23 +186,21 @@ export const settingsLocales = {
     'settings.invalidInstruction': 'Each prompt can contain at most 2000 characters.',
     'settings.unsaved': 'Unsaved changes',
     'settings.current': 'Settings are up to date',
-    'settings.save': 'Save settings',
     'settings.saving': 'Saving…',
+    'settings.retry': 'Retry saving',
     'settings.saved': 'Settings saved',
     'settings.reset': 'Restore defaults',
     'settings.discard': 'Discard changes',
-    'settings.resetHint': 'Defaults are staged. Save to apply them.',
+    'settings.resetHint': 'Restoring default settings…',
     'settings.conflict': 'Settings changed elsewhere. Your edits are retained; choose how to continue.',
     'settings.latest': 'Load latest settings',
     'settings.keep': 'Keep my changes',
-    'settings.keepHint': 'Keep the fields you edited and use the latest values for other fields. Save again to apply.',
-    'settings.remoteChanges': 'Show fields changed elsewhere',
+    'settings.keepHint': 'Your edits are saved automatically; other fields use the latest values.',
+    'settings.remoteChanges': 'Compare my edits with latest settings',
     'settings.refused': 'Settings were not accepted. Check the fields or load the latest settings.',
     'settings.failed': 'Could not save: ',
     'settings.invalidNumber': 'Enter a positive integer.',
     'settings.invalidTimeout': 'Enter an integer from 1000 to 600000.',
-    'settings.invalidTranslationEngine': 'Choose an available translation engine.',
-    'settings.validation': 'Correct the highlighted settings first.',
   },
 } as const
 
@@ -254,7 +252,63 @@ function acceptedEditor(snapshot: ConfigFormSnapshot): Editor | null {
     sourceVisionModelMode: visionModelMode(draft), visionModelMode: visionModelMode(draft) }
 }
 
-/** Settings card with an explicit save boundary and revision-fenced local edits. */
+const engineFieldsByKind = { ocr: 'ocrEngine', image: 'imageEngine', translation: 'translationEngine', embedding: 'embeddingEngine' } as const
+interface Submission { editor: Editor; accepted: Draft; fields: readonly Field[]; kinds: readonly EngineKind[] }
+function rebaseEditor(editor: Editor, snapshot: ConfigFormSnapshot, submission?: Submission): Editor {
+  const accepted = acceptedEditor(snapshot)
+  if (!accepted) return editor
+  let conflict = editor.conflict
+  const draft = { ...editor.draft }
+  for (const field of fields) {
+    const base = editor.source[field], local = editor.draft[field], remote = accepted.source[field]
+    if (field === 'engineConfigurations') {
+      const before = JSON.parse(base as string), current = JSON.parse(local as string), latest = JSON.parse(remote as string)
+      const acknowledged = submission && JSON.parse(submission.editor.draft.engineConfigurations)
+      const committed = submission && JSON.parse(submission.accepted.engineConfigurations)
+      const result: EngineConfigurations = {}
+      for (const kind of Object.keys(engineFieldsByKind) as EngineKind[]) {
+        const merged = mergeSettingsValue(before[kind], current[kind], latest[kind],
+          submission?.kinds.includes(kind) ? { value: acknowledged[kind], accepted: committed[kind] } : undefined)
+        if (merged.value !== undefined) result[kind] = merged.value as EngineConfigurations[EngineKind]
+        conflict ||= merged.conflict
+      }
+      draft.engineConfigurations = JSON.stringify(result)
+    } else {
+      const merged = mergeSettingsValue(base, local, remote,
+        submission?.fields.includes(field) ? { value: submission.editor.draft[field], accepted: submission.accepted[field] } : undefined)
+      Object.assign(draft, { [field]: merged.value })
+      conflict ||= merged.conflict
+    }
+  }
+  const modeAccepted = submission && (submission.fields.includes('imageEngine') || submission.kinds.includes('image'))
+    && editor.visionModelMode === submission.editor.visionModelMode
+  return { ...accepted, draft, conflict,
+    unsets: editor.unsets.filter(field => !submission?.fields.includes(field) || !submission.editor.unsets.includes(field)
+      || editor.draft[field] !== submission.editor.draft[field]),
+    visionModelMode: modeAccepted || editor.visionModelMode === editor.sourceVisionModelMode
+      ? accepted.visionModelMode : editor.visionModelMode }
+}
+
+interface EditorOwner {
+  editor: Editor | null; inFlight: boolean; queued: boolean; failed: boolean
+  notice: string; error: string; submitted: boolean; version: number
+  listeners: Set<() => void>; flush(): Promise<void>
+  accepted?: Submission
+}
+// The ConfigForm, rather than its mounted settings view, owns pending writes.
+// Weak keys retain failed edits for a reopened view without retaining dead connections.
+const editors = new WeakMap<ConfigForm, EditorOwner>()
+function editorFor(form: ConfigForm, snapshot: ConfigFormSnapshot): EditorOwner {
+  let owner = editors.get(form)
+  if (!owner) {
+    owner = { editor: acceptedEditor(snapshot), inFlight: false, queued: false, failed: false,
+      notice: '', error: '', submitted: false, version: 0, listeners: new Set(), async flush() {} }
+    editors.set(form, owner)
+  }
+  return owner
+}
+
+/** Revision-fenced automatic saves, with a local draft for incomplete edits. */
 export function Settings({ form, t, translationEngines, engineCatalog, modelOptions, rebuildRetrievalIndex }: SettingsProps) {
   const tr = useCallback((key: keyof typeof settingsLocales.zh): string => {
     const value = t(key)
@@ -265,7 +319,23 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     useCallback(() => form.getSnapshot(), [form]),
     useCallback(() => form.getSnapshot(), [form]),
   )
-  const [editor, setEditor] = useState<Editor | null>(() => acceptedEditor(snapshot))
+  const owner = useMemo(() => editorFor(form, snapshot), [form])
+  useSyncExternalStore(useCallback(listener => { owner.listeners.add(listener); return () => { owner.listeners.delete(listener) } }, [owner]),
+    useCallback(() => owner.version, [owner]), useCallback(() => owner.version, [owner]))
+  const editor = owner.editor
+  const { inFlight: saving, notice, error, submitted } = owner
+  function updateOwner(change: Partial<EditorOwner>) {
+    Object.assign(owner, change); owner.version++
+    for (const listener of [...owner.listeners]) listener()
+  }
+  function setEditor(update: React.SetStateAction<Editor | null>) {
+    const next = typeof update === 'function' ? update(owner.editor) : update
+    if (next !== owner.editor) updateOwner({ editor: next })
+  }
+  const setSaving = (inFlight: boolean) => updateOwner({ inFlight })
+  const setNotice = (notice: string) => updateOwner({ notice })
+  const setError = (error: string) => updateOwner({ error })
+  const setSubmitted = (submitted: boolean) => updateOwner({ submitted })
   const activeModelOptions = editor?.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified'
     ? modelOptions : undefined
   const modelDirectory = useSyncExternalStore(
@@ -273,10 +343,8 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     useCallback(() => activeModelOptions?.getSnapshot() ?? unavailableModelOptions, [activeModelOptions]),
     useCallback(() => activeModelOptions?.getSnapshot() ?? unavailableModelOptions, [activeModelOptions]),
   )
-  const [saving, setSaving] = useState(false)
-  const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
-  const [submitted, setSubmitted] = useState(false)
+  const [saveRequest, setSaveRequest] = useState(0)
+  const immediateSave = useRef(false)
   const [rebuildingIndex, setRebuildingIndex] = useState(false)
   const [indexNotice, setIndexNotice] = useState('')
   const [indexError, setIndexError] = useState('')
@@ -290,19 +358,28 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     setRebuildingIndex(false); setIndexNotice(''); setIndexError('')
     return () => { indexRequest.current?.abort(); indexRequest.current = undefined }
   }, [form, rebuildRetrievalIndex])
+  useEffect(() => { formIdentity.current = form }, [form])
+  useEffect(() => () => { void owner.flush() }, [owner])
   useEffect(() => {
-    if (formIdentity.current !== form) {
-      formIdentity.current = form
-      setEditor(acceptedEditor(snapshot)); setError(''); setNotice(''); setSubmitted(false); setSaving(false)
+    if (snapshot.status !== 'ready' || snapshot.value === undefined) return
+    if (owner.accepted && !owner.inFlight) {
+      if (snapshot.revision === undefined || snapshot.revision <= owner.accepted.editor.revision!) return
+      const submission = owner.accepted
+      owner.accepted = undefined
+      const rebased = owner.editor && rebaseEditor(owner.editor, snapshot, submission)
+      setEditor(rebased)
+      if (!isDirty(rebased)) {
+        owner.failed = false; setError(''); setNotice(tr('settings.saved'))
+      }
       return
     }
-    if (snapshot.status !== 'ready' || snapshot.value === undefined) return
     setEditor(current => {
+      if (owner.inFlight) return current
       if (current === null || !isDirty(current)) return acceptedEditor(snapshot)
-      if (snapshot.revision !== current.revision) return { ...current, conflict: true }
+      if (snapshot.revision !== current.revision) return rebaseEditor(current, snapshot)
       return current
     })
-  }, [form, snapshot])
+  }, [owner, snapshot])
 
   const dirty = isDirty(editor)
   useEffect(() => {
@@ -312,62 +389,68 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [dirty])
 
-  const disabled = saving || rebuildingIndex || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
-  const validation: Partial<Record<Field, string>> = {}
-  const configurations: EngineConfigurations = editor ? JSON.parse(editor.draft.engineConfigurations) : {}
-  let visionModelError: string | undefined
+  const disabled = rebuildingIndex || snapshot.status !== 'ready' || !snapshot.writable || snapshot.revision === undefined
   const descriptors = (kind: EngineKind): readonly EngineDescriptor[] => engineCatalog?.engines[kind]
     ?? (kind === 'translation' ? translationEngines.filter(engine => engine.id !== 'none').map(engine => ({
       id: engine.id, name: engine.label, version: '1', execution: 'remote' as const,
     })) : [])
-  if (editor) {
-    const sourceConfigurations: EngineConfigurations = JSON.parse(editor.source.engineConfigurations)
-    for (const field of ['translationTimeoutMs', 'historyCapacity'] as const) {
-      const value = Number(editor.draft[field])
-      if (!/^\d+$/.test(editor.draft[field]) || !Number.isSafeInteger(value) || value < 1) validation[field] = tr('settings.invalidNumber')
-      if (field === 'translationTimeoutMs' && (value < 1000 || value > 600000)) {
-        validation[field] = tr('settings.invalidTimeout')
-      }
-    }
-    for (const [kind, field] of [['ocr', 'ocrEngine'], ['image', 'imageEngine'], ['translation', 'translationEngine'], ['embedding', 'embeddingEngine']] as const) {
-      const touched = editor.draft[field] !== editor.source[field]
-        || JSON.stringify(configurations[kind]?.[editor.draft[field]])
-          !== JSON.stringify(sourceConfigurations[kind]?.[editor.source[field]])
-      const descriptor = descriptors(kind).find(engine => engine.id === editor.draft[field])
-      if (!descriptor && touched) validation[field] = tr('settings.invalidEngine')
-      if (descriptor && touched) {
-        try { validateEngineConfiguration(descriptor, engineBinding(kind, descriptor.id, configurations).config) }
-        catch { validation.engineConfigurations = tr('settings.engineConfigInvalid') }
-      }
-    }
-    if (editor.draft.indexImageDescriptions && !editor.source.indexImageDescriptions
-      && !descriptors('image').some(engine => engine.id === editor.draft.imageEngine && engine.execution !== 'disabled')) {
-      validation.imageEngine = tr('settings.invalidEngine')
-    }
-    if (editor.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified') {
-      const config = configurations.image?.['dsh-vision'] ?? {}
-      const source = sourceConfigurations.image?.['dsh-vision'] ?? {}
-      const touched = editor.visionModelMode !== editor.sourceVisionModelMode
-        || editor.draft.imageEngine !== editor.source.imageEngine
-        || ['provider', 'model', 'reasoningEffort'].some(key => config[key] !== source[key])
-      if (touched) {
-        const model = modelDirectory.catalog?.groups.find(group => group.id === config.provider)?.models.find(item => item.id === config.model)
-        if (!model || modelDirectory.status !== 'ready') visionModelError = tr('settings.visionSelectionRequired')
-        else if (config.reasoningEffort && !model.reasoning?.efforts.some(effort => effort.id === config.reasoningEffort)) {
-          visionModelError = tr('settings.visionEffortInvalid')
+  function validateEditor(editor: Editor | null) {
+    const validation: Partial<Record<Field, string>> = {}
+    const invalidKinds = new Set<EngineKind>()
+    const configurations: EngineConfigurations = editor ? JSON.parse(editor.draft.engineConfigurations) : {}
+    let visionModelError: string | undefined
+    if (editor) {
+      const sourceConfigurations: EngineConfigurations = JSON.parse(editor.source.engineConfigurations)
+      for (const field of ['translationTimeoutMs', 'historyCapacity'] as const) {
+        const value = Number(editor.draft[field])
+        if (!/^\d+$/.test(editor.draft[field]) || !Number.isSafeInteger(value) || value < 1) validation[field] = tr('settings.invalidNumber')
+        if (field === 'translationTimeoutMs' && (value < 1000 || value > 600000)) {
+          validation[field] = tr('settings.invalidTimeout')
         }
-        if (visionModelError) validation.engineConfigurations = visionModelError
+      }
+      for (const [kind, field] of [['ocr', 'ocrEngine'], ['image', 'imageEngine'], ['translation', 'translationEngine'], ['embedding', 'embeddingEngine']] as const) {
+        const touched = editor.draft[field] !== editor.source[field]
+          || JSON.stringify(configurations[kind]?.[editor.draft[field]])
+            !== JSON.stringify(sourceConfigurations[kind]?.[editor.source[field]])
+        const descriptor = descriptors(kind).find(engine => engine.id === editor.draft[field])
+        if (!descriptor && touched) { validation[field] = tr('settings.invalidEngine'); invalidKinds.add(kind) }
+        if (descriptor && touched) {
+          try { validateEngineConfiguration(descriptor, engineBinding(kind, descriptor.id, configurations).config) }
+          catch { validation.engineConfigurations = tr('settings.engineConfigInvalid'); invalidKinds.add(kind) }
+        }
+      }
+      if (editor.draft.indexImageDescriptions && !editor.source.indexImageDescriptions
+        && !descriptors('image').some(engine => engine.id === editor.draft.imageEngine && engine.execution !== 'disabled')) {
+        validation.imageEngine = tr('settings.invalidEngine')
+        validation.indexImageDescriptions = tr('settings.invalidEngine')
+      }
+      if (editor.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified') {
+        const config = configurations.image?.['dsh-vision'] ?? {}
+        const source = sourceConfigurations.image?.['dsh-vision'] ?? {}
+        const touched = editor.visionModelMode !== editor.sourceVisionModelMode
+          || editor.draft.imageEngine !== editor.source.imageEngine
+          || ['provider', 'model', 'reasoningEffort'].some(key => config[key] !== source[key])
+        if (touched) {
+          const model = modelDirectory.catalog?.groups.find(group => group.id === config.provider)?.models.find(item => item.id === config.model)
+          if (!model || modelDirectory.status !== 'ready') visionModelError = tr('settings.visionSelectionRequired')
+          else if (config.reasoningEffort && !model.reasoning?.efforts.some(effort => effort.id === config.reasoningEffort)) {
+            visionModelError = tr('settings.visionEffortInvalid')
+          }
+          if (visionModelError) { validation.engineConfigurations = visionModelError; invalidKinds.add('image') }
+        }
+      }
+      for (const field of promptFields) {
+        if (editor.draft[field].length > MAX_EXPLANATION_INSTRUCTION_LENGTH) {
+          validation[field] = tr('settings.invalidInstruction')
+        }
+      }
+      if (explanationTemplateIssue(editor.draft.explanationPromptTemplate)) {
+        validation.explanationPromptTemplate = tr('settings.invalidTemplate')
       }
     }
-    for (const field of promptFields) {
-      if (editor.draft[field].length > MAX_EXPLANATION_INSTRUCTION_LENGTH) {
-        validation[field] = tr('settings.invalidInstruction')
-      }
-    }
-    if (explanationTemplateIssue(editor.draft.explanationPromptTemplate)) {
-      validation.explanationPromptTemplate = tr('settings.invalidTemplate')
-    }
+    return { validation, invalidKinds, configurations, visionModelError }
   }
+  const { validation, configurations, visionModelError } = validateEditor(editor)
 
   const legacyPromptActive = !!editor && editor.draft.explanationPromptTemplate !== defaultExplanationPromptTemplate
     && promptFields.every(field => !editor.draft[field].trim())
@@ -405,6 +488,11 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
         && (!splitPromptEdited || key !== 'explanationPromptTemplate')) }))
     setNotice(''); setError('')
   }
+  function requestSave(immediate = true) {
+    immediateSave.current = immediate
+    owner.failed = false
+    setSaveRequest(value => value + 1)
+  }
   function changeVisionMode(mode: VisionModelMode) {
     setEditor(current => {
       if (!current) return current
@@ -433,11 +521,14 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
       draft: { ...current.draft, explanationPromptTemplate: defaultExplanationPromptTemplate },
       unsets: current.unsets.filter(key => key !== 'explanationPromptTemplate') }))
     setNotice(''); setError('')
+    requestSave()
   }
   function loadLatest() {
     const latest = form.getSnapshot()
     if (latest.status !== 'ready') return
     setEditor(acceptedEditor(latest)); setError(''); setNotice(''); setSubmitted(false)
+    owner.accepted = undefined
+    owner.failed = false; owner.queued = false
   }
   function keepChanges() {
     const latest = form.getSnapshot()
@@ -448,50 +539,122 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     setEditor(current => {
       if (!current) return current
       const draft = Object.fromEntries(fields.map(field => [field, current.unsets.includes(field) ? defaults[field]
+        : field === 'engineConfigurations' ? JSON.stringify(mergeSettingsValue(
+          JSON.parse(current.source[field]), JSON.parse(current.draft[field]), JSON.parse(source[field])).value)
         : current.draft[field] !== current.source[field] ? current.draft[field] : source[field]])) as Draft
       return { source, revision: latest.revision, conflict: false, unsets: current.unsets, draft,
         sourceVisionModelMode: visionModelMode(source),
         visionModelMode: current.visionModelMode !== current.sourceVisionModelMode ? current.visionModelMode : visionModelMode(draft) }
     })
     setError(''); setNotice(tr('settings.keepHint'))
+    requestSave()
   }
   function restoreDefaults() {
     const base = snapshot.base && typeof snapshot.base === 'object' ? snapshot.base as Partial<PdfSettings> : {}
     const defaults = toDraft({ ...defaultSettings, ...base })
     setEditor(current => current && ({ ...current, draft: defaults, unsets: [...fields], visionModelMode: visionModelMode(defaults) }))
     setError(''); setNotice(tr('settings.resetHint')); setSubmitted(false)
+    requestSave()
   }
   async function save() {
-    if (!editor || disabled || !dirty || editor.conflict) return
+    if (owner.inFlight) { owner.queued = true; return }
+    const editor = owner.editor, latest = form.getSnapshot()
+    if (!editor || owner.failed || !isDirty(editor) || editor.conflict || latest.status !== 'ready' || latest.value === undefined
+      || !latest.writable || latest.revision === undefined) return
+    if (owner.accepted) {
+      owner.queued = true
+      await runSave(finishAcceptance)
+      return
+    }
     setSubmitted(true)
-    if (Object.keys(validation).length > 0) { setError(tr('settings.validation')); return }
-    const latest = form.getSnapshot()
-    if (latest.revision !== editor.revision) { setEditor(current => current && ({ ...current, conflict: true })); return }
-    const ops = fields.filter(field => editor.unsets.includes(field) || editor.draft[field] !== editor.source[field]).map(field =>
+    const { validation, invalidKinds, configurations } = validateEditor(editor)
+    if (latest.revision !== editor.revision) {
+      setEditor(current => current && rebaseEditor(current, latest))
+      void owner.flush()
+      return
+    }
+    const kinds = (Object.keys(engineFieldsByKind) as EngineKind[]).filter(kind => !invalidKinds.has(kind))
+    const sourceConfigurations: EngineConfigurations = JSON.parse(editor.source.engineConfigurations)
+    const nextConfigurations = { ...sourceConfigurations }
+    for (const kind of kinds) {
+      if (configurations[kind]) nextConfigurations[kind] = configurations[kind]
+      else delete nextConfigurations[kind]
+    }
+    const captured = { ...editor, draft: { ...editor.draft, engineConfigurations: JSON.stringify(nextConfigurations) } }
+    const selectedFields = fields.filter(field => {
+      if (validation[field] && field !== 'engineConfigurations') return false
+      const kind = (Object.keys(engineFieldsByKind) as EngineKind[]).find(kind => engineFieldsByKind[kind] === field)
+      if (kind && invalidKinds.has(kind)) return false
+      if (field === 'engineConfigurations' && invalidKinds.size && editor.unsets.includes(field)) return false
+      return editor.unsets.includes(field) || captured.draft[field] !== editor.source[field]
+    })
+    if (!selectedFields.length) return
+    const ops = selectedFields.map(field =>
       editor.unsets.includes(field) ? { op: 'unset' as const, path: [field] } : {
         op: 'set' as const, path: [field],
-        value: isBooleanField(field) ? editor.draft[field] : field === 'translationTimeoutMs' || field === 'historyCapacity'
-          ? Number(editor.draft[field]) : field === 'engineConfigurations'
-            ? JSON.parse(editor.draft[field]) : editor.draft[field].trim(),
+        value: isBooleanField(field) ? captured.draft[field] : field === 'translationTimeoutMs' || field === 'historyCapacity'
+          ? Number(captured.draft[field]) : field === 'engineConfigurations'
+            ? JSON.parse(captured.draft[field]) : captured.draft[field].trim(),
       })
-    const owner = form
-    setSaving(true); setError(''); setNotice('')
-    try {
-      const accepted = await owner.mutate(ops, editor.revision)
-      if (!mounted.current || formIdentity.current !== owner) return
-      const current = owner.getSnapshot()
-      if (accepted) {
-        setEditor(acceptedEditor(current)); setSubmitted(false); setNotice(tr('settings.saved'))
+    const expected = { ...latest.value } as Record<string, unknown>
+    const inherited = { ...defaultSettings, ...(latest.base as Partial<PdfSettings>) }
+    for (const operation of ops) {
+      const field = operation.path[0]!
+      expected[field] = operation.op === 'set' ? operation.value : inherited[field as keyof PdfSettings]
+    }
+    const acceptedDraft = toDraft(expected as unknown as PdfSettings)
+    const submission: Submission = { editor: captured, accepted: acceptedDraft, fields: selectedFields,
+      kinds: selectedFields.includes('engineConfigurations') ? kinds : [] }
+    const user = latest.user && typeof latest.user === 'object' ? latest.user as Record<string, unknown> : {}
+    const base = latest.base && typeof latest.base === 'object' ? latest.base as Record<string, unknown> : {}
+    const currentDraft = toDraft(latest.value)
+    const changedOps = ops.filter(operation => {
+      const field = operation.path[0]!, value = operation.op === 'set' ? operation.value : base[field]
+      const present = operation.op === 'set' || value !== undefined
+      return Object.hasOwn(user, field) !== present || JSON.stringify(user[field]) !== JSON.stringify(value)
+        || currentDraft[field] !== acceptedDraft[field]
+    })
+    if (!changedOps.length) {
+      setEditor(previous => previous && rebaseEditor(previous, latest, submission))
+      setNotice(tr('settings.saved'))
+      return
+    }
+    await runSave(async () => {
+      if (await form.mutate(changedOps, editor.revision)) {
+        owner.accepted = submission
+        await finishAcceptance()
       } else {
-        setEditor(previous => previous && ({ ...previous, conflict: current.revision !== previous.revision }))
+        owner.failed = true
+        setEditor(previous => previous && rebaseEditor(previous, form.getSnapshot()))
         setError(tr('settings.refused'))
       }
-    } catch (cause) {
-      if (mounted.current && formIdentity.current === owner) setError(`${tr('settings.failed')}${cause instanceof Error ? cause.message : String(cause)}`)
+    })
+  }
+  async function finishAcceptance() {
+    const submission = owner.accepted!
+    const current = await waitForSettingsAcknowledgement(form, submission.editor.revision!)
+    setEditor(previous => previous && rebaseEditor(previous, current, submission))
+    owner.accepted = undefined
+    setNotice(tr('settings.saved'))
+  }
+  async function runSave(operation: () => Promise<void>) {
+    setSaving(true); setError(''); setNotice('')
+    try { await operation() }
+    catch (cause) {
+      owner.failed = true
+      setError(`${tr('settings.failed')}${cause instanceof Error ? cause.message : String(cause)}`)
     } finally {
-      if (mounted.current && formIdentity.current === owner) setSaving(false)
+      setSaving(false)
+      if (owner.queued && !owner.failed) { owner.queued = false; void owner.flush() }
     }
   }
+  owner.flush = save
+  useEffect(() => {
+    if (owner.failed || !saveRequest) return
+    if (immediateSave.current) { void owner.flush(); return }
+    const timer = setTimeout(() => { void owner.flush() }, 400)
+    return () => clearTimeout(timer)
+  }, [saveRequest, owner, snapshot.status, snapshot.writable, engineCatalog, modelDirectory])
 
   const fieldRow = (field: Field, control: React.ReactNode, status?: React.ReactNode) => <div key={field} className="dsh-pdf-settings-field">
     <div className="dsh-pdf-settings-field-heading">
@@ -559,11 +722,18 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     {snapshot.status === 'loading' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.loading')}</p>}
     {snapshot.status === 'unavailable' && <p role="status" className="dsh-pdf-settings-status">{tr('settings.unavailable')}</p>}
     {snapshot.status === 'ready' && !snapshot.writable && <p role="status" className="dsh-pdf-settings-status">{tr('settings.readOnly')}</p>}
-    {editor && <form onSubmit={event => { event.preventDefault(); void save() }} className="dsh-pdf-settings-form">
+    {editor && <form onSubmit={event => { event.preventDefault(); requestSave() }}
+      onChangeCapture={event => {
+        const target = event.target as HTMLInputElement
+        requestSave(target.tagName === 'SELECT' || target.type === 'checkbox')
+      }}
+      onBlurCapture={event => {
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') requestSave()
+      }} className="dsh-pdf-settings-form">
       {editor.conflict && <div role="alert" className="dsh-pdf-settings-notice">
         <p>{tr('settings.conflict')}</p>
         {remoteDraft && <details><summary>{tr('settings.remoteChanges')}</summary><ul>
-          {fields.filter(field => remoteDraft[field] !== editor.source[field]).map(field => <li key={field}>{tr(`settings.${field}`)}: {String(editor.source[field])} → {String(remoteDraft[field])}</li>)}
+          {fields.filter(field => remoteDraft[field] !== editor.draft[field]).map(field => <li key={field}>{tr(`settings.${field}`)}: {String(editor.draft[field])} → {String(remoteDraft[field])}</li>)}
         </ul></details>}
         <div className="dsh-pdf-settings-notice-actions"><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={loadLatest}>{tr('settings.latest')}</button><button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={keepChanges}>{tr('settings.keep')}</button></div>
         <small className="dsh-pdf-settings-hint">{tr('settings.keepHint')}</small>
@@ -577,7 +747,7 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
         {booleanFields.map(indexOption)}
         {rebuildRetrievalIndex && <div className="dsh-pdf-settings-field">
           <div className="dsh-pdf-settings-field-heading">
-            <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || dirty || editor.conflict}
+            <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || saving || dirty || editor.conflict}
               aria-describedby={`${id}-rebuild-index-help`} onClick={() => { void rebuildIndex() }}>
               {tr(rebuildingIndex ? 'settings.rebuildingIndex' : 'settings.rebuildIndex')}
             </button>
@@ -598,6 +768,7 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
         <p id={`${id}-prompts-hint`} className="dsh-pdf-settings-hint">{tr('settings.explanationPromptsHelp')}</p>
         {legacyPromptActive && <div className="dsh-pdf-settings-notice" role="status">
           <p>{tr('settings.legacyPromptNotice')}</p>
+          {validation.explanationPromptTemplate && <p role="alert" className="dsh-pdf-settings-error">{validation.explanationPromptTemplate}</p>}
           <button type="button" disabled={disabled} className="dsh-pdf-settings-secondary" onClick={useSplitPrompts}>{tr('settings.useSplitPrompts')}</button>
         </div>}
         {promptFields.map((field, index) => fieldRow(field,
@@ -607,14 +778,15 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
               'settings.explanationImageDefault'] as const)[index])}
             value={editor.draft[field]} onChange={event => edit(field, event.target.value)} />))}
       </section>
-      {error && <p role="alert" className="dsh-pdf-settings-error dsh-pdf-settings-form-error">{error}</p>}
+      {error && <div role="alert" className="dsh-pdf-settings-error dsh-pdf-settings-form-error">{error}
+        <button type="button" disabled={disabled || saving || editor.conflict} onClick={() => requestSave()}>{tr('settings.retry')}</button>
+      </div>}
       <div className="dsh-pdf-settings-footer">
         <div className="dsh-pdf-settings-footer-actions">
           <button type="button" disabled={disabled} className="dsh-pdf-settings-quiet" onClick={restoreDefaults}>{tr('settings.reset')}</button>
-          <button type="button" disabled={disabled || !dirty} className="dsh-pdf-settings-quiet" onClick={loadLatest}>{tr('settings.discard')}</button>
+          <button type="button" disabled={disabled || saving || !dirty} className="dsh-pdf-settings-quiet" onClick={loadLatest}>{tr('settings.discard')}</button>
         </div>
-        <span aria-live="polite" className="dsh-pdf-settings-save-status">{notice || tr(dirty ? 'settings.unsaved' : 'settings.current')}</span>
-        <button type="submit" disabled={disabled || !dirty || editor.conflict} className="dsh-pdf-settings-save">{tr(saving ? 'settings.saving' : 'settings.save')}</button>
+        <span aria-live="polite" className="dsh-pdf-settings-save-status">{tr(saving ? 'settings.saving' : dirty ? 'settings.unsaved' : 'settings.current')}{notice && !dirty && !saving ? ` · ${notice}` : ''}</span>
       </div>
     </form>}
   </section>

@@ -177,3 +177,133 @@ test('indexing snapshot capacity preserves every live subscription when no inact
     assert.ok(requests.every(signal => !signal.aborted), 'the inactive cache budget must never cancel a live view')
   } finally { stops.forEach(stop => stop()); api.dispose(); lifetime.abort(); await turn() }
 })
+
+const defaultPolicy = { embeddingEngine: 'embedding', ocrEngine: 'ocr', imageEngine: 'image',
+  indexScanPages: false, indexImageDescriptions: false }
+const customPolicy = { embeddingEngine: 'another-embedding', ocrEngine: 'another-ocr', imageEngine: 'another-image',
+  indexScanPages: true, indexImageDescriptions: true }
+const documentSnapshot = (revision: string, settingsRevision: number, pending = false): PdfIndexingSnapshot => ({
+  ...snapshot('running'), revision,
+  documents: [{ documentId: 'document', revision: settingsRevision, policy: pending ? customPolicy : defaultPolicy,
+    activePolicy: defaultPolicy, pending, impact: pending ? 'embedding' : 'none' }],
+})
+
+test('document configuration and defaults update every view through the shared session snapshot', async () => {
+  const lifetime = new AbortController(), requests: object[] = []
+  const api = createPdfIndexingApi({ rpc: { async call(path, method, input) {
+    assert.equal(path, '/api'); assert.equal(method, 'pdf.indexing'); requests.push(input)
+    const action = (input as { action: string }).action
+    return ok(action === 'configure' ? documentSnapshot('configured', 8, true)
+      : action === 'defaults' ? documentSnapshot('defaults', 9) : documentSnapshot('initial', 7))
+  } } }, lifetime.signal)
+  let firstNotifications = 0, secondNotifications = 0
+  const stop = api.subscribe('session', () => { firstNotifications++ })
+  const stopAgain = api.subscribe('session', () => { secondNotifications++ })
+  const stopOther = api.subscribe('other-session', () => {})
+  try {
+    await turn()
+    const other = api.getSnapshot('other-session')
+    const first = firstNotifications, second = secondNotifications
+    await api.configure('session', 'document', 7, customPolicy, lifetime.signal)
+    assert.deepEqual(requests.at(-1), { action: 'configure', sessionId: 'session', documentId: 'document', revision: 7, policy: customPolicy })
+    assert.equal(firstNotifications, first + 1)
+    assert.equal(secondNotifications, second + 1)
+    assert.deepEqual(api.getSnapshot('session').documents, documentSnapshot('configured', 8, true).documents,
+      'Host-provided active and pending policies remain distinct until indexing applies them')
+    assert.equal(api.getSnapshot('other-session'), other, 'the same document ID in another Session has separate state')
+
+    await api.useDefaults('session', 'document', 8, lifetime.signal)
+    assert.deepEqual(requests.at(-1), { action: 'defaults', sessionId: 'session', documentId: 'document', revision: 8 })
+    assert.deepEqual(api.getSnapshot('session').documents, documentSnapshot('defaults', 9).documents)
+    assert.equal(firstNotifications, first + 2)
+    assert.equal(secondNotifications, second + 2)
+  } finally { stop(); stopAgain(); stopOther(); api.dispose(); lifetime.abort() }
+})
+
+test('a late status or configuration reply cannot replace a newer defaults snapshot', async () => {
+  const lifetime = new AbortController()
+  let finishStatus!: (value: unknown) => void, finishConfigure!: (value: unknown) => void
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input) {
+    const action = (input as { action: string }).action
+    if (action === 'status') return new Promise(resolve => { finishStatus = resolve })
+    if (action === 'configure') return new Promise(resolve => { finishConfigure = resolve })
+    return ok(documentSnapshot('defaults', 9))
+  } } }, lifetime.signal)
+  const stop = api.subscribe('session', () => {})
+  try {
+    const configured = api.configure('session', 'document', 7, customPolicy, lifetime.signal)
+    await api.useDefaults('session', 'document', 8, lifetime.signal)
+    const current = api.getSnapshot('session')
+    finishStatus(ok(documentSnapshot('initial', 7)))
+    finishConfigure(ok(documentSnapshot('configured', 8, true)))
+    await configured; await turn()
+    assert.equal(api.getSnapshot('session'), current)
+    assert.equal(current.documents![0]!.pending, false)
+    assert.equal(current.documents![0]!.revision, 9)
+  } finally { stop(); api.dispose(); lifetime.abort() }
+})
+
+test('invalid document settings and Host configuration errors never replace the last valid policy', async () => {
+  const lifetime = new AbortController()
+  let failure: 'shape' | 'engine' = 'shape'
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input) {
+    if ((input as { action: string }).action === 'status') return ok(documentSnapshot('initial', 7))
+    if (failure === 'engine') return { ok: false, error: { code: 'PDF_INDEX_ENGINE_UNAVAILABLE', message: 'The engine was unloaded' } }
+    const invalid = documentSnapshot('invalid', 8, true)
+    return ok({ ...invalid, documents: [{ ...invalid.documents![0], policy: { ...customPolicy, apiKey: 'must-not-enter-policy' } }] } as unknown as PdfIndexingSnapshot)
+  } } }, lifetime.signal)
+  const stop = api.subscribe('session', () => {})
+  try {
+    await turn()
+    const current = api.getSnapshot('session')
+    await assert.rejects(api.configure('session', 'document', 7, customPolicy, lifetime.signal), /Unrecognized key/)
+    assert.equal(api.getSnapshot('session'), current, 'strict policy parsing excludes credentials and unknown configuration')
+    failure = 'engine'
+    await assert.rejects(api.useDefaults('session', 'document', 7, lifetime.signal), error =>
+      error instanceof Error && 'code' in error && error.code === 'PDF_INDEX_ENGINE_UNAVAILABLE')
+    assert.equal(api.getSnapshot('session'), current, 'unloading an engine must not silently select a fallback policy')
+  } finally { stop(); api.dispose(); lifetime.abort() }
+})
+
+test('cancelling a document configuration keeps other views watching and ignores its late non-cooperative reply', async () => {
+  const lifetime = new AbortController(), caller = new AbortController()
+  let watchSignal!: AbortSignal, configureSignal!: AbortSignal, finishConfigure!: (value: unknown) => void
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input, signal) {
+    assert.ok(signal)
+    if ((input as { action: string }).action === 'status') { watchSignal = signal; return ok(documentSnapshot('initial', 7)) }
+    configureSignal = signal
+    return new Promise(resolve => { finishConfigure = resolve })
+  } } }, lifetime.signal)
+  const stop = api.subscribe('session', () => {}), stopAgain = api.subscribe('session', () => {})
+  try {
+    await turn()
+    const current = api.getSnapshot('session')
+    const action = api.configure('session', 'document', 7, customPolicy, caller.signal)
+    caller.abort(new Error('view closed'))
+    await assert.rejects(action, /view closed/)
+    assert.equal(configureSignal.aborted, true)
+    assert.equal(watchSignal.aborted, false, 'one view does not own the shared Session subscription')
+    finishConfigure(ok(documentSnapshot('configured', 8, true))); await turn()
+    assert.equal(api.getSnapshot('session'), current)
+  } finally { stop(); stopAgain(); api.dispose(); lifetime.abort() }
+})
+
+for (const ending of ['dispose', 'lifetime'] as const) test(`indexing ${ending} cancels in-flight defaults and blocks new configuration requests`, async () => {
+  const lifetime = new AbortController(), caller = new AbortController()
+  let requests = 0, requestSignal!: AbortSignal, finish!: (value: unknown) => void
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, _input, signal) {
+    requests++; assert.ok(signal); requestSignal = signal
+    return new Promise(resolve => { finish = resolve })
+  } } }, lifetime.signal)
+  try {
+    const action = api.useDefaults('session', 'document', 7, caller.signal)
+    if (ending === 'dispose') api.dispose()
+    else lifetime.abort()
+    await assert.rejects(action, error => error instanceof DOMException && error.name === 'AbortError')
+    assert.equal(requestSignal.aborted, true)
+    finish(ok(documentSnapshot('defaults', 8))); await turn()
+    await assert.rejects(api.configure('session', 'document', 7, customPolicy, caller.signal), error =>
+      error instanceof DOMException && error.name === 'AbortError')
+    assert.equal(requests, 1, 'unloaded adapters cannot create another Host operation')
+  } finally { api.dispose(); lifetime.abort() }
+})

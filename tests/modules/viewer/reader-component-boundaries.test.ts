@@ -823,7 +823,9 @@ test('Reader can return through history after both viewport capture and Host res
 })
 
 test('Reader registers only its visible, ready PDF for validated tool-card navigation', async () => {
-  await withReader(async ({ render, props }) => {
+  await withReader(async ({ render, props, api }) => {
+    const snapshot = fixtureSnapshot()
+    api.open = async () => snapshot
     let lease: VisiblePdfReader | undefined
     let releases = 0
     const evidenceNavigation: NonNullable<ReaderProps['evidenceNavigation']> = {
@@ -835,9 +837,16 @@ test('Reader registers only its visible, ready PDF for validated tool-card navig
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.equal(lease?.sessionId, 'session-1')
     assert.equal(lease?.current()?.id, 'document-1')
+    let finish!: (snapshot: WorkspaceSnapshot) => void
+    api.open = () => new Promise(resolve => { finish = resolve })
+    await render({ ...props, evidenceNavigation, content: { ...props.content, revision: 2 } })
+    assert.equal(lease, undefined, 'tool-card navigation cannot claim a refreshing display owner')
+    await act(async () => { finish(snapshot); await Promise.resolve() })
+    await waitForReader(() => !!lease, 'the ready replacement did not re-register tool-card navigation')
+    assert.equal((lease as VisiblePdfReader | undefined)?.current(), snapshot)
     await render(null)
     assert.equal(lease, undefined)
-    assert.equal(releases, 1)
+    assert.equal(releases, 2)
   })
 })
 
@@ -1011,5 +1020,38 @@ test('Reader confirms reload for an unsubmitted form and can enter explanation a
     assert.deepEqual(calls, ['change:1'])
     assert.ok(container.querySelector('.dsh-pdf-mode-explanation'), 'the deferred start callback accepts the newly committed revision')
     assert.equal(readerCommand(container, 'reader.explain.exit').getAttribute('aria-pressed'), 'true')
+  })
+})
+
+test('Reader executes a toolbar command once after a same-resource refresh becomes ready', async () => {
+  await withReader(async ({ container, render, props, api }) => {
+    await render(props)
+    await waitForReader(() => !!container.querySelector('[data-pdf-page="1"]'), 'initial page did not mount')
+    let finish!: (snapshot: WorkspaceSnapshot) => void
+    api.open = () => new Promise(resolve => { finish = resolve })
+    await render({ ...props, content: { ...props.content, revision: 2 } })
+    assert.equal(readerCommand(container, 'reader.regionScreenshot').disabled, false)
+    await clickReaderCommand(container, 'reader.regionScreenshot')
+    assert.equal(container.querySelector('.dsh-pdf-mode-region'), null, 'the command waits for its display owner')
+    await act(async () => { finish(fixtureSnapshot({ revision: 2 })); await Promise.resolve() })
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-mode-region'), 'the original click was dropped during refresh')
+    assert.equal(container.querySelectorAll('.dsh-pdf-mode-region').length, 1)
+  })
+})
+
+test('Reader cancels a command waiting for refresh when another resource takes the view', async () => {
+  await withReader(async ({ container, render, props, api }) => {
+    await render(props)
+    await waitForReader(() => !!container.querySelector('[data-pdf-page="1"]'), 'initial page did not mount')
+    let finishOld!: (snapshot: WorkspaceSnapshot) => void
+    api.open = (_session, address) => address.includes('second') ? Promise.resolve(fixtureSnapshot({ id: 'document-2' }))
+      : new Promise(resolve => { finishOld = resolve })
+    await render({ ...props, content: { ...props.content, revision: 2 } })
+    await clickReaderCommand(container, 'reader.regionScreenshot')
+    await render({ ...props, resourceAddress: 'file:///tmp/second.pdf', content: { ...props.content, revision: 3 } })
+    await act(async () => { finishOld(fixtureSnapshot({ revision: 2 })); await Promise.resolve() })
+    assert.equal(container.querySelector('.dsh-pdf-mode-region'), null)
+    await clickReaderCommand(container, 'reader.regionScreenshot')
+    assert.ok(container.querySelector('.dsh-pdf-mode-region'), 'the replacement document accepts its own commands')
   })
 })

@@ -47,7 +47,10 @@ const sameDocument = (a: RetrievalDocument, b: RetrievalDocument) => a.id === b.
   && a.sourceDigest === b.sourceDigest && a.contentVersion === b.contentVersion && a.pageCount === b.pageCount
 const providerIdentity = (provider: RetrievalEmbedding | undefined) => provider
   ? JSON.stringify([provider.fingerprint, provider.generation ?? '', provider.configurationIdentity ?? '',
-    provider.dimensions, provider.maxBatchSize, provider.maxInputCharacters ?? null]) : 'none'
+    provider.dimensions, provider.maxBatchSize, provider.maxInputCharacters ?? null,
+    ...(provider.documentFingerprint === undefined ? [] : [provider.documentFingerprint])]) : 'none'
+const invalidDocumentIdentity = (provider: RetrievalEmbedding) => provider.documentFingerprint !== undefined
+  && (typeof provider.documentFingerprint !== 'string' || !provider.documentFingerprint || provider.documentFingerprint.length > 512)
 
 /** Alternative representations of one block compete as one result. Choose a
  * representation using its best rank in each branch, retaining that unit's
@@ -319,8 +322,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       source.check()
       if (batches >= limits.embeddingBatchesPerStep || scanned++ >= 512) break
       const provider = source.current().provider!
-      const modelKey = provider.configurationIdentity === undefined ? provider.fingerprint
-        : digest(JSON.stringify([provider.fingerprint, provider.configurationIdentity]))
+      const modelKey = provider.documentFingerprint ?? (provider.configurationIdentity === undefined ? provider.fingerprint
+        : digest(JSON.stringify([provider.fingerprint, provider.configurationIdentity])))
       const key = retrievalCacheKey('vector', modelKey, 'document', digest(chunk.text))
       const pooled = index.vectorPool.get(key)
       if (pooled) {
@@ -501,7 +504,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
         const provider = selected && (!selected.availability || await selected.availability(signal)) ? selected : undefined
         signal.throwIfAborted()
         if (!provider) throw fail('pdf/retrieval-engine-unavailable', 'No embedding engine is available for background indexing')
-        if (!Number.isSafeInteger(provider.dimensions) || provider.dimensions < 1
+        if (invalidDocumentIdentity(provider) || !Number.isSafeInteger(provider.dimensions) || provider.dimensions < 1
             || !Number.isSafeInteger(provider.maxBatchSize) || provider.maxBatchSize < 1
             || provider.maxInputCharacters !== undefined && (!Number.isSafeInteger(provider.maxInputCharacters) || provider.maxInputCharacters < 64)) {
           throw fail('pdf/retrieval-invalid-provider', 'Embedding provider has invalid dimensions or input limits')
@@ -575,7 +578,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
         const selectionIdentity = query.mode === 'lexical' ? 'lexical' : providerIdentity(selected)
         const provider = selected && (!selected.availability || await selected.availability(signal)) ? selected : undefined
         signal.throwIfAborted()
-        if (provider && (!Number.isSafeInteger(provider.dimensions) || provider.dimensions < 1
+        if (provider && (invalidDocumentIdentity(provider) || !Number.isSafeInteger(provider.dimensions) || provider.dimensions < 1
           || !Number.isSafeInteger(provider.maxBatchSize) || provider.maxBatchSize < 1
           || (provider.maxInputCharacters !== undefined && (!Number.isSafeInteger(provider.maxInputCharacters) || provider.maxInputCharacters < 64)))) {
           throw fail('pdf/retrieval-invalid-provider', 'Embedding provider has invalid dimensions or input limits')

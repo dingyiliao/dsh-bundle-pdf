@@ -694,9 +694,26 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-search-panel input { flex: 1 1 auto; width: 0; min-width: 0; }
 .dsh-pdf-search-panel form button { flex: none; }
 .dsh-pdf-search-indexing { margin: 12px 0; padding-top: 12px; border-top: 1px solid var(--pdf-border); }
+.dsh-pdf-search-indexing > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; list-style: none; }
+.dsh-pdf-search-indexing > summary::-webkit-details-marker { display: none; }
+.dsh-pdf-search-indexing > summary strong { font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
+.dsh-pdf-search-indexing > summary .dsh-pdf-toolbar-icon { flex: none; width: 14px; height: 14px; color: var(--pdf-muted); transition: transform 160ms ease; }
+.dsh-pdf-search-indexing:not([open]) > summary .dsh-pdf-toolbar-icon { transform: rotate(-90deg); }
+.dsh-pdf-index-settings-content { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
 .dsh-pdf-search-indexing-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
 .dsh-pdf-search-indexing-heading strong { font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
 .dsh-pdf-search-indexing p { margin: 6px 0 0; overflow-wrap: anywhere; }
+.dsh-pdf-index-setting { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: var(--pdf-type-label); }
+.dsh-pdf-index-setting select { width: 100%; min-width: 0; box-sizing: border-box; }
+.dsh-pdf-index-toggle { display: flex; align-items: flex-start; gap: 7px; font-size: var(--pdf-type-body-compact); line-height: var(--pdf-leading-compact); }
+.dsh-pdf-search-panel .dsh-pdf-index-toggle input { flex: none; width: 14px; height: 14px; margin: 2px 0 0; }
+.dsh-pdf-index-impact { padding: 8px; border-radius: 6px; background: var(--pdf-sidebar-selected-bg); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-compact); }
+.dsh-pdf-index-secondary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dsh-pdf-reader .dsh-pdf-index-secondary-actions button {
+  min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-size: var(--pdf-type-caption);
+}
+.dsh-pdf-index-settings-error { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px; color: var(--pdf-danger, #b42318); font-size: var(--pdf-type-caption); overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .dsh-pdf-search-indexing > summary .dsh-pdf-toolbar-icon { transition: none; } }
 .dsh-pdf-reader .dsh-pdf-search-hit { display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%; margin: 7px 0; padding: 8px; white-space: normal; overflow-wrap: anywhere; }
 .dsh-pdf-search-hit strong { font-size: var(--pdf-type-caption); color: var(--pdf-muted); }
 .dsh-pdf-reader .dsh-pdf-comment-item {

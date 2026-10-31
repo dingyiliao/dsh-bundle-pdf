@@ -3,6 +3,19 @@ import { z } from 'zod'
 export const PDF_INDEXING_METHOD = 'pdf.indexing'
 const sessionId = z.string().min(1).max(512)
 const documentId = z.string().min(1).max(512)
+const engineId = z.string().min(1).max(200)
+/** Document choices reference globally configured engines; they never carry credentials. */
+export const documentIndexPolicySchema = z.object({
+  embeddingEngine: engineId, ocrEngine: engineId, imageEngine: engineId,
+  indexScanPages: z.boolean(), indexImageDescriptions: z.boolean(),
+}).strict()
+export type PdfDocumentIndexPolicy = z.infer<typeof documentIndexPolicySchema>
+export const documentIndexSettingsSchema = z.object({
+  documentId, revision: z.number().int().nonnegative(), policy: documentIndexPolicySchema,
+  activePolicy: documentIndexPolicySchema, pending: z.boolean(),
+  impact: z.enum(['none', 'content', 'embedding', 'configuration']),
+}).strict()
+export type PdfDocumentIndexSettings = z.infer<typeof documentIndexSettingsSchema>
 export const indexingProgressSchema = z.object({
   indexedPages: z.number().int().nonnegative(), totalPages: z.number().int().positive(),
   embeddedChunks: z.number().int().nonnegative(), totalChunks: z.number().int().nonnegative(),
@@ -19,12 +32,16 @@ export const indexingTaskSchema = z.object({
 }).strict()
 export const indexingSnapshotSchema = z.object({
   revision: z.string().min(1).max(128), enabled: z.boolean(), tasks: z.array(indexingTaskSchema).max(64),
+  documents: z.array(documentIndexSettingsSchema).max(1024).optional(),
 }).strict()
 export const indexingRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('status'), sessionId, revision: z.string().min(1).max(128).optional() }).strict(),
   z.object({ action: z.literal('start'), sessionId, documentId }).strict(),
   z.object({ action: z.literal('rebuild'), sessionId, documentId }).strict(),
   z.object({ action: z.literal('cancel'), sessionId, documentId }).strict(),
+  z.object({ action: z.literal('configure'), sessionId, documentId,
+    revision: z.number().int().nonnegative(), policy: documentIndexPolicySchema }).strict(),
+  z.object({ action: z.literal('defaults'), sessionId, documentId, revision: z.number().int().nonnegative() }).strict(),
 ])
 export type PdfIndexingTask = z.infer<typeof indexingTaskSchema>
 export type PdfIndexingSnapshot = z.infer<typeof indexingSnapshotSchema>

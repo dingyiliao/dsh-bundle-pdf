@@ -35,7 +35,9 @@ For Desktop, install its bundled CLI through **Manage dsh Command…** in the ap
 
 Native components install automatically; no local compilation is needed. Supported platforms: macOS (Apple Silicon/Intel), Windows x64, and glibc Linux (x64/arm64).
 
-Open a local PDF from DSH's file sidebar. AI features use your configured models or extension engines. Semantic retrieval requires a separately configured embedding service and is off by default. Once enabled, it indexes documents in the background when opened; OCR and image descriptions can be enabled independently and may call remote services and incur charges. See [SPEC](SPEC.md) for limits.
+Open a local PDF from DSH's file sidebar. AI features use your configured models or extension engines. Semantic retrieval requires a separately configured embedding service and is off by default. PDFs with an enabled active policy prepare their index in the background on open; OCR and image descriptions can be enabled independently and may call remote services and incur charges. See [SPEC](SPEC.md) for limits.
+
+Settings save automatically. Choose each PDF's engines and indexing options under **Search → Current PDF index**. Updates run when you request them and reuse cached results; disabling semantic search takes effect immediately. Global settings manage engine connections and defaults for new documents.
 
 ## Agent tools
 

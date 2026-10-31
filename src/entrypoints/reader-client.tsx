@@ -185,7 +185,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
     }), [owner])
     return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={configuredOcr}
-      indexingApi={indexingApi}
+      indexingApi={indexingApi} engineCatalog={engines}
       imageUnderstanding={configuredImages} regionEvidence={regionEvidence}
       textSelectionEvidence={textSelectionEvidence} translation={translation}
       allowReadingContext={props.sessionId === file.sessionId} reportReadingContext={reportReadingContext}

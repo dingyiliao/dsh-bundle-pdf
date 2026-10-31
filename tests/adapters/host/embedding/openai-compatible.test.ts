@@ -236,3 +236,38 @@ test('a service advertising the revision contract must echo it for the embedding
     await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), code('invalid-result'))
   } finally { registry.dispose() }
 })
+
+test('document encoding identity ignores query instructions and transport limits while query identity remains distinct', async () => {
+  const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async () => reply(metadata())) as typeof fetch })
+  const base = { dimensions: 2, queryInstruction: 'first query' }
+  await engine.availability!(base, new AbortController().signal)
+  const original = engine.describe(base)
+  assert.equal(original.modelRevision, FIXTURE_MODEL_REVISION)
+  const executionChanges: Parameters<typeof engine.describe>[0][] = [
+    { maxBatchSize: 2 }, { maxInputCharacters: 1000 }, { queryInstruction: 'another query' },
+  ]
+  for (const change of executionChanges) {
+    const changed = engine.describe({ ...base, ...change })
+    assert.equal(changed.documentFingerprint, original.documentFingerprint,
+      'unchanged document inputs and weights produce interchangeable document vectors')
+    assert.equal(changed.modelRevision, original.modelRevision, 'transport and query changes do not forget learned model metadata')
+    if ('queryInstruction' in change) assert.notEqual(changed.fingerprint, original.fingerprint)
+    else assert.equal(changed.fingerprint, original.fingerprint)
+  }
+  const encodingChanges: Parameters<typeof engine.describe>[0][] = [
+    { model: 'other-model' }, { dimensions: 3 }, { endpoint: 'https://other.example/v1/embeddings' },
+  ]
+  for (const change of encodingChanges) {
+    assert.notEqual(engine.describe({ ...base, ...change }).documentFingerprint, original.documentFingerprint)
+  }
+})
+
+test('credential changes stay isolated until the service attests the same model revision', async () => {
+  const engine = createOpenAiCompatibleEmbeddingEngine({ resolveCredential: async () => 'fixture-key',
+    fetch: (async () => reply(metadata())) as typeof fetch })
+  const first = { dimensions: 2, apiKeyRef: 'FIRST_ACCOUNT' }, second = { dimensions: 2, apiKeyRef: 'SECOND_ACCOUNT' }
+  assert.notEqual(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+  await engine.availability!(first, new AbortController().signal)
+  await engine.availability!(second, new AbortController().signal)
+  assert.equal(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+})

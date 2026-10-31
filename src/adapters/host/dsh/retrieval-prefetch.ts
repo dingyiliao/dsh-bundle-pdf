@@ -3,7 +3,7 @@ import type { RetrievalProgress } from '../../../modules/retrieval/index.js'
 import { indexingProgressSchema } from '../../../contracts/indexing.js'
 
 export interface RetrievalPrefetchDocument extends Pick<OpenWorkingCopyDocument,
-  'sessionId' | 'id' | 'contentVersion' | 'sourceDigest' | 'conflict'> {}
+  'sessionId' | 'id' | 'path' | 'contentVersion' | 'sourceDigest' | 'conflict'> {}
 export interface RetrievalPrefetchStatus {
   revision: string
   state: 'idle' | 'running' | 'suspended' | 'disposed'
@@ -21,14 +21,15 @@ interface Entry {
   progress?: RetrievalProgress
   failureCode?: string
   rebuild?: boolean
+  planId?: string
 }
 interface Running { entry: Entry; controller: AbortController; promise: Promise<void> }
 interface Ports {
   /** Only real UI/model owners belong here; indexing leases are not owners. */
   documents(): readonly RetrievalPrefetchDocument[]
   /** A stable saved binding/registration identity, not mutable discovery metadata. */
-  selection(): { identity: string } | undefined
-  prepare(sessionId: string, input: { documentId: string; rebuild?: boolean }, signal: AbortSignal,
+  selection(document: RetrievalPrefetchDocument): { identity: string; planId?: string } | undefined
+  prepare(sessionId: string, input: { documentId: string; rebuild?: boolean; indexPlanId?: string }, signal: AbortSignal,
     onProgress?: (progress: RetrievalProgress) => void): Promise<void>
   subscribe?(listener: () => void): () => void
   onChange?(status: RetrievalPrefetchStatus): void
@@ -103,6 +104,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     task.promise = Promise.resolve().then(async () => {
       controller.signal.throwIfAborted()
       await ports.prepare(entry.document.sessionId, { documentId: entry.document.id,
+        ...(entry.planId ? { indexPlanId: entry.planId } : {}),
         ...(entry.rebuild ? { rebuild: true } : {}) }, controller.signal, progress => {
         if (controller.signal.aborted || entries.get(documentKey(entry.document)) !== entry || entry.state !== 'running') return
         const parsed = indexingProgressSchema.safeParse(progress)
@@ -123,19 +125,21 @@ export function createRetrievalPrefetch(ports: Ports) {
     notify()
   }
   function reconcile(): void {
-    const selection = ports.selection()
-    const desired = new Map<string, { document: RetrievalPrefetchDocument; signature: string }>()
+    const desired = new Map<string, { document: RetrievalPrefetchDocument; signature: string; planId?: string }>()
     let skipped = 0
-    if (selection) {
+    {
       const available = new Map(ports.documents().filter(document => !document.conflict).map(document => [documentKey(document), document]))
       for (const key of priority) if (!available.has(key)) priority.delete(key)
       const ordered = new Set([...priority].reverse().concat([...available.keys()]))
       for (const key of ordered) {
         const document = available.get(key)!
         if (document.conflict) continue
+        const selection = ports.selection(document)
+        if (!selection) continue
         if (desired.has(key)) continue
         if (desired.size >= maximum) { skipped++; continue }
-        desired.set(key, { document: { ...document }, signature: signatureFor(selection.identity, document) })
+        desired.set(key, { document: { ...document }, signature: signatureFor(selection.identity, document),
+          ...(selection.planId ? { planId: selection.planId } : {}) })
       }
     }
     skippedDocuments = skipped; lastFailure = undefined
@@ -164,8 +168,8 @@ export function createRetrievalPrefetch(ports: Ports) {
     const document = ownedDocument(sessionId, id)
     if (suspended) fail('pdf/retrieval-busy', 'PDF indexes are being reset. Retry shortly.')
     if (document.conflict) fail('pdf/stale-reader', 'Resolve the PDF source conflict before indexing.')
-    let selection: { identity: string } | undefined
-    try { selection = ports.selection() } catch { fail('pdf/retrieval-engine-unavailable', 'Configure an available semantic search engine before indexing.') }
+    let selection: { identity: string; planId?: string } | undefined
+    try { selection = ports.selection(document) } catch { fail('pdf/retrieval-engine-unavailable', 'Configure an available semantic search engine before indexing.') }
     if (!selection) return fail('pdf/retrieval-engine-unavailable', 'Enable semantic search before indexing.')
     const key = documentKey(document), previous = entries.get(key)
     const signature = signatureFor(selection.identity, document)
@@ -175,6 +179,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     priority.delete(key); priority.add(key)
     if (priority.size > maximum) priority.delete(priority.values().next().value!)
     entries.set(key, { document: { ...document }, signature, occurrence: ++occurrence, state: 'queued',
+      ...(selection.planId ? { planId: selection.planId } : {}),
       ...(rebuild ? { rebuild: true } : {}) })
     if (running && running.entry === previous) running.controller.abort()
     reconcile()

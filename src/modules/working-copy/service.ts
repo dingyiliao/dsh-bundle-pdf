@@ -49,7 +49,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       const active = copies.get(id), dormant = suspended.get(id)
       const record = active?.record ?? dormant?.record
       if (!record) return []
-      return [{ sessionId: record.sessionId, id, contentVersion: record.contentVersion,
+      return [{ sessionId: record.sessionId, id, path: record.path, contentVersion: record.contentVersion,
         sourceDigest: record.sourceHash, conflict: active?.snapshot.conflict ?? dormant!.conflict,
         title: (basename(record.path) || 'PDF').slice(0, 512) }]
     })

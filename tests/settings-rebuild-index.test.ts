@@ -16,7 +16,7 @@ const formFor = (snapshot: ConfigFormSnapshot): ConfigForm => ({ getSnapshot: ()
 
 test('a settings connection without index management does not advertise an unusable action', () => {
   const html = renderToStaticMarkup(React.createElement(Settings, { form: formFor(ready()), t: key => key, translationEngines: [] }))
-  assert.equal(html.includes('重建索引'), false)
+  assert.equal(html.includes('清除全部索引缓存'), false)
 })
 
 test('index rebuild settings show progress and recovery, fence duplicates, and cancel when their owner changes', async () => {
@@ -37,7 +37,21 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
       endpoint: 'http://localhost:8001/v1/embeddings', modelRevision: 'retired-version',
     } } } } }
   const mutations: unknown[] = []
-  let owner: ConfigForm = { ...formFor(legacySnapshot), async mutate(operations) { mutations.push(operations); return true } }
+  let accepted = legacySnapshot
+  const listeners = new Set<() => void>()
+  let owner: ConfigForm = { getSnapshot: () => accepted,
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    async mutate(operations) {
+      mutations.push(operations)
+      const value = { ...accepted.value } as Record<string, unknown>
+      for (const operation of operations) {
+        if (operation.op === 'set') value[String(operation.path[0])] = operation.value
+        else delete value[String(operation.path[0])]
+      }
+      accepted = { ...accepted, value: value as unknown as typeof defaultSettings, revision: Number(accepted.revision) + 1 }
+      for (const listener of listeners) listener()
+      return true
+    } }
   let calls = 0, signal!: AbortSignal, finish!: () => void
   let perform = async () => new Promise<void>(resolve => { finish = resolve })
   const rebuildRetrievalIndex = (active: AbortSignal) => { calls++; signal = active; return perform() }
@@ -62,21 +76,21 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
       Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!.call(endpoint, 'https://provider.example/v1/embeddings')
       endpoint.dispatchEvent(new dom.Event('input', { bubbles: true }))
     })
-    await act(async () => { button('保存设置').click() })
+    await act(async () => { endpoint.dispatchEvent(new dom.FocusEvent('focusout', { bubbles: true })) })
     assert.equal(mutations.length, 1, 'a retired modelRevision cannot prevent saving a valid engine edit')
     assert.match(JSON.stringify(mutations[0]), /provider\.example/)
     assert.equal(JSON.stringify(mutations[0]).includes('modelRevision'), false)
     assert.match(container.textContent ?? '', /不会修改 PDF 或草稿/)
-    await act(async () => { button('重建索引').click(); button('重建索引').click() })
+    await act(async () => { button('清除全部索引缓存').click(); button('清除全部索引缓存').click() })
     assert.equal(calls, 1)
     assert.equal(button('正在清除索引缓存…').disabled, true)
     assert.equal(container.querySelector<HTMLInputElement>('input[id$="-historyCapacity"]')!.disabled, true)
     await act(async () => { finish() })
     assert.match(container.textContent ?? '', /索引缓存已清除，将在后台或下次检索时重建/)
-    assert.equal(button('重建索引').disabled, false)
+    assert.equal(button('清除全部索引缓存').disabled, false)
 
     perform = async () => { throw new Error('Host unavailable') }
-    await act(async () => { button('重建索引').click() })
+    await act(async () => { button('清除全部索引缓存').click() })
     assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /无法重建索引：Host unavailable/)
     assert.equal(container.textContent?.includes('索引缓存已清除，将在后台或下次检索时重建'), false)
 
@@ -86,26 +100,26 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
       Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!.call(input, '66')
       input.dispatchEvent(new dom.Event('input', { bubbles: true }))
     })
-    assert.equal(button('重建索引').disabled, true)
+    assert.equal(button('清除全部索引缓存').disabled, true)
     await act(async () => { button('撤销修改').click() })
-    assert.equal(button('重建索引').disabled, false)
+    assert.equal(button('清除全部索引缓存').disabled, false)
 
     perform = async () => new Promise<void>(resolve => { finish = resolve })
-    await act(async () => { button('重建索引').click() })
+    await act(async () => { button('清除全部索引缓存').click() })
     const oldSignal = signal
     owner = formFor(ready())
     await act(async () => { render() })
     assert.equal(oldSignal.aborted, true)
-    assert.equal(button('重建索引').disabled, false)
+    assert.equal(button('清除全部索引缓存').disabled, false)
     await act(async () => { finish() })
     assert.equal(container.textContent?.includes('索引缓存已清除，将在后台或下次检索时重建'), false,
       'late completion cannot publish success into a replacement settings owner')
     owner = formFor({ ...ready(), writable: false })
     await act(async () => { render() })
-    assert.equal(button('重建索引').disabled, true)
+    assert.equal(button('清除全部索引缓存').disabled, true)
     owner = formFor(ready())
     await act(async () => { render() })
-    await act(async () => { button('重建索引').click() })
+    await act(async () => { button('清除全部索引缓存').click() })
     await act(async () => { root.unmount(); unmounted = true })
     assert.equal(signal.aborted, true)
     finish()

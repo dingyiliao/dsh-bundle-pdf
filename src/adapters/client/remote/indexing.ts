@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { PDF_INDEXING_METHOD, indexingSnapshotSchema, type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
+import { PDF_INDEXING_METHOD, indexingSnapshotSchema, type indexingRequestSchema, type PdfDocumentIndexPolicy,
+  type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
 import type { PdfConnection } from './pdf-api.js'
 import type { PdfIndexingClientSnapshot } from '../../../modules/viewer/index.js'
 const reply = z.discriminatedUnion('ok', [
@@ -9,10 +10,12 @@ const reply = z.discriminatedUnion('ok', [
 interface SessionStore {
   value: PdfIndexingClientSnapshot; listeners: Set<() => void>; watch?: AbortController; sequence: number
 }
+type ControlRequest = Exclude<z.infer<typeof indexingRequestSchema>, { action: 'status' }>
 
 /** One cancellable status subscription per resource Session, shared across PDF views. */
 export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortSignal) {
   const sessions = new Map<string, SessionStore>()
+  const disposal = new AbortController()
   let disposed = false
   const get = (sessionId: string): SessionStore => {
     let entry = sessions.get(sessionId)
@@ -81,11 +84,11 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       if (entry.watch === controller) entry.watch = undefined
     })()
   }
-  async function control(action: 'start' | 'rebuild' | 'cancel', sessionId: string, documentId: string, signal: AbortSignal): Promise<void> {
-    const active = AbortSignal.any([signal, lifetime])
+  async function control(input: ControlRequest, signal: AbortSignal): Promise<void> {
+    const active = AbortSignal.any([signal, lifetime, disposal.signal])
     if (disposed) throw new DOMException('Indexing connection is closed', 'AbortError')
-    const entry = get(sessionId), sequence = ++entry.sequence
-    const value = await call({ action, sessionId, documentId }, active)
+    const entry = get(input.sessionId), sequence = ++entry.sequence
+    const value = await call(input, active)
     if (sequence === entry.sequence) { entry.sequence++; publish(entry, { status: 'ready', ...value }) }
   }
   return {
@@ -95,9 +98,13 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       entry.listeners.add(listener); watch(sessionId, entry)
       return () => { entry.listeners.delete(listener); if (!entry.listeners.size) { entry.watch?.abort(); entry.watch = undefined } }
     },
-    start: (sessionId: string, documentId: string, signal: AbortSignal) => control('start', sessionId, documentId, signal),
-    rebuild: (sessionId: string, documentId: string, signal: AbortSignal) => control('rebuild', sessionId, documentId, signal),
-    cancel: (sessionId: string, documentId: string, signal: AbortSignal) => control('cancel', sessionId, documentId, signal),
+    start: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'start', sessionId, documentId }, signal),
+    rebuild: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'rebuild', sessionId, documentId }, signal),
+    cancel: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'cancel', sessionId, documentId }, signal),
+    configure: (sessionId: string, documentId: string, revision: number, policy: PdfDocumentIndexPolicy, signal: AbortSignal) =>
+      control({ action: 'configure', sessionId, documentId, revision, policy }, signal),
+    useDefaults: (sessionId: string, documentId: string, revision: number, signal: AbortSignal) =>
+      control({ action: 'defaults', sessionId, documentId, revision }, signal),
     dismiss(sessionId: string, documentId: string, occurrence: number) {
       if (disposed || lifetime.aborted) return
       const entry = get(sessionId)
@@ -106,6 +113,6 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       entry.value = { ...entry.value, dismissed: { ...entry.value.dismissed, [documentId]: occurrence } }
       for (const listener of [...entry.listeners]) { try { listener() } catch { /* Isolate views. */ } }
     },
-    dispose() { disposed = true; for (const entry of sessions.values()) { entry.watch?.abort(); entry.listeners.clear() }; sessions.clear() },
+    dispose() { disposed = true; disposal.abort(); for (const entry of sessions.values()) { entry.watch?.abort(); entry.listeners.clear() }; sessions.clear() },
   }
 }

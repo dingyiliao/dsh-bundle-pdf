@@ -4,7 +4,7 @@ import { createPdfPageContent, type PdfPageContent } from '../../../../src/adapt
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { EmbeddingRegistry } from '../../../../src/embedding/index.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, type SavedReference } from '../../../../src/modules/evidence/index.ts'
-import { createPageRepresentation, type PageContent } from '../../../../src/modules/document/index.ts'
+import { createPageRepresentation, parsePageContent, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, type PageContent } from '../../../../src/modules/document/index.ts'
 import { HostOcrService } from '../../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../../src/modules/image-understanding/index.ts'
 import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
@@ -214,7 +214,8 @@ test('missing vision engines and invalid outputs preserve native retrieval with 
       assert.equal(f.state.recognitions, 0)
       assert.equal(f.state.descriptions, invalid === 'missing-engine' ? 0 : 1)
       assert.deepEqual(f.state.renders, invalid === 'missing-engine' ? [] : [1])
-      assert.equal(f.data.size, 0)
+      assert.ok([...f.data.values()].every(value => parsePageContent(value)?.extractionIdentity === NATIVE_PAGE_CONTENT_EXTRACTION_VERSION),
+        'only the successful native layer is retained, not a complete aggregate or a failed description')
     } finally { await f.dispose() }
   }
 })
@@ -337,7 +338,8 @@ test('optional image interpretation failure returns the available native evidenc
     assert.equal(result.coverage.failedPages.length, 1)
     assert.equal(result.coverage.failedPages[0]!.page, 1)
     assert.equal(result.nextCursor, undefined)
-    assert.equal(f.data.size, 0, 'neither failed IR nor retrieval page is persisted as complete')
+    assert.ok([...f.data.values()].every(value => parsePageContent(value)?.extractionIdentity === NATIVE_PAGE_CONTENT_EXTRACTION_VERSION),
+      'the successful native layer is retained without claiming a complete aggregate or retrieval page')
     const again = await f.retrieval.search('a', { ...query('nativekeyword'), fromPage: 1, maxPages: 1 }, signal)
     assert.equal(again.status, 'incomplete')
     assert.equal(f.state.descriptions, 1, 'the immutable partial index retries only on explicit rebuild')

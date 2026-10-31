@@ -92,7 +92,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-pdf-project-coverage
-          path: dsh-bundle-pdf/.test-output/project-coverage-*/
+          path: |
+            dsh-bundle-pdf/.test-output/project-coverage-*/
+            dsh-bundle-pdf/.test-output/web-tests-*/
           if-no-files-found: warn
           include-hidden-files: true
   native:

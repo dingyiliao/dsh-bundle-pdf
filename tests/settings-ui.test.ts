@@ -22,6 +22,9 @@ test('PDF Settings omits the AI engine heading and explains each setting only on
     }))
     assert.equal([...html.matchAll(/<h3\b/g)].length, 2, 'only navigation and prompts retain group headings')
     assert.doesNotMatch(html, /AI 引擎|AI engines|engines-title/)
+    assert.doesNotMatch(html, /type="submit"|保存设置|Save settings/)
+    assert.ok(html.includes(locale['settings.indexScanPages']))
+    assert.ok(html.includes(locale['settings.indexImageDescriptions']))
     for (const key of ['settings.enginesHelp', 'settings.ocrHelp', 'settings.imageHelp', 'settings.indexScanPagesHelp', 'settings.indexImageDescriptionsHelp',
       'settings.translationHelp', 'settings.explanationPromptsHelp'] as const) {
       assert.equal(html.split(locale[key]).length - 1, 1, `${key} is not repeated`)

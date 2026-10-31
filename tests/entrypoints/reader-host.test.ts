@@ -200,7 +200,7 @@ test('opening a PDF starts shared background indexing without a synthetic query 
   assert.equal(runtime.configListeners.size, 0)
 })
 
-test('saved engine changes cancel preparation and rebuild automatically prepares still-open documents', { skip: !existsSync(indexingWorker) }, async t => {
+test('document index choices survive global edits and wait for explicit processing before reset can resume them', { skip: !existsSync(indexingWorker) }, async t => {
   const assets = await assetFixture(t), sessionId = 'preindex-settings', runtime = host({ agentSessionId: sessionId })
   runtime.ctx.pdfNative.executable = indexingWorker
   await apply(runtime.ctx, runtime.config, assets)
@@ -220,15 +220,38 @@ test('saved engine changes cancel preparation and rebuild automatically prepares
     updateVolatile(runtime.config.embeddingEngine, next.embeddingEngine)
     runtime.configChanged([['embeddingEngine']])
   }
+  const control = async (payload: unknown) => {
+    const response = await runtime.routes.get('/api/pdf.indexing')!.fetch(infoRequest({
+      type: 'client-request', method: 'pdf.indexing', rpcId: 'policy-control', payload,
+    }))
+    const body = await response.json() as { result: { ok: boolean; value: { documents: Array<{
+      documentId: string; revision: number; pending: boolean; policy: { embeddingEngine: string; ocrEngine: string;
+        imageEngine: string; indexScanPages: boolean; indexImageDescriptions: boolean }
+    }> } } }
+    assert.equal(body.result.ok, true)
+    return body.result.value
+  }
   try {
-    await openSyntheticDocument(runtime, assets, sessionId, 'Prepare this already opened document in the background.')
+    const opened = await openSyntheticDocument(runtime, assets, sessionId, 'Prepare this already opened document in the background.')
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(calls.length, 0, 'disabled semantic retrieval must not process document text')
     changeEngine('fixture')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(calls.length, 0, 'new global defaults do not change a PDF that is already open')
+    const settings = (await control({ action: 'status', sessionId })).documents[0]!
+    assert.equal(settings.policy.embeddingEngine, 'none')
+    const configured = await control({ action: 'configure', sessionId, documentId: opened.documentId,
+      revision: settings.revision, policy: { ...settings.policy, embeddingEngine: 'fixture' } })
+    assert.equal(configured.documents[0]!.pending, true)
+    assert.equal(calls.length, 0, 'saving a new document policy does not start expensive work')
+    await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 1)
     changeEngine('none')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(calls[0]!.aborted, false, 'changing global defaults does not cancel the document-owned build')
+    await control({ action: 'cancel', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls[0]!.aborted)
-    changeEngine('fixture')
+    await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 2)
     const reset = await runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
       type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'reset-prefetch', payload: {},
@@ -300,7 +323,7 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
       '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines', '/api/pdf.model-options', '/api/pdf.retrieval.rebuild',
     ])
     assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
-      ['pdf_drafts', 'pdf_positions', 'pdf_evidence', 'pdf_retrieval'])
+      ['pdf_drafts', 'pdf_positions', 'pdf_evidence', 'pdf_retrieval', 'pdf_index'])
     assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfEmbedding', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
     assert.ok(runtime.tools.includes('pdf_page_read'))
@@ -817,9 +840,9 @@ test('Host image evidence resolver binds each request to a live matching Session
   } finally { await mounted.disposeEffects() }
 })
 
-test('Host bootstrap closes earlier domains when opening navigation, evidence or retrieval storage fails', async (t) => {
+test('Host bootstrap closes earlier domains when navigation, evidence, retrieval or index preferences fail to open', async (t) => {
   const assets = await assetFixture(t)
-  for (const failOpenAt of [2, 3, 4]) {
+  for (const failOpenAt of [2, 3, 4, 5]) {
     const runtime = host({ failOpenAt })
     await assert.rejects(apply(runtime.ctx, runtime.config, assets), /Domain open failed/)
     assert.equal(runtime.effects.length, 0)

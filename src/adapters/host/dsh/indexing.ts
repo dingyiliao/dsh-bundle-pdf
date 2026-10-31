@@ -3,6 +3,7 @@ import { PASSIVE_POLL_TIMEOUT_MS } from '../../../shared/passive-poll.js'
 import { indexingRequestSchema, indexingSnapshotSchema, type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
 import type { OpenWorkingCopyDocument } from '../../../modules/working-copy/index.js'
 import type { createRetrievalPrefetch } from './retrieval-prefetch.js'
+import type { createDocumentIndexes } from './document-indexes.js'
 
 type Prefetch = ReturnType<typeof createRetrievalPrefetch>
 const unavailable = () => Object.assign(new Error('PDF indexing is unavailable.'), { code: 'pdf/cancelled' })
@@ -11,6 +12,7 @@ const unavailable = () => Object.assign(new Error('PDF indexing is unavailable.'
 export function createPdfIndexing(prefetch: Prefetch, ports: {
   documents(): readonly OpenWorkingCopyDocument[]
   enabled(): boolean
+  indexes?: Pick<ReturnType<typeof createDocumentIndexes>, 'settings' | 'configure' | 'stage'>
 }) {
   const listeners = new Set<() => void>()
   let disposed = false
@@ -22,7 +24,10 @@ export function createPdfIndexing(prefetch: Prefetch, ports: {
     if (disposed) throw unavailable()
     const open = new Map(ports.documents().filter(document => document.sessionId === sessionId).map(document => [document.id, document]))
     const state = prefetch.status()
-    const value = { enabled: ports.enabled(), tasks: state.documents.flatMap(task => {
+    const documents = ports.indexes ? [...open.values()].map(document => ports.indexes!.settings(sessionId, document.id)) : undefined
+    const value = { enabled: documents ? documents.some(value => value.policy.embeddingEngine !== 'none'
+      || value.activePolicy.embeddingEngine !== 'none') : ports.enabled(),
+      ...(documents ? { documents } : {}), tasks: state.documents.flatMap(task => {
       const document = open.get(task.id)
       if (task.sessionId !== sessionId || !document) return []
       return [{ documentId: task.id, title: (document.title || 'PDF').slice(0, 512),
@@ -66,8 +71,20 @@ export function createPdfIndexing(prefetch: Prefetch, ports: {
       if (!ports.documents().some(document => document.sessionId === sessionId && document.id === request.documentId)) {
         throw Object.assign(new Error('Open this PDF before controlling its index.'), { code: 'pdf/unknown-document' })
       }
-      if (request.action === 'start') prefetch.start(sessionId, request.documentId)
-      else if (request.action === 'rebuild') prefetch.rebuild(sessionId, request.documentId)
+      if (request.action === 'configure' || request.action === 'defaults') {
+        if (!ports.indexes) throw unavailable()
+        await ports.indexes.configure(sessionId, request.documentId, request.revision,
+          request.action === 'configure' ? request.policy : undefined)
+        prefetch.refresh(); changed()
+      }
+      else if (request.action === 'start') {
+        await ports.indexes?.stage(sessionId, request.documentId)
+        if (ports.indexes?.settings(sessionId, request.documentId).policy.embeddingEngine !== 'none') prefetch.start(sessionId, request.documentId)
+      }
+      else if (request.action === 'rebuild') {
+        await ports.indexes?.stage(sessionId, request.documentId, true)
+        prefetch.rebuild(sessionId, request.documentId)
+      }
       else prefetch.cancel(sessionId, request.documentId)
       return snapshot(sessionId)
     },

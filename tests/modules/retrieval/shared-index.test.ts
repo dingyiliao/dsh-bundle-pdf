@@ -341,3 +341,30 @@ test('persistent vectors restore only within their exact engine configuration na
     } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
 })
+
+test('an attested document encoder reuses vectors across query and transport changes while keeping queries separate', async () => {
+  const f = fixture({ cache: true })
+  try {
+    f.providers.get('a')!.documentFingerprint = 'document-encoding-v1'
+    await f.service.prepare('a', { documentId: 'document-a' })
+    const before = await f.service.search('a', input('a'))
+    const second = f.providers.get('b')!
+    second.documentFingerprint = 'document-encoding-v1'
+    second.configurationIdentity = 'changed-query-and-batch-configuration'
+    second.fingerprint = 'new-query-prefix-identity'
+    second.maxBatchSize = 1
+    const progress: RetrievalProgress[] = []
+    await f.service.prepare('b', { documentId: 'document-b' }, undefined, value => progress.push(value))
+    const after = await f.service.search('b', input('b'))
+    assert.notEqual(before.indexGeneration, after.indexGeneration, 'query and continuation identities remain distinct')
+    assert.equal(documentCalls(f).length, 3, 'all original document vectors were reused without encoding again')
+    assert.equal(progress.at(-1)?.reusedChunks, 3); assert.equal(progress.at(-1)?.computedChunks, 0)
+    assert.ok(f.calls.some(call => call.session === 'b' && call.purpose === 'query'), 'the new binding still computes its own query')
+    f.service.validate('a', before)
+    f.service.validate('b', after)
+    second.documentFingerprint = 'different-document-encoding'
+    assert.throws(() => f.service.validate('b', after), { code: 'pdf/stale-reader' })
+    await f.service.prepare('b', { documentId: 'document-b' })
+    assert.equal(documentCalls(f).length, 6, 'different weights cannot restore the previous document vectors')
+  } finally { await f.service.dispose() }
+})

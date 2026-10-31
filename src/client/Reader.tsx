@@ -57,7 +57,7 @@ export function Reader(props: ReaderProps) {
       explanation.captureController.current?.abort()
       return explanation.captureTask.current
     } })
-  const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, documentReady } = documentState
+  const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, documentReady, waitForReady } = documentState
   const indexing = useReaderIndexing({ api: props.indexingApi, sessionId, documentId: snapshot?.id,
     signal: tab.signal, t, onError: notifyError })
   const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
@@ -89,16 +89,20 @@ export function Reader(props: ReaderProps) {
     return !!await change([{ type: 'set-field', fieldId, value }])
   }, [change, tab.signal, displayOwner?.token, ownerSequence, formIdentity])
   const formCommits = useReaderFormCommits({ identity: formIdentity, onError: notifyError, commit: changeFormField })
+  const commandContext = useRef({ formIdentity, displayOwner, flush: formCommits.flush })
+  commandContext.current = { formIdentity, displayOwner, flush: formCommits.flush }
   const runAfterFormFlush = useCallback(async <Result,>(operation: () => Result | Promise<Result>): Promise<Result | undefined> => {
-    const owner = ownerSequence.current
-    const ownsDocument = () => !tab.signal.aborted && owner === ownerSequence.current
-      && displayOwner?.token === owner && !!state.current.snapshot
+    const ownsDocument = (owner: number | false) => owner !== false && documentReady()
+      && owner === ownerSequence.current && commandContext.current.displayOwner?.token === owner
+      && commandContext.current.formIdentity === formIdentity && !!state.current.snapshot
       && formCommitIdentity(callbacks.current.sessionId, state.current.snapshot) === formIdentity
     // Commands suspended behind a field write still belong to the document
-    // that received them, even if another resource opens before it settles.
-    if (!ownsDocument() || !await formCommits.flush() || !ownsDocument()) return
+    // that received them. A same-resource reload may replace its display owner
+    // while the command waits, so use the latest form owner after it is ready.
+    if (!ownsDocument(await waitForReady()) || !await commandContext.current.flush()
+      || !ownsDocument(await waitForReady())) return
     return operation()
-  }, [formCommits.flush, formIdentity, displayOwner?.token, ownerSequence, tab.signal])
+  }, [formIdentity, ownerSequence, documentReady, waitForReady])
   const actAfterFormFlush: typeof act = (operation, conflictOnStaleSave) =>
     runAfterFormFlush(() => act(operation, conflictOnStaleSave))
   const navigation = useReaderNavigation({ api, sessionId, tabSignal: tab.signal,
@@ -124,8 +128,9 @@ export function Reader(props: ReaderProps) {
         viewportHeight: state.current.scrollRoot?.clientHeight ?? 0 }),
       subscribe: (id, changed) => api.subscribe(id, changed), jump,
     })) ?? 'unavailable', [api, jump, tab.signal, runAfterFormFlush])
+  const evidenceReady = documentReady()
   useLayoutEffect(() => {
-    if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !documentReady()) return
+    if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !evidenceReady) return
     return props.evidenceNavigation.register({ sessionId, snapshot,
       current: () => !tab.signal.aborted && state.current.snapshot === snapshot ? snapshot : null,
       readPageText: async (page, signal) => joinPageText((await pdf.text(page, signal)).items),
@@ -133,7 +138,7 @@ export function Reader(props: ReaderProps) {
       navigateTarget: (page, target, signal) => navigateEvidence({ requestId: crypto.randomUUID(),
         page, documentId: snapshot.id, contentVersion: snapshot.contentVersion, target }, signal),
     })
-  }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump, navigateEvidence])
+  }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump, navigateEvidence, evidenceReady])
   const sidebar = useReaderSidebarLayout({ bodyRef: readerBody, navigationLock, navigating,
     resourceAddress: props.resourceAddress, visible: tab.visible })
   const { section: sidebarSection, expanded: sidebarExpanded,
@@ -342,7 +347,8 @@ export function Reader(props: ReaderProps) {
     selectedAnnotation, clearAnnotation, selectAnnotation,
     jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
-    translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control, t })
+    translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control,
+    engineCatalog: props.engineCatalog, t })
   const goBack = () => navigateHistory()
 
   const closeToolsMenu = () => { if (toolsMenu.current) toolsMenu.current.open = false }

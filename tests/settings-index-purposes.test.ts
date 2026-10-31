@@ -79,8 +79,8 @@ test('OCR and vision share their index bindings, keep independent toggles and fo
     await act(async () => { const control = select(suffix); control.value = value
       control.dispatchEvent(new dom.Event('change', { bubbles: true })) })
   }
-  const save = async () => {
-    await act(async () => { container.querySelector('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })) })
+  const blur = async (suffix: string) => {
+    await act(async () => { input(suffix).dispatchEvent(new dom.FocusEvent('focusout', { bubbles: true })) })
   }
   const publish = async (settings: PdfSettings) => {
     await act(async () => { snapshot = { ...snapshot, value: settings, revision: Number(snapshot.revision) + 1 }
@@ -94,30 +94,23 @@ test('OCR and vision share their index bindings, keep independent toggles and fo
       ['fixture.vision', 'fixture.remote'], 'only actual registered vision engines are selectable')
     assert.equal(container.querySelector('select[id$="-indexDescriptionEngine"]'), null, 'there is no duplicate index engine')
     assert.equal(container.querySelectorAll('input[type="checkbox"]').length, 2)
-    await fill('historyCapacity', '88')
-    await save()
+    await fill('historyCapacity', '88'); await blur('historyCapacity')
     assert.equal(mutations.length, 1, 'unrelated edits remain saveable for an old missing image choice')
     assert.deepEqual(mutations[0], [{ op: 'set', path: ['historyCapacity'], value: 88 }])
 
     await publish({ ...baseSettings, indexScanPages: false, indexImageDescriptions: false })
-    assert.equal(select('imageEngine').value, 'ocr-text', 'engine controls do not depend on index toggles')
+    assert.equal(select('imageEngine').value, 'ocr-text', 'engine controls do not depend on index defaults')
     await act(async () => { input('indexScanPages').click(); input('indexImageDescriptions').click() })
-    await save()
-    assert.equal(mutations.length, 1, 'new visual indexing requires a loaded image engine')
+    assert.equal(snapshot.value!.indexScanPages, true, 'a valid independent switch persists immediately')
+    assert.equal(snapshot.value!.indexImageDescriptions, false, 'an unavailable image engine holds the visual default pending')
     assert.match(container.textContent ?? '', /Choose an installed engine/)
     await choose('imageEngine', 'fixture.vision')
     assert.equal(input('image-model').value, 'saved-visual-model')
     assert.equal(input('ocr-language').value, 'eng')
-    assert.equal(input('indexScanPages').checked, true)
-    assert.equal(input('indexImageDescriptions').checked, true)
-    await fill('image-model', 'shared-visual-model')
-    await save()
-    assert.equal(mutations.length, 2)
-    for (const field of ['indexScanPages', 'indexImageDescriptions']) {
-      assert.deepEqual(mutations[1]!.find(operation => operation.path[0] === field), { op: 'set', path: [field], value: true })
-    }
-    assert.deepEqual(mutations[1]!.find(operation => operation.path[0] === 'imageEngine'),
+    assert.equal(snapshot.value!.indexImageDescriptions, true)
+    assert.deepEqual(mutations.at(-1)!.find(operation => operation.path[0] === 'imageEngine'),
       { op: 'set', path: ['imageEngine'], value: 'fixture.vision' })
+    await fill('image-model', 'shared-visual-model'); await blur('image-model')
     assert.ok(mutations.flat().every(operation => operation.path[0] !== 'indexDescriptionEngine'))
     assert.equal(snapshot.value!.ocrEngine, 'fixture.ocr')
     assert.equal(snapshot.value!.imageEngine, 'fixture.vision')
@@ -126,35 +119,30 @@ test('OCR and vision share their index bindings, keep independent toggles and fo
       ocr: { 'fixture.ocr': { language: 'eng' } },
     })
 
-    for (const field of ['indexScanPages', 'indexImageDescriptions']) {
+    for (const field of ['indexScanPages', 'indexImageDescriptions'] as const) {
       await act(async () => { input(field).click() })
       assert.equal(select('imageEngine').value, 'fixture.vision')
       assert.equal(input('image-model').value, 'shared-visual-model')
-      await save()
+      assert.equal(snapshot.value![field], false, 'each indexing default saves without a form submit')
     }
-    assert.equal(input('indexScanPages').checked, false)
-    assert.equal(input('indexImageDescriptions').checked, false)
-    assert.equal(mutations.length, 4)
+    assert.equal(mutations.length, 6)
     await act(async () => { catalog = { ...catalog, revision: 'unloaded', engines: { ...catalog.engines,
       image: imageEngines.filter(engine => engine.id !== 'fixture.vision') } }; render() })
     assert.equal(select('imageEngine').value, 'fixture.vision')
     assert.equal(select('imageEngine').selectedOptions[0]!.disabled, true)
     assert.equal(container.querySelector('input[id$="-image-model"]'), null, 'unloaded provider fields disappear')
-    await fill('historyCapacity', '89')
-    await save()
-    assert.equal(mutations.length, 5, 'missing untouched image selection permits unrelated saves')
+    await fill('historyCapacity', '89'); await blur('historyCapacity')
+    assert.equal(mutations.length, 7, 'missing untouched image selection permits unrelated saves')
 
     await choose('imageEngine', 'fixture.remote')
+    assert.equal(snapshot.value!.imageEngine, 'fixture.remote', 'valid engine selections save immediately')
     await act(async () => { catalog = { ...catalog, revision: 'remote-unloaded', engines: { ...catalog.engines,
       image: [] } }; render() })
     assert.equal(select('imageEngine').value, 'fixture.remote', 'catalog removal cannot auto-pick another engine')
-    await save()
-    assert.equal(mutations.length, 5, 'an edited selection cannot save after its provider unloads')
+    assert.equal(select('imageEngine').selectedOptions[0]!.disabled, true)
     await act(async () => { catalog = { ...catalog, revision: 'reloaded', engines: { ...catalog.engines, image: imageEngines } }; render() })
     assert.equal(select('imageEngine').selectedOptions[0]!.disabled, false)
-    await save()
-    assert.equal(mutations.length, 6)
-    assert.equal(snapshot.value!.imageEngine, 'fixture.remote')
+    assert.equal(mutations.length, 8, 'catalog refresh does not rewrite an already accepted selection')
     assert.equal(container.querySelectorAll('select[id$="-imageEngine"]').length, 1)
     assert.equal(container.querySelector('select[id$="-indexDescriptionEngine"]'), null)
   } finally {

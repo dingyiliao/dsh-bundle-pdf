@@ -94,11 +94,18 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
     const config = configuration(input)
     const encoding = `text-instruct-l2-v1:${createHash('sha256').update(config.queryInstruction).digest('hex')}`
     const modelRevision = revisions.get(configurationIdentity(config)) ?? 'unversioned'
-    const fingerprint = createHash('sha256').update(JSON.stringify({ engine: id, version: descriptor.version, ...config, encoding, modelRevision })).digest('hex')
+    const documentFingerprint = createHash('sha256').update(JSON.stringify({ engine: id, version: descriptor.version,
+      endpoint: config.endpoint, model: config.model, dimensions: config.dimensions, encoding: 'document-text-l2-v1', modelRevision,
+      ...(modelRevision === 'unversioned' ? { credentialScope: config.apiKeyRef ?? null } : {}) })).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify({ documentFingerprint, encoding })).digest('hex')
     return { engineId: id, engineVersion: descriptor.version, model: config.model, modelRevision,
-      dimensions: config.dimensions, maxBatchSize: config.maxBatchSize, maxInputCharacters: config.maxInputCharacters, encoding, fingerprint }
+      dimensions: config.dimensions, maxBatchSize: config.maxBatchSize, maxInputCharacters: config.maxInputCharacters, encoding, fingerprint,
+      documentFingerprint }
   }
-  const configurationIdentity = (config: Configuration): string => createHash('sha256').update(JSON.stringify(config)).digest('hex')
+  // Discovery belongs to the actual service/model, independent of batch sizing
+  // or the query prefix. Request/binding changes are still fenced by the caller.
+  const configurationIdentity = (config: Configuration): string => createHash('sha256')
+    .update(JSON.stringify([config.endpoint, config.model, config.dimensions, config.apiKeyRef ?? null])).digest('hex')
   const headers = async (config: Configuration, signal: AbortSignal): Promise<Headers> => {
     const result = new Headers({ 'content-type': 'application/json' })
     if (config.apiKeyRef) {

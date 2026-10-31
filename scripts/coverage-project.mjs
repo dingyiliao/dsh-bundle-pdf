@@ -111,7 +111,7 @@ await run('browser Worker smoke', [
 ], { DSH_PDF_BROWSER_EXECUTABLE: browserExecutable, DSH_PDF_REQUIRE_BROWSER_TESTS: '1' })
 await verifyFingerprint()
 await run('Web PDF interaction tests with Chromium V8 coverage', [
-  'node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.web.config.ts',
+  'scripts/run-web-tests.mjs',
 ], { DSH_PDF_BROWSER_COVERAGE_DIR: browserDirectory, PDF_BENCH_CHROMIUM: browserExecutable })
 await verifyFingerprint()
 await run('map browser V8 coverage to project source', ['scripts/report-browser-coverage.mjs'], {

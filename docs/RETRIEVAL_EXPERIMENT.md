@@ -11,9 +11,10 @@ annotation, navigation and multi-step history pipeline. Model edits continue to 
 the shared draft directly; saving still requires confirmation. No second document,
 draft or anchor registry is introduced.
 
-The first implementation indexes extracted text, reports OCR/quality/empty-page
-coverage separately, and never claims images or formulas have been understood.
-Page-image retrieval and reranking remain extension work, not release claims.
+The original 2026-10-25 implementation indexed extracted text and reported
+OCR/quality/empty-page coverage separately. Its measurements below do not cover
+the later OCR and image-description pipeline. Raw page-image vector retrieval
+and reranking remain extension work, not release claims.
 
 1. [x] Validate the supplied local MLX embedding runtime with synthetic bilingual data.
 2. [x] Original-offset chunks, BM25, cosine ranking and protected reciprocal-rank fusion.
@@ -54,6 +55,23 @@ instead of racing a short timer. The updated tree passes 1,300 Node cases
 all 37 browser cases; these changes do not alter production behavior.
 
 ## Runtime decision
+
+Current source keeps a persistent index policy per PDF path. Global settings
+provide new-document defaults; the Search panel saves document choices
+automatically and leaves costly updates to the user. Native text, OCR and image
+descriptions have independent caches. Changing one content source reuses the
+others, and matching document-encoding identities reuse vectors across query or
+batch-size changes. Disabling semantic indexing takes effect immediately;
+otherwise pending choices replace the active plan only after a successful update.
+
+The built-in OpenAI-compatible adapter now supplies `documentFingerprint`.
+Old vector keys are not migrated or matched by guesswork, so the first upgrade
+may recompute document embeddings. Existing aggregate `PageContent` records
+remain readable and are split into per-source records when reused; subsequent
+compatible records can be reused normally. Third-party providers without a
+document fingerprint retain their conservative model key when its identity is
+unchanged. The historical benchmark results below predate these policy and cache
+changes; they are not new measurements of them.
 
 The supplied `mlx-lm-local-demo` has a cached
 `mlx-community/Qwen3-Embedding-0.6B-8bit` model. Its installed convenience helper
@@ -108,11 +126,13 @@ configuration. The adapter includes a learned service revision in the cache
 fingerprint and checks revision consistency within the operation, so reported
 version changes automatically separate old indexes. Cache identity is managed
 internally; there is no `modelRevision` setting. If a service changes the model
-behind the same name without reporting a new revision, use **Rebuild index** in
-PDF settings. It clears this profile's retrieval caches and invalidates old searches;
-background preparation is drained before clearing and resumes for still-open PDFs
-when embedding is enabled. Other documents are indexed on their next open or
-search, leaving PDFs and drafts unchanged.
+behind the same name without reporting a new revision, use **Recompute entire
+index** under **Search → Current PDF index** to refresh one PDF, or **Clear all
+index caches** in PDF settings to reset this profile's retrieval caches and old
+searches. The profile reset drains background work before clearing, then resumes
+still-open PDFs with their active plans; pending choices still need an explicit
+update. Other documents rebuild on their next open or search, leaving PDFs,
+drafts and saved policies unchanged.
 `queryInstruction` defaults to an empty string for every model; configure it according to the model's
 requirements. To reproduce this Qwen3 experiment, enter
 `Given a search query, retrieve relevant passages from the document that answer the query`.
@@ -125,15 +145,19 @@ protocols can use the same typed registration contract; see
 [engine extensions](ENGINE_EXTENSIONS.md). The measurements below use only the
 local launcher, not a third-party service.
 
-The current Host also prepares opened PDFs in the background when the configured
-embedding engine is enabled and available. Reader opens and `pdf_open` share this
-path. Preparation extracts native page text and document vectors only, reusing the
-same index, cache and build jobs as search; it does not generate query vectors or
-automatically run OCR. Opening does not wait for preparation. A search issued
-before it finishes may still wait for the remaining work. With a third-party
-service, extracted text is sent at open-time preparation, not only after a query.
-The task panel retains green **Index ready** records until Host removes the
-closed PDF's task; other short-lived save notices retain their existing timers.
+The current Host prepares opened PDFs in the background when their active plan
+enables an available embedding engine. Reader opens and `pdf_open` share this
+path. Preparation always includes native text, can recognize scanned/damaged
+text, and can generate whole-page image descriptions according to that plan's
+two independent switches. It embeds the resulting text and reuses the same
+index, caches and build jobs as search; it does not generate query vectors.
+Opening or searching does not activate pending choices. Opening does not wait
+for preparation, and an early search may still need the remaining work. Remote
+services may receive clean page images and extracted or generated text during
+preparation, before any query. The task panel retains green **Index ready**
+records until acknowledged with **Done** or the Host removes the closed PDF's
+task; acknowledging feedback does not remove index readiness. Other short-lived
+save notices retain their existing timers.
 The historical benchmarks below do not measure this opening/background behavior.
 
 ## Data flow and ownership
@@ -226,15 +250,16 @@ missing geometry. OCR-derived candidates are not promoted to native coordinates.
 
 ## Budgets and lifecycle
 
-- Embedding is disabled by default. When enabled and available, opened PDFs are
-  prepared in the background; explicit searches reuse the same progress and cache.
+- Embedding is disabled by default. Opened PDFs with an enabled, available active
+  plan are prepared in the background; explicit searches reuse its progress and cache.
   Background preparation runs at most one document at a time and tracks up to 64
   open documents, with excess documents left to on-demand retrieval.
 - Only UI/model owners keep preparation eligible. Last-owner close or cancellation
   detaches that Session's preparation without stopping other authorized subscribers
-  to the same build. Shared work aborts once no subscribers remain. Disabled or
-  changed embedding settings, source changes and provider unload cancel obsolete
-  work. Source changes can queue a replacement; unchanged annotation edits do not.
+  to the same build. Shared work aborts once no subscribers remain. Disabling a
+  document's index, changing its active plan or source, and provider unload fence
+  obsolete work. Editing global defaults or a pending policy does not switch the
+  active plan. Source changes can queue a replacement; unchanged annotation edits do not.
   Failed preparations do not retry indefinitely. Rebuild suspends and drains this
   queue before clearing caches, then resumes eligible still-open documents.
 - The default search scope is the whole document; `fromPage/maxPages` restrict
@@ -246,17 +271,25 @@ missing geometry. OCR-derived candidates are not promoted to native coordinates.
 - Host retains query continuation state and validates scope, query, source and
   engine generation. Incomplete coverage produces progress, not a global
   best-match or no-answer claim.
-- Runtime defaults cap indexes at 20,000 chunks each, 8 resident indexes, an
-  estimated 64 MiB total index budget, 2 simultaneous build jobs and 8 admitted
-  queries. Active indexes cannot be evicted mid-query; each build step retains
-  its own document lease. These are
-  admission limits, not a guarantee of total process RSS; larger scopes may need
-  to be split explicitly.
+- Production keeps at most four immutable-plan runtimes. Each has at most two
+  resident indexes, an estimated 64 MiB index budget, two simultaneous build jobs
+  and eight admitted queries; each index is capped at 20,000 chunks. Across four
+  runtimes this permits at most eight indexes and 256 MiB of indexed-data budget,
+  allocated as data becomes resident rather than reserved up front.
+  Build/query admission limits are per runtime, not Host-wide limits of two/eight;
+  background document preparation still runs one document at a time. The generic
+  retrieval service's standalone defaults remain eight indexes and 64 MiB per
+  instance; production limits each instance to two indexes while preserving that
+  original per-plan memory budget. Active indexes
+  cannot be evicted mid-query; each build step retains its own document lease.
+  These are admission estimates, not a guarantee of total process RSS; larger
+  scopes may need to be split explicitly.
   Lexical estimates count one posting per distinct term/chunk pair. Resident
   cosine-search vectors use normalized Float32 storage shared by identical text;
   persisted vectors use versioned little-endian Float32/Base64 records with an
-  integrity checksum. Existing numeric-array records migrate on a valid hit
-  without requesting another embedding.
+  integrity checksum. At a compatible cache key, existing numeric-array records
+  migrate on a valid hit without requesting another embedding; this does not
+  migrate the old built-in adapter's keys across the document-fingerprint change.
 - The separate `pdf_retrieval_<profile>` Storage Domain stores derived text and
   vectors with default limits of 64 MiB serialized data, 12,000 records and 7 days.
   Individual records are limited to 2 MiB. Cache loss/corruption can be rebuilt
@@ -295,19 +328,24 @@ is made that all CPU/GPU usage ends as soon as a caller receives cancellation.
 
 ## Coverage and limits
 
-The production indexing adapter deliberately requests native text with automatic
-character-repair OCR disabled. Opening/searching a long book must not silently
-launch hundreds of OCR jobs. Empty pages and undecodable characters appear in
-coverage/warnings. Explicit OCR and page-image tools remain available separately,
-but their output is not automatically ingested into this index.
+Native extraction requests `{ recover: false }`, disabling the Reader's fixed
+character-repair path. This does not disable the active indexing plan's selected
+OCR engine: its text-recognition switch handles missing/damaged native text, and
+its independent image switch adds generated whole-page descriptions. Both may
+run during background preparation and incur model calls. Ad-hoc OCR or page-image
+tool output is not automatically inserted; indexing uses its own validated source
+pipeline. Empty or failed representations remain visible in coverage/warnings.
 
-Text around a formula or figure can retrieve its page; this does not mean the
-formula, table or graph has been understood. Image-only content is reported as
-not indexed. The synthetic complex-page cases record this missing coverage rather
-than inventing images, layout evidence or OCR accuracy. No multimodal index,
-reranker, semantic answer validator, cross-document search or automatic section
-reconstruction is included. No-answer queries can still return ranked candidates;
-the agent must read context and cannot infer that a result proves the answer.
+Native text can retrieve a formula's or figure's page without understanding it.
+Enabled OCR and description engines can add searchable derived text, with source
+and approximate page/region evidence; they do not provide native text coordinates
+or guaranteed formula, chart or table understanding. With those options disabled,
+image-only content remains uncovered. The original synthetic complex-page cases
+measure that older native-text-only scope, not the accuracy of later enrichment.
+There is no raw-image vector index, reranker, semantic answer validator,
+cross-document search or automatic section reconstruction. No-answer queries can
+still return ranked candidates; the agent must read context and cannot infer that
+a result proves the answer.
 
 Production ranking cooperatively yields and rechecks cancellation/source fences
 after 64 BM25 build chunks, 1,024 lexical posting contributions or 32 vectors.
@@ -381,8 +419,9 @@ The scale corpus repeats the 28 small passages, uses about 158,780 text characte
 at 1,000 pages and reuses already computed document/query vectors. Those timings
 exclude embedding, PDF extraction and disk IO; they do not represent an arbitrary
 1,000-page textbook. The theoretical 1,000 × 1,024 × Float32 vector payload is
-4,096,000 bytes, but the benchmark reuses arrays and production uses JavaScript
-numbers, so this is not a measured cache-memory bound.
+4,096,000 bytes, but that benchmark reused arrays and the then-current service
+stored JavaScript numbers. This is not a measured memory bound for the current
+Float32 storage or its production runtime budgets.
 
 The same runner also calls the actual retrieval service, with a synthetic page
 provider and a structured-clone in-memory KV adapter:

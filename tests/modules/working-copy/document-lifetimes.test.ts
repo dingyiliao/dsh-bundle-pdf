@@ -63,9 +63,9 @@ test('open document observers combine UI and model ownership without treating op
   let release: (() => void) | undefined
   try {
     const opened = await open('agent', 'model-one')
-    assert.deepEqual(events, [[{ sessionId, id: opened.id, contentVersion: opened.contentVersion,
+    assert.deepEqual(events, [[{ sessionId, id: opened.id, path: opened.path, contentVersion: opened.contentVersion,
       sourceDigest: digestPdfBytes(opened.bytes), conflict: false, title: 'shared.pdf' }]])
-    assert.deepEqual(Object.keys(events[0]![0]!).sort(), ['conflict', 'contentVersion', 'id', 'sessionId', 'sourceDigest', 'title'])
+    assert.deepEqual(Object.keys(events[0]![0]!).sort(), ['conflict', 'contentVersion', 'id', 'path', 'sessionId', 'sourceDigest', 'title'])
     await open('ui', 'reader-one')
     release = await service.acquire(sessionId, opened.id, agent, signal)
     await add(opened.id, opened.revision)

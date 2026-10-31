@@ -76,6 +76,15 @@ export function apply(ctx: Context) {
 
 ## Configuration and selection
 
+Settings save automatically. Index engine choices and the two content switches
+are defaults for newly opened documents. Each PDF has its own policy under
+**Search → Current PDF index**; selecting **Use current defaults** explicitly
+copies the latest defaults. Changes save without starting model work: the user
+starts **Update index** to build a replacement while the current index remains
+usable if its engine is still available. Cancellation or failure retains the
+active plan. Selecting `none` for that PDF takes effect immediately and retains
+cached content.
+
 PDF settings select `ocrEngine`, `imageEngine`, `translationEngine` and
 `embeddingEngine`. `engineConfigurations` retains each engine's configuration
 under its kind and ID (`ocr`, `image`, `translation`, `embedding`). Switching
@@ -86,7 +95,8 @@ may pass an explicit `binding` without changing the Reader's choice.
 OCR engine for missing or damaged native text. **Visual description indexing**
 (`indexImageDescriptions`, default `false`) uses the selected image-understanding
 engine with the indexing prompt and embeds its generated text, not raw pixels.
-Both switches may be on. There is no separate visual-description engine selector
+Both switches may be on. Each document selects its bindings from the same OCR
+and image-understanding directories; there is no extra visual-description service
 or registry. Neither switch enables the default-disabled embedding engine.
 Descriptions add model calls, latency and possible fees.
 
@@ -244,6 +254,14 @@ rebuildable vectors, not document permissions. Registry `generation(binding)` is
 separate: it fences a registration lifetime so unloading/replacing an engine
 invalidates in-flight work even when the encoding fingerprint is unchanged.
 
+Providers may also return `documentFingerprint`, an optional nonempty string of
+at most 512 characters identifying only document-vector encoding. It must change
+with document weights, tokenizer, dimensions or document instructions; query-only
+instructions and transport batch sizes can leave it unchanged. Consumers namespace
+it by engine ID. Without it, retrieval conservatively keeps the full binding in
+the vector-cache key. The complete fingerprint, configuration and registration
+generation still fence requests and queries, even when document vectors are reused.
+
 Consumers call `registry.embed(request, binding)` and receive `{ vectors, model }`;
 `list/subscribe` drive the dynamic settings catalog. Selection is captured per
 request. Removing a provider aborts its active requests; retrieval also rejects
@@ -252,8 +270,9 @@ The `pdf_semantic_search` tool requires a configured, available embedding engine
 and reports unavailable engines explicitly. It does not expose the internal
 retriever's automatic lexical fallback; literal matching uses `pdf_keyword_search`.
 
-When embedding is enabled and available, opening the shared working copy from
-either the Reader or `pdf_open` schedules background preparation. Providers
+When a document's active policy enables an available embedding engine, opening
+its shared working copy from either the Reader or `pdf_open` schedules background
+preparation. Providers
 receive the same `purpose: 'document'` requests used by search; no new provider
 method, synthetic query or query vector is involved. Before embedding, the shared
 page-content pipeline can invoke selected-engine OCR for scanned/damaged pages
@@ -277,17 +296,21 @@ documents; excess documents retain on-demand search. Only actual UI/model
 ownership counts as open, not an indexing lease. Closing the last owner in one
 Session cancels that Session's preparation; it does not stop a build still used
 by another authorized subscriber. Shared build work aborts when no subscribers
-remain. Disabled/changed bindings and provider unload invalidate obsolete work.
+remain. Disabling indexing or applying an updated plan invalidates obsolete work;
+editing defaults or pending choices does not switch the active plan. Provider
+unload aborts affected requests without choosing a fallback engine.
 Source changes can queue a fresh preparation; unchanged annotation edits do not.
 Ready indexes remain subject to the shared LRU/memory budget, not permanent disk
 storage. Failures do not retry indefinitely in the background.
 
-The Reader's indexing control starts, resumes or retries the current open PDF
-when embedding is enabled. It reuses caches and is a no-op for a ready index;
-profile-wide cache invalidation remains **Rebuild index** in settings. Manual
-cancellation stays stopped for the same source/configuration during that open
-lifecycle. A manual start, source/configuration change, or close/reopen can
-schedule preparation again.
+The Reader's **Update index** starts, resumes or retries the current open PDF and
+applies pending choices when embedding is enabled. It reuses caches; only an
+unchanged, ready plan is a no-op. **Recompute entire index** forces fresh page
+processing and document embeddings for the selected document without clearing
+other documents' caches. **Clear all index caches** in PDF settings is the separate
+profile-wide reset. Manual cancellation stays stopped for the same active
+source/plan during that open lifecycle. A manual start, source or applied-plan
+change, or close/reopen can schedule preparation again.
 
 The existing task entry reports filenames, extracted/total pages and
 embedded/total chunks for all open PDFs in the current resource Session, with
@@ -318,13 +341,14 @@ configuration example. `queryInstruction` defaults to an empty string for every
 model. Configure it explicitly when the model requires a retrieval instruction;
 clearing the field disables the instruction.
 
-**Rebuild index** in PDF settings invalidates this profile's in-memory indexes,
-active searches and continuation state, and clears its persisted retrieval cache.
+**Clear all index caches** in PDF settings invalidates this profile's in-memory
+indexes, active searches and continuation state, and clears its persisted retrieval cache.
 It first suspends and drains background preparation, then resumes it for still-open
-documents after a successful reset when embedding is enabled. Other documents
-rebuild on their next open or search. It does not modify PDF files, drafts or
-annotations. Use it when a service replaces the weights or
-tokenizer behind an unchanged model name without reporting a new revision;
+documents after a successful reset when their active policy enables embedding.
+Other documents rebuild on their next open or search. Pending choices still
+require **Update index**; clearing caches does not apply them. It does not modify
+PDF files, drafts, annotations or saved document policies. Use it when a service
+replaces the weights or tokenizer behind an unchanged model name without reporting a new revision;
 the standard protocol cannot detect such a replacement reliably. Rebuilding also prevents cancelled, older work from
 repopulating the cleared cache.
 

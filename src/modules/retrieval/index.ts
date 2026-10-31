@@ -1,5 +1,7 @@
 export * from './types.js'
 export * from './service.js'
+export { createDocumentIndexPolicies, documentIndexRecordSchema, indexPolicy, resolveIndexPlan, settingsForIndexPlan } from './document-policy.js'
+export type { ResolvedIndexPlan } from './document-policy.js'
 export { chunkPage, chunkRetrievalPage, tokenizeRetrievalText, RETRIEVAL_TEXT_VERSION } from './text.js'
 export { retrievalPageText } from './paragraphs.js'
 export type { RetrievalChunk } from './text.js'

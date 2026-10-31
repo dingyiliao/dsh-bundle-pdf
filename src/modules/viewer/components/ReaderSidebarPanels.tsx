@@ -10,6 +10,8 @@ import { AnnotationList } from './AnnotationList.js'
 import { OcrTranscriptPanel } from './OcrTranscriptPanel.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 import { TranslationPanel } from './TranslationPanel.js'
+import { DocumentIndexSettings } from './DocumentIndexSettings.js'
+import type { EngineCatalogSnapshot } from '../../engines/index.js'
 
 type OcrTranscript = ReturnType<typeof useReaderOcr>['ocrTranscript']
 type Search = ReturnType<typeof useReaderSearch>
@@ -26,6 +28,7 @@ export interface ReaderSidebarPanelsOptions {
   ocrTranscript: OcrTranscript
   search: Search
   indexing?: ReaderIndexingControl
+  engineCatalog?: EngineCatalogSnapshot
   translation: Translation
   rememberTargetLanguage?: (language: string) => Promise<boolean>
   translationEngine: string
@@ -60,14 +63,8 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
           {search.searching ? t('reader.searching') : t('reader.search')}</button>
       </form>
       <p className="dsh-pdf-muted">{t('reader.searchCoverage')}</p>
-      {indexing && <section className="dsh-pdf-search-indexing" aria-label={t('reader.indexing.title')}>
-        <div className="dsh-pdf-search-indexing-heading">
-          <strong>{t('reader.indexing.title')}</strong>
-          {indexing.enabled && <button type="button" disabled={indexing.disabled} onClick={indexing.onStart}>{indexing.label}</button>}
-        </div>
-        <p className="dsh-pdf-muted" role="status">{indexing.statusLabel}</p>
-        <p className="dsh-pdf-muted">{t('reader.indexing.searchHint')}</p>
-      </section>}
+      {indexing && <DocumentIndexSettings key={indexing.configuration?.identity ?? snapshot?.id}
+        control={indexing} catalog={options.engineCatalog} t={t} />}
       {search.searched && <p>{search.hits.length ? `${search.hits.length}${search.hits.length >= 500 ? '+' : ''} ${t('reader.results')}` : t('reader.noResults')}</p>}
       {search.hits.map((hit, index) => <button className="dsh-pdf-search-hit" key={index}
         onClick={() => jump(hit.page, hit.x === undefined || hit.y === undefined ? {} : { x: hit.x, y: hit.y })}>

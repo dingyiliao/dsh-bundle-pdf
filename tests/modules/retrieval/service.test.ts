@@ -50,7 +50,8 @@ function embedding() {
 }
 
 test('invalid embedding provider metadata fails before reading or indexing PDF content', async () => {
-  for (const invalid of [{ dimensions: 0 }, { dimensions: 1.5 }, { maxBatchSize: 0 }, { maxInputCharacters: 63 }]) {
+  for (const invalid of [{ dimensions: 0 }, { dimensions: 1.5 }, { maxBatchSize: 0 }, { maxInputCharacters: 63 },
+    { documentFingerprint: '' }, { documentFingerprint: 'x'.repeat(513) }, { documentFingerprint: 12 as never }]) {
     const e = embedding()
     const f = fixture({ provider: { ...e.provider, ...invalid } })
     try {

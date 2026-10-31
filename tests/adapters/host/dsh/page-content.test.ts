@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPdfPageContent, projectPageContent } from '../../../../src/adapters/host/dsh/page-content.ts'
-import { pageContentDigest } from '../../../../src/modules/document/index.ts'
+import { pageContentDigest, parsePageContent, PageRepresentationSchema, createPageRepresentation } from '../../../../src/modules/document/index.ts'
 import { HostOcrService, type HostOcrBackend } from '../../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../../src/modules/image-understanding/index.ts'
 import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
@@ -28,7 +28,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
     model: 'revision-one', bytes: new Uint8Array([1, 2, 3]), version: 'content-one', denied: false,
     reads: 0, renders: 0, recognitions: 0, descriptions: 0, words: true, imageFailure: false, ocrAvailable: true, unmappedCharacters: 0,
     imageModel: undefined as string | undefined, imageInputs: [] as Uint8Array[], ocrInputs: [] as Uint8Array[],
-    imageIdentityResolutions: 0, ocrIdentityResolutions: 0,
+    imageIdentityResolutions: 0, ocrIdentityResolutions: 0, cacheWriteFailure: false,
     imageBindings: [] as { id: string; variant: unknown }[], onImage: undefined as (() => Promise<void>) | undefined,
     onOcr: undefined as (() => Promise<void>) | undefined,
     onNative: undefined as (() => Promise<void>) | undefined, onRender: undefined as (() => Promise<void>) | undefined, onGet: undefined as (() => void) | undefined }
@@ -99,7 +99,10 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
   image.register(imageBackend('fixture-image-two'))
   const workspaces = { readSnapshot: snapshot }
   const create = () => createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image,
-    cache: { async get(key) { const value = structuredClone(data.get(key)); state.onGet?.(); return value }, async set(key, value) { data.set(key, structuredClone(value)) } } })
+    cache: { async get(key) { const value = structuredClone(data.get(key)); state.onGet?.(); return value }, async set(key, value) {
+      if (state.cacheWriteFailure) throw new Error('Cache storage is unavailable')
+      data.set(key, structuredClone(value))
+    } } })
   const content = create()
   return { content, create, state, data, ocr, image, snapshot,
     updateSettings(change: Partial<PdfSettings>) { settings = { ...settings, ...change } },
@@ -112,6 +115,22 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
 
 const representations = (content: Awaited<ReturnType<ReturnType<typeof fixture>['content']['read']>>) =>
   content.blocks.flatMap(block => block.representations)
+
+// Assert retained content rather than a storage record count: independent
+// native/producer layers and aggregate snapshots intentionally overlap.
+function cachedDerivations(f: ReturnType<typeof fixture>) {
+  const retained = new Map<string, { id: string; kind: string; text: string }>()
+  for (const value of f.data.values()) {
+    const page = parsePageContent(value), single = PageRepresentationSchema.safeParse(value)
+    for (const rep of page ? representations(page) : single.success ? [single.data] : []) {
+      if (rep.kind !== 'native-text') retained.set(rep.id, rep)
+    }
+  }
+  return [...retained.values()]
+}
+function aggregateKey(f: ReturnType<typeof fixture>) {
+  return [...f.data.entries()].find(([, value]) => parsePageContent(value)?.extractionIdentity === f.content.identity('a'))![0]
+}
 
 test('native pages preserve exact text and geometry without OCR or image interpretation work', async () => {
   const f = fixture({ native: 'native needle evidence' })
@@ -227,7 +246,7 @@ test('an uninstalled selected vision engine fails explicitly without rendering o
       }
       assert.equal(f.state.ocrIdentityResolutions, 0); assert.equal(f.state.imageIdentityResolutions, 0)
       assert.equal(f.state.renders, 0); assert.equal(f.state.recognitions, 0); assert.equal(f.state.descriptions, 0)
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
     } finally { f.dispose() }
   }
 })
@@ -240,7 +259,7 @@ test('invalid vision output cannot be persisted as an indexed description', asyn
     assert.deepEqual(partial.failure, { code: 'pdf/image-invalid-result' })
     assert.deepEqual(representations(partial).map(rep => rep.kind), ['native-text'])
     assert.equal(f.state.recognitions, 0); assert.equal(f.state.descriptions, 1); assert.equal(f.state.renders, 1)
-    assert.equal(f.data.size, 0)
+    assert.equal(cachedDerivations(f).length, 0)
   } finally { f.dispose() }
 })
 
@@ -271,7 +290,7 @@ test('shared vision selection owns content cache identity while disabled OCR set
     assert.notEqual(second.extractionIdentity, first.extractionIdentity)
     assert.equal(representations(second).find(rep => rep.kind === 'image-description')!.producer.id, 'fixture-image-two')
     assert.deepEqual(f.state.imageBindings, [{ id: 'fixture-image', variant: 'first' }, { id: 'fixture-image-two', variant: 'second' }])
-    assert.equal(f.state.descriptions, 2); assert.equal(f.data.size, 2)
+    assert.equal(f.state.descriptions, 2); assert.equal(cachedDerivations(f).length, 2)
 
     f.state.imageModel = 'independent-visual-revision-two'
     await assert.rejects(f.content.verify('a', signal), { code: 'pdf/stale-reader' })
@@ -279,7 +298,7 @@ test('shared vision selection owns content cache identity while disabled OCR set
     const revised = await f.content.read('a', 'doc-a', 1, signal)
     assert.notEqual(revised.extractionIdentity, second.extractionIdentity)
     assert.equal(representations(revised).find(rep => rep.kind === 'image-description')!.producer.model, f.state.imageModel)
-    assert.equal(f.state.descriptions, 3); assert.equal(f.data.size, 3)
+    assert.equal(f.state.descriptions, 3); assert.equal(cachedDerivations(f).length, 3)
   } finally { f.dispose() }
 })
 
@@ -293,12 +312,12 @@ test('changing the shared image engine during visual preparation rejects obsolet
     await entered.promise
     f.updateSettings({ imageEngine: 'fixture-image-two' })
     gate.resolve(); await rejected
-    assert.equal(f.data.size, 0)
+    assert.equal(cachedDerivations(f).length, 0)
     f.state.onImage = undefined
     await f.content.prepare('a', signal)
     const result = await f.content.read('a', 'doc-a', 1, signal)
     assert.equal(representations(result).find(rep => rep.kind === 'image-description')!.producer.id, 'fixture-image-two')
-    assert.equal(f.state.recognitions, 0); assert.equal(f.state.descriptions, 2); assert.equal(f.data.size, 1)
+    assert.equal(f.state.recognitions, 0); assert.equal(f.state.descriptions, 2); assert.equal(cachedDerivations(f).length, 1)
   } finally { gate.resolve(); f.dispose() }
 })
 
@@ -314,10 +333,10 @@ test('cancellation and shared visual backend removal cannot persist late indexed
       else if (reason === 'remove') f.unregisterImage()
       else f.content.dispose()
       await rejected
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
       gate.resolve()
       await new Promise<void>(resolve => setImmediate(resolve))
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
       assert.equal(f.state.recognitions, 0)
     } finally { gate.resolve(); f.dispose() }
   }
@@ -368,14 +387,14 @@ test('policy, configuration, model and original source changes cannot consume ob
     assert.notEqual(original, f.content.identity('a')); assert.equal(f.state.descriptions, 1)
     f.updateSettings({ engineConfigurations: { ocr: { fixture: { variant: 'second' } }, image: { 'fixture-image': { variant: 'first' } } } })
     await f.content.prepare('a', signal); await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(f.state.recognitions, 3)
+    assert.equal(f.state.recognitions, 2, 'enabling image descriptions reused the original OCR')
     f.state.model = 'revision-two'
     await f.content.prepare('a', signal); await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(f.state.recognitions, 4)
+    assert.equal(f.state.recognitions, 3)
     f.state.bytes = new Uint8Array([9, 8, 7]); f.state.version = 'content-two'
     await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(f.state.recognitions, 5)
-    assert.equal(f.data.size, 5)
+    assert.equal(f.state.recognitions, 4)
+    assert.equal(f.state.reads, 2, 'only a real source change requires native extraction again')
   } finally { f.dispose() }
 })
 
@@ -398,17 +417,17 @@ test('corrupted content is rebuilt and explicit refresh bypasses valid derived r
   const f = fixture()
   try {
     await f.content.read('a', 'doc-a', 1, signal)
-    const key = [...f.data.keys()][0]!, cached = structuredClone(f.data.get(key)) as { blocks: { representations: { digest: string }[] }[] }
+    const key = aggregateKey(f), cached = structuredClone(f.data.get(key)) as { blocks: { representations: { digest: string }[] }[] }
     cached.blocks[1]!.representations[0]!.digest = pageContentDigest('corrupt')
     f.data.set(key, cached)
     await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(f.state.recognitions, 2)
+    assert.equal(f.state.recognitions, 1, 'a corrupt aggregate is reconstructed from verified producer layers')
     f.content.refresh('a', 'doc-a')
     f.state.text = 'needle refreshed'
     const refreshed = await f.content.read('a', 'doc-a', 1, signal)
     assert.equal(representations(refreshed).find(rep => rep.kind === 'ocr-text')!.text, 'needle refreshed')
     await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(f.state.recognitions, 3)
+    assert.equal(f.state.recognitions, 2)
   } finally { f.dispose() }
 })
 
@@ -424,10 +443,10 @@ test('cancellation, backend removal and plugin disposal cannot persist late OCR 
       else if (reason === 'remove') f.unregister()
       else f.content.dispose()
       await rejected
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
       gate.resolve()
       await new Promise<void>(resolve => setImmediate(resolve))
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
     } finally { gate.resolve(); f.dispose() }
   }
 })
@@ -440,7 +459,7 @@ test('source replacement during asynchronous native extraction rejects the old s
     await entered.promise
     f.state.bytes = new Uint8Array([4, 5, 6]); f.state.version = 'content-two'
     gate.resolve(); await rejected
-    assert.equal(f.data.size, 0); assert.equal(f.state.recognitions, 0)
+    assert.equal(cachedDerivations(f).length, 0); assert.equal(f.state.recognitions, 0)
   } finally { gate.resolve(); f.dispose() }
 })
 
@@ -449,7 +468,7 @@ test('missing OCR fails on scans while optional image failure preserves native c
   try {
     ocr.unregister()
     await assert.rejects(ocr.content.read('a', 'doc-a', 1, signal), { code: 'pdf/index-ocr-unavailable' })
-    assert.equal(ocr.data.size, 0); assert.equal(ocr.state.recognitions, 0)
+    assert.equal(cachedDerivations(ocr).length, 0); assert.equal(ocr.state.recognitions, 0)
   } finally { ocr.dispose() }
   const image = fixture({ native: 'Native page', describe: true })
   try {
@@ -459,7 +478,7 @@ test('missing OCR fails on scans while optional image failure preserves native c
     assert.deepEqual(partial.failure, { code: 'pdf/index-image-unavailable' })
     assert.equal(projectPageContent(partial).failure?.code, 'pdf/index-image-unavailable')
     assert.ok(projectPageContent(partial).units?.some(unit => unit.kind === 'native-text'))
-    assert.equal(image.data.size, 0); assert.equal(image.state.descriptions, 0)
+    assert.equal(cachedDerivations(image).length, 0); assert.equal(image.state.descriptions, 0)
   } finally { image.dispose() }
 })
 
@@ -480,14 +499,16 @@ test('failure while refreshing an older successful image interpretation tombston
   const f = fixture({ native: 'native needle', describe: true })
   try {
     await f.content.read('a', 'doc-a', 1, signal)
-    const key = [...f.data.keys()][0]!
+    const key = aggregateKey(f)
     f.content.refresh('a', 'doc-a')
     f.state.imageFailure = true
     const partial = await f.content.read('a', 'doc-a', 1, signal)
     assert.equal(partial.nativeText.text, 'native needle')
     assert.ok(partial.failure)
     assert.equal(f.data.get(key), null)
-    assert.equal([...f.data.values()].filter(value => value !== null).length, 0)
+    assert.equal(cachedDerivations(f).length, 0)
+    assert.ok([...f.data.values()].some(value => parsePageContent(value)?.nativeText.text === 'native needle'),
+      'a failed description does not throw away the successful native layer')
   } finally { f.dispose() }
 })
 
@@ -500,7 +521,7 @@ test('an unavailable image backend does not prevent scan OCR from yielding expli
     assert.equal(representations(result).some(rep => rep.kind === 'image-description'), false)
     assert.ok(result.failure)
     assert.equal(f.state.recognitions, 1); assert.equal(f.state.renders, 1)
-    assert.equal(f.data.size, 0)
+    assert.deepEqual(cachedDerivations(f).map(rep => rep.kind), ['ocr-text'])
   } finally { f.dispose() }
 })
 
@@ -513,7 +534,7 @@ test('failed OCR does not prevent an independent image description from yielding
     assert.equal(representations(result).some(rep => rep.kind === 'ocr-text'), false)
     assert.ok(result.failure)
     assert.equal(f.state.recognitions, 1); assert.equal(f.state.descriptions, 1); assert.equal(f.state.renders, 1)
-    assert.equal(f.data.size, 0)
+    assert.deepEqual(cachedDerivations(f).map(rep => rep.kind), ['image-description'])
   } finally { f.dispose() }
 })
 
@@ -546,7 +567,7 @@ test('two unavailable derivation engines do not render pixels when no backend ca
     f.unregister(); f.image.dispose()
     await assert.rejects(f.content.read('a', 'doc-a', 1, signal))
     assert.equal(f.state.renders, 0); assert.equal(f.state.recognitions, 0); assert.equal(f.state.descriptions, 0)
-    assert.equal(f.data.size, 0)
+    assert.equal(cachedDerivations(f).length, 0)
   } finally { f.dispose() }
 })
 
@@ -558,7 +579,7 @@ test('an optional clean-render failure preserves native text as explicit partial
     assert.equal(result.nativeText.text, 'native needle')
     assert.ok(result.failure)
     assert.equal(f.state.renders, 1); assert.equal(f.state.descriptions, 0)
-    assert.equal(f.data.size, 0)
+    assert.equal(cachedDerivations(f).length, 0)
   } finally { f.dispose() }
 })
 
@@ -569,7 +590,7 @@ test('source authority failures wrapped by an OCR backend remain fatal and canno
     try {
       await assert.rejects(f.content.read('a', 'doc-a', 1, signal), { code })
       assert.equal(f.state.descriptions, 0)
-      assert.equal(f.data.size, 0)
+      assert.equal(cachedDerivations(f).length, 0)
     } finally { f.dispose() }
   }
 })
@@ -579,7 +600,7 @@ test('an offline OCR availability probe prevents rendering pixels or starting re
   f.state.ocrAvailable = false
   try {
     await assert.rejects(f.content.read('a', 'doc-a', 1, signal), { code: 'pdf/index-ocr-unavailable' })
-    assert.equal(f.state.renders, 0); assert.equal(f.state.recognitions, 0); assert.equal(f.data.size, 0)
+    assert.equal(f.state.renders, 0); assert.equal(f.state.recognitions, 0); assert.equal(cachedDerivations(f).length, 0)
   } finally { f.dispose() }
 })
 
@@ -602,7 +623,7 @@ test('a thrown scan refresh invalidates the previous complete IR before recognit
   const f = fixture()
   try {
     await f.content.read('a', 'doc-a', 1, signal)
-    const key = [...f.data.keys()][0]!
+    const key = aggregateKey(f)
     f.content.refresh('a', 'doc-a')
     f.state.onOcr = async () => { throw new Error('Recognition stopped working') }
     await assert.rejects(f.content.read('a', 'doc-a', 1, signal))
@@ -612,5 +633,141 @@ test('a thrown scan refresh invalidates the previous complete IR before recognit
       await assert.rejects(restart.read('a', 'doc-a', 1, signal))
       assert.equal(f.state.recognitions, 3, 'a restarted pipeline must retry instead of restoring the obsolete successful scan')
     } finally { restart.dispose() }
+  } finally { f.dispose() }
+})
+
+test('enabling and disabling an independent representation reuses native, OCR and image work without mixing the selected sources', async () => {
+  const f = fixture()
+  const select = async (change: Partial<PdfSettings>) => {
+    f.updateSettings(change); await f.content.prepare('a', signal)
+    return f.content.read('a', 'doc-a', 1, signal)
+  }
+  try {
+    const original = await f.content.read('a', 'doc-a', 1, signal)
+    const originalOcr = representations(original).find(rep => rep.kind === 'ocr-text')!
+    const both = await select({ indexImageDescriptions: true })
+    assert.deepEqual(representations(both).find(rep => rep.kind === 'ocr-text'), originalOcr)
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions, f.state.renders], [1, 1, 1, 2])
+    const imageOnly = await select({ indexScanPages: false })
+    assert.deepEqual(representations(imageOnly).map(rep => rep.kind), ['native-text', 'image-description'])
+    const neither = await select({ indexImageDescriptions: false })
+    assert.deepEqual(representations(neither).map(rep => rep.kind), ['native-text'])
+    assert.deepEqual(representations(await select({ indexScanPages: true, indexImageDescriptions: true })), representations(both))
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions, f.state.renders], [1, 1, 1, 2],
+      'source filters and restored optional representations do not render or run either producer again')
+  } finally { f.dispose() }
+})
+
+test('changing one producer leaves the other cached representation and native text intact', async () => {
+  const f = fixture({ describe: true })
+  try {
+    const first = await f.content.read('a', 'doc-a', 1, signal)
+    f.updateSettings({ engineConfigurations: { ocr: { fixture: { variant: 'changed OCR' } },
+      image: { 'fixture-image': { variant: 'first' }, 'fixture-image-two': { variant: 'second' } } } })
+    await f.content.prepare('a', signal)
+    const changedOcr = await f.content.read('a', 'doc-a', 1, signal)
+    assert.deepEqual(representations(changedOcr).find(rep => rep.kind === 'image-description'),
+      representations(first).find(rep => rep.kind === 'image-description'))
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 2, 1])
+    f.updateSettings({ imageEngine: 'fixture-image-two' }); await f.content.prepare('a', signal)
+    const changedImage = await f.content.read('a', 'doc-a', 1, signal)
+    assert.deepEqual(representations(changedImage).find(rep => rep.kind === 'ocr-text'),
+      representations(changedOcr).find(rep => rep.kind === 'ocr-text'))
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 2, 2])
+    assert.equal(representations(changedImage).find(rep => rep.kind === 'image-description')!.producer.id, 'fixture-image-two')
+  } finally { f.dispose() }
+})
+
+test('retrying one failed optional producer restores the other successful representation', async () => {
+  const f = fixture({ describe: true })
+  try {
+    f.state.imageFailure = true
+    const partial = await f.content.read('a', 'doc-a', 1, signal)
+    assert.ok(partial.failure)
+    const repaired = representations(partial).find(rep => rep.kind === 'ocr-text')!
+    f.state.imageFailure = false
+    const complete = await f.content.read('a', 'doc-a', 1, signal)
+    assert.equal(complete.failure, undefined)
+    assert.deepEqual(representations(complete).find(rep => rep.kind === 'ocr-text'), repaired)
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 1, 2])
+  } finally { f.dispose() }
+})
+
+test('cached native quality still requests OCR when recognition is enabled later', async () => {
+  const f = fixture({ native: 'damaged native content', scan: false })
+  try {
+    f.state.unmappedCharacters = 2
+    await f.content.read('a', 'doc-a', 1, signal)
+    f.updateSettings({ indexScanPages: true }); await f.content.prepare('a', signal)
+    const recognized = await f.content.read('a', 'doc-a', 1, signal)
+    assert.deepEqual(representations(recognized).map(rep => rep.kind), ['native-text', 'ocr-text'])
+    assert.equal(f.state.reads, 1); assert.equal(f.state.recognitions, 1)
+  } finally { f.dispose() }
+})
+
+test('a damaged optional layer is recomputed without rerunning the healthy producer', async () => {
+  const f = fixture({ describe: true })
+  try {
+    await f.content.read('a', 'doc-a', 1, signal)
+    const ocr = [...f.data.entries()].find(([, value]) => {
+      const parsed = PageRepresentationSchema.safeParse(value)
+      return parsed.success && parsed.data.kind === 'ocr-text'
+    })!
+    f.data.set(ocr[0], { ...(ocr[1] as Record<string, unknown>), inputDigest: 'corrupted' })
+    f.data.set(aggregateKey(f), null)
+    const restored = await f.content.read('a', 'doc-a', 1, signal)
+    assert.equal(restored.failure, undefined)
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 2, 1])
+  } finally { f.dispose() }
+})
+
+test('a legacy aggregate seeds separate native and producer caches before a policy change', async () => {
+  const f = fixture({ describe: true })
+  try {
+    const original = await f.content.read('a', 'doc-a', 1, signal)
+    const key = aggregateKey(f)
+    f.data.clear()
+    f.data.set(key, { ...original, blocks: original.blocks.map(block => ({ ...block,
+      representations: block.representations.map(rep => rep.kind !== 'native-text' ? rep :
+        createPageRepresentation({ ...rep, producer: { ...rep.producer, version: 'legacy-aggregate-extraction' } })),
+    })) })
+    await f.content.read('a', 'doc-a', 1, signal)
+    f.updateSettings({ indexScanPages: false }); await f.content.prepare('a', signal)
+    const combined = await f.content.read('a', 'doc-a', 1, signal)
+    assert.deepEqual(representations(combined).map(rep => rep.kind), ['native-text', 'image-description'])
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 1, 1])
+  } finally { f.dispose() }
+})
+
+test('misfiled or differently attested producer records are cache misses rather than trusted results', async () => {
+  for (const corruption of ['wrong-kind', 'wrong-producer']) {
+    const f = fixture({ describe: true })
+    try {
+      await f.content.read('a', 'doc-a', 1, signal)
+      const layer = [...f.data.entries()].find(([, value]) => {
+        const result = PageRepresentationSchema.safeParse(value)
+        return result.success && result.data.kind === 'ocr-text'
+      })!
+      const previous = PageRepresentationSchema.parse(layer[1])
+      const wrong = corruption === 'wrong-kind'
+        ? PageRepresentationSchema.parse([...f.data.values()].find(value => PageRepresentationSchema.safeParse(value).data?.kind === 'image-description'))
+        : createPageRepresentation({ ...previous, producer: { ...previous.producer, configurationIdentity: 'another-producer' } })
+      f.data.set(layer[0], wrong); f.data.set(aggregateKey(f), null)
+      const restored = await f.content.read('a', 'doc-a', 1, signal)
+      assert.equal(restored.failure, undefined)
+      assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 2, 1])
+    } finally { f.dispose() }
+  }
+})
+
+test('failed cache reads and writes cannot prevent successful content extraction', async () => {
+  const f = fixture({ describe: true })
+  try {
+    f.state.onGet = () => { throw new Error('Unreadable cache') }
+    f.state.cacheWriteFailure = true
+    const content = await f.content.read('a', 'doc-a', 1, signal)
+    assert.equal(content.failure, undefined)
+    assert.deepEqual(representations(content).map(rep => rep.kind), ['native-text', 'ocr-text', 'image-description'])
+    assert.equal(f.data.size, 0)
   } finally { f.dispose() }
 })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { PdfIndexingTask } from '../../../contracts/indexing.js'
+import type { PdfDocumentIndexPolicy, PdfDocumentIndexSettings, PdfIndexingTask } from '../../../contracts/indexing.js'
 import type { PdfIndexingApi, PdfIndexingClientSnapshot } from '../ports/indexing.js'
 import type { FloatingStatus } from '../components/FloatingStatusRail.js'
 
@@ -11,6 +11,15 @@ export interface ReaderIndexingControl {
   label: string
   statusLabel: string
   onStart(): void
+  onRebuild?(): void
+  configuration?: {
+    identity: string
+    value: PdfDocumentIndexSettings
+    disabled: boolean
+    saving: boolean
+    configure(policy: PdfDocumentIndexPolicy): Promise<boolean>
+    useDefaults(): Promise<boolean>
+  }
 }
 export interface ReaderIndexingOptions {
   api?: PdfIndexingApi
@@ -62,7 +71,11 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
 
   const connected = snapshot.status === 'ready'
   async function command(action: 'start' | 'rebuild' | 'cancel', target: string): Promise<void> {
-    if (!api || !connected || !snapshot.enabled || signal.aborted || requests.current.has(target)) return
+    const settings = snapshot.documents?.find(value => value.documentId === target)
+    const enabled = settings ? action === 'cancel'
+      ? settings.policy.embeddingEngine !== 'none' || settings.activePolicy.embeddingEngine !== 'none'
+      : settings.policy.embeddingEngine !== 'none' : snapshot.enabled
+    if (!api || !connected || !enabled || signal.aborted || requests.current.has(target)) return
     const controller = new AbortController()
     requests.current.set(target, controller)
     setPending(current => new Set(current).add(target))
@@ -77,10 +90,39 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
       }
     }
   }
+  async function configure(action: 'configure' | 'defaults', policy?: PdfDocumentIndexPolicy): Promise<boolean> {
+    // The whole policy belongs to this render; borrowing a newer mirror's
+    // revision would let a stale UI overwrite another view's changes.
+    const settings = snapshot.documents?.find(value => value.documentId === documentId)
+    if (!api || !connected || !documentId || !settings || signal.aborted) return false
+    const key = `configuration:${documentId}`
+    if (requests.current.has(key)) return false
+    const controller = new AbortController()
+    requests.current.set(key, controller)
+    setPending(current => new Set(current).add(key))
+    try {
+      const active = AbortSignal.any([signal, controller.signal])
+      if (action === 'configure') await api.configure(sessionId, documentId, settings.revision, policy!, active)
+      else await api.useDefaults(sessionId, documentId, settings.revision, active)
+      return !active.aborted && requests.current.get(key) === controller
+    } catch (error) {
+      if (!controller.signal.aborted && !signal.aborted && requests.current.get(key) === controller) throw error
+      return false
+    } finally {
+      if (requests.current.get(key) === controller) {
+        requests.current.delete(key)
+        setPending(current => { const next = new Set(current); next.delete(key); return next })
+      }
+    }
+  }
   const statuses: FloatingStatus[] = api ? snapshot.tasks.filter(task => task.state !== 'ready'
     || snapshot.dismissed?.[task.documentId] !== task.occurrence).map(task => {
     const active = task.state === 'queued' || task.state === 'running'
     const completed = task.state === 'ready'
+    const settings = snapshot.documents?.find(value => value.documentId === task.documentId)
+    const enabled = settings ? active
+      ? settings.policy.embeddingEngine !== 'none' || settings.activePolicy.embeddingEngine !== 'none'
+      : settings.policy.embeddingEngine !== 'none' : snapshot.enabled
     const action = active ? 'cancel' : task.state === 'failed' ? 'rebuild' : 'start'
     const actionLabel = t(active ? 'reader.cancel' : task.state === 'failed' ? 'reader.indexing.rebuild' : 'reader.indexing.retry')
     return { id: `indexing:${task.documentId}`, occurrence: task.occurrence,
@@ -96,24 +138,33 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
         onClick: () => api.dismiss(sessionId, task.documentId, task.occurrence) }]
         : [{ label: actionLabel,
           ariaLabel: `${active ? t('reader.indexing.cancel') : actionLabel}: ${task.title}`,
-          disabled: !connected || !snapshot.enabled || pending.has(task.documentId),
+          disabled: !connected || !enabled || pending.has(task.documentId),
           onClick: () => { void command(action, task.documentId) } }],
     } satisfies FloatingStatus
   }) : []
   if (api && snapshot.status === 'unavailable' && documentId) statuses.unshift({ id: 'indexing-connection', kind: 'error',
     activity: 'dot', content: t('reader.indexing.unavailable') })
   const current = snapshot.tasks.find(task => task.documentId === documentId)
+  const settings = snapshot.documents?.find(value => value.documentId === documentId)
+  const enabled = settings ? settings.policy.embeddingEngine !== 'none' : snapshot.enabled
   const statusLabel = t(!connected ? snapshot.status === 'loading' ? 'reader.indexing.checking' : 'reader.indexing.unavailable'
-    : !snapshot.enabled ? 'reader.indexing.disabled' : current?.state === 'ready' ? 'reader.indexing.ready'
+    : !enabled ? 'reader.indexing.disabled' : current?.state === 'ready' ? 'reader.indexing.ready'
       : current?.state === 'queued' || current?.state === 'running' ? 'reader.indexing.running' : 'reader.indexing.start')
-  const rebuild = current?.state === 'ready' || current?.state === 'failed'
   const control: ReaderIndexingControl | undefined = api ? {
-    enabled: snapshot.enabled,
-    label: t(rebuild ? 'reader.indexing.rebuild' : 'reader.indexing.start'),
-    statusLabel: connected && snapshot.enabled && current ? indexingLabel(current, t) : statusLabel,
-    disabled: !documentId || !connected || !snapshot.enabled || signal.aborted || pending.has(documentId)
+    enabled,
+    label: t(settings?.pending || current?.state === 'ready' || current?.state === 'failed' ? 'reader.indexing.update' : 'reader.indexing.start'),
+    statusLabel: connected && enabled && current ? indexingLabel(current, t) : statusLabel,
+    disabled: !documentId || !connected || !enabled || signal.aborted || pending.has(documentId)
+      || pending.has(`configuration:${documentId}`)
       || current?.state === 'queued' || current?.state === 'running',
-    onStart: () => { if (documentId) void command(rebuild ? 'rebuild' : 'start', documentId) },
+    onStart: () => { if (documentId) void command('start', documentId) },
+    onRebuild: () => { if (documentId) void command('rebuild', documentId) },
+    ...(settings ? { configuration: {
+      identity: JSON.stringify([sessionId, documentId]), value: settings,
+      disabled: !connected || signal.aborted,
+      saving: pending.has(`configuration:${documentId}`),
+      configure: policy => configure('configure', policy), useDefaults: () => configure('defaults'),
+    } } : {}),
   } : undefined
   return { statuses, control }
 }

@@ -24,6 +24,8 @@ export interface DocumentResidency {
 export interface OpenWorkingCopyDocument {
   sessionId: string
   id: string
+  /** Canonical resource identity remains available after idle working-set eviction. */
+  path?: string
   contentVersion: string
   sourceDigest: string
   conflict: boolean

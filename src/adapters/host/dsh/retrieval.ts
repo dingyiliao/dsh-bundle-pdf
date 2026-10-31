@@ -40,6 +40,7 @@ function summarizeCoverage(coverage: RetrievalResult['coverage'], candidates: re
 export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
   references: EvidenceReferenceStore, options: {
     cache?: RetrievalCache; embeddings?: EmbeddingRegistry; settings?: () => PdfSettings
+    limits?: Parameters<typeof createRetrievalService>[0]['limits']
     content?: PdfPageContent
     /** Resolve the caller's session policy and re-read the actual source, including ready-cache hits. */
     freshSource?(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
@@ -74,6 +75,8 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       const model = registry.describe(binding)
       return { configuration, registry,
         backend: { fingerprint: model.fingerprint, generation: registry.generation(binding),
+        ...(model.documentFingerprint ? { documentFingerprint: createHash('sha256')
+          .update(JSON.stringify([binding.engineId, model.documentFingerprint])).digest('hex') } : {}),
         configurationIdentity: createHash('sha256').update(configuration).digest('hex'),
         dimensions: model.dimensions, maxBatchSize: model.maxBatchSize, maxInputCharacters: model.maxInputCharacters,
         async availability(signal) {
@@ -107,7 +110,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     return 'backend' in result ? result.backend : undefined
   }
   const imageEvidence = createImageEvidenceRegistry(workspaces, references)
-  const service = createRetrievalService({ documents: { snapshot, retain: options.retain }, cache: options.cache,
+  const service = createRetrievalService({ documents: { snapshot, retain: options.retain }, cache: options.cache, limits: options.limits,
     embedding: { select }, pages: { ...(options.content ? { identity: options.content.identity } : {}), async read(sessionId, id, page, signal) {
       if (options.content) return projectPageContent(await options.content.read(sessionId, id, page, signal))
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
@@ -123,7 +126,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
         : state === 'rebuilding' ? 'PDF search indexes are being reset. Retry semantic search shortly; pdf_keyword_search remains available.'
           : 'PDF retrieval is unloading; pdf_keyword_search remains available.' }
   }
-  async function availability(_sessionId: string, signal: AbortSignal) {
+  async function availability(_sessionId: string, signal: AbortSignal, _documentId?: string) {
     signal.throwIfAborted()
     const operation = operationalAvailability()
     if (operation) return operation

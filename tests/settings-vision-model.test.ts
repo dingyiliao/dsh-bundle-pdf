@@ -28,7 +28,6 @@ async function withSettings(run: (harness: {
   container: HTMLElement
   select(suffix: string): HTMLSelectElement
   choose(suffix: string, value: string): Promise<void>
-  save(): Promise<void>
   click(label: string): Promise<void>
   fillHistory(value: string): Promise<void>
   state(): ConfigFormSnapshot
@@ -94,7 +93,6 @@ async function withSettings(run: (harness: {
         await act(async () => { const control = select(suffix); control.value = value
           control.dispatchEvent(new dom.Event('change', { bubbles: true })) })
       },
-      async save() { await act(async () => { container.querySelector('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })) }) },
       async click(label) { await act(async () => {
         const button = [...container.querySelectorAll('button')].find(control => control.textContent === label)
         assert.ok(button, `button ${label} exists`); button.click()
@@ -104,6 +102,7 @@ async function withSettings(run: (harness: {
           const control = container.querySelector<HTMLInputElement>('input[id$="-historyCapacity"]')!
           Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!.call(control, value)
           control.dispatchEvent(new dom.Event('input', { bubbles: true }))
+          control.dispatchEvent(new dom.FocusEvent('focusout', { bubbles: true }))
         })
       },
       async publishModels(next) { await act(async () => { modelSnapshot = next; for (const listener of modelListeners) listener() }) },
@@ -131,30 +130,25 @@ test('DSH vision follows the session without model lookup; explicit choices save
     assert.equal(h.modelRequests(), 0, 'follow mode performs no model-directory request')
     await h.choose('vision-source', 'specified')
     await h.choose('vision-source', 'follow')
-    assert.ok([...h.container.querySelectorAll('button')].find(button => button.textContent === 'Save settings')!.disabled,
-      'opening and leaving explicit mode without a choice adds no redundant configuration')
+    assert.equal(h.mutations.length, 0, 'opening and leaving explicit mode without a choice adds no redundant configuration')
     await h.choose('vision-source', 'specified')
     assert.equal(h.modelRequests(), 2)
     assert.deepEqual([...h.select('vision-model').querySelectorAll('optgroup')].map(group => group.label), ['Provider A', 'Provider B'])
-    await h.save()
     assert.equal(h.mutations.length, 0, 'explicit mode cannot silently save as follow before a model is chosen')
     assert.equal([...h.container.querySelectorAll('[role="alert"]')].filter(node => /Choose a currently available visual model/.test(node.textContent ?? '')).length, 1)
     await h.choose('vision-model', pair('provider/a', 'vision/one'))
     assert.equal(h.select('vision-effort').value, 'low')
     await h.choose('vision-effort', 'high')
-    await h.save()
-    assert.equal(h.mutations.length, 1)
+    assert.equal(h.mutations.length, 2, 'model and effort selectors each save their valid choice immediately')
     assert.deepEqual(h.state().value!.engineConfigurations?.image?.['dsh-vision'], {
       provider: 'provider/a', model: 'vision/one', reasoningEffort: 'high',
     })
     assert.equal(Object.keys(h.state().value!).some(key => /mode|source/i.test(key)), false, 'mode is not a persisted setting')
     await h.choose('vision-model', pair('provider/a', 'vision/two'))
     assert.equal(h.container.querySelector('select[id$="-vision-effort"]'), null, 'a new model never inherits an unsupported effort')
-    await h.save()
     assert.deepEqual(h.state().value!.engineConfigurations?.image?.['dsh-vision'], { provider: 'provider/a', model: 'vision/two' })
     await h.choose('vision-source', 'follow')
     assert.equal(h.container.querySelector('select[id$="-vision-model"]'), null)
-    await h.save()
     assert.equal(h.state().value!.engineConfigurations?.image?.['dsh-vision'], undefined, 'follow removes every model override')
     assert.deepEqual(h.state().value!.engineConfigurations?.image?.['other-engine'], { endpoint: 'fixture' })
   }, { ...defaultSettings, engineConfigurations: { image: { 'other-engine': { endpoint: 'fixture' } } } })
@@ -165,20 +159,21 @@ test('unavailable saved models remain visible and unrelated edits save; a newly 
     assert.equal(h.select('vision-source').value, 'specified')
     assert.equal(h.select('vision-model').value, pair('removed-provider', 'removed-model'))
     assert.equal(h.select('vision-model').selectedOptions[0]!.disabled, true)
-    await h.fillHistory('42'); await h.save()
+    await h.fillHistory('42')
     assert.equal(h.mutations.length, 1, 'catalog availability does not force changes to a saved route')
+    await h.publishModels({ status: 'loading', catalog })
     await h.choose('vision-model', pair('provider/b', 'vision/one'))
     await h.publishModels({ status: 'ready', catalog: { groups: [], failures: [] } })
     assert.equal(h.select('vision-model').value, pair('provider/b', 'vision/one'))
     assert.equal(h.select('vision-model').selectedOptions[0]!.disabled, true)
-    await h.save(); assert.equal(h.mutations.length, 1)
+    assert.equal(h.mutations.length, 1)
     await h.publishModels({ status: 'ready', catalog })
-    await h.save(); assert.equal(h.mutations.length, 2)
+    assert.equal(h.mutations.length, 2)
     assert.deepEqual(h.state().value!.engineConfigurations?.image?.['dsh-vision'], { provider: 'provider/b', model: 'vision/one' })
   }, { ...defaultSettings, engineConfigurations: { image: { 'dsh-vision': { provider: 'removed-provider', model: 'removed-model', reasoningEffort: 'retained' } } } })
 })
 
-test('discard, defaults, remote conflicts and replacement forms reset or preserve model-source intent correctly', async () => {
+test('discard and defaults clear local model-source intent while independent remote edits merge automatically', async () => {
   await withSettings(async h => {
     await h.choose('vision-source', 'specified')
     await h.click('Discard changes')
@@ -187,21 +182,18 @@ test('discard, defaults, remote conflicts and replacement forms reset or preserv
     await h.choose('vision-model', pair('provider/a', 'vision/one'))
     await h.click('Restore defaults')
     assert.equal(h.select('vision-source').value, 'follow')
-    await h.click('Discard changes')
+    const before = h.mutations.length
     await h.choose('vision-source', 'specified')
     await h.publishSettings({ ...defaultSettings, historyCapacity: 65 })
-    assert.match(h.container.textContent ?? '', /Settings changed elsewhere/)
-    await h.click('Keep my changes')
-    assert.equal(h.select('vision-source').value, 'specified', 'an explicit but not-yet-chosen draft survives conflict reconciliation')
-    await h.save(); assert.equal(h.mutations.length, 0)
-    await h.publishSettings({ ...defaultSettings, historyCapacity: 66 })
-    await h.click('Load latest settings')
+    assert.doesNotMatch(h.container.textContent ?? '', /Settings changed elsewhere/)
+    assert.equal(h.select('vision-source').value, 'specified', 'incomplete model-source intent survives independent remote edits')
+    assert.equal(h.mutations.length, before, 'incomplete specified mode cannot persist as follow')
+    await h.click('Discard changes')
     assert.equal(h.select('vision-source').value, 'follow')
-    const other: ConfigForm = { getSnapshot: () => ({ status: 'ready', value: { ...defaultSettings,
+    const otherSnapshot: ConfigFormSnapshot = { status: 'ready', value: { ...defaultSettings,
       engineConfigurations: { image: { 'dsh-vision': { provider: 'provider/a', model: 'vision/two' } } } },
-      revision: 1, writable: true, base: {}, user: {} }), subscribe: () => () => {}, mutate: async () => true }
-    // A stable snapshot is required by useSyncExternalStore.
-    const otherSnapshot = other.getSnapshot(); other.getSnapshot = () => otherSnapshot
+      revision: 1, writable: true, base: {}, user: {} }
+    const other: ConfigForm = { getSnapshot: () => otherSnapshot, subscribe: () => () => {}, mutate: async () => false }
     await h.render({ form: other })
     assert.equal(h.select('vision-source').value, 'specified')
     assert.equal(h.select('vision-model').value, pair('provider/a', 'vision/two'))
@@ -216,11 +208,11 @@ test('model failures, empty visual catalogs and partial catalogs offer retry wit
     assert.equal(h.modelRequests(), 2)
     await h.publishModels({ status: 'ready', catalog: { groups: [], failures: [] } })
     assert.match(h.container.textContent ?? '', /No model currently declares image input/)
-    await h.save(); assert.equal(h.mutations.length, 0)
+    assert.equal(h.mutations.length, 0)
     await h.publishModels({ status: 'ready', catalog: { ...catalog, failures: [{ id: 'offline', name: 'Offline provider', message: 'Unavailable' }] } })
     assert.match(h.container.textContent ?? '', /Some providers could not be loaded/)
     await h.choose('vision-model', pair('provider/a', 'vision/two'))
-    await h.save(); assert.equal(h.mutations.length, 1)
+    assert.equal(h.mutations.length, 1)
     assert.equal(h.container.querySelector('input[id$="-image-provider"],input[id$="-image-model"]'), null)
   }, { ...defaultSettings }, { status: 'error', error: 'Offline' })
 })
@@ -271,7 +263,7 @@ test('whitespace-only legacy model fields render as follow and padded saved IDs 
     assert.equal(h.select('vision-source').value, 'specified')
     assert.equal(h.select('vision-model').value, pair('provider/a', 'vision/one'))
     assert.equal(h.select('vision-model').selectedOptions[0]!.disabled, false)
-    await h.choose('vision-effort', 'high'); await h.save()
+    await h.choose('vision-effort', 'high')
     assert.deepEqual(h.state().value!.engineConfigurations?.image?.['dsh-vision'], {
       provider: 'provider/a', model: 'vision/one', reasoningEffort: 'high',
     })

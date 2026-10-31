@@ -232,18 +232,6 @@
   text-align: right;
 }
 
-.dsh-pdf-settings-save {
-  padding: 5px 14px;
-  border: 1px solid transparent;
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-layer-3);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  cursor: pointer;
-}
-
 .dsh-pdf-settings button:disabled {
   opacity: 0.4;
   cursor: default;

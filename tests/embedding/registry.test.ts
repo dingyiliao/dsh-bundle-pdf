@@ -174,3 +174,32 @@ test('bad provider failures and availability reasons do not expose inputs or cre
   })
   registry.dispose()
 })
+
+test('document-only fingerprints are optional, bounded and checked against reported operation identities', async () => {
+  const base = engine()
+  for (const invalid of ['', 'x'.repeat(513), 123]) {
+    const registry = new EmbeddingRegistry()
+    registry.register({ ...base, describe: config => ({ ...base.describe(config), documentFingerprint: invalid as never }) })
+    try { assert.throws(() => registry.describe(binding), code('invalid-result')) }
+    finally { registry.dispose() }
+  }
+  const registry = new EmbeddingRegistry()
+  registry.register({ ...base, describe: config => ({ ...base.describe(config), documentFingerprint: 'verified-document-model' }),
+    async embed() { return { vectors: [[3, 4]], model: { ...base.describe({}), documentFingerprint: 'unverified-document-model' } } } })
+  try { await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), code('invalid-result')) }
+  finally { registry.dispose() }
+})
+
+test('a document encoder changing during inference or final validation cannot reuse the previous query fingerprint', async () => {
+  for (const moment of ['inference', 'delivery']) {
+    const registry = new EmbeddingRegistry(), base = engine()
+    let documentFingerprint = 'original-doc-model', descriptions = 0
+    registry.register({ ...base,
+      describe: config => ({ ...base.describe(config), documentFingerprint: moment === 'delivery' && ++descriptions >= 3
+        ? 'replacement-doc-model' : documentFingerprint }),
+      async embed() { if (moment === 'inference') documentFingerprint = 'replacement-doc-model'; return [[3, 4]] },
+    })
+    try { await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), code('invalid-result')) }
+    finally { registry.dispose() }
+  }
+})

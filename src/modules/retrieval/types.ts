@@ -11,6 +11,9 @@ export interface RetrievalDocument {
 export interface RetrievalEmbedding {
   /** Includes provider, model revision, dimensions and query/document encoding configuration. */
   fingerprint: string
+  /** Provider-attested document encoding identity. When absent the complete
+   * fingerprint/binding pair remains the conservative persistent vector key. */
+  documentFingerprint?: string
   /** Registration lifetime, separate from the reusable model/config fingerprint. */
   generation?: string
   /** Exact engine binding identity; third-party fingerprints may omit configuration. */

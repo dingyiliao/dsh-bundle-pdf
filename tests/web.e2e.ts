@@ -56,6 +56,31 @@ async function executeScaffoldTool(tools: Context['tools'], input: ToolExecution
   return batch.results[0]!.result
 }
 
+it('persists a valid setting when Escape closes the editor before its typing debounce', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser), tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-settings-close-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached' })
+    await openSettings(page, 'en')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    await settings.getByRole('spinbutton', { name: 'Navigation history capacity' }).fill('77')
+    // No blur, submit, or debounce wait: leaving the view must flush its intent.
+    await page.keyboard.press('Escape')
+    await settings.waitFor({ state: 'hidden' })
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value)
+      .toMatchObject({ historyCapacity: 77 })
+    await openSettings(page, 'en')
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    await expect.poll(() => settings.getByRole('spinbutton', { name: 'Navigation history capacity' }).inputValue()).toBe('77')
+    expect(tripwire.pageErrors).toEqual([])
+  } finally { await browser?.close(); await scaffold.close() }
+})
+
 it('updates engine settings live when a contributor plugin loads and unloads, retaining missing selections', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined
@@ -75,14 +100,14 @@ it('updates engine settings live when a contributor plugin loads and unloads, re
       .toEqual(['Reading and navigation', 'Explanation prompts'])
     expect(await pdfSettings.getByText('Engines run on demand.', { exact: false }).count()).toBe(1)
     expect(await pdfSettings.locator('textarea').count()).toBe(3)
-    const rebuildIndex = settings.getByRole('button', { name: 'Rebuild index', exact: true })
+    const rebuildIndex = settings.getByRole('button', { name: 'Clear all index caches', exact: true })
     await rebuildIndex.click()
     await settings.getByText('Index cache cleared. Indexes rebuild in the background or when searched.', { exact: true }).waitFor()
     const embedding = settings.getByRole('combobox', { name: 'Semantic search engine', exact: true })
     await embedding.selectOption('local-qwen3-embedding')
     expect(await settings.getByRole('textbox', { name: 'Model revision', exact: true }).count()).toBe(0)
     expect(await embedding.locator('..').locator('.dsh-pdf-settings-engine-kind').textContent()).toBe('Service')
-    expect(await rebuildIndex.isDisabled()).toBe(true)
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     await embedding.selectOption('none')
     if (process.env.PDF_SETTINGS_SCREENSHOT) await settings.screenshot({ path: process.env.PDF_SETTINGS_SCREENSHOT })
     const ocr = settings.getByRole('combobox', { name: 'OCR engine', exact: true })
@@ -120,8 +145,12 @@ it('updates engine settings live when a contributor plugin loads and unloads, re
     await settings.getByRole('textbox', { name: 'Fixture credential reference' }).fill('fixture.credential')
     await image.selectOption('fixture.image')
     await translation.selectOption('fixture.translation')
-    await settings.getByRole('button', { name: 'Save settings', exact: true }).click()
-    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await settings.getByRole('textbox', { name: 'Fixture credential reference' }).blur()
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value).toMatchObject({
+      ocrEngine: 'fixture.ocr', imageEngine: 'fixture.image', translationEngine: 'fixture.translation',
+      engineConfigurations: { ocr: { 'fixture.ocr': { language: 'eng', accuracy: 3, enabled: true, credential: 'fixture.credential' } } },
+    })
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     await contributor.dispose()
     contributor = undefined
     await expect.poll(() => ocr.locator('option[value="fixture.ocr"]').isDisabled(), { timeout: 10_000 }).toBe(true)
@@ -133,8 +162,9 @@ it('updates engine settings live when a contributor plugin loads and unloads, re
     expect(await settings.getByRole('textbox', { name: 'Fixture language' }).count()).toBe(0)
     // Missing providers must not block unrelated settings edits or force fallback.
     await settings.getByRole('spinbutton', { name: 'Navigation history capacity' }).fill('91')
-    await settings.getByRole('button', { name: 'Save settings', exact: true }).click()
-    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await settings.getByRole('spinbutton', { name: 'Navigation history capacity' }).blur()
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value).toMatchObject({ historyCapacity: 91 })
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     expect(await ocr.inputValue()).toBe('fixture.ocr')
     expect(tripwire.pageErrors).toEqual([])
     await page.setViewportSize({ width: 640, height: 900 })
@@ -189,8 +219,8 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     const settings = page.getByRole('dialog', { name: 'Settings' })
     await settings.getByRole('button', { name: 'PDF', exact: true }).click()
     await settings.getByRole('combobox', { name: 'Semantic search engine', exact: true }).selectOption('fixture.indexing')
-    await settings.getByRole('button', { name: 'Save settings', exact: true }).click()
-    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value).toMatchObject({ embeddingEngine: 'fixture.indexing' })
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     await page.keyboard.press('Escape')
     await page.getByRole('treeitem').filter({ hasText: 'PDF indexing test' }).click()
     const column = page.locator('[data-rightbar-col]')
@@ -201,11 +231,14 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     await column.locator('[data-files-entry="file"]').getByRole('button', { name, exact: true }).click()
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible' })
-    await expect.poll(() => pending.length).toBe(1)
     await reader.locator('.dsh-pdf-activity-trigger').click()
     const tasks = reader.locator('.dsh-pdf-activity-popover')
     const progress = tasks.getByRole('progressbar', { name: `Read pages: ${name}`, exact: true })
     await progress.waitFor({ state: 'visible' })
+    // The Reader shell mounts before opening and preparing its durable plan.
+    // Wait for the actual embedding phase before inspecting the held request.
+    await tasks.getByText('Computing embeddings…', { exact: true }).waitFor()
+    await expect.poll(() => pending.length).toBe(1)
     expect(await progress.getAttribute('max')).toBe('3')
     expect(await tasks.getByRole('progressbar', { name: `Indexed passages: ${name}`, exact: true }).count()).toBe(1)
     await tasks.getByRole('button', { name: `Cancel indexing: ${name}`, exact: true }).click()
@@ -213,7 +246,7 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     await expect.poll(() => pending[0]!.signal.aborted).toBe(true)
     // Search owns manual preparation; task notifications own progress and cancellation.
     await reader.getByRole('tab', { name: 'Search', exact: true }).click()
-    const manual = reader.locator('.dsh-pdf-search-indexing').getByRole('button')
+    const manual = reader.locator('.dsh-pdf-search-indexing').getByRole('button', { name: /^(Index PDF|Update index)$/ })
     await expect.poll(() => manual.isEnabled()).toBe(true)
     await manual.click()
     await expect.poll(() => pending.length).toBe(2)
@@ -221,7 +254,7 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     await progress.waitFor({ state: 'visible' })
     pending[1]!.complete()
     await tasks.getByText('Index ready', { exact: true }).waitFor()
-    await expect.poll(() => manual.textContent()).toBe('Rebuild index')
+    await expect.poll(() => manual.textContent()).toBe('Update index')
     await expect.poll(() => manual.isEnabled()).toBe(true)
     // Another resource Session opens the same bytes with its own working-copy
     // identity. It must reuse the completed resident index, even without a new
@@ -236,7 +269,7 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     await column.locator('[data-files-reload]').click()
     await column.locator('[data-files-entry="file"]').getByRole('button', { name, exact: true }).click()
     await reader.getByRole('tab', { name: 'Search', exact: true }).click()
-    await expect.poll(() => manual.textContent()).toBe('Rebuild index')
+    await expect.poll(() => manual.textContent()).toBe('Update index')
     if (!await tasks.isVisible()) await reader.locator('.dsh-pdf-activity-trigger').click()
     await tasks.getByText('Index ready', { exact: true }).waitFor()
     expect(pending).toHaveLength(2)
@@ -269,7 +302,7 @@ async function mountIndexingControls(page: BrowserPage) {
   await page.setContent('<div id="indexing-root" style="height:100%;width:100%"></div>')
   await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f5f5f5; --dsw-alias-bg-layer-1:#fff; --dsw-alias-label-primary:#222; --dsw-alias-label-secondary:#666; --dsw-alias-border-l2:#ddd; --dsw-alias-link:#4278ed; --dsw-alias-button-primary-fill:#161718; --dsw-alias-label-primary-foreground:#fff; --dsw-alias-bg-document-preview:#edf0f3; --dsw-alias-interactive-bg-hover:#e7e9ed; } html,body { margin:0; height:100%; } ${css.join('\n')}` })
   await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
-  await page.locator('[data-reader-view="first"] .dsh-pdf-search-indexing').getByRole('button').waitFor()
+  await page.locator('[data-reader-view="first"] .dsh-pdf-search-indexing').getByRole('button', { name: 'Index PDF', exact: true }).waitFor()
 }
 
 const indexingFixture = (page: BrowserPage) => ({
@@ -324,7 +357,7 @@ it('keeps indexing controls in search and shares dismissible task notifications 
     await saveIndexingControlsShot(page, 'indexing-ready')
     await task.getByRole('button', { name: 'Done: alpha.pdf', exact: true }).click()
     expect(await first.locator('[data-status-id="indexing:alpha"]').count()).toBe(0)
-    await expect.poll(() => search.getByRole('button').textContent()).toBe('Rebuild index')
+    await expect.poll(() => search.getByRole('button', { name: 'Update index', exact: true }).textContent()).toBe('Update index')
     const beforeRepublish = await fixture.revision()
     await fixture.republish()
     await expect.poll(fixture.revision).not.toBe(beforeRepublish)
@@ -335,8 +368,8 @@ it('keeps indexing controls in search and shares dismissible task notifications 
     const mirror = page.locator('[data-reader-view="mirror"]')
     await openIndexingTasks(mirror)
     expect(await mirror.locator('[data-status-id="indexing:alpha"]').count()).toBe(0)
-    await mirror.locator('.dsh-pdf-search-indexing').getByRole('button', { name: 'Rebuild index', exact: true }).click()
-    await expect.poll(async () => (await fixture.calls()).at(-1)).toEqual({ action: 'rebuild', sessionId: 'session-a', documentId: 'alpha' })
+    await mirror.locator('.dsh-pdf-search-indexing').getByRole('button', { name: 'Update index', exact: true }).click()
+    await expect.poll(async () => (await fixture.calls()).at(-1)).toEqual({ action: 'start', sessionId: 'session-a', documentId: 'alpha' })
     await openIndexingTasks(mirror)
     const mirrorTask = mirror.locator('[data-status-id="indexing:alpha"]')
     await mirrorTask.getByRole('progressbar', { name: 'Read pages: alpha.pdf', exact: true }).waitFor()
@@ -344,7 +377,7 @@ it('keeps indexing controls in search and shares dismissible task notifications 
     await expect.poll(() => mirrorTask.getAttribute('data-tone')).toBe('error')
     await saveIndexingControlsShot(page, 'indexing-failed')
     await mirrorTask.getByRole('button', { name: 'Rebuild index: alpha.pdf', exact: true }).click()
-    await expect.poll(async () => (await fixture.calls()).map(call => call.action)).toEqual(['start', 'cancel', 'start', 'rebuild', 'rebuild'])
+    await expect.poll(async () => (await fixture.calls()).map(call => call.action)).toEqual(['start', 'cancel', 'start', 'start', 'rebuild'])
     await fixture.publish('ready')
     await mirrorTask.getByRole('button', { name: 'Done: alpha.pdf', exact: true }).click()
     await fixture.show('first')
@@ -377,16 +410,77 @@ it('keeps indexing actions reachable in the short search panel and hides manual 
       return { inside: button.left >= panel.left && button.right <= panel.right && button.top >= panel.top && button.bottom <= panel.bottom }
     })
     expect(bounds.inside).toBe(true)
+    // Settings actions must also fit the true minimum drawer width. Their
+    // complete labels can wrap instead of widening the shared scrollport.
+    const sidebar = reader.locator('.dsh-pdf-sidebar')
+    await sidebar.locator('.dsh-pdf-sidebar-divider').press('Home')
+    await sidebar.evaluate(element => Promise.allSettled(element.getAnimations({ subtree: true }).map(animation => animation.finished)))
+    const scroll = reader.locator('.dsh-pdf-search-panel > .dsh-pdf-panel-scroll')
+    expect(await scroll.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+    const settingsActions = search.locator('.dsh-pdf-index-secondary-actions button')
+    expect(await settingsActions.count()).toBe(2)
+    const settingsBounds = await settingsActions.evaluateAll(buttons => buttons.map(button => {
+      const box = button.getBoundingClientRect(), viewport = button.closest('.dsh-pdf-panel-scroll')!.getBoundingClientRect()
+      return { fits: box.left >= viewport.left - 1 && box.right <= viewport.right + 1,
+        textFits: button.scrollWidth <= button.clientWidth + 1 && button.scrollHeight <= button.clientHeight + 1 }
+    }))
+    expect(settingsBounds.every(button => button.fits && button.textFits)).toBe(true)
     await saveIndexingControlsShot(page, 'indexing-search-short')
     expect(await reader.locator('[data-pdf-tool-rail] [data-document-command="index"]').count()).toBe(0)
     await reader.locator('.dsh-pdf-document-menu > summary').click()
-    expect(await reader.locator('.dsh-pdf-tools-menu').getByRole('button', { name: /Index PDF|Rebuild index/ }).count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-tools-menu').getByRole('button', { name: /Index PDF|Update index|Recompute entire index/ }).count()).toBe(0)
     await page.keyboard.press('Escape')
     await reader.locator('.dsh-pdf-activity-trigger').click()
     await reader.getByRole('button', { name: 'Cancel indexing: alpha.pdf', exact: true }).click()
     await fixture.disable()
-    await expect.poll(() => search.getByRole('button').count()).toBe(0)
+    await expect.poll(() => search.getByRole('button', { name: /^(Index PDF|Update index|Recompute entire index)$/ }).count()).toBe(0)
+    expect(await search.getByRole('combobox', { name: 'Embedding engine', exact: true }).isEnabled()).toBe(true)
+    expect(await search.getByRole('button', { name: 'Use current defaults', exact: true }).isEnabled()).toBe(true)
     expect(await fixture.errors()).toEqual([])
+  } finally { await browser.close() }
+})
+
+it('saves document index choices across mirror views without starting work or changing another PDF', async () => {
+  const browser = await launchBrowser()
+  try {
+    const page = await browser.newPage({ viewport: { width: 760, height: 620 } })
+    onTestFailed(() => saveFailureShot(page, 'pdf-document-index-settings'))
+    const tripwire = watchConsole(page)
+    await mountIndexingControls(page)
+    const fixture = indexingFixture(page)
+    const first = page.locator('[data-reader-view="first"]')
+    const settings = first.locator('.dsh-pdf-search-indexing')
+    await fixture.publish('ready')
+    await expect.poll(() => settings.getByRole('button', { name: 'Update index', exact: true }).isEnabled()).toBe(true)
+    await settings.getByRole('checkbox', { name: 'Include image descriptions', exact: true }).check()
+    await expect.poll(fixture.calls).toEqual([{ action: 'configure', sessionId: 'session-a', documentId: 'alpha' }])
+    await settings.getByText('Settings saved. The existing index is still using its previous settings.', { exact: true }).waitFor()
+    expect(await settings.getByRole('combobox', { name: 'Image understanding engine', exact: true }).inputValue()).toBe('fixture-image')
+    expect(await first.locator('[data-status-id="indexing:alpha"][data-tone="success"]').count()).toBe(1)
+
+    await fixture.show('mirror')
+    const mirror = page.locator('[data-reader-view="mirror"]')
+    const mirrorSettings = mirror.locator('.dsh-pdf-search-indexing')
+    expect(await mirrorSettings.getByRole('checkbox', { name: 'Include image descriptions', exact: true }).isChecked()).toBe(true)
+    await mirrorSettings.getByRole('button', { name: 'Update index', exact: true }).click()
+    await expect.poll(async () => (await fixture.calls()).map(call => call.action)).toEqual(['configure', 'start'])
+    await fixture.publish('ready')
+    await mirrorSettings.getByText('Settings saved for this PDF.', { exact: true }).waitFor()
+    await mirrorSettings.getByRole('combobox', { name: 'Embedding engine', exact: true }).selectOption('none')
+    await expect.poll(async () => (await fixture.calls()).map(call => call.action)).toEqual(['configure', 'start', 'configure'])
+    await expect.poll(() => mirrorSettings.getByRole('button', { name: 'Update index', exact: true }).count()).toBe(0)
+    expect(await mirrorSettings.getByRole('combobox', { name: 'Embedding engine', exact: true }).isEnabled()).toBe(true)
+    await mirrorSettings.getByRole('button', { name: 'Use current defaults', exact: true }).click()
+    await expect.poll(async () => (await fixture.calls()).map(call => call.action)).toEqual(['configure', 'start', 'configure', 'defaults'])
+    await expect.poll(() => mirrorSettings.getByRole('combobox', { name: 'Embedding engine', exact: true }).inputValue()).toBe('fixture-embedding')
+    expect(await mirrorSettings.getByRole('checkbox', { name: 'Include image descriptions', exact: true }).isChecked()).toBe(false)
+
+    await fixture.show('other-session')
+    const other = page.locator('[data-reader-view="other-session"] .dsh-pdf-search-indexing')
+    expect(await other.getByRole('checkbox', { name: 'Include image descriptions', exact: true }).isChecked()).toBe(false)
+    expect(await other.getByRole('combobox', { name: 'Embedding engine', exact: true }).inputValue()).toBe('fixture-embedding')
+    expect(await fixture.errors()).toEqual([])
+    expect(tripwire.pageErrors).toEqual([])
   } finally { await browser.close() }
 })
 
@@ -2043,6 +2137,9 @@ it('remembers the selected translation language for the next selection and after
         await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
       }
       await reader.waitFor({ state: 'visible', timeout: 20_000 })
+      // The Reader shell mounts before a cold native open has returned.
+      await reader.locator('[data-pdf-page="1"] [data-pdf-text="active"] span[data-pdf-run]').first()
+        .waitFor({ state: 'visible', timeout: 20_000 })
       await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
         .toContain('Browser PDF page one')
     }
@@ -3645,16 +3742,17 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     const historyCapacity = settings.getByRole('spinbutton', { name: 'Navigation history capacity' })
     await expect.poll(() => historyCapacity.isEnabled()).toBe(true)
     await historyCapacity.fill('101')
-    await settings.getByRole('button', { name: 'Save settings' }).click()
-    await settings.getByText('Settings saved', { exact: true }).waitFor()
+    await historyCapacity.blur()
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value).toMatchObject({ historyCapacity: 101 })
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     await page.keyboard.press('Escape')
     await openSettings(page, 'en')
     await settings.getByRole('button', { name: 'PDF', exact: true }).click()
     await expect.poll(() => historyCapacity.inputValue()).toBe('101')
     await settings.getByRole('button', { name: 'Restore defaults' }).click()
     await expect.poll(() => historyCapacity.inputValue()).toBe('100')
-    await settings.getByRole('button', { name: 'Discard changes' }).click()
-    await expect.poll(() => historyCapacity.inputValue()).toBe('101')
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value).toMatchObject({ historyCapacity: 100 })
+    await expect.poll(() => settings.locator('.dsh-pdf-settings-save-status').textContent()).toMatch(/^Settings are up to date/)
     await page.keyboard.press('Escape')
     await page.getByRole('treeitem').filter({ hasText: 'PDF browser test' }).click()
     const column = page.locator('[data-rightbar-col]')
@@ -4136,7 +4234,31 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     await expect.poll(() => save.isEnabled()).toBe(true)
     const editedNoteFrame = await reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first().elementHandle()
     expect(editedNoteFrame).not.toBeNull()
-    await save.click()
+    // Hold the same-resource refresh caused by Save. The old complete frame
+    // and toolbar remain visible, so a single user click must wait for the
+    // replacement display owner rather than disappear in the ownership gap.
+    let releaseResourceOpen!: () => void
+    const pendingResourceOpen = new Promise<void>(resolve => { releaseResourceOpen = resolve })
+    let holdResourceOpen = true, heldResourceOpens = 0
+    await page.route('**/api/pdf.dispatch.v2', async route => {
+      if (holdResourceOpen && route.request().method() === 'POST' && route.request().postDataJSON()?.payload?.action === 'open') {
+        heldResourceOpens++
+        await pendingResourceOpen
+      }
+      try { await route.continue() } catch { /* A superseded resource open is cancelled. */ }
+    })
+    try {
+      await save.click()
+      await expect.poll(() => heldResourceOpens).toBeGreaterThan(0)
+      const screenshotCommand = toolbar.getByRole('button', { name: 'Region screenshot', exact: true })
+      expect(await screenshotCommand.isEnabled()).toBe(true)
+      expect(await reader.locator('canvas[data-pdf-raster-ready="true"]').count()).toBeGreaterThan(0)
+      await screenshotCommand.click()
+      expect(await reader.locator('.dsh-pdf-mode-region').count()).toBe(0)
+    } finally {
+      holdResourceOpen = false
+      releaseResourceOpen()
+    }
     await expect.poll(() => save.isDisabled()).toBe(true)
     await expect.poll(() => savedNoteContents(path)).toEqual(['Edited standalone note'])
     // The disk write can precede Client acceptance and native replacement.
@@ -4155,7 +4277,8 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
     // The action stays discoverable, but this keyless fixture has no OCR-capable
     // session model, so the Host reports it unavailable.
     expect(await toolbar.getByRole('button', { name: 'OCR page' }).isDisabled()).toBe(true)
-    await toolbar.getByRole('button', { name: 'Region screenshot', exact: true }).click()
+    // The click above completes after the replacement is published, without
+    // requiring a second click. Keep exercising capture and all later actions.
     await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
     await expect.poll(() => reader.locator('.dsh-pdf-mode-inline').getAttribute('aria-label')).toBe('Drag to capture an area')
     expect(await reader.locator('.dsh-pdf-notice').filter({ hasText: 'Drag to capture an area' }).count()).toBe(0)

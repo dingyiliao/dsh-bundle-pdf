@@ -24,6 +24,9 @@ export interface EmbeddingModel {
   /** Includes query instructions, document encoding and normalization version. */
   encoding: string
   fingerprint: string
+  /** Optional identity of document vectors only. Excludes query instructions
+   * and transport limits; providers own and must attest its encoding contract. */
+  documentFingerprint?: string
 }
 
 export interface EmbeddingRequest {

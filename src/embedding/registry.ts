@@ -77,13 +77,13 @@ export class EmbeddingRegistry {
       const currentModel = this.model(engine, config)
       if (output && typeof output === 'object' && 'vectors' in output && 'model' in output) {
         const reported = output.model
-        const identity = ['engineId', 'engineVersion', 'model', 'modelRevision', 'dimensions', 'encoding', 'fingerprint'] as const
+        const identity = ['engineId', 'engineVersion', 'model', 'modelRevision', 'dimensions', 'encoding', 'fingerprint', 'documentFingerprint'] as const
         if (!reported || identity.some(key => reported[key] !== currentModel[key])) {
           throw new EmbeddingError('invalid-result', 'The embedding response has an unverified model identity.')
         }
         returned = output.vectors
         resultModel = currentModel
-      } else if (currentModel.fingerprint !== model.fingerprint) {
+      } else if (currentModel.fingerprint !== model.fingerprint || currentModel.documentFingerprint !== model.documentFingerprint) {
         throw new EmbeddingError('invalid-result', 'The embedding model changed during the request.')
       }
       if (!Array.isArray(returned) || returned.length !== texts.length
@@ -98,7 +98,8 @@ export class EmbeddingRegistry {
         if (!Number.isFinite(norm) || norm < 1e-12) throw new EmbeddingError('invalid-result', 'The embedding response contains an empty vector.')
         return vector.map(value => value / norm)
       })
-      if (this.model(engine, config).fingerprint !== resultModel.fingerprint) {
+      const finalModel = this.model(engine, config)
+      if (finalModel.fingerprint !== resultModel.fingerprint || finalModel.documentFingerprint !== resultModel.documentFingerprint) {
         throw new EmbeddingError('invalid-result', 'The embedding model changed during the request.')
       }
       return { vectors, model: resultModel }
@@ -131,6 +132,7 @@ export class EmbeddingRegistry {
     }
     if (!model || model.engineId !== engine.descriptor.id || model.engineVersion !== engine.descriptor.version
         || [model.model, model.modelRevision, model.encoding, model.fingerprint].some(value => typeof value !== 'string' || !value || value.length > 512)
+        || model.documentFingerprint !== undefined && (typeof model.documentFingerprint !== 'string' || !model.documentFingerprint || model.documentFingerprint.length > 512)
         || !Number.isSafeInteger(model.dimensions) || model.dimensions < 1 || model.dimensions > this.limits.maxDimensions
         || !Number.isSafeInteger(model.maxBatchSize) || model.maxBatchSize < 1
         || !Number.isSafeInteger(model.maxInputCharacters) || model.maxInputCharacters < 1) {

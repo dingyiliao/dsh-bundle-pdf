@@ -322,7 +322,8 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
         item.documentId === documentId && item.contentVersion === result.contentVersion)
       const selectedBindings = JSON.stringify(routing.bindings())
       const capabilities = await documentCapabilities(observed, sessionId, {
-        ocr: routing.ocr(), image: routing.image(), retrieval,
+        ocr: routing.ocr(), image: routing.image(),
+        retrieval: { availability: (owner, signal) => retrieval.availability(owner, signal, documentId) },
         navigation: agentNavigation !== undefined, visible: visibleInReader,
       }, exec.signal)
       const latest = workspaces.readSnapshot(sessionId, documentId)
@@ -359,7 +360,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
       const sessionId = requireSession(exec)
       return relatedSearches.run(sessionId, args, exec.signal, async (input, cursor) => {
         background.touch(sessionId, input.documentId)
-        const available = await retrieval.availability(sessionId, exec.signal)
+        const available = await retrieval.availability(sessionId, exec.signal, input.documentId)
         if (available.status !== 'available') throw Object.assign(new Error(available.reason), { code: 'pdf/semantic-unavailable' })
         const { nextCursor, ...value } = await retrieval.search(sessionId, { ...input, mode: 'semantic', cursor }, exec.signal)
         return { value, nextCursor }

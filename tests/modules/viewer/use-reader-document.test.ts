@@ -22,6 +22,7 @@ async function withDocument(run: (fixture: {
   state(): ReturnType<typeof useReaderDocument>
   options: ReaderDocumentOptions
   render(options: ReaderDocumentOptions): Promise<void>
+  unmount(): Promise<void>
   loaded: string[]
   failed: string[]
   switches: string[]
@@ -47,7 +48,8 @@ async function withDocument(run: (fixture: {
   const render = async (next: ReaderDocumentOptions) => {
     await act(async () => { root.render(React.createElement(Harness, next)); await new Promise(resolve => setTimeout(resolve, 5)) })
   }
-  try { await run({ state: () => latest!, options, render, loaded, failed, switches }) }
+  const unmount = async () => { await act(async () => { root.render(null) }) }
+  try { await run({ state: () => latest!, options, render, unmount, loaded, failed, switches }) }
   finally {
     await act(async () => root.unmount())
     dom.close()
@@ -94,5 +96,105 @@ test('open failure belongs to the current owner and is not reported as loaded', 
     assert.deepEqual(loaded, [])
     assert.ok(failed.some(message => message.includes('cannot open')))
     assert.ok(failed.includes('failed'))
+  })
+})
+
+test('commands wait for a same-resource refresh to publish its replacement display owner', async () => {
+  await withDocument(async ({ options, state, render }) => {
+    await render(options)
+    const first = await state().waitForReady()
+    assert.equal(typeof first, 'number')
+    let finish!: (snapshot: WorkspaceSnapshot) => void
+    options.api.open = () => new Promise(resolve => { finish = resolve })
+    await render({ ...options, content: { ...options.content, revision: 2 } })
+    assert.ok(state().snapshot)
+    assert.ok(state().pdf, 'the last rendered PDF stays visible while its replacement opens')
+    assert.equal(state().documentReady(), false)
+    let settled = false
+    const readiness = state().waitForReady()
+    assert.equal(state().waitForReady(), readiness, 'one resource shares one readiness wait instead of accumulating callbacks')
+    const waiting = readiness.then(token => { settled = true; return token })
+    await Promise.resolve()
+    assert.equal(settled, false)
+    await act(async () => { finish({ ...makeSnapshot('doc-1'), revision: 2 }); await Promise.resolve() })
+    const replacement = await waiting
+    assert.equal(typeof replacement, 'number')
+    assert.notEqual(replacement, first)
+    assert.equal(state().documentReady(), true)
+    assert.equal(await state().waitForReady(), replacement)
+  })
+})
+
+for (const boundary of ['resource', 'session', 'api', 'tab'] as const) {
+  test(`a pending ready command cannot cross the ${boundary} ownership boundary`, async () => {
+    await withDocument(async ({ options, state, render }) => {
+      let finishOld!: (snapshot: WorkspaceSnapshot) => void
+      options.api.open = () => new Promise(resolve => { finishOld = resolve })
+      await render(options)
+      const waitOld = state().waitForReady
+      const waiting = waitOld()
+      const nextApi = { ...options.api, open: async () => makeSnapshot('replacement') }
+      const next = { ...options,
+        ...(boundary === 'resource' ? { resourceAddress: 'file:///tmp/next.pdf' } : {}),
+        ...(boundary === 'session' ? { sessionId: 'chat-2' } : {}),
+        ...(boundary === 'api' ? { api: nextApi } : {}),
+        ...(boundary === 'tab' ? { tabSignal: new AbortController().signal } : {}),
+      }
+      if (boundary !== 'api') options.api.open = nextApi.open
+      await render(next)
+      assert.equal(await waiting, false)
+      assert.equal(await waitOld(), false, 'an old callback cannot claim a new resource owner')
+      await act(async () => { finishOld(makeSnapshot('stale')); await Promise.resolve() })
+      assert.equal(state().snapshot?.id, 'replacement')
+      assert.equal(typeof await state().waitForReady(), 'number')
+    })
+  })
+}
+
+test('tab abort and Reader unmount settle pending commands even when the carrier never replies', async () => {
+  for (const boundary of ['abort', 'unmount'] as const) {
+    await withDocument(async ({ options, state, render, unmount }) => {
+      options.api.open = () => new Promise(() => {})
+      const tab = new AbortController()
+      await render({ ...options, tabSignal: tab.signal })
+      const wait = state().waitForReady
+      const waiting = wait()
+      if (boundary === 'abort') tab.abort()
+      else await unmount()
+      assert.equal(await waiting, false)
+      assert.equal(await wait(), false)
+    })
+  }
+})
+
+test('an open failure settles pending commands and a later refresh can recover', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    let reject!: (error: Error) => void
+    options.api.open = () => new Promise((_resolve, fail) => { reject = fail })
+    await render(options)
+    const waiting = state().waitForReady()
+    await act(async () => { reject(new Error('open unavailable')); await Promise.resolve() })
+    assert.equal(await waiting, false)
+    assert.equal(await state().waitForReady(), false)
+    assert.ok(failed.some(message => message.includes('open unavailable')))
+    options.api.open = async () => makeSnapshot('recovered')
+    await render({ ...options, content: { ...options.content, revision: 2 } })
+    assert.equal(typeof await state().waitForReady(), 'number')
+    assert.equal(state().snapshot?.id, 'recovered')
+  })
+})
+
+test('a native document initialization failure settles waiting commands', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    let finish!: (snapshot: WorkspaceSnapshot) => void
+    options.api.open = () => new Promise(resolve => { finish = resolve })
+    await render(options)
+    const waiting = state().waitForReady()
+    const snapshot = makeSnapshot('native-failure')
+    Object.defineProperty(snapshot.document, 'pageCount', { get() { throw new Error('native init failed') } })
+    await act(async () => { finish(snapshot); await Promise.resolve() })
+    assert.equal(await waiting, false)
+    assert.equal(state().documentReady(), false)
+    assert.ok(failed.some(message => message.includes('native init failed')))
   })
 })
