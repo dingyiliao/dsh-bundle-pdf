@@ -25,6 +25,7 @@ export function createDocumentIndexes(options: {
   const runtimes = new Map<string, Runtime>()
   const candidates = new Map<string, Plan>()
   const activeIds = new Map<string, string>()
+  const requests = new Set<AbortController>()
   const listeners = new Set<() => void>()
   let allocations = Promise.resolve(), reset: Promise<void> | undefined, disposal: Promise<void> | undefined
   let closed = false, resetFailed = false, clock = 0
@@ -42,9 +43,16 @@ export function createDocumentIndexes(options: {
   }
   function active(path: string): Plan {
     const value = options.policies.active(path)
-    return { value, id: activeIds.get(path) ?? identity(value) }
+    return { value, id: value.policy.embeddingEngine === 'none' ? identity(value) : activeIds.get(path) ?? identity(value) }
   }
+  const inactiveReason = () => options.policies.enabled()
+    ? 'Build or update this PDF\'s semantic index in the search panel before searching.'
+    : 'Semantic search is disabled in PDF settings.'
   function refresh() {
+    if (!options.policies.enabled()) {
+      candidates.clear()
+      for (const request of requests) request.abort(Object.assign(new Error('Semantic search is disabled in PDF settings.'), { code: 'pdf/retrieval-engine-unavailable' }))
+    }
     const paths = new Set(options.documents().flatMap(owner => owner.path ? [owner.path] : []))
     for (const path of candidates.keys()) if (!paths.has(path)) candidates.delete(path)
     for (const path of activeIds.keys()) if (!paths.has(path)) activeIds.delete(path)
@@ -55,10 +63,14 @@ export function createDocumentIndexes(options: {
     const owner = document(sessionId, documentId)
     try { return await operation(owner) } finally { refresh() }
   }
-  async function use<Result>(plan: Plan, operation: (api: PdfRetrieval) => Promise<Result>): Promise<Result> {
+  async function use<Result>(plan: Plan, signal: AbortSignal, operation: (api: PdfRetrieval, signal: AbortSignal) => Promise<Result>): Promise<Result> {
     check()
+    const controller = new AbortController(), active = AbortSignal.any([signal, controller.signal])
+    requests.add(controller)
     const acquired = allocations.then(async () => {
       check()
+      active.throwIfAborted()
+      if (!options.policies.enabled()) fail('pdf/retrieval-engine-unavailable', 'Semantic search is disabled in PDF settings.')
       let runtime = runtimes.get(plan.id)
       if (runtime?.retired) {
         if (runtime.users) fail('pdf/retrieval-busy', 'The previous index engine is finishing a request. Retry shortly.')
@@ -78,16 +90,22 @@ export function createDocumentIndexes(options: {
       return runtime
     })
     allocations = acquired.then(() => {}, () => {})
-    const runtime = await acquired
-    try { return await operation(runtime.api) } finally { runtime.users--; runtime.used = ++clock }
+    try {
+      const runtime = await acquired
+      try {
+        active.throwIfAborted()
+        const result = await operation(runtime.api, active)
+        active.throwIfAborted()
+        return result
+      } finally { runtime.users--; runtime.used = ++clock }
+    } finally { requests.delete(controller) }
   }
   async function stage(sessionId: string, documentId: string, force = false) {
     return owned(sessionId, documentId, async owner => {
       await options.policies.settled(owner.path)
       const value = options.policies.desired(owner.path), key = identity(value)
       if (value.policy.embeddingEngine === 'none') {
-        await options.policies.activate(owner.path, value)
-        candidates.delete(owner.path); activeIds.delete(owner.path); changed()
+        candidates.delete(owner.path); changed()
         return
       }
       const previous = candidates.get(owner.path)
@@ -104,6 +122,7 @@ export function createDocumentIndexes(options: {
     selection(owner: OpenWorkingCopyDocument) {
       check()
       if (!owner.path) return undefined
+      if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') return undefined
       const plan = candidates.get(owner.path) ?? active(owner.path)
       return plan.value.policy.embeddingEngine === 'none' ? undefined : { identity: plan.id, planId: plan.id }
     },
@@ -115,11 +134,6 @@ export function createDocumentIndexes(options: {
       return owned(sessionId, documentId, async owner => {
         if (policy) await options.policies.configure(owner.path, revision, policy)
         else await options.policies.defaults(owner.path, revision)
-        const target = options.policies.desired(owner.path)
-        if (target.policy.embeddingEngine === 'none') {
-          await options.policies.activate(owner.path, target)
-          candidates.delete(owner.path); activeIds.delete(owner.path); changed()
-        }
       })
     },
     stage,
@@ -129,7 +143,8 @@ export function createDocumentIndexes(options: {
       return owned(sessionId, documentId, async owner => {
         await options.policies.settled(owner.path)
         const plan = active(owner.path)
-        const result = await use(plan, api => api.availability(sessionId, signal, documentId))
+        if (plan.value.policy.embeddingEngine === 'none') return { status: 'unavailable' as const, reason: inactiveReason() }
+        const result = await use(plan, signal, (api, active) => api.availability(sessionId, active, documentId))
         if (active(owner.path).id !== plan.id) return { status: 'unavailable' as const,
           reason: 'PDF index settings changed during the capability check. Retry with the current document.' }
         return result
@@ -139,15 +154,21 @@ export function createDocumentIndexes(options: {
       onProgress?: (progress: RetrievalProgress) => void) {
       return owned(sessionId, input.documentId, async owner => {
         await options.policies.settled(owner.path)
+        if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
+          fail('pdf/retrieval-engine-unavailable', 'Semantic search is disabled in PDF settings.')
+        }
         const candidate = candidates.get(owner.path), plan = candidate ?? active(owner.path)
         if (candidate && (input.fromPage !== undefined && input.fromPage !== 1 || input.maxPages !== undefined)) {
           fail('pdf/invalid-request', 'A replacement index must cover the whole PDF before it can become active.')
         }
         if (input.indexPlanId && input.indexPlanId !== plan.id) fail('pdf/stale-reader', 'The queued PDF index configuration has changed.')
-        await use(plan, api => api.prepare(sessionId, { documentId: input.documentId,
+        await use(plan, signal, (api, active) => api.prepare(sessionId, { documentId: input.documentId,
           ...(input.fromPage ? { fromPage: input.fromPage } : {}), ...(input.maxPages ? { maxPages: input.maxPages } : {}),
-          ...(plan.force ? { rebuild: true } : {}) }, signal, onProgress))
+          ...(plan.force ? { rebuild: true } : {}) }, active, onProgress))
         signal.throwIfAborted()
+        if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
+          fail('pdf/retrieval-engine-unavailable', 'Semantic search was disabled during indexing.')
+        }
         if (candidate) {
           if (candidates.get(owner.path) !== candidate) fail('pdf/stale-reader', 'The PDF index update was superseded.')
           await options.policies.activate(owner.path, plan.value)
@@ -162,7 +183,8 @@ export function createDocumentIndexes(options: {
       return owned(sessionId, input.documentId, async owner => {
         await options.policies.settled(owner.path)
         const plan = active(owner.path)
-        const result = await use(plan, api => api.search(sessionId, input, signal))
+        if (plan.value.policy.embeddingEngine === 'none') fail('pdf/retrieval-engine-unavailable', inactiveReason())
+        const result = await use(plan, signal, (api, active) => api.search(sessionId, input, active))
         if (active(owner.path).id !== plan.id) fail('pdf/stale-reader', 'PDF index settings changed during this search. Start a new search.')
         return result
       })

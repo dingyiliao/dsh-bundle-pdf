@@ -37,7 +37,7 @@ Native components install automatically; no local compilation is needed. Support
 
 Open a local PDF from DSH's file sidebar. AI features use your configured models or extension engines. Semantic retrieval requires a separately configured embedding service and is off by default. PDFs with an enabled active policy prepare their index in the background on open; OCR and image descriptions can be enabled independently and may call remote services and incur charges. See [SPEC](SPEC.md) for limits.
 
-Settings save automatically. Choose each PDF's engines and indexing options under **Search → Current PDF index**. Updates run when you request them and reuse cached results; disabling semantic search takes effect immediately. Global settings manage engine connections and defaults for new documents.
+Settings save automatically. Select engines in **PDF settings**; each PDF independently enables OCR and image-description indexing under **Search → Current PDF index**. Update indexes when needed to reuse cached results; disabling semantic search takes effect immediately.
 
 ## Agent tools
 

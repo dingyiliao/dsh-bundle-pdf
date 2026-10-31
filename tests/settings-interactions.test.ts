@@ -12,7 +12,8 @@ const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
 }
 type Operations = Parameters<ConfigForm['mutate']>[0]
 const catalog: EngineCatalogSnapshot = { revision: 'fixture', engines: {
-  ocr: [{ id: 'session-llm', name: 'OCR', version: '1', execution: 'local' }],
+  ocr: [{ id: 'session-llm', name: 'OCR', version: '1', execution: 'local' },
+    { id: 'fixture.ocr', name: 'Other OCR', version: '1', execution: 'local' }],
   image: [{ id: 'dsh-vision', name: 'Vision', version: '1', execution: 'remote',
     configurationFields: [{ key: 'endpoint', label: 'Image endpoint', type: 'string' }, { key: 'credential', label: 'Credential', type: 'string' }] },
     { id: 'fixture.required', name: 'Configured vision', version: '1', execution: 'local',
@@ -117,7 +118,6 @@ async function setup(initial = ready()) {
         input.dispatchEvent(new dom.Event('input', { bubbles: true })) })
     },
     async blur(suffix: string) { await act(async () => { control(suffix).dispatchEvent(new dom.FocusEvent('focusout', { bubbles: true })) }) },
-    async toggle(suffix: string) { await act(async () => { (control(suffix) as HTMLInputElement).click() }) },
     async choose(suffix: string, value: string) { await act(async () => { const select = control(suffix)
       select.value = value; select.dispatchEvent(new dom.Event('change', { bubbles: true })) }) },
     async click(name: string) { await act(async () => { button(name).click() }) },
@@ -135,20 +135,20 @@ async function setup(initial = ready()) {
   }
 }
 
-test('valid selectors and switches save immediately; invalid numbers stay editable without blocking independent changes', async () => {
+test('global engine selectors save immediately; invalid numbers stay editable without blocking independent changes', async () => {
   const h = await setup()
   try {
     assert.equal([...h.container.querySelectorAll('button')].some(node => node.textContent === 'Save settings'), false)
-    await h.toggle('indexScanPages')
-    assert.equal(h.state().value!.indexScanPages, false)
+    await h.choose('ocrEngine', 'fixture.ocr')
+    assert.equal(h.state().value!.ocrEngine, 'fixture.ocr')
     await h.choose('translationEngine', 'fixture.translation')
     assert.equal(h.state().value!.translationEngine, 'fixture.translation')
     await h.fill('translationTimeoutMs', '999'); await h.blur('translationTimeoutMs')
     assert.equal(h.calls.length, 2)
     assert.equal(h.control('translationTimeoutMs').value, '999')
     assert.match(h.container.textContent!, /Enter an integer from 1000 to 600000/)
-    await h.toggle('indexScanPages')
-    assert.equal(h.state().value!.indexScanPages, true)
+    await h.choose('ocrEngine', 'session-llm')
+    assert.equal(h.state().value!.ocrEngine, 'session-llm')
     assert.equal(h.state().value!.translationTimeoutMs, defaultSettings.translationTimeoutMs)
     await h.fill('translationTimeoutMs', '19000'); await h.blur('translationTimeoutMs')
     assert.equal(h.state().value!.translationTimeoutMs, 19000)
@@ -158,6 +158,21 @@ test('valid selectors and switches save immediately; invalid numbers stay editab
     await h.fill('explanationGeneralInstruction', 'Explain concisely.'); await h.blur('explanationGeneralInstruction')
     assert.equal(h.state().value!.explanationGeneralInstruction, 'Explain concisely.')
     assert.doesNotMatch(h.container.textContent!, /Settings changed elsewhere/)
+  } finally { await h.close() }
+})
+
+test('global engine edits and reset leave document indexing defaults untouched', async () => {
+  const h = await setup(ready({ ...defaultSettings, indexScanPages: false, indexImageDescriptions: true }))
+  try {
+    assert.equal(h.container.querySelectorAll('input[type="checkbox"]').length, 0)
+    await h.choose('ocrEngine', 'fixture.ocr')
+    await h.click('Restore defaults')
+    assert.equal(h.state().value!.ocrEngine, defaultSettings.ocrEngine)
+    assert.equal(h.state().value!.indexScanPages, false)
+    assert.equal(h.state().value!.indexImageDescriptions, true)
+    assert.ok(h.calls.length > 0)
+    assert.ok(h.calls.flatMap(call => call.ops).every(operation =>
+      !['indexScanPages', 'indexImageDescriptions'].includes(operation.path[0]!)))
   } finally { await h.close() }
 })
 
@@ -188,8 +203,8 @@ test('an incomplete engine choice waits for its valid configuration and then sav
     assert.equal(h.state().value!.imageEngine, 'dsh-vision')
     assert.equal(h.control('imageEngine').value, 'fixture.required')
     assert.match(h.container.textContent!, /Check the selected engine configuration/)
-    await h.toggle('indexScanPages')
-    assert.equal(h.state().value!.indexScanPages, false)
+    await h.choose('ocrEngine', 'fixture.ocr')
+    assert.equal(h.state().value!.ocrEngine, 'fixture.ocr')
     assert.equal(h.state().value!.imageEngine, 'dsh-vision')
     await h.fill('image-model', 'my-model'); await h.blur('image-model')
     assert.equal(h.calls.length, 2)
@@ -208,14 +223,14 @@ test('serial saves retain edits made in flight, including a revert to the origin
     assert.equal(h.calls.length, 1)
     assert.equal(h.control('historyCapacity').disabled, false, 'saving does not lock the settings form')
     await h.fill('historyCapacity', String(defaultSettings.historyCapacity)); await h.blur('historyCapacity')
-    await h.toggle('indexScanPages')
+    await h.choose('ocrEngine', 'fixture.ocr')
     assert.equal(h.calls.length, 1, 'only one mutation is in flight')
     h.changeMutation(async ops => { h.accept(ops); return true })
     await act(async () => { finish() })
     assert.equal(h.calls.length, 2)
     assert.deepEqual(h.calls.map(call => call.revision), [1, 2])
     assert.equal(h.state().value!.historyCapacity, defaultSettings.historyCapacity)
-    assert.equal(h.state().value!.indexScanPages, false)
+    assert.equal(h.state().value!.ocrEngine, 'fixture.ocr')
     assert.doesNotMatch(h.container.textContent!, /Settings changed elsewhere|Unsaved changes/)
   } finally { await h.close() }
 })

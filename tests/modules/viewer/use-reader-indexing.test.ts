@@ -31,10 +31,9 @@ const running = (): PdfIndexingClientSnapshot => ({ status: 'ready', enabled: tr
 const idle = (): PdfIndexingClientSnapshot => ({ status: 'ready', enabled: true, tasks: [], revision: 'idle' })
 type Call = { action: string; sessionId: string; id: string; signal: AbortSignal;
   revision?: number; policy?: PdfDocumentIndexPolicy }
-const policy: PdfDocumentIndexPolicy = { embeddingEngine: 'embedding', ocrEngine: 'ocr', imageEngine: 'image',
-  indexScanPages: true, indexImageDescriptions: false }
+const policy: PdfDocumentIndexPolicy = { indexScanPages: true, indexImageDescriptions: false }
 const documentSettings = (overrides: Partial<PdfDocumentIndexSettings> = {}): PdfDocumentIndexSettings => ({
-  documentId: 'a', revision: 1, policy, activePolicy: policy, pending: false, impact: 'none', ...overrides,
+  documentId: 'a', revision: 1, policy, activePolicy: policy, enabled: true, activeEnabled: true, pending: false, impact: 'none', ...overrides,
 })
 
 async function withIndexing(run: (f: {
@@ -283,7 +282,7 @@ test('task text distinguishes restoration, native extraction and new embeddings 
 })
 
 test('document choices save by revision even when semantic search is off and processing starts only on explicit update', async () => {
-  const disabled = { ...policy, embeddingEngine: 'none' }
+  const disabled = { ...policy, indexScanPages: false }
   await withIndexing(async f => {
     const configuration = f.state().control!.configuration!
     assert.equal(configuration.disabled, false, 'engine selection remains editable when indexing is disabled')
@@ -296,12 +295,15 @@ test('document choices save by revision even when semantic search is off and pro
     assert.equal(f.state().control!.configuration!.saving, true)
     assert.deepEqual(f.calls.map(({ signal: _signal, ...call }) => call), [{ action: 'configure', sessionId: 'session-a',
       id: 'a', revision: 1, policy }])
-    await f.publish({ ...idle(), documents: [documentSettings({ revision: 2, activePolicy: disabled,
-      pending: true, impact: 'embedding' })] })
+    await f.publish({ ...idle(), enabled: false, documents: [documentSettings({ revision: 2, activePolicy: disabled,
+      enabled: false, activeEnabled: false, pending: true, impact: 'content' })] })
     await act(async () => { finish(); assert.equal(await saved, true) })
     assert.equal(f.state().control!.configuration!.saving, false)
     assert.equal(f.state().control!.label, 'Update index')
-    assert.equal(f.state().control!.configuration!.value.activePolicy.embeddingEngine, 'none')
+    assert.equal(f.state().control!.configuration!.value.activeEnabled, false)
+    assert.equal(f.state().control!.enabled, false, 'content switches cannot enable the globally disabled embedding engine')
+    await f.publish({ ...idle(), documents: [documentSettings({ revision: 2, activePolicy: disabled, activeEnabled: false,
+      pending: true, impact: 'embedding' })] })
     assert.equal(f.calls.length, 1, 'saving configuration must never start a model job')
     await act(async () => { f.state().control!.onStart() })
     assert.equal(f.calls.at(-1)!.action, 'start')
@@ -310,7 +312,7 @@ test('document choices save by revision even when semantic search is off and pro
     await act(async () => { assert.equal(await f.state().control!.configuration!.useDefaults(), true) })
     assert.equal(f.calls.at(-1)!.action, 'defaults')
     assert.equal(f.calls.at(-1)!.revision, 2, 'each choice uses the settings revision displayed by its render')
-  }, { ...idle(), enabled: false, documents: [documentSettings({ policy: disabled, activePolicy: disabled })] })
+  }, { ...idle(), enabled: false, documents: [documentSettings({ policy: disabled, activePolicy: disabled, enabled: false, activeEnabled: false })] })
 })
 
 test('configuration errors reach the local editor, retain Host truth and cannot leak across document lifetimes', async () => {
@@ -336,7 +338,7 @@ test('configuration errors reach the local editor, retain Host truth and cannot 
 test('an old document-policy event cannot borrow a newer mirror revision before React receives that snapshot', async () => {
   await withIndexing(async f => {
     const rendered = f.state().control!.configuration!
-    const otherViewPolicy = { ...policy, ocrEngine: 'another-ocr', indexScanPages: false }
+    const otherViewPolicy = { ...policy, indexScanPages: false }
     let host = { ...idle(), revision: 'other-view-update', documents: [documentSettings({ revision: 2, policy: otherViewPolicy })] }
     const configure = f.api.configure
     f.api.configure = async (...args) => {
@@ -360,7 +362,7 @@ test('an old document-policy event cannot borrow a newer mirror revision before 
     assert.equal(f.calls[0]!.revision, 1, 'a whole-policy edit must carry the revision that produced its displayed fields')
     assert.equal(accepted, undefined)
     assert.ok(failure instanceof Error && 'code' in failure && failure.code === 'pdf/index-settings-stale')
-    assert.deepEqual(host.documents[0]!.policy, otherViewPolicy, 'the concurrent OCR choice cannot be overwritten by an old complete policy')
+    assert.deepEqual(host.documents[0]!.policy, otherViewPolicy, 'the concurrent OCR switch cannot be overwritten by an old complete policy')
     assert.deepEqual(f.failures, [], 'the local settings editor owns the conflict and retry')
 
     await f.publish(host)

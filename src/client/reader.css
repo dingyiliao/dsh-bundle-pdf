@@ -703,8 +703,6 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-search-indexing-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
 .dsh-pdf-search-indexing-heading strong { font-size: var(--pdf-type-label); font-weight: var(--pdf-weight-semibold); }
 .dsh-pdf-search-indexing p { margin: 6px 0 0; overflow-wrap: anywhere; }
-.dsh-pdf-index-setting { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: var(--pdf-type-label); }
-.dsh-pdf-index-setting select { width: 100%; min-width: 0; box-sizing: border-box; }
 .dsh-pdf-index-toggle { display: flex; align-items: flex-start; gap: 7px; font-size: var(--pdf-type-body-compact); line-height: var(--pdf-leading-compact); }
 .dsh-pdf-search-panel .dsh-pdf-index-toggle input { flex: none; width: 14px; height: 14px; margin: 2px 0 0; }
 .dsh-pdf-index-impact { padding: 8px; border-radius: 6px; background: var(--pdf-sidebar-selected-bg); font-size: var(--pdf-type-caption); line-height: var(--pdf-leading-compact); }

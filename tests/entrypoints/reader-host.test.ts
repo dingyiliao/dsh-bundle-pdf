@@ -200,7 +200,7 @@ test('opening a PDF starts shared background indexing without a synthetic query 
   assert.equal(runtime.configListeners.size, 0)
 })
 
-test('document index choices survive global edits and wait for explicit processing before reset can resume them', { skip: !existsSync(indexingWorker) }, async t => {
+test('document content choices follow global engines, cancel on global disable and wait for explicit replacement processing', { skip: !existsSync(indexingWorker) }, async t => {
   const assets = await assetFixture(t), sessionId = 'preindex-settings', runtime = host({ agentSessionId: sessionId })
   runtime.ctx.pdfNative.executable = indexingWorker
   await apply(runtime.ctx, runtime.config, assets)
@@ -229,8 +229,8 @@ test('document index choices survive global edits and wait for explicit processi
     }))
     const body = await response.json() as { result: { ok: boolean; value: {
       tasks: Array<{ documentId: string; state: string }>; documents: Array<{
-      documentId: string; revision: number; pending: boolean; policy: { embeddingEngine: string; ocrEngine: string;
-        imageEngine: string; indexScanPages: boolean; indexImageDescriptions: boolean }; activePolicy: { embeddingEngine: string }
+      documentId: string; revision: number; pending: boolean; enabled: boolean; activeEnabled: boolean;
+        policy: { indexScanPages: boolean; indexImageDescriptions: boolean }; activePolicy: { indexScanPages: boolean; indexImageDescriptions: boolean }
     }> } } }
     assert.equal(body.result.ok, true)
     return body.result.value
@@ -243,30 +243,35 @@ test('document index choices survive global edits and wait for explicit processi
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(calls.length, 0, 'new global defaults do not change a PDF that is already open')
     const settings = (await control({ action: 'status', sessionId })).documents[0]!
-    assert.equal(settings.policy.embeddingEngine, 'none')
+    assert.equal(settings.enabled, true); assert.equal(settings.activeEnabled, false)
+    assert.deepEqual(Object.keys(settings.policy).sort(), ['indexImageDescriptions', 'indexScanPages'])
     const configured = await control({ action: 'configure', sessionId, documentId: opened.documentId,
-      revision: settings.revision, policy: { ...settings.policy, embeddingEngine: 'fixture' } })
+      revision: settings.revision, policy: { ...settings.policy, indexScanPages: false } })
     assert.equal(configured.documents[0]!.pending, true)
     assert.equal(calls.length, 0, 'saving a new document policy does not start expensive work')
     await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 1)
     changeEngine('none')
     await new Promise<void>(resolve => setImmediate(resolve))
-    assert.equal(calls[0]!.aborted, false, 'changing global defaults does not cancel the document-owned build')
+    assert.equal(calls[0]!.aborted, true, 'global disable cancels the document-owned build without discarding its accepted plan')
     await control({ action: 'cancel', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls[0]!.aborted)
+    assert.equal((await control({ action: 'status', sessionId })).documents[0]!.enabled, false)
+    changeEngine('fixture')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(calls.length, 1, 'reenabling does not automatically resume a discarded candidate')
     await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 2)
     const building = await control({ action: 'status', sessionId })
     assert.equal(building.tasks.find(task => task.documentId === opened.documentId)!.state, 'running')
     assert.equal(building.documents[0]!.pending, true, 'embedding admission is not a ready index')
-    assert.equal(building.documents[0]!.activePolicy.embeddingEngine, 'none')
+    assert.equal(building.documents[0]!.activeEnabled, false)
     finishSecond()
     await waitForIndexing(async () => {
       const ready = await control({ action: 'status', sessionId })
       const document = ready.documents.find(document => document.documentId === opened.documentId)!
       return ready.tasks.some(task => task.documentId === opened.documentId && task.state === 'ready')
-        && !document.pending && document.activePolicy.embeddingEngine === 'fixture'
+        && !document.pending && document.activeEnabled
     })
     const reset = await runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
       type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'reset-prefetch', payload: {},

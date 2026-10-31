@@ -25,8 +25,7 @@ export function createPdfIndexing(prefetch: Prefetch, ports: {
     const open = new Map(ports.documents().filter(document => document.sessionId === sessionId).map(document => [document.id, document]))
     const state = prefetch.status()
     const documents = ports.indexes ? [...open.values()].map(document => ports.indexes!.settings(sessionId, document.id)) : undefined
-    const value = { enabled: documents ? documents.some(value => value.policy.embeddingEngine !== 'none'
-      || value.activePolicy.embeddingEngine !== 'none') : ports.enabled(),
+    const value = { enabled: documents ? documents.some(value => value.enabled) : ports.enabled(),
       ...(documents ? { documents } : {}), tasks: state.documents.flatMap(task => {
       const document = open.get(task.id)
       if (task.sessionId !== sessionId || !document) return []
@@ -79,7 +78,7 @@ export function createPdfIndexing(prefetch: Prefetch, ports: {
       }
       else if (request.action === 'start') {
         await ports.indexes?.stage(sessionId, request.documentId)
-        if (ports.indexes?.settings(sessionId, request.documentId).policy.embeddingEngine !== 'none') prefetch.start(sessionId, request.documentId)
+        if (!ports.indexes || ports.indexes.settings(sessionId, request.documentId).enabled) prefetch.start(sessionId, request.documentId)
       }
       else if (request.action === 'rebuild') {
         await ports.indexes?.stage(sessionId, request.documentId, true)

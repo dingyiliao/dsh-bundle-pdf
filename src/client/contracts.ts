@@ -5,7 +5,6 @@ import type { HostOcrApi, ImageUnderstandingApi, PdfReadingContextUpdate, PdfAge
   PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi, PdfIndexingApi } from '../modules/viewer/index.js'
 import type { PromptContentPart } from '../modules/explanation/index.js'
 import type { PdfEvidenceNavigation } from './toolview/pdf-evidence-navigation.js'
-import type { EngineCatalogSnapshot } from '../modules/engines/index.js'
 
 export type { PdfClientApi, PdfSettings, WorkspaceSnapshot } from '../shared/contracts.ts'
 export type { PdfReadingContextUpdate } from '../modules/viewer/index.js'
@@ -18,7 +17,6 @@ export type ReaderProps = Pick<DocumentPreviewProps, 'resourceAddress' | 'scroll
   api: PdfClientApi
   hostOcr: HostOcrApi
   indexingApi?: PdfIndexingApi
-  engineCatalog?: EngineCatalogSnapshot
   imageUnderstanding: ImageUnderstandingApi
   /** Host-owned, source-fenced image regions for explanation questions. */
   regionEvidence?: PdfRegionEvidenceApi

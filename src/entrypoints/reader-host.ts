@@ -186,7 +186,7 @@ export async function apply(
   const stopPrefetchEngines = embeddings.subscribe(() => { prefetch.refresh(); indexing.changed() })
   const stopPrefetchConfig = ctx.on?.('loader/volatile-update', paths => {
     if (paths.some(path => ['embeddingEngine', 'engineConfigurations', 'ocrEngine', 'imageEngine', 'indexScanPages', 'indexImageDescriptions'].includes(String(path[0])))) {
-      prefetch.refresh(); indexing.changed()
+      retrieval.refresh(); prefetch.refresh(); indexing.changed()
     }
   })
   const engineCatalog = new EngineCatalog()

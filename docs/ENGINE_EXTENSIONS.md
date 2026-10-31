@@ -76,14 +76,14 @@ export function apply(ctx: Context) {
 
 ## Configuration and selection
 
-Settings save automatically. Index engine choices and the two content switches
-are defaults for newly opened documents. Each PDF has its own policy under
-**Search → Current PDF index**; selecting **Use current defaults** explicitly
-copies the latest defaults. Changes save without starting model work: the user
+Settings save automatically. Engine selections and connection settings are
+global. Each PDF stores only its two content switches under
+**Search → Current PDF index**; selecting **Use current defaults** copies their
+new-document defaults. Changes save without starting model work: the user
 starts **Update index** to build a replacement while the current index remains
 usable if its engine is still available. Cancellation or failure retains the
-active plan. Selecting `none` for that PDF takes effect immediately and retains
-cached content.
+active plan. Selecting `none` for the global embedding engine stops semantic
+indexing immediately without deleting cached content or document preferences.
 
 PDF settings select `ocrEngine`, `imageEngine`, `translationEngine` and
 `embeddingEngine`. `engineConfigurations` retains each engine's configuration
@@ -95,10 +95,16 @@ may pass an explicit `binding` without changing the Reader's choice.
 OCR engine for missing or damaged native text. **Visual description indexing**
 (`indexImageDescriptions`, default `false`) uses the selected image-understanding
 engine with the indexing prompt and embeds its generated text, not raw pixels.
-Both switches may be on. Each document selects its bindings from the same OCR
-and image-understanding directories; there is no extra visual-description service
+Both switches may be on. Index plans resolve their bindings from the global OCR
+and image-understanding selections; there is no document-specific engine override
+or extra visual-description service
 or registry. Neither switch enables the default-disabled embedding engine.
 Descriptions add model calls, latency and possible fees.
+
+The two switches are document preferences. The optional profile patch values
+`indexScanPages` and `indexImageDescriptions` seed new documents; they are not
+duplicate controls in Settings. Changing global engines marks existing index
+plans as pending until an explicit update succeeds, retaining usable old indexes.
 
 ```yaml
 ocrEngine: example.http-ocr

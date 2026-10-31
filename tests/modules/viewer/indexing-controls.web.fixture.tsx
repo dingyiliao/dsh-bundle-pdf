@@ -21,23 +21,17 @@ const calls: Array<{ action: string; sessionId: string; documentId: string }> = 
 const errors: string[] = []
 let revision = 0
 const t = (key: string) => readerLocales.en[key] ?? key
-const defaults: PdfDocumentIndexPolicy = { embeddingEngine: 'fixture-embedding', ocrEngine: 'fixture-ocr',
-  imageEngine: 'fixture-image', indexScanPages: true, indexImageDescriptions: false }
-const engineCatalog = { revision: 'fixture', engines: {
-  embedding: [{ id: 'none', name: 'Disabled', version: '1', execution: 'disabled' as const },
-    { id: 'fixture-embedding', name: 'Fixture embedding', version: '1', execution: 'service' as const }],
-  ocr: [{ id: 'fixture-ocr', name: 'Fixture OCR', version: '1', execution: 'local' as const, capabilities: ['ocr-text' as const] }],
-  image: [{ id: 'fixture-image', name: 'Fixture image understanding', version: '1', execution: 'remote' as const,
-    capabilities: ['image-description' as const] }], translation: [],
-} }
+const defaults: PdfDocumentIndexPolicy = { indexScanPages: true, indexImageDescriptions: false }
+let globallyEnabled = true
 
 function host(sessionId: string): PdfIndexingSnapshot {
   let value = hosts.get(sessionId)
   if (!value) {
-    value = { revision: String(++revision), enabled: true, tasks: [], documents: [{
-      documentId: sessionId === 'session-a' ? 'alpha' : 'beta', revision: 0,
-      policy: { ...defaults }, activePolicy: { ...defaults }, pending: false, impact: 'none',
-    }] }
+    value = { revision: String(++revision), enabled: globallyEnabled, tasks: [],
+      documents: (sessionId === 'session-a' ? ['alpha', 'gamma'] : ['beta']).map(documentId => ({
+        documentId, revision: 0, policy: { ...defaults }, activePolicy: { ...defaults },
+        enabled: globallyEnabled, activeEnabled: globallyEnabled, pending: false, impact: 'none',
+      })) }
     hosts.set(sessionId, value)
   }
   return value
@@ -69,11 +63,10 @@ const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal
     const settings = current.documents!.find(value => value.documentId === input.documentId)!
     if (input.revision !== settings.revision) return { ok: false, error: { code: 'pdf/index-settings-conflict', message: 'Index settings changed.' } }
     const policy = input.action === 'defaults' ? { ...defaults } : input.policy!
-    const pending = policy.embeddingEngine !== 'none' && JSON.stringify(policy) !== JSON.stringify(settings.activePolicy)
+    const pending = JSON.stringify(policy) !== JSON.stringify(settings.activePolicy)
     const next = { ...settings, revision: settings.revision + 1, policy, pending,
-      activePolicy: policy.embeddingEngine === 'none' ? policy : settings.activePolicy,
-      impact: pending ? policy.embeddingEngine === settings.activePolicy.embeddingEngine ? 'content' as const : 'embedding' as const : 'none' as const }
-    changed(input.sessionId, { ...current, enabled: policy.embeddingEngine !== 'none', documents: [next] })
+      impact: pending ? 'content' as const : 'none' as const }
+    changed(input.sessionId, { ...current, documents: current.documents!.map(value => value.documentId === input.documentId ? next : value) })
     return respond(host(input.sessionId))
   }
   const previous = current.tasks.find(task => task.documentId === input.documentId)
@@ -116,7 +109,7 @@ function View({ name, sessionId, documentId }: { name: string; sessionId: string
   const search = useReaderSearch({ document: pdf.current, pages: [], ocrPages: new Map(), tabSignal: lifetime.signal,
     onError(error) { errors.push(String(error)) } })
   const panels = readerSidebarPanels({ snapshot, pdf: pdf.current, annotations: [], clearAnnotation() {}, selectAnnotation() {},
-    jump() {}, ocrTranscript: null, search, indexing: indexing.control, engineCatalog,
+    jump() {}, ocrTranscript: null, search, indexing: indexing.control,
     translation: { selection: null, async translate() { throw new Error('Translation is outside this fixture') },
       begin() {}, close() {}, reset() {} }, translationRegistry, translationEngine: 'none', t })
   return <div className="dsh-pdf-reader" data-reader-view={name} style={{ height: '100%', width: '100%' }}>
@@ -134,6 +127,7 @@ function View({ name, sessionId, documentId }: { name: string; sessionId: string
 createRoot(document.getElementById('indexing-root')!).render(<>
   <div data-view-shell="first" style={{ height: '100%' }}><View name="first" sessionId="session-a" documentId="alpha" /></div>
   <div data-view-shell="mirror" style={{ height: '100%', display: 'none' }}><View name="mirror" sessionId="session-a" documentId="alpha" /></div>
+  <div data-view-shell="other-document" style={{ height: '100%', display: 'none' }}><View name="other-document" sessionId="session-a" documentId="gamma" /></div>
   <div data-view-shell="other-session" style={{ height: '100%', display: 'none' }}><View name="other-session" sessionId="session-b" documentId="beta" /></div>
 </>)
 
@@ -145,11 +139,14 @@ Object.assign(window, { __pdfIndexingFixture: {
     changed(sessionId, { enabled: value.enabled, tasks: [{ documentId, title: `${documentId}.pdf`,
       occurrence: current?.occurrence ?? 1, state, ...(state === 'failed' ? { failureCode: 'fixture/unavailable' } : {}) }],
       documents: value.documents?.map(settings => state === 'ready' && settings.documentId === documentId
-        ? { ...settings, activePolicy: settings.policy, pending: false, impact: 'none' } : settings) })
+        ? { ...settings, activePolicy: settings.policy, activeEnabled: settings.enabled, pending: false, impact: 'none' } : settings) })
   },
   republish() { const value = host('session-a'); changed('session-a', value) },
-  disable() { const value = host('session-a'); changed('session-a', { enabled: false, tasks: [], documents: value.documents?.map(settings => ({
-    ...settings, revision: settings.revision + 1, policy: { ...settings.policy, embeddingEngine: 'none' },
-    activePolicy: { ...settings.policy, embeddingEngine: 'none' }, pending: false, impact: 'none',
-  })) }) },
+  disable() {
+    globallyEnabled = false
+    for (const [sessionId, value] of hosts) changed(sessionId, { enabled: false, tasks: [], documents: value.documents?.map(settings => ({
+      ...settings, revision: settings.revision + 1, enabled: false, activeEnabled: false,
+      activePolicy: settings.policy, pending: false, impact: 'none',
+    })) })
+  },
 } })

@@ -16,7 +16,7 @@ export interface PdfIndexingApi {
   cancel(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
   /** Stage document-local choices against the last observed settings revision. */
   configure(sessionId: string, documentId: string, revision: number, policy: PdfDocumentIndexPolicy, signal: AbortSignal): Promise<void>
-  /** Restore global defaults for one document without changing other open PDFs. */
+  /** Restore profile defaults for the document content switches without changing other PDFs. */
   useDefaults(sessionId: string, documentId: string, revision: number, signal: AbortSignal): Promise<void>
   /** Hide only this completed occurrence across views of the same resource Session. */
   dismiss(sessionId: string, documentId: string, occurrence: number): void

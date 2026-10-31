@@ -3,12 +3,18 @@ import { documentIndexPolicySchema, type PdfDocumentIndexPolicy, type PdfDocumen
 import { canonicalEngineJson, engineConfigurationsSchema, type EngineJson } from '../engines/index.js'
 import { defaultSettings, type PdfSettings } from '../../shared/contracts.js'
 
+const engineId = z.string().min(1).max(200)
+const resolvedPolicySchema = documentIndexPolicySchema.extend({
+  embeddingEngine: engineId, ocrEngine: engineId, imageEngine: engineId,
+}).strict()
 export const resolvedIndexPlanSchema = z.object({
-  policy: documentIndexPolicySchema, configurations: engineConfigurationsSchema,
+  policy: resolvedPolicySchema, configurations: engineConfigurationsSchema,
 }).strict()
 export type ResolvedIndexPlan = z.infer<typeof resolvedIndexPlanSchema>
 export const documentIndexRecordSchema = z.object({
-  revision: z.number().int().nonnegative(), desired: documentIndexPolicySchema, active: resolvedIndexPlanSchema,
+  version: z.literal(2).optional(), revision: z.number().int().nonnegative(),
+  desired: z.union([documentIndexPolicySchema, resolvedPolicySchema.transform(value => indexPolicy(value))]),
+  active: resolvedIndexPlanSchema,
 }).strict()
 type Record = z.infer<typeof documentIndexRecordSchema>
 interface Store {
@@ -19,19 +25,19 @@ interface Store {
 const equal = (left: unknown, right: unknown) => canonicalEngineJson(left as EngineJson) === canonicalEngineJson(right as EngineJson)
 const stale = () => Object.assign(new Error('PDF index settings changed. Reload their current values and retry.'), { code: 'pdf/index-settings-stale' })
 
-export function indexPolicy(settings: PdfSettings): PdfDocumentIndexPolicy {
-  return { embeddingEngine: settings.embeddingEngine ?? 'none', ocrEngine: settings.ocrEngine ?? 'session-llm',
-    imageEngine: settings.imageEngine ?? 'dsh-vision', indexScanPages: settings.indexScanPages ?? true,
-    indexImageDescriptions: settings.indexImageDescriptions ?? false }
+export function indexPolicy(settings: Pick<PdfSettings, 'indexScanPages' | 'indexImageDescriptions'>): PdfDocumentIndexPolicy {
+  return { indexScanPages: settings.indexScanPages ?? true, indexImageDescriptions: settings.indexImageDescriptions ?? false }
 }
 /** Freeze only the selected bindings; edits to unrelated engines do not invalidate this document. */
 export function resolveIndexPlan(policy: PdfDocumentIndexPolicy, settings: PdfSettings): ResolvedIndexPlan {
+  const resolved = { ...policy, embeddingEngine: settings.embeddingEngine ?? 'none',
+    ocrEngine: settings.ocrEngine ?? 'session-llm', imageEngine: settings.imageEngine ?? 'dsh-vision' }
   const configurations: ResolvedIndexPlan['configurations'] = {}
-  for (const [kind, id] of [['embedding', policy.embeddingEngine], ['ocr', policy.ocrEngine], ['image', policy.imageEngine]] as const) {
+  for (const [kind, id] of [['embedding', resolved.embeddingEngine], ['ocr', resolved.ocrEngine], ['image', resolved.imageEngine]] as const) {
     if (kind === 'ocr' && !policy.indexScanPages || kind === 'image' && !policy.indexImageDescriptions || id === 'none') continue
     configurations[kind] = { [id]: structuredClone(settings.engineConfigurations?.[kind]?.[id] ?? {}) }
   }
-  return { policy: structuredClone(policy), configurations }
+  return { policy: structuredClone(resolved), configurations }
 }
 export function settingsForIndexPlan(plan: ResolvedIndexPlan, defaults: PdfSettings = defaultSettings): PdfSettings {
   return { ...defaults, ...plan.policy, engineConfigurations: structuredClone(plan.configurations) }
@@ -43,6 +49,7 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
   const listeners = new Set<() => void>()
   let disposed = false
   let disposal: Promise<void> | undefined
+  const enabled = () => (defaults().embeddingEngine ?? 'none') !== 'none'
   const changed = () => { for (const listener of [...listeners]) { try { listener() } catch { /* Passive observers. */ } } }
   function entry(path: string) {
     if (disposed) throw new Error('PDF index settings are closed.')
@@ -50,12 +57,13 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
     let current = entries.get(key)
     if (!current) {
       const saved = store.get(key)
-      const desired = indexPolicy(defaults())
-      const record = saved === undefined ? { revision: 0, desired, active: resolveIndexPlan(desired, defaults()) }
+      const settings = defaults(), desired = indexPolicy(settings)
+      const parsed: Record = saved === undefined ? { revision: 0, desired, active: resolveIndexPlan(desired, settings) }
         : documentIndexRecordSchema.parse(saved)
+      const record: Record = { ...parsed, version: 2 }
       current = { record, pending: Promise.resolve(), retained: true }
       entries.set(key, current)
-      if (saved === undefined) {
+      if (parsed.version !== 2) {
         current.pending = Promise.resolve().then(async () => { await store.put(key, structuredClone(record)) })
         void current.pending.catch(() => {})
       }
@@ -80,7 +88,13 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
     return resolveIndexPlan(entry(path).current.record.desired, defaults())
   }
   return {
-    active: (path: string): ResolvedIndexPlan => structuredClone(entry(path).current.record.active),
+    enabled,
+    active(path: string): ResolvedIndexPlan {
+      const plan = structuredClone(entry(path).current.record.active)
+      // Global disable is a reversible gate, never a rewrite of a ready index.
+      if (!enabled()) plan.policy.embeddingEngine = 'none'
+      return plan
+    },
     desired,
     async settled(path: string) {
       const { key, current } = entry(path), pending = current.pending
@@ -103,8 +117,10 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
           || record.active.policy.indexImageDescriptions !== target.policy.indexImageDescriptions
           || record.active.policy.ocrEngine !== target.policy.ocrEngine || record.active.policy.imageEngine !== target.policy.imageEngine
           ? 'content' : 'configuration'
+      const enabled = target.policy.embeddingEngine !== 'none'
       return { documentId, revision: record.revision, policy: structuredClone(record.desired),
-        activePolicy: structuredClone(record.active.policy), pending, impact }
+        activePolicy: indexPolicy(record.active.policy), enabled,
+        activeEnabled: enabled && record.active.policy.embeddingEngine !== 'none', pending, impact }
     },
     configure(path: string, revision: number, policy: PdfDocumentIndexPolicy) {
       const next = documentIndexPolicySchema.parse(policy)

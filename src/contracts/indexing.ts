@@ -3,16 +3,14 @@ import { z } from 'zod'
 export const PDF_INDEXING_METHOD = 'pdf.indexing'
 const sessionId = z.string().min(1).max(512)
 const documentId = z.string().min(1).max(512)
-const engineId = z.string().min(1).max(200)
-/** Document choices reference globally configured engines; they never carry credentials. */
+/** Documents choose content sources; engine selection belongs to global settings. */
 export const documentIndexPolicySchema = z.object({
-  embeddingEngine: engineId, ocrEngine: engineId, imageEngine: engineId,
   indexScanPages: z.boolean(), indexImageDescriptions: z.boolean(),
 }).strict()
 export type PdfDocumentIndexPolicy = z.infer<typeof documentIndexPolicySchema>
 export const documentIndexSettingsSchema = z.object({
   documentId, revision: z.number().int().nonnegative(), policy: documentIndexPolicySchema,
-  activePolicy: documentIndexPolicySchema, pending: z.boolean(),
+  activePolicy: documentIndexPolicySchema, enabled: z.boolean(), activeEnabled: z.boolean(), pending: z.boolean(),
   impact: z.enum(['none', 'content', 'embedding', 'configuration']),
 }).strict()
 export type PdfDocumentIndexSettings = z.infer<typeof documentIndexSettingsSchema>

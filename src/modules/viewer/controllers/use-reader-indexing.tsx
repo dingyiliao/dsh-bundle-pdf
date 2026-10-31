@@ -73,8 +73,8 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
   async function command(action: 'start' | 'rebuild' | 'cancel', target: string): Promise<void> {
     const settings = snapshot.documents?.find(value => value.documentId === target)
     const enabled = settings ? action === 'cancel'
-      ? settings.policy.embeddingEngine !== 'none' || settings.activePolicy.embeddingEngine !== 'none'
-      : settings.policy.embeddingEngine !== 'none' : snapshot.enabled
+      ? settings.enabled || settings.activeEnabled
+      : settings.enabled : snapshot.enabled
     if (!api || !connected || !enabled || signal.aborted || requests.current.has(target)) return
     const controller = new AbortController()
     requests.current.set(target, controller)
@@ -121,8 +121,8 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     const completed = task.state === 'ready'
     const settings = snapshot.documents?.find(value => value.documentId === task.documentId)
     const enabled = settings ? active
-      ? settings.policy.embeddingEngine !== 'none' || settings.activePolicy.embeddingEngine !== 'none'
-      : settings.policy.embeddingEngine !== 'none' : snapshot.enabled
+      ? settings.enabled || settings.activeEnabled
+      : settings.enabled : snapshot.enabled
     const action = active ? 'cancel' : task.state === 'failed' ? 'rebuild' : 'start'
     const actionLabel = t(active ? 'reader.cancel' : task.state === 'failed' ? 'reader.indexing.rebuild' : 'reader.indexing.retry')
     return { id: `indexing:${task.documentId}`, occurrence: task.occurrence,
@@ -146,7 +146,7 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     activity: 'dot', content: t('reader.indexing.unavailable') })
   const current = snapshot.tasks.find(task => task.documentId === documentId)
   const settings = snapshot.documents?.find(value => value.documentId === documentId)
-  const enabled = settings ? settings.policy.embeddingEngine !== 'none' : snapshot.enabled
+  const enabled = settings ? settings.enabled : snapshot.enabled
   const statusLabel = t(!connected ? snapshot.status === 'loading' ? 'reader.indexing.checking' : 'reader.indexing.unavailable'
     : !enabled ? 'reader.indexing.disabled' : current?.state === 'ready' ? 'reader.indexing.ready'
       : current?.state === 'queued' || current?.state === 'running' ? 'reader.indexing.running' : 'reader.indexing.start')

@@ -83,21 +83,23 @@ function fixture(maxRuntimes?: number) {
     async clearCache() { state.clears++; await state.onClear?.() }, ...(maxRuntimes === undefined ? {} : { maxRuntimes }) })
   const configure = async (engine: string, documentId = 'doc-a') => {
     const current = api.settings('a', documentId)
-    const policy = { ...current.policy, embeddingEngine: engine }
+    defaults = { ...defaults, embeddingEngine: engine }
+    api.refresh()
+    const policy = current.policy
     await api.configure('a', documentId, current.revision, policy)
     return policy
   }
   const search = (sessionId = 'a', documentId = 'doc-a') => api.search(sessionId, { documentId, query: 'synthetic question', mode: 'semantic' }, signal)
   return { api, policies, records, documents, runtimes, calls, state, configure, search,
     updateDefaults(change: Partial<PdfSettings>) { defaults = { ...defaults, ...change } },
-    policy: (): PdfDocumentIndexPolicy => ({ embeddingEngine: 'embed-a', ocrEngine: 'ocr-a', imageEngine: 'image-a',
-      indexScanPages: true, indexImageDescriptions: false }) }
+    policy: (): PdfDocumentIndexPolicy => ({ indexScanPages: true, indexImageDescriptions: false }) }
 }
 
 test('queries retain the ready plan until a full candidate succeeds, then all views of that resource see the new plan', async () => {
   const f = fixture(), entered = deferred(), gate = deferred()
   try {
     const first = await f.search()
+    await f.search('a', 'other')
     await f.configure('embed-b')
     assert.equal(f.runtimes.length, 1, 'saving preferences alone neither allocates a replacement nor invokes a model')
     assert.equal(f.api.settings('a', 'doc-a').pending, true)
@@ -112,25 +114,30 @@ test('queries retain the ready plan until a full candidate succeeds, then all vi
     const updated = await f.search()
     assert.notEqual(updated.indexGeneration, first.indexGeneration)
     assert.equal(f.runtimes[1]!.plan.policy.embeddingEngine, 'embed-b')
-    assert.equal(f.api.settings('b', 'doc-b').activePolicy.embeddingEngine, 'embed-b')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-b')
     assert.equal(f.api.settings('a', 'doc-a').pending, false)
     assert.equal((await f.search('a', 'other')).indexGeneration, first.indexGeneration,
       'another file keeps its own settings and may share the identical immutable runtime')
   } finally { gate.resolve(); await f.api.dispose() }
 })
 
-test('per-file settings survive new hashes and view IDs while later global defaults only affect new resources', async () => {
+test('per-file content flags survive saves and later engine selection always comes from global settings', async () => {
   const f = fixture()
   try {
-    f.api.settings('a', 'doc-a'); await f.configure('embed-b')
+    const first = f.api.settings('a', 'doc-a')
+    await f.api.configure('a', 'doc-a', first.revision, { ...first.policy, indexImageDescriptions: true })
     f.documents[0]!.sourceDigest = 'saved-new-source'; f.documents[0]!.contentVersion = 'new-working-set'
-    f.updateDefaults({ embeddingEngine: 'embed-c' })
-    assert.equal(f.api.settings('b', 'doc-b').policy.embeddingEngine, 'embed-b')
-    assert.equal(f.api.settings('a', 'other').policy.embeddingEngine, 'embed-c')
+    f.updateDefaults({ embeddingEngine: 'embed-c', ocrEngine: 'ocr-new', imageEngine: 'image-new', indexScanPages: false })
+    assert.deepEqual(f.api.settings('b', 'doc-b').policy, { indexScanPages: true, indexImageDescriptions: true })
+    assert.equal(f.policies.desired('/book.pdf').policy.embeddingEngine, 'embed-c')
+    assert.equal(f.policies.desired('/book.pdf').policy.ocrEngine, 'ocr-new')
+    assert.equal(f.policies.desired('/book.pdf').policy.imageEngine, 'image-new')
+    assert.equal(f.api.settings('a', 'other').policy.indexScanPages, false)
     const snapshot = f.api.settings('a', 'doc-a')
     await f.api.configure('a', 'doc-a', snapshot.revision)
-    assert.equal(f.api.settings('a', 'doc-a').policy.embeddingEngine, 'embed-c', 'adopting defaults is explicit')
-    assert.equal(f.api.settings('a', 'doc-a').activePolicy.embeddingEngine, 'embed-a')
+    assert.equal(f.api.settings('a', 'doc-a').policy.indexScanPages, false, 'only adopting content defaults is explicit')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
+    assert.equal(f.runtimes.length, 0, 'neither global nor document preferences allocate a replacement')
   } finally { await f.api.dispose() }
 })
 
@@ -186,8 +193,8 @@ test('a queued or superseded candidate cannot promote an obsolete policy and par
     const rejected = assert.rejects(pending, { code: 'pdf/stale-reader' })
     await entered.promise; await f.configure('embed-c'); await f.api.stage('a', 'doc-a')
     gate.resolve(); await rejected
-    assert.equal(f.api.settings('a', 'doc-a').activePolicy.embeddingEngine, 'embed-a')
-    assert.equal(f.api.settings('a', 'doc-a').policy.embeddingEngine, 'embed-c')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
+    assert.equal(f.policies.desired('/book.pdf').policy.embeddingEngine, 'embed-c')
   } finally { gate.resolve(); await f.api.dispose() }
 })
 
@@ -203,18 +210,49 @@ test('a search crossing successful plan promotion is rejected rather than return
   } finally { gate.resolve(); await f.api.dispose() }
 })
 
-test('disabling semantic indexing activates a query-free plan immediately and deletes the staged candidate', async () => {
+test('global disable gates every operation while preserving the ready forced runtime and its durable plan', async () => {
   const f = fixture()
   try {
+    await f.search(); await f.api.stage('a', 'doc-a', true)
+    await f.api.prepare('a', { documentId: 'doc-a' }, signal)
+    const forced = await f.search(), selection = f.api.selection(f.documents[0]!)!
     await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
     await f.configure('none')
-    assert.equal(f.api.settings('a', 'doc-a').pending, false)
-    assert.equal(f.api.settings('a', 'doc-a').activePolicy.embeddingEngine, 'none')
+    const disabled = f.api.settings('a', 'doc-a')
+    assert.equal(disabled.enabled, false); assert.equal(disabled.activeEnabled, false)
     assert.equal(f.api.selection(f.documents[0]!), undefined)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'none')
+    assert.equal((f.records.get('/book.pdf') as { active: ResolvedIndexPlan }).active.policy.embeddingEngine, 'embed-a')
     await f.api.stage('a', 'doc-a')
-    assert.equal(f.api.settings('a', 'doc-a').pending, false, 'explicit start of a disabled policy remains query-free')
-    assert.equal(f.runtimes.length, 0, 'disabling does not execute either the old or proposed model')
-    assert.equal((await f.api.availability('a', signal, 'doc-a')).status, 'unavailable')
+    assert.deepEqual(await f.api.availability('a', signal, 'doc-a'),
+      { status: 'unavailable', reason: 'Semantic search is disabled in PDF settings.' })
+    await assert.rejects(f.search(), { code: 'pdf/retrieval-engine-unavailable', message: 'Semantic search is disabled in PDF settings.' })
+    await assert.rejects(f.api.prepare('a', { documentId: 'doc-a' }, signal), { code: 'pdf/retrieval-engine-unavailable' })
+    assert.equal(f.runtimes.length, 2, 'disable never allocates a fake runtime or disposes the reusable index')
+    await f.configure('embed-a')
+    assert.deepEqual(f.api.selection(f.documents[0]!), selection, 'the force identity survives a reversible global disable')
+    assert.equal((await f.search()).indexGeneration, forced.indexGeneration)
+    assert.equal(f.api.settings('a', 'doc-a').pending, false)
+  } finally { await f.api.dispose() }
+})
+
+test('enabling global search for a PDF opened while disabled asks for an explicit first build', async () => {
+  const f = fixture()
+  try {
+    f.updateDefaults({ embeddingEngine: 'none' })
+    assert.equal(f.api.settings('a', 'doc-a').enabled, false)
+    await f.policies.settled('/book.pdf')
+    f.updateDefaults({ embeddingEngine: 'embed-a' }); f.api.refresh()
+    assert.equal(f.api.settings('a', 'doc-a').enabled, true)
+    assert.equal(f.api.settings('a', 'doc-a').activeEnabled, false)
+    const reason = 'Build or update this PDF\'s semantic index in the search panel before searching.'
+    assert.deepEqual(await f.api.availability('a', signal, 'doc-a'), { status: 'unavailable', reason })
+    await assert.rejects(f.search(), { code: 'pdf/retrieval-engine-unavailable', message: reason })
+    assert.equal(f.runtimes.length, 0, 'enabling an engine must not silently allocate or build an index')
+    await f.api.stage('a', 'doc-a'); await f.api.prepare('a', { documentId: 'doc-a' }, signal)
+    assert.equal((await f.api.availability('a', signal, 'doc-a')).status, 'available')
+    assert.equal((await f.search()).effectiveMode, 'semantic')
+    assert.equal(f.api.settings('a', 'doc-a').activeEnabled, true)
   } finally { await f.api.dispose() }
 })
 
@@ -321,6 +359,8 @@ test('passive listeners are isolated and disposal drains admitted work, closes f
   f.api.subscribe(() => { throw new Error('passive listener failure') })
   const stop = f.api.subscribe(() => { notifications++ })
   try {
+    const initial = f.api.settings('a', 'doc-a')
+    await f.api.configure('a', 'doc-a', initial.revision, { ...initial.policy, indexImageDescriptions: true })
     await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
     assert.ok(notifications >= 2)
     stop(); const before = notifications
@@ -437,8 +477,8 @@ test('closing the final owner releases the candidate but keeps preferences and r
     f.updateDefaults({ embeddingEngine: 'embed-c' })
     f.documents.push(first)
     const restored = f.api.settings('a', 'doc-a')
-    assert.equal(restored.policy.embeddingEngine, 'embed-b')
-    assert.equal(restored.activePolicy.embeddingEngine, 'embed-a')
+    assert.equal(f.policies.desired('/book.pdf').policy.embeddingEngine, 'embed-c')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
     assert.equal(restored.pending, true)
     assert.notEqual(f.api.selection(first)!.identity, candidate.identity, 'a closed candidate is not silently resumed')
     assert.equal((await f.search()).indexGeneration, original.indexGeneration)
@@ -456,44 +496,49 @@ test('last-owner closure drops the path-specific force identity while preserving
     f.documents.splice(f.documents.findIndex(owner => owner.id === 'doc-b'), 1); f.api.refresh(); await turn()
     f.documents.push(first)
     assert.notEqual(f.api.selection(first)!.identity, forced.identity)
-    assert.equal(f.api.settings('a', 'doc-a').activePolicy.embeddingEngine, 'embed-a')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
     assert.equal(f.runtimes[1]!.closed, false, 'the runtime remains subject to the ordinary shared LRU budget')
   } finally { await f.api.dispose() }
 })
 
-test('an admitted disable still commits if the final view closes while the preference write is pending', async () => {
+test('an admitted content preference commits after the final view closes without rewriting its frozen active plan', async () => {
   const f = fixture(), entered = deferred(), gate = deferred()
   try {
     const initial = f.api.settings('a', 'doc-a'); await f.policies.settled('/book.pdf')
     f.state.onPut = async () => { entered.resolve(); await gate.promise }
-    const disabling = f.api.configure('a', 'doc-a', initial.revision, { ...initial.policy, embeddingEngine: 'none' })
+    const saving = f.api.configure('a', 'doc-a', initial.revision, { ...initial.policy, indexImageDescriptions: true })
     await entered.promise
     const first = { ...f.documents[0]! }
-    f.documents.splice(0, 2); f.api.refresh()
-    gate.resolve(); await disabling; await turn()
+    f.documents.splice(0, 2); f.updateDefaults({ embeddingEngine: 'none' }); f.api.refresh()
+    gate.resolve(); await saving; await turn()
     f.documents.push(first)
     const reopened = f.api.settings('a', 'doc-a')
-    assert.equal(reopened.policy.embeddingEngine, 'none')
-    assert.equal(reopened.activePolicy.embeddingEngine, 'none')
-    assert.equal(reopened.pending, false)
+    assert.equal(reopened.policy.indexImageDescriptions, true)
+    assert.equal(reopened.enabled, false); assert.equal(reopened.activeEnabled, false)
+    assert.equal((f.records.get('/book.pdf') as { active: ResolvedIndexPlan }).active.policy.embeddingEngine, 'embed-a')
     assert.equal(f.runtimes.length, 0)
   } finally { gate.resolve(); await f.api.dispose() }
 })
 
-test('staging recovers a disabled preference whose previous process stopped before activation', async () => {
-  const f = fixture()
+test('global disable aborts a candidate and reenabling does not silently restart the expensive replacement', async () => {
+  const f = fixture(), entered = deferred(), gate = deferred()
   try {
-    const initial = f.api.settings('a', 'doc-a'); await f.policies.settled('/book.pdf')
-    await f.policies.configure('/book.pdf', initial.revision, { ...initial.policy, embeddingEngine: 'none' })
+    const original = await f.search(), originalSelection = f.api.selection(f.documents[0]!)!
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
+    let active!: AbortSignal
+    f.state.onPrepare = async (_runtime, _call, signal) => { active = signal; entered.resolve(); await gate.promise }
+    const preparing = f.api.prepare('a', { documentId: 'doc-a' }, signal)
+    const rejected = assert.rejects(preparing, { code: 'pdf/retrieval-engine-unavailable' })
+    await entered.promise
+    f.updateDefaults({ embeddingEngine: 'none' }); f.api.refresh()
+    assert.equal(active.aborted, true)
+    gate.resolve(); await rejected
+    f.updateDefaults({ embeddingEngine: 'embed-b' }); f.api.refresh()
+    assert.deepEqual(f.api.selection(f.documents[0]!), originalSelection)
     assert.equal(f.api.settings('a', 'doc-a').pending, true)
-    let notifications = 0
-    f.api.subscribe(() => { notifications++ })
-    await f.api.stage('a', 'doc-a')
-    assert.equal(f.api.settings('a', 'doc-a').activePolicy.embeddingEngine, 'none')
-    assert.equal(f.api.settings('a', 'doc-a').pending, false)
-    assert.equal(f.runtimes.length, 0)
-    assert.equal(notifications, 2, 'the durable activation and task selection both announce the recovered state')
-  } finally { await f.api.dispose() }
+    assert.equal((await f.search()).indexGeneration, original.indexGeneration)
+    assert.equal(f.calls.filter(call => call.kind === 'prepare').length, 1)
+  } finally { gate.resolve(); await f.api.dispose() }
 })
 
 test('availability checked across plan promotion cannot report the retired model as current', async () => {
@@ -527,5 +572,43 @@ test('the LRU evicts the least recently used idle runtime and ignores owners wit
     f.api.refresh()
     assert.throws(() => f.api.settings('c', 'pathless'), { code: 'pdf/unknown-document' })
     assert.equal(f.runtimes.length, 3)
+  } finally { await f.api.dispose() }
+})
+
+for (const kind of ['search', 'availability'] as const) {
+  test(`global disable cancels an admitted ${kind} even when the forced ready identity is reenabled before it settles`, async () => {
+    const f = fixture(), entered = deferred(), gate = deferred()
+    try {
+      await f.search(); await f.api.stage('a', 'doc-a', true)
+      await f.api.prepare('a', { documentId: 'doc-a' }, signal)
+      const ready = await f.search(), selected = f.api.selection(f.documents[0]!)!
+      let active!: AbortSignal
+      const wait = async (_runtime: Runtime, _call: Call, value: AbortSignal) => { active = value; entered.resolve(); await gate.promise }
+      if (kind === 'search') f.state.onSearch = wait
+      else f.state.onAvailability = wait
+      const request = kind === 'search' ? f.search() : f.api.availability('a', signal, 'doc-a')
+      const rejected = assert.rejects(request, { code: 'pdf/retrieval-engine-unavailable' })
+      await entered.promise
+      await f.configure('none')
+      assert.equal(active.aborted, true)
+      await f.configure('embed-a')
+      assert.deepEqual(f.api.selection(f.documents[0]!), selected)
+      gate.resolve(); await rejected
+      f.state.onSearch = undefined; f.state.onAvailability = undefined
+      assert.equal((await f.search()).indexGeneration, ready.indexGeneration)
+      assert.equal(f.runtimes.length, 2, 'the ready index survives cancellation without allocating a disabled runtime')
+    } finally { gate.resolve(); await f.api.dispose() }
+  })
+}
+
+test('a global disable observed before its notification still prevents a completed candidate from being promoted', async () => {
+  const f = fixture()
+  try {
+    await f.search(); await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
+    f.state.onPrepare = async () => { f.updateDefaults({ embeddingEngine: 'none' }) }
+    await assert.rejects(f.api.prepare('a', { documentId: 'doc-a' }, signal), { code: 'pdf/retrieval-engine-unavailable' })
+    assert.equal((f.records.get('/book.pdf') as { active: ResolvedIndexPlan }).active.policy.embeddingEngine, 'embed-a')
+    f.updateDefaults({ embeddingEngine: 'embed-a' })
+    assert.equal(f.api.settings('a', 'doc-a').pending, false)
   } finally { await f.api.dispose() }
 })

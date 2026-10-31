@@ -56,9 +56,10 @@ all 37 browser cases; these changes do not alter production behavior.
 
 ## Runtime decision
 
-Current source keeps a persistent index policy per PDF path. Global settings
-provide new-document defaults; the Search panel saves document choices
-automatically and leaves costly updates to the user. Native text, OCR and image
+Current source keeps the two indexing switches as persistent preferences per
+PDF path. Engines and their connections are selected globally in PDF settings;
+the Search panel saves only each document's OCR and image-description switches
+and leaves costly updates to the user. Native text, OCR and image
 descriptions have independent caches. Changing one content source reuses the
 others, and matching document-encoding identities reuse vectors across query or
 batch-size changes. Disabling semantic indexing takes effect immediately;

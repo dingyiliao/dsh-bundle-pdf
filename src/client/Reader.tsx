@@ -348,7 +348,7 @@ export function Reader(props: ReaderProps) {
     jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
     translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control,
-    engineCatalog: props.engineCatalog, t })
+    t })
   const goBack = () => navigateHistory()
 
   const closeToolsMenu = () => { if (toolsMenu.current) toolsMenu.current.open = false }

@@ -23,9 +23,8 @@ test('PDF Settings omits the AI engine heading and explains each setting only on
     assert.equal([...html.matchAll(/<h3\b/g)].length, 2, 'only navigation and prompts retain group headings')
     assert.doesNotMatch(html, /AI 引擎|AI engines|engines-title/)
     assert.doesNotMatch(html, /type="submit"|保存设置|Save settings/)
-    assert.ok(html.includes(locale['settings.indexScanPages']))
-    assert.ok(html.includes(locale['settings.indexImageDescriptions']))
-    for (const key of ['settings.enginesHelp', 'settings.ocrHelp', 'settings.imageHelp', 'settings.indexScanPagesHelp', 'settings.indexImageDescriptionsHelp',
+    assert.doesNotMatch(html, /id="[^"]*-(?:indexScanPages|indexImageDescriptions)"/)
+    for (const key of ['settings.enginesHelp', 'settings.ocrHelp', 'settings.imageHelp',
       'settings.translationHelp', 'settings.explanationPromptsHelp'] as const) {
       assert.equal(html.split(locale[key]).length - 1, 1, `${key} is not repeated`)
     }
@@ -80,27 +79,22 @@ test('PDF Settings keeps ready writable controls editable without a mode field',
     translationEngines: [{ id: 'dsh-model', label: 'DSH model' }],
   }))
   const controls = [...html.matchAll(/<(?:select|input)\b[^>]*>/g)].map(match => match[0])
-  assert.equal(controls.length, 8)
+  assert.equal(controls.length, 6)
   for (const control of controls) assert.doesNotMatch(control, /\bdisabled(?:\s|=|>)/)
 })
 
-test('index preprocessing checkboxes follow embedding and use defaults for older settings snapshots', () => {
+test('global settings keep engine selectors while document indexing switches stay in the sidebar', () => {
   const { indexScanPages: _scanned, indexImageDescriptions: _descriptions, ...legacySettings } = defaultSettings
-  const snapshot: ConfigFormSnapshot = { status: 'ready', value: legacySettings,
-    base: {}, user: {}, revision: 1, writable: true }
-  const form: ConfigForm = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true }
-  const html = renderToStaticMarkup(React.createElement(Settings, { form,
-    t: key => (settingsLocales.en as Record<string, string>)[key] ?? key, translationEngines: [] }))
-  const checks = [...html.matchAll(/<input\b[^>]*type="checkbox"[^>]*>/g)].map(match => match[0])
-  assert.equal(checks.length, 2)
-  assert.match(checks[0]!, /indexScanPages/)
-  assert.match(checks[0]!, /\bchecked=""/)
-  assert.match(checks[1]!, /indexImageDescriptions/)
-  assert.doesNotMatch(checks[1]!, /\bchecked=/)
-  const embeddingSelect = html.match(/<select\b[^>]*id="[^"]*-embeddingEngine"[^>]*>/)?.[0]
-  assert.ok(embeddingSelect)
-  assert.ok(html.indexOf(embeddingSelect) < html.indexOf(checks[0]!))
-  assert.match(html, /Adds model calls, waiting time and cost/)
+  for (const value of [legacySettings, { ...defaultSettings, indexScanPages: true, indexImageDescriptions: true }]) {
+    const snapshot: ConfigFormSnapshot = { status: 'ready', value, base: {}, user: {}, revision: 1, writable: true }
+    const form: ConfigForm = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true }
+    const html = renderToStaticMarkup(React.createElement(Settings, { form,
+      t: key => (settingsLocales.en as Record<string, string>)[key] ?? key, translationEngines: [] }))
+    assert.doesNotMatch(html, /type="checkbox"|id="[^"]*-(?:indexScanPages|indexImageDescriptions)"/)
+    for (const field of ['embeddingEngine', 'ocrEngine', 'imageEngine']) {
+      assert.match(html, new RegExp(`<select\\b[^>]*id="[^"]*-${field}"`))
+    }
+  }
 })
 
 test('semantic search settings follow the engine catalog and retain an unloaded selection', () => {

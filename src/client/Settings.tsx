@@ -39,11 +39,7 @@ export const settingsLocales = {
     'settings.ocrEngine': 'OCR 引擎',
     'settings.imageEngine': '图像理解引擎',
     'settings.embeddingEngine': '语义检索引擎',
-    'settings.embeddingHelp': '启用后，打开 PDF 会在后台建立文字索引；第三方服务会收到抽取的文字。关键词搜索不受影响。',
-    'settings.indexScanPages': '新文档默认启用文字识别索引',
-    'settings.indexScanPagesHelp': '新打开的文档在原生文字缺失或损坏时，默认使用所选 OCR 引擎。已有 PDF 的索引策略不会被覆盖，可在其搜索面板中单独调整。',
-    'settings.indexImageDescriptions': '新文档默认启用视觉描述索引',
-    'settings.indexImageDescriptionsHelp': '新打开的文档默认使用所选图像理解引擎生成整页描述并索引文字；会增加模型调用、等待时间和费用。已有 PDF 的索引策略不会被覆盖。',
+    'settings.embeddingHelp': '所有 PDF 共用此引擎。已有索引可在文档的搜索面板更新，原有结果会保留。第三方服务会收到抽取的文字，关键词搜索不受影响。',
     'settings.rebuildIndex': '清除全部索引缓存',
     'settings.rebuildingIndex': '正在清除索引缓存…',
     'settings.rebuildIndexHelp': '清除当前 profile 中所有 PDF 的检索缓存。已启用索引的文档随后按各自策略重新建立；不会修改 PDF 或草稿。当前文档的重建请使用其搜索面板。',
@@ -125,11 +121,7 @@ export const settingsLocales = {
     'settings.ocrEngine': 'OCR engine',
     'settings.imageEngine': 'Image understanding engine',
     'settings.embeddingEngine': 'Semantic search engine',
-    'settings.embeddingHelp': 'When enabled, opening a PDF builds its text index in the background. Third-party services receive extracted text. Keyword search remains available.',
-    'settings.indexScanPages': 'Text recognition indexing for new documents',
-    'settings.indexScanPagesHelp': 'Newly opened documents use the selected OCR engine when native text is missing or damaged. Existing PDFs keep their own indexing policy, adjustable in their Search panel.',
-    'settings.indexImageDescriptions': 'Visual description indexing for new documents',
-    'settings.indexImageDescriptionsHelp': 'Newly opened documents use the selected image engine to describe whole pages and index the text. Adds model calls, waiting time and cost. Existing PDFs keep their own indexing policy.',
+    'settings.embeddingHelp': 'Shared by all PDFs. Update existing indexes from each document’s Search panel; current results are retained. Third-party services receive extracted text. Keyword search remains available.',
     'settings.rebuildIndex': 'Clear all index caches',
     'settings.rebuildingIndex': 'Clearing index cache…',
     'settings.rebuildIndexHelp': 'Clears retrieval caches for all PDFs in this profile. Index-enabled documents subsequently rebuild with their own policies. PDFs and drafts are unchanged. Use the Search panel to rebuild only the current document.',
@@ -205,21 +197,15 @@ export const settingsLocales = {
 } as const
 
 const promptFields = ['explanationGeneralInstruction', 'explanationTextInstruction', 'explanationImageInstruction'] as const
-const booleanFields = ['indexScanPages', 'indexImageDescriptions'] as const
-type BooleanField = typeof booleanFields[number]
-const fields = ['ocrEngine', 'imageEngine', 'embeddingEngine', ...booleanFields, 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
+const fields = ['ocrEngine', 'imageEngine', 'embeddingEngine', 'engineConfigurations', 'translationEngine', 'translationTimeoutMs', 'historyCapacity', ...promptFields,
   'explanationPromptTemplate'] as const
 type Field = typeof fields[number]
 const fieldHints: Partial<Record<Field, keyof typeof settingsLocales.zh>> = {
   ocrEngine: 'settings.ocrHelp', imageEngine: 'settings.imageHelp', translationEngine: 'settings.translationHelp',
   embeddingEngine: 'settings.embeddingHelp',
-  indexScanPages: 'settings.indexScanPagesHelp', indexImageDescriptions: 'settings.indexImageDescriptionsHelp',
   translationTimeoutMs: 'settings.translationTimeoutHelp', historyCapacity: 'settings.historyHelp',
 }
-type Draft = Record<Exclude<Field, BooleanField>, string> & Record<BooleanField, boolean>
-function isBooleanField(field: Field): field is BooleanField {
-  return booleanFields.some(option => option === field)
-}
+type Draft = Record<Field, string>
 interface Editor {
   source: Draft; draft: Draft; revision: number | undefined; conflict: boolean; unsets: Field[]
   sourceVisionModelMode: VisionModelMode
@@ -235,10 +221,8 @@ const unavailableModelOptions: ReturnType<ModelOptionsStore['getSnapshot']> = { 
 function toDraft(settings: PdfSettings): Draft {
   const complete = { ...defaultSettings, ...settings }
   complete.translationEngine = effectiveTranslationEngine(complete.translationEngine)
-  complete.indexScanPages = settings.indexScanPages ?? true
-  complete.indexImageDescriptions = settings.indexImageDescriptions ?? false
   complete.imageEngine = migrateImageEngine(complete.imageEngine!, complete.engineConfigurations)
-  return Object.fromEntries(fields.map(field => [field, isBooleanField(field) ? complete[field] : field === 'engineConfigurations'
+  return Object.fromEntries(fields.map(field => [field, field === 'engineConfigurations'
     ? JSON.stringify(migrateEngineConfigurations(complete.engineConfigurations, settings.imageEngine)) : String(complete[field])])) as Draft
 }
 function isDirty(editor: Editor | null): boolean {
@@ -419,11 +403,6 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
           catch { validation.engineConfigurations = tr('settings.engineConfigInvalid'); invalidKinds.add(kind) }
         }
       }
-      if (editor.draft.indexImageDescriptions && !editor.source.indexImageDescriptions
-        && !descriptors('image').some(engine => engine.id === editor.draft.imageEngine && engine.execution !== 'disabled')) {
-        validation.imageEngine = tr('settings.invalidEngine')
-        validation.indexImageDescriptions = tr('settings.invalidEngine')
-      }
       if (editor.draft.imageEngine === 'dsh-vision' && editor.visionModelMode === 'specified') {
         const config = configurations.image?.['dsh-vision'] ?? {}
         const source = sourceConfigurations.image?.['dsh-vision'] ?? {}
@@ -592,7 +571,7 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     const ops = selectedFields.map(field =>
       editor.unsets.includes(field) ? { op: 'unset' as const, path: [field] } : {
         op: 'set' as const, path: [field],
-        value: isBooleanField(field) ? captured.draft[field] : field === 'translationTimeoutMs' || field === 'historyCapacity'
+        value: field === 'translationTimeoutMs' || field === 'historyCapacity'
           ? Number(captured.draft[field]) : field === 'engineConfigurations'
             ? JSON.parse(captured.draft[field]) : captured.draft[field].trim(),
       })
@@ -671,16 +650,6 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     'aria-describedby': `${id}-${fieldHints[field] ? `${field}-hint` : 'prompts-hint'}${submitted && validation[field] ? ` ${id}-${field}-error` : ''}`,
     className: 'dsh-pdf-settings-control',
   })
-  const indexOption = (field: BooleanField) => editor && <div key={field} className="dsh-pdf-settings-field">
-    <label htmlFor={`${id}-${field}`} className="dsh-pdf-settings-label">
-      <input {...attributes(field)} className={undefined} type="checkbox" checked={editor.draft[field]}
-        style={{ margin: '0 8px 0 0', verticalAlign: 'middle' }}
-        onChange={event => edit(field, event.target.checked)} />
-      {tr(`settings.${field}`)}
-    </label>
-    <small id={`${id}-${field}-hint`} className="dsh-pdf-settings-hint">{tr(fieldHints[field]!)}</small>
-  </div>
-
   const engineFields = (kind: EngineKind, field: 'ocrEngine' | 'imageEngine' | 'translationEngine' | 'embeddingEngine') => {
     if (!editor) return null
     const engineId = editor.draft[field]
@@ -744,7 +713,6 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
         {engineFields('image', 'imageEngine')}
         {engineFields('translation', 'translationEngine')}
         {engineFields('embedding', 'embeddingEngine')}
-        {booleanFields.map(indexOption)}
         {rebuildRetrievalIndex && <div className="dsh-pdf-settings-field">
           <div className="dsh-pdf-settings-field-heading">
             <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || saving || dirty || editor.conflict}

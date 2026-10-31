@@ -178,14 +178,12 @@ test('indexing snapshot capacity preserves every live subscription when no inact
   } finally { stops.forEach(stop => stop()); api.dispose(); lifetime.abort(); await turn() }
 })
 
-const defaultPolicy = { embeddingEngine: 'embedding', ocrEngine: 'ocr', imageEngine: 'image',
-  indexScanPages: false, indexImageDescriptions: false }
-const customPolicy = { embeddingEngine: 'another-embedding', ocrEngine: 'another-ocr', imageEngine: 'another-image',
-  indexScanPages: true, indexImageDescriptions: true }
+const defaultPolicy = { indexScanPages: false, indexImageDescriptions: false }
+const customPolicy = { indexScanPages: true, indexImageDescriptions: true }
 const documentSnapshot = (revision: string, settingsRevision: number, pending = false): PdfIndexingSnapshot => ({
   ...snapshot('running'), revision,
   documents: [{ documentId: 'document', revision: settingsRevision, policy: pending ? customPolicy : defaultPolicy,
-    activePolicy: defaultPolicy, pending, impact: pending ? 'embedding' : 'none' }],
+    activePolicy: defaultPolicy, enabled: true, activeEnabled: true, pending, impact: pending ? 'content' : 'none' }],
 })
 
 test('document configuration and defaults update every view through the shared session snapshot', async () => {
