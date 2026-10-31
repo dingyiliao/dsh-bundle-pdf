@@ -292,6 +292,196 @@ test('question editors fit a short PDF scrollport while a full-height rail and r
   })
 })
 
+for (const annotation of [false, true]) test(`${annotation ? 'annotation' : 'selection'} actions avoid asymmetric floating gutters without moving the PDF anchor`, async () => {
+  await withReader(async ({ dom, reader, viewport, render, resize }) => {
+    const fullViewport = rect(30, 40, 780, 400)
+    viewport.getBoundingClientRect = () => fullViewport
+    viewport.style.paddingLeft = '86px'; viewport.style.paddingRight = '210px'
+    viewport.scrollLeft = 127; viewport.scrollTop = 300
+    let anchor = rect(480, 200, 24, 18)
+    const firstAnchor = anchor, originalAnchor = { ...anchor }
+    await render(React.createElement(FloatingToolbar, { viewport, getAnchor: () => anchor,
+      label: 'PDF actions', className: annotation ? 'dsh-pdf-annotation-toolbar' : undefined,
+      children: React.createElement('button', null, annotation ? 'Delete' : 'Highlight') }))
+    const toolbar = reader.querySelector<HTMLElement>('.dsh-pdf-context-toolbar')!
+    const check = (rightPadding: number) => {
+      const worldLeft = 30 + Number.parseFloat(toolbar.style.left)
+      assert.equal(toolbar.dataset.visible, 'true')
+      assert.ok(worldLeft >= fullViewport.left + 86 + 8, 'actions clear the floating tool rail')
+      assert.ok(worldLeft + toolbar.offsetWidth <= fullViewport.right - rightPadding - 8,
+        'every action remains on the readable side of the floating panel')
+    }
+    check(210)
+    viewport.style.paddingRight = '330px'; anchor = rect(462, 200, 24, 18)
+    await resize(viewport); check(330)
+    assert.deepEqual(firstAnchor, originalAnchor, 'placement never rewrites PDF anchor coordinates')
+    assert.deepEqual(viewport.getBoundingClientRect(), fullViewport)
+    assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], [127, 300], 'showing actions cannot reposition the document')
+    anchor = rect(650, 200, 24, 18)
+    await resize(viewport)
+    assert.equal(toolbar.dataset.visible, 'false', 'an anchor fully behind the panel does not expose inaccessible actions')
+    anchor = rect(300, 200, 24, 18)
+    await act(async () => viewport.dispatchEvent(new dom.Event('pdflayoutchange')))
+    await resize(viewport); check(330)
+  })
+})
+
+test('explanation questions stay editable inside the padded reading strip as the floating panel widens', async () => {
+  await withReader(async ({ reader, viewport, render, resize, dom }) => {
+    const fullViewport = rect(30, 40, 780, 400), anchor = rect(462, 200, 24, 18)
+    const originalAnchor = { ...anchor }
+    viewport.getBoundingClientRect = () => fullViewport
+    viewport.style.paddingLeft = '86px'; viewport.style.paddingRight = '210px'
+    viewport.scrollLeft = 127
+    await render(React.createElement(ExplanationQuestionEditor, { viewport, getAnchor: () => anchor,
+      mode: 'new', index: 1, question: 'Explain this figure', disabled: false, t: key => key,
+      onChange() {}, onSave() {}, onCancel() {} }))
+    const editor = reader.querySelector<HTMLElement>('.dsh-pdf-explanation-question-editor')!
+    const check = (rightPadding: number) => {
+      const worldLeft = 30 + Number.parseFloat(editor.style.left)
+      assert.notEqual(editor.style.visibility, 'hidden')
+      assert.ok(worldLeft >= fullViewport.left + 86 + 12)
+      assert.ok(worldLeft + Number.parseFloat(editor.style.width) <= fullViewport.right - rightPadding - 12)
+    }
+    check(210)
+    assert.equal(dom.document.activeElement, editor.querySelector('textarea'), 'the bounded question still receives editing focus')
+    viewport.style.paddingRight = '330px'; await resize(viewport); check(330)
+    assert.equal(editor.querySelector<HTMLTextAreaElement>('textarea')!.value, 'Explain this figure')
+    assert.equal(viewport.scrollLeft, 127)
+    assert.deepEqual(anchor, originalAnchor)
+    assert.deepEqual(viewport.getBoundingClientRect(), fullViewport)
+  })
+})
+
+for (const cardKind of ['comment', 'note'] as const) test(`${cardKind} placement honors floating gutters and preserves the full-coordinate PDF anchor`, async () => {
+  await withReader(async ({ reader, viewport, render, resize }) => {
+    const fullViewport = rect(30, 40, 780, 400), anchor = rect(250, 160, 40, 20)
+    const originalAnchor = { ...anchor }
+    viewport.getBoundingClientRect = () => fullViewport
+    viewport.style.paddingLeft = '86px'; viewport.style.paddingRight = '330px'
+    const props = { viewport, getAnchor: () => anchor, label: 'PDF comment', cardKind, connector: cardKind === 'comment',
+      children: React.createElement('textarea', { defaultValue: 'A comment' }) }
+    await render(React.createElement(AnnotationCommentCard, props))
+    const card = reader.querySelector<HTMLElement>('.dsh-pdf-page-comment-card')!
+    const check = () => {
+      const worldLeft = 30 + Number.parseFloat(card.style.left)
+      assert.equal(card.dataset.visible, 'true')
+      assert.ok(worldLeft >= fullViewport.left + 86 + 12)
+      assert.ok(worldLeft + Number.parseFloat(card.style.width) <= fullViewport.right - 330 - 12)
+    }
+    check()
+    if (cardKind === 'comment') {
+      const path = reader.querySelector('svg path[marker-end]')!
+      assert.match(path.getAttribute('d')!, /^M 240 140 /,
+        'the connector starts at the original PDF mark center/bottom relative to the Reader, without subtracting safe padding again')
+    } else assert.equal(reader.querySelector('svg.dsh-pdf-comment-connector'), null)
+    await render(React.createElement(AnnotationCommentCard, { ...props, getPosition: () => rect(750, 120, 0, 0) }))
+    await resize(viewport); check()
+    assert.equal(card.querySelector<HTMLTextAreaElement>('textarea')!.value, 'A comment')
+    assert.deepEqual(anchor, originalAnchor)
+    assert.deepEqual(viewport.getBoundingClientRect(), fullViewport)
+  })
+})
+
+test('note pointer and keyboard resizing stop before a floating panel rather than the full scrollport edge', async () => {
+  await withReader(async ({ dom, reader, viewport, render, flushFrames }) => {
+    viewport.getBoundingClientRect = () => rect(30, 40, 780, 400)
+    viewport.style.paddingLeft = '86px'; viewport.style.paddingRight = '330px'
+    const anchor = rect(250, 160, 40, 20), sizeKey = 'floating-gutter-note'
+    const originalAnchor = { ...anchor }
+    await render(React.createElement(AnnotationCommentCard, { viewport, getAnchor: () => anchor, label: 'Note',
+      cardKind: 'note', connector: false, sizeKey, resizeLabel: 'Resize note', children: React.createElement('textarea') }))
+    const card = reader.querySelector<HTMLElement>('.dsh-pdf-page-comment-card')!
+    const handle = card.querySelector<HTMLButtonElement>('[data-note-card-resize-handle]')!
+    card.getBoundingClientRect = () => rect(30 + Number.parseFloat(card.style.left), 40 + Number.parseFloat(card.style.top),
+      Number.parseFloat(card.style.width), Number.parseFloat(card.style.height) || card.offsetHeight)
+    const pointer = (type: string, x: number, y: number) => {
+      const event = new dom.Event(type, { bubbles: true, cancelable: true })
+      for (const [key, value] of Object.entries({ pointerId: 3, isPrimary: true, button: 0, clientX: x, clientY: y }))
+        Object.defineProperty(event, key, { configurable: true, value })
+      return event
+    }
+    const check = () => {
+      const bounds = card.getBoundingClientRect()
+      assert.ok(bounds.left >= 30 + 86 + 12)
+      assert.ok(bounds.right <= 810 - 330 - 12, 'resizing must preserve the entire editable note before the panel')
+      const stored = JSON.parse(dom.localStorage.getItem(`dsh-pdf:note-card-size:v1:${sizeKey}`)!) as { width: number }
+      assert.equal(stored.width, bounds.width)
+      return stored.width
+    }
+    const start = card.getBoundingClientRect()
+    await act(async () => {
+      handle.dispatchEvent(pointer('pointerdown', start.right, start.bottom))
+      handle.dispatchEvent(pointer('pointermove', start.right + 1000, start.bottom))
+      handle.dispatchEvent(pointer('pointerup', start.right + 1000, start.bottom))
+    })
+    await flushFrames()
+    const maximumWidth = check()
+    assert.ok(maximumWidth > start.width, 'the readable remainder is usable for resizing')
+    await act(async () => handle.dispatchEvent(new dom.KeyboardEvent('keydown', {
+      bubbles: true, cancelable: true, key: 'ArrowRight', shiftKey: true,
+    })))
+    assert.equal(check(), maximumWidth, 'keyboard growth respects the same floating-panel boundary')
+    await act(async () => handle.dispatchEvent(new dom.KeyboardEvent('keydown', {
+      bubbles: true, cancelable: true, key: 'ArrowLeft', shiftKey: true,
+    })))
+    assert.equal(check(), maximumWidth - 10)
+    assert.deepEqual(anchor, originalAnchor)
+  })
+})
+
+test('a 240px reader keeps an active comment editable by temporarily sharing the right rail space', async () => {
+  await withReader(async ({ reader, viewport, render, resize, dom }) => {
+    let fullViewport = rect(0, 0, 240, 320)
+    reader.getBoundingClientRect = () => fullViewport
+    viewport.getBoundingClientRect = () => fullViewport
+    viewport.style.paddingLeft = '86px'; viewport.style.paddingRight = '90px'
+    viewport.scrollLeft = 73; viewport.scrollTop = 200
+    const anchor = rect(108, 40, 58, 42), originalAnchor = { ...anchor }
+    await render(React.createElement(React.Fragment, null,
+      React.createElement(FloatingToolbar, { viewport, getAnchor: () => anchor, label: 'Annotation actions',
+        className: 'dsh-pdf-annotation-toolbar', children: React.createElement('button', null, 'Edit comment') }),
+      React.createElement(AnnotationCommentCard, { viewport, getAnchor: () => anchor, label: 'Comment',
+        children: React.createElement('textarea', { 'aria-label': 'Comment text', defaultValue: 'Keep this comment' }) })))
+    const toolbar = reader.querySelector<HTMLElement>('.dsh-pdf-context-toolbar')!
+    const card = reader.querySelector<HTMLElement>('.dsh-pdf-page-comment-card')!
+    const bounds = (element: HTMLElement) => rect(Number.parseFloat(element.style.left), Number.parseFloat(element.style.top),
+      element.offsetWidth, element.offsetHeight)
+    toolbar.getBoundingClientRect = () => bounds(toolbar)
+    card.getBoundingClientRect = () => bounds(card)
+    const input = card.querySelector('textarea')!
+    input.focus(); input.value = 'Keep this comment and my unfinished edit'
+    await resize(viewport)
+    const check = (rightEdge: number) => {
+      assert.equal(toolbar.dataset.visible, 'true')
+      assert.equal(card.dataset.visible, 'true', 'an editor with less than 80px in the strict strip must remain accessible')
+      assert.equal(card.getAttribute('aria-hidden'), 'false')
+      const actions = toolbar.getBoundingClientRect(), editor = card.getBoundingClientRect()
+      assert.ok(actions.left >= 86 + 8 && editor.left >= 86 + 12, 'the left tool rail remains uncovered')
+      assert.ok(actions.right <= rightEdge - 8 && editor.right <= rightEdge - 12,
+        'the outer document scrollbar remains uncovered')
+      assert.ok(editor.bottom + 12 <= actions.top || editor.top >= actions.bottom + 12
+        || editor.right + 12 <= actions.left || editor.left >= actions.right + 12,
+      'the active comment and its actions must not cover one another')
+      assert.equal(input.value, 'Keep this comment and my unfinished edit')
+      assert.equal(dom.document.activeElement, input)
+    }
+    check(224)
+    assert.equal(viewport.style.paddingRight, '90px', 'editor fallback does not change the PDF layout gutter')
+    assert.equal(viewport.getBoundingClientRect().width, 240)
+    assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], [73, 200])
+    assert.deepEqual(anchor, originalAnchor)
+
+    fullViewport = rect(0, 0, 800, 320); viewport.style.paddingRight = '330px'
+    await resize(viewport)
+    check(800 - 330)
+    assert.ok(card.getBoundingClientRect().right <= 800 - 330 - 12,
+      'once there is enough room, the same open editor stops covering the right panel again')
+    assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], [73, 200])
+    assert.deepEqual(anchor, originalAnchor)
+  })
+})
+
 test('expanded reading-sidebar limits deduct the measured tool rail and retain 180px of PDF space', async () => {
   await withReader(async ({ mount, render, resize }) => {
     let paneWidth = 480, railWidth = 80

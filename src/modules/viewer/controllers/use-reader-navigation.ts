@@ -5,7 +5,8 @@ import type { PdfClientApi, WorkspaceSnapshot } from '../../../shared/contracts.
 import type { NativeDocument } from '../rendering/document.js'
 import type { PageView } from '../model/reader-selection.js'
 import type { ReaderLifetime } from './reader-lifetime.js'
-import { windowLayout } from '../rendering/window-layout.js'
+import { pageWindowLeft, windowLayout } from '../rendering/window-layout.js'
+import { scrollportPadding } from '../rendering/pdf-viewport-geometry.js'
 import { readingSafeTop } from '../rendering/page-layout.js'
 import { waitForReaderState } from './wait-for-reader-state.js'
 import { applyIfNoNewerNavigation } from './reading-resume.js'
@@ -92,12 +93,15 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
         validate?.()
         const page = windowLayout(root)?.[position.page - 1]
         const size = state.current.size
+        const padding = scrollportPadding(root)
         // ResizeObserver reports fractional content-box sizes, clientWidth /
         // clientHeight round to CSS pixels. A matching stale state/layout pair
-        // is not sufficient while a docked sidebar is still changing the pane.
+        // is not sufficient while a floating sidebar is still changing the safe gutters.
         const measured = position.fit === 'custom' || Math.abs(size.width - root.clientWidth) < 1
           && Math.abs(size.height - root.clientHeight) < 1
-        return measured && page?.page === position.page
+        const paddingMeasured = (size.paddingLeft === undefined || Math.abs(size.paddingLeft - padding.paddingLeft) < .25)
+          && (size.paddingRight === undefined || Math.abs(size.paddingRight - padding.paddingRight) < .25)
+        return measured && paddingMeasured && page?.page === position.page
           && Math.abs(page.scale - pageScale(geometry, position.fit, position.scale)) < 0.001 ? page : undefined
       }
       while (true) {
@@ -105,7 +109,7 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
         const numericPage = await waitForReaderState(root, 'pdflayoutchange', currentLayout, operationSignal, remaining())
         operationSignal.throwIfAborted()
         // Reveal a distant narrow page before waiting for its windowed PageView.
-        const targetLeft = (root.scrollWidth - numericPage.width) / 2
+        const targetLeft = pageWindowLeft(root, numericPage)
         if (targetLeft + numericPage.width <= root.scrollLeft || targetLeft >= root.scrollLeft + root.clientWidth) {
           root.scrollLeft = Math.max(0, (root.scrollWidth - root.clientWidth) / 2)
         }
@@ -122,15 +126,17 @@ export function useReaderNavigation(options: ReaderNavigationOptions) {
         const positioned = currentLayout()
         if (!positioned || Math.abs(view.viewport.scale - positioned.scale) >= 0.001) continue
         const [x, y] = view.viewport.convertToViewportPoint(position.x, position.y)
-        root.scrollLeft = (root.scrollWidth - positioned.width) / 2 + x
-          - (position.viewportAnchor?.x ?? 0) * root.clientWidth
+        const safeLeft = state.current.size.paddingLeft ?? 0
+        const safeRight = root.clientWidth - (state.current.size.paddingRight ?? 0)
+        const viewportX = Math.max(safeLeft, Math.min(safeRight, (position.viewportAnchor?.x ?? 0) * root.clientWidth))
+        root.scrollLeft = pageWindowLeft(root, positioned) + x - viewportX
         root.scrollTop = positioned.top + y - (position.viewportAnchor?.y ?? 0) * root.clientHeight
         await nextFrame()
         operationSignal.throwIfAborted()
         const settled = currentLayout()
         // Continue the same pinned navigation only when its geometry changed;
         // newer user/model navigation still aborts this owner normally.
-        if (!settled || settled.top !== positioned.top || settled.scale !== positioned.scale) continue
+        if (!settled || settled.top !== positioned.top || settled.left !== positioned.left || settled.scale !== positioned.scale) continue
         latest.current.setCurrentPage(position.page)
         latest.current.setPageInput(String(position.page))
         validate?.()

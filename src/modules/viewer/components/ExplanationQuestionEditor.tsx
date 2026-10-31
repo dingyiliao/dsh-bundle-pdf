@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { readingViewportBounds } from '../rendering/pdf-viewport-geometry.js'
 import { MAX_EXPLANATION_ITEM_QUESTION_CHARACTERS } from '../../explanation/index.js'
 
 export interface ExplanationQuestionEditorProps {
@@ -60,7 +61,7 @@ export function ExplanationQuestionEditor({ viewport, getAnchor, mode, index, qu
     const update = () => {
       const anchor = anchorRef.current()
       if (!anchor) { setPlacement(null); return }
-      const bounds = viewport.getBoundingClientRect()
+      const bounds = readingViewportBounds(viewport)
       if (anchor.bottom <= bounds.top || anchor.top >= bounds.bottom
         || anchor.right <= bounds.left || anchor.left >= bounds.right) { setPlacement(null); return }
       const leftEdge = Math.max(bounds.left + EDGE_GAP, EDGE_GAP)

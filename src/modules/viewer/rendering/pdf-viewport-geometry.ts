@@ -1,6 +1,24 @@
 /** Page lookup is O(1) over a page, O(log P) over the surrounding whitespace. */
 import { pageIndexAtOffset, windowLayout } from './window-layout.js'
 
+/** CSS owns the safe gutters; all fit and navigation geometry reads the same values. */
+export function scrollportPadding(root: HTMLElement): { paddingLeft: number; paddingRight: number } {
+  const style = root.ownerDocument.defaultView!.getComputedStyle(root)
+  return { paddingLeft: Number.parseFloat(style.paddingLeft) || 0, paddingRight: Number.parseFloat(style.paddingRight) || 0 }
+}
+
+/** Floating editors stay in the readable strip, while PDF surfaces may extend underneath the chrome. */
+export function readingViewportBounds(root: HTMLElement): Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'> {
+  const bounds = root.getBoundingClientRect(), padding = scrollportPadding(root)
+  const left = bounds.left + padding.paddingLeft
+  let right = Math.max(left, bounds.right - padding.paddingRight)
+  // A comment needs 80px plus 12px on each side. In a very narrow reader,
+  // transient editors may cover the right rail rather than disappear mid-edit.
+  // Keep the left tools and the outer document scrollbar reachable.
+  if (right - left < 104) right = Math.max(left, bounds.right - Math.min(16, padding.paddingRight))
+  return { left, right, top: bounds.top, bottom: bounds.bottom, width: right - left, height: bounds.height }
+}
+
 export function pageAtPointer(root: HTMLElement, target: EventTarget | null, y: number): HTMLElement | undefined {
   const wrapper = target instanceof Element ? target.closest<HTMLElement>('[data-page-number]') : null
   if (wrapper && root.contains(wrapper)) return wrapper.querySelector<HTMLElement>('[data-pdf-page]') ?? undefined

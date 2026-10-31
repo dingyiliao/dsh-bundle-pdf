@@ -1,4 +1,5 @@
 /* The windowed wrapper owns the spacing between pages. */
+.dsh-pdf-windowed-page { padding: 0; }
 .dsh-pdf-page-stage {
   position: relative;
   margin: 0 auto;

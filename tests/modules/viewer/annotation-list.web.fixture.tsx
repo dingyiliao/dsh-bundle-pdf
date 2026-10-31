@@ -35,12 +35,12 @@ function Fixture() {
   Object.assign(window, { annotationListProbe: { setMode, reads } })
   return <div className="dsh-pdf-reader"><div className="dsh-pdf-body">
     <div className="dsh-pdf-content" />
-    <div className="dsh-pdf-sidebar"><div className="dsh-pdf-sidebar-shell"><AnnotationList
+    <div className="dsh-pdf-sidebar"><div className="dsh-pdf-sidebar-shell"><div className="dsh-pdf-sidebar-main"><AnnotationList
       annotations={mode === 'notes' ? notes : mode === 'multi-page-notes' ? multiPageNotes : highlights}
       selectedId={selectedId} pdf={mode === 'highlights' ? pdf as unknown as NativeDocument : null}
       details={<div id="annotation-test-editor"><textarea aria-label="Annotation editor" defaultValue="Comment" /></div>}
       onSelect={item => setSelectedId(item.id)} onDeselect={() => setSelectedId(undefined)} t={key => labels[key] ?? key} />
-  </div></div></div></div>
+  </div></div></div></div></div>
 }
 
 createRoot(document.getElementById('root')!).render(<Fixture />)

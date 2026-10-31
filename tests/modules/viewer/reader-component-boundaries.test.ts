@@ -259,7 +259,7 @@ test('Reader keeps encrypted documents readable while disabling edits and report
     await clickReaderCommand(container, 'reader.reload')
     assert.deepEqual(calls, ['reload'], 'clean read-only PDFs reload without a discard confirmation')
     await clickReaderCommand(container, 'reader.explain.start')
-    assert.match(container.querySelector('.dsh-pdf-explanation-status-area')?.parentElement?.getAttribute('title') ?? '',
+    assert.match(container.querySelector('.dsh-pdf-explanation-status-area')?.parentElement?.getAttribute('data-tooltip') ?? '',
       /Vision backend is offline/)
     await clickReaderCommand(container, 'reader.explain.exit')
     assert.equal(container.querySelector('.dsh-pdf-explanation-status'), null)
@@ -655,12 +655,13 @@ test('Reader preserves a region question when Host region preparation fails', as
       assert.equal(save.disabled, false)
       failRaster = true
       await act(async () => { save.click(); await Promise.resolve() })
-      const failure = container.querySelector<HTMLElement>('.dsh-pdf-mode-error-popover[role="alert"]')!
+      const failure = container.querySelector<HTMLElement>('.dsh-pdf-floating-status[data-status-id="explanation"]')!
       assert.match(failure?.textContent ?? '', /Host explanation raster failed/)
-      const indicator = container.querySelector<HTMLButtonElement>('.dsh-pdf-mode-error-indicator')!
-      assert.match(indicator.getAttribute('aria-label') ?? '', /Host explanation raster failed/)
-      if (failure.hidden) await act(async () => { indicator.click() })
-      assert.equal(failure.hidden, false, 'the compact explanation control exposes its failure details')
+      const indicator = container.querySelector<HTMLButtonElement>('.dsh-pdf-activity-trigger')!
+      assert.equal(indicator.dataset.kind, 'error')
+      await act(async () => { indicator.click() })
+      assert.equal(failure.closest<HTMLElement>('.dsh-pdf-activity-popover')!.hidden, false,
+        'the shared task entry exposes explanation failures')
       assert.ok(container.querySelector('.dsh-pdf-explanation-question-editor'), 'raster failure preserves the question for retry')
     } finally {
       dom.HTMLElement.prototype.getBoundingClientRect = oldBounds
@@ -1019,7 +1020,7 @@ test('Reader confirms reload for an unsubmitted form and can enter explanation a
     await clickReaderCommand(container, 'reader.explain.start')
     assert.deepEqual(calls, ['change:1'])
     assert.ok(container.querySelector('.dsh-pdf-mode-explanation'), 'the deferred start callback accepts the newly committed revision')
-    assert.equal(readerCommand(container, 'reader.explain.exit').getAttribute('aria-pressed'), 'true')
+    assert.equal(readerCommand(container, 'reader.explain.exit').disabled, false)
   })
 })
 

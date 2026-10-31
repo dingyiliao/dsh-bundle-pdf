@@ -84,7 +84,7 @@ function Fixture() {
     translationRegistry: { list: () => [] } as unknown as ReaderSidebarPanelsOptions['translationRegistry'], t,
   })
   return <div className="dsh-pdf-reader"><div className="dsh-pdf-body">
-    <aside className="dsh-pdf-sidebar dsh-pdf-glass" style={{ width: '100%', maxWidth: '100%' }}>
+    <aside className="dsh-pdf-sidebar dsh-pdf-glass" style={{ inset: 0, width: '100%', maxWidth: '100%' }}>
       <div className="dsh-pdf-sidebar-shell" style={{ width: '100%' }}><div className="dsh-pdf-sidebar-main">
         <div className="dsh-pdf-sidebar-panels">
           {readingSidebarSections.map(section => <div key={section} className="dsh-pdf-sidebar-panel"

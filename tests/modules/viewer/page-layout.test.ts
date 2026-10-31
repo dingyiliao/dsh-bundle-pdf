@@ -39,7 +39,7 @@ test('virtual layout preserves mixed page geometry and rotation without loading 
   assert.deepEqual(inset.map(page => page.top), [READING_TOP_INSET, READING_TOP_INSET + 400 + PAGE_GAP])
 })
 
-test('docked tools leave a regular page inset and navigation detects the page at that edge', () => {
+test('the reading canvas leaves a regular page inset and navigation detects the page at that edge', () => {
   assert.equal(READING_TOP_INSET, 16, 'the old 72px floating-toolbar reservation is gone')
   const pages: PdfPageInfo[] = Array.from({ length: 128 }, (_, index) => ({
     page: index + 1, cropBox: [0, 0, 400, 560], rotation: 0, userUnit: 1,

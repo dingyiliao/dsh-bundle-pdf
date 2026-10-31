@@ -7,6 +7,7 @@ export interface ReaderFloatingStatusesOptions {
   documentPath?: string
   mode: 'text' | 'region' | 'note'
   explanationActive: boolean
+  explanation?: { sending: boolean; error: string; review(): void; dismiss(): void }
   regionPurpose: 'explanation' | 'screenshot' | null
   screenshotPhase: 'preparing' | 'cancelling' | null
   ocrProgress: 'preparing' | 'recognizing' | 'cancelling' | null
@@ -33,6 +34,12 @@ export function readerFloatingStatuses(options: ReaderFloatingStatusesOptions): 
   const { saveFeedback, documentPath, screenshotPhase, ocrProgress,
     onSaveExpired, onCancelScreenshot, onCancelOcr, t } = options
   const statuses: FloatingStatus[] = []
+  if (options.explanation?.sending) statuses.push({ id: 'explanation', activity: 'progress',
+    content: t('reader.explain.sending'), title: documentPath })
+  else if (options.explanation?.error) statuses.push({ id: 'explanation', kind: 'error', tone: 'error', activity: 'dot',
+    content: options.explanation.error, title: documentPath,
+    actions: [{ label: t('reader.explain.review'), onClick: options.explanation.review },
+      { label: t('reader.dismiss'), onClick: options.explanation.dismiss }] })
   if (saveFeedback) {
     const { kind, durationMs, occurrence } = saveFeedback
     statuses.push({ id: 'save', kind: kind === 'failed' ? 'error' : kind, className: 'dsh-pdf-save-feedback', activity: 'dot',

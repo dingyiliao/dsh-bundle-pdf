@@ -1,9 +1,9 @@
 /** Real Web/Chromium panel interactions, collected from the built PDF Client. */
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PDFDocument, PDFHexString, PDFName, StandardFonts } from 'pdf-lib'
-import type { Browser, Page } from 'playwright'
+import { PDFDocument, PDFHexString, PDFName, StandardFonts, rgb } from 'pdf-lib'
+import type { Browser, Locator, Page } from 'playwright'
 import { expect, it } from 'vitest'
 import { launchWebScaffold, seedSession, watchConsole } from '../../deepseek-harness/apps/web/tests/scaffold.ts'
 import { newEnglishPage } from '../../deepseek-harness/apps/web/tests/support.ts'
@@ -23,6 +23,8 @@ async function documentBytes(): Promise<Uint8Array> {
   const font = await document.embedFont(StandardFonts.Helvetica)
   for (let number = 1; number <= 4; number++) {
     const page = document.addPage([1100, 700])
+    // A wide colored band exposes any accidental clipping behind the rails.
+    page.drawRectangle({ x: 0, y: 310, width: 1100, height: 80, color: rgb(.85, .9, .95) })
     page.drawText(`Coverage page ${number}`, { x: 50, y: 610, size: 20, font })
     if (number !== 1) continue
     const records = [
@@ -65,6 +67,11 @@ async function openReader(page: Page, url: string, title: string) {
   return reader
 }
 
+async function openSidebarSection(reader: Locator, name: string) {
+  const tab = reader.getByRole('tab', { name, exact: true })
+  if (await tab.getAttribute('aria-expanded') !== 'true') await tab.click()
+}
+
 it('edits embedded bookmark titles, targets and hierarchy through save and reopen', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let opened: Browser | undefined
@@ -80,7 +87,7 @@ it('edits embedded bookmark titles, targets and hierarchy through save and reope
     const page = await newEnglishPage(opened)
     const tripwire = watchConsole(page)
     let reader = await openReader(page, scaffold.authenticatedUrl, title)
-    await reader.getByRole('tab', { name: 'Bookmarks', exact: true }).click()
+    await openSidebarSection(reader, 'Bookmarks')
 
     const add = async (name: string, target: number) => {
       await reader.getByRole('button', { name: 'Add PDF bookmark', exact: true }).click()
@@ -159,7 +166,7 @@ it('edits embedded bookmark titles, targets and hierarchy through save and reope
     await expect.poll(() => save.isDisabled()).toBe(true)
 
     reader = await openReader(page, scaffold.authenticatedUrl, title)
-    await reader.getByRole('tab', { name: 'Bookmarks', exact: true }).click()
+    await openSidebarSection(reader, 'Bookmarks')
     await reader.getByRole('button', { name: 'More bookmark actions: Opening chapter', exact: true }).click()
     await reader.getByRole('menuitem', { name: 'Delete bookmark', exact: true }).click()
     await reader.getByRole('dialog', { name: 'Delete PDF bookmark', exact: true }).getByRole('button', { name: 'Delete?', exact: true }).click()
@@ -186,7 +193,7 @@ it('edits recoverable imported bookmarks and creates children without a read-onl
     const page = await newEnglishPage(opened)
     const tripwire = watchConsole(page)
     let reader = await openReader(page, scaffold.authenticatedUrl, title)
-    await reader.getByRole('tab', { name: 'Bookmarks', exact: true }).click()
+    await openSidebarSection(reader, 'Bookmarks')
     const more = (name: string) => reader.getByRole('button', { name: `More bookmark actions: ${name}`, exact: true })
     await more('Imported chapter').waitFor()
     expect(await reader.getByRole('button', { name: 'Add PDF bookmark', exact: true }).isEnabled()).toBe(true)
@@ -221,7 +228,7 @@ it('edits recoverable imported bookmarks and creates children without a read-onl
     expect(saved.outlineReadOnlyReason).toBeUndefined()
     expect(saved.outline![0].children.map(item => item.title)).toEqual(['Imported section', 'New nested bookmark'])
     reader = await openReader(page, scaffold.authenticatedUrl, title)
-    await reader.getByRole('tab', { name: 'Bookmarks', exact: true }).click()
+    await openSidebarSection(reader, 'Bookmarks')
     await more('Recovered chapter').waitFor()
     if (!await more('New nested bookmark').isVisible()) await reader.getByRole('button', { name: 'Expand bookmark section', exact: true }).click()
     await more('New nested bookmark').waitFor()
@@ -244,6 +251,11 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     const page = await newEnglishPage(opened)
     const tripwire = watchConsole(page)
     const reader = await openReader(page, scaffold.authenticatedUrl, title)
+    await page.locator('[data-sidebar-right-mode="fullscreen"]').click()
+    const captureLayout = async (name: string) => {
+      const directory = process.env.DSH_PDF_FLOATING_LAYOUT_SCREENSHOT_DIR
+      if (directory) { await mkdir(directory, { recursive: true }); await reader.screenshot({ path: join(directory, `${name}.png`) }) }
+    }
     // The default right-hand tab is already at the responsive 45% width cap;
     // give this resize exercise enough room to expand without changing the cap.
     await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
@@ -279,7 +291,7 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeGreaterThan(beforeWidth)
     await divider.press('ArrowRight')
 
-    await reader.getByRole('tab', { name: 'Annotations', exact: true }).click()
+    await openSidebarSection(reader, 'Annotations')
     const filter = reader.getByRole('combobox', { name: 'Filter annotations' })
     const list = reader.getByRole('list', { name: 'Annotations' })
     await list.waitFor({ state: 'visible' })
@@ -300,9 +312,10 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     await rows.nth(1).evaluate(element => (element as HTMLElement).blur())
 
     await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
+    await captureLayout('reader-wide-fit-light')
     const zoom = reader.locator('.dsh-pdf-toolbar-zoom')
     await zoom.locator('summary').click()
-    await reader.locator('.dsh-pdf-zoom-menu').getByRole('button', { name: '100%' }).click()
+    await reader.locator('.dsh-pdf-zoom-menu').getByRole('button', { name: '150%' }).click()
     const scroller = reader.locator('.dsh-pdf-scroll')
     await expect.poll(() => scroller.evaluate(element => element.scrollWidth - element.clientWidth)).toBeGreaterThan(200)
     await expect.poll(() => scroller.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(200)
@@ -319,26 +332,111 @@ it('navigates sidebar and annotation rows by keyboard, then scrolls both axes th
     expect(sidebarBounds).not.toBeNull()
     expect(scrollBounds).not.toBeNull()
     expect(verticalBounds).not.toBeNull()
-    expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('relative')
+    expect(await sidebar.evaluate(element => getComputedStyle(element).position)).toBe('absolute')
+    expect(await sidebar.locator('.dsh-pdf-sidebar-toggle').count()).toBe(0)
     expect(toolRailBounds!.width).toBe(56)
-    expect(Math.abs(toolRailBounds!.x - bodyBounds!.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(toolRailBounds!.x + toolRailBounds!.width - contentBounds!.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(toolRailBounds!.width + contentBounds!.width + sidebarBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
-    expect(Math.abs(contentBounds!.x + contentBounds!.width - sidebarBounds!.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(sidebarBounds!.x + sidebarBounds!.width - bodyBounds!.x - bodyBounds!.width)).toBeLessThanOrEqual(1)
-    expect(Math.abs(sidebarBounds!.y - contentBounds!.y)).toBeLessThanOrEqual(1)
-    expect(Math.abs(sidebarBounds!.height - contentBounds!.height)).toBeLessThanOrEqual(1)
-    const toggle = sidebar.locator('.dsh-pdf-sidebar-toggle')
+    expect(toolRailBounds!.x).toBeGreaterThan(bodyBounds!.x)
+    for (const [canvas, label] of [[contentBounds!, 'content'], [scrollBounds!, 'scrollport']] as const) {
+      expect(Math.abs(canvas.x - bodyBounds!.x), label).toBeLessThanOrEqual(1)
+      expect(Math.abs(canvas.width - bodyBounds!.width), label).toBeLessThanOrEqual(1)
+      expect(Math.abs(canvas.y - bodyBounds!.y), label).toBeLessThanOrEqual(1)
+      expect(Math.abs(canvas.height - bodyBounds!.height), label).toBeLessThanOrEqual(1)
+    }
+    expect(sidebarBounds!.x + sidebarBounds!.width).toBeLessThan(bodyBounds!.x + bodyBounds!.width)
+    expect((await sidebar.locator('.dsh-pdf-sidebar-rail-shell').boundingBox())!.y).toBeGreaterThan(bodyBounds!.y)
+    expect(sidebarBounds!.y + sidebarBounds!.height).toBeLessThan(bodyBounds!.y + bodyBounds!.height)
+    expect(await scroller.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgb(255, 255, 255)')
+    // The scrollbar remains outside the floating rail, so even a large PDF can
+    // be dragged along the far-right edge without a sidebar intercepting it.
+    expect(verticalBounds!.x).toBeGreaterThan(sidebarBounds!.x + sidebarBounds!.width)
+    expect(Math.abs(verticalBounds!.x + verticalBounds!.width - scrollBounds!.x - scrollBounds!.width + 2))
+      .toBeLessThanOrEqual(1)
+    const pageSurface = reader.locator('[data-pdf-page="1"] .dsh-pdf-tile-surface')
+    await expect.poll(() => reader.evaluate(element => {
+      const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')!
+      const track = element.querySelector('.dsh-pdf-windowed-pages')!.getBoundingClientRect()
+      const paper = element.querySelector('[data-pdf-page="1"]')!.getBoundingClientRect()
+      const numericLeft = parseFloat(getComputedStyle(scroll).paddingLeft) + (track.width - paper.width) / 2
+      const actualLeft = paper.left - scroll.getBoundingClientRect().left + scroll.scrollLeft
+      return Math.abs(actualLeft - numericLeft)
+    }), { message: 'numeric page-left matches the rendered PDF, without inherited wrapper padding' }).toBeLessThanOrEqual(1)
+    const fixedPageWidth = (await pageSurface.boundingBox())!.width
+    const expandedGutter = await scroller.evaluate(element => parseFloat(getComputedStyle(element).paddingRight))
+    const toggle = sidebar.getByRole('tab', { selected: true })
     await toggle.click()
     await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(56)
     const collapsedContent = (await reader.locator('.dsh-pdf-content').boundingBox())!
-    const collapsedSidebar = (await sidebar.boundingBox())!
-    expect(collapsedContent.width).toBeGreaterThan(contentBounds!.width + 100)
-    expect(Math.abs(collapsedContent.x + collapsedContent.width - collapsedSidebar.x)).toBeLessThanOrEqual(1)
-    expect(Math.abs(toolRailBounds!.width + collapsedContent.width + collapsedSidebar.width - bodyBounds!.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(collapsedContent.x - contentBounds!.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(collapsedContent.width - contentBounds!.width)).toBeLessThanOrEqual(1)
+    expect(await scroller.evaluate(element => parseFloat(getComputedStyle(element).paddingRight))).toBeLessThan(expandedGutter - 100)
+    expect(Math.abs((await pageSurface.boundingBox())!.width - fixedPageWidth)).toBeLessThanOrEqual(1)
     await toggle.click()
     await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - sidebarBounds!.width)).toBeLessThanOrEqual(1)
-    expect(Math.abs(verticalBounds!.x - scrollBounds!.x - 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs((await pageSurface.boundingBox())!.width - fixedPageWidth)).toBeLessThanOrEqual(1)
+
+    // At 150%, both paper edges can be scrolled out from under the floating
+    // controls. The paper also paints in the gaps alongside those controls;
+    // an extra clipping viewport at the safe reading bounds would fail here.
+    await scroller.evaluate(element => { element.scrollTop = 0; element.scrollLeft = 0 })
+    await expect.poll(async () => (await pageSurface.boundingBox())!.x)
+      .toBeGreaterThan(toolRailBounds!.x + toolRailBounds!.width)
+    await scroller.evaluate(element => { element.scrollLeft = element.scrollWidth })
+    await expect.poll(async () => {
+      const paper = (await pageSurface.boundingBox())!, panel = (await sidebar.boundingBox())!
+      return paper.x + paper.width <= panel.x
+    }).toBe(true)
+    const paperBehindRails = await reader.evaluate(element => {
+      const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')!
+      const paper = element.querySelector<HTMLElement>('[data-pdf-page="1"]')!
+      scroll.scrollLeft = (scroll.scrollWidth - scroll.clientWidth) / 2
+      const body = element.querySelector('.dsh-pdf-body')!.getBoundingClientRect()
+      const left = element.querySelector('[data-pdf-tool-rail]')!.getBoundingClientRect()
+      const right = element.querySelector('.dsh-pdf-sidebar')!.getBoundingClientRect()
+      const box = paper.getBoundingClientRect(), y = Math.min(body.bottom - 20, box.top + box.height / 2)
+      const points = [left.left - 2, right.right + 2]
+      return { hits: points.map(x => {
+        const hit = document.elementFromPoint(x, y)
+        return x > box.left && x < box.right && !!hit && (hit === paper || paper.contains(hit))
+      }), points: points.map(x => ({ x, y })) }
+    })
+    expect(paperBehindRails.hits).toEqual([true, true])
+    expect(await reader.evaluate(element => {
+      const body = element.querySelector('.dsh-pdf-body')!.getBoundingClientRect()
+      const left = element.querySelector('[data-pdf-tool-rail]')!.getBoundingClientRect()
+      const right = element.querySelector('.dsh-pdf-sidebar-rail')!.getBoundingClientRect()
+      const panel = element.querySelector('.dsh-pdf-sidebar-main')!.getBoundingClientRect()
+      return [[left.left + left.width / 2, body.top + 6], [right.left + right.width / 2, body.top + 6],
+        [(panel.right + right.left) / 2, body.top + 80]].every(([x, y]) =>
+        !!document.elementFromPoint(x!, y!)?.closest('.dsh-pdf-scroll'))
+    }), 'transparent top insets and the panel/rail gap pass pointer input to the PDF').toBe(true)
+    for (const point of paperBehindRails.points) {
+      await expect.poll(async () => {
+        const screenshot = await page.screenshot({ clip: { x: Math.floor(point.x), y: Math.floor(point.y), width: 1, height: 1 } })
+        const [red, green, blue] = await page.evaluate(async bytes => {
+          const bitmap = await createImageBitmap(new Blob([Uint8Array.from(bytes)], { type: 'image/png' }))
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1
+          const context = canvas.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close()
+          return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3)
+        }, [...screenshot])
+        return red! < 235 && green! > red! && blue! > green!
+      }, { message: 'native PDF pixels paint beyond the safe reading gutters' }).toBe(true)
+    }
+    await captureLayout('reader-wide-150-light')
+    if (process.env.DSH_PDF_FLOATING_LAYOUT_SCREENSHOT_DIR) {
+      await reader.evaluate(element => { (element as HTMLElement).style.width = '500px' })
+      await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+      await captureLayout('reader-narrow-150-light')
+      const theme = await page.locator('body').getAttribute('data-ds-dark-theme')
+      await page.locator('body').evaluate(element => element.setAttribute('data-ds-dark-theme', ''))
+      await captureLayout('reader-narrow-150-dark')
+      await page.locator('body').evaluate((element, value) => {
+        if (value === null) element.removeAttribute('data-ds-dark-theme'); else element.setAttribute('data-ds-dark-theme', value)
+      }, theme)
+      await reader.evaluate(element => { (element as HTMLElement).style.width = '850px' })
+      await toggle.click()
+      await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - sidebarBounds!.width)).toBeLessThanOrEqual(1)
+    }
+    await scroller.evaluate(element => { element.scrollLeft = 0 })
     await vertical.focus()
     await page.keyboard.press('End')
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(200)

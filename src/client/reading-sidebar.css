@@ -3,13 +3,13 @@
   --pdf-sidebar-control-radius: var(--pdf-chrome-control-radius, 6px);
   --pdf-sidebar-selected-bg: color-mix(in srgb, var(--pdf-accent) 12%, transparent);
   --pdf-sidebar-ease-out: cubic-bezier(.23, 1, .32, 1);
-  position: relative; display: flex; flex: none;
+  position: absolute; top: 0; right: 18px; bottom: 4px; display: flex; flex: none;
   width: var(--pdf-sidebar-width, 296px);
   max-width: max(56px, min(45%, calc(100% - var(--pdf-tool-rail-width, 0px) - 180px)));
   min-width: var(--pdf-chrome-rail-width, 56px); min-height: 0;
-  isolation: isolate; z-index: 20; inset: auto; margin: 0;
-  border: 0; border-radius: 0; background: transparent; overflow: hidden;
-  /* Reserve real column width while the card reveals inside it. */
+  isolation: isolate; z-index: 20; margin: 0; pointer-events: none;
+  border: 0; border-radius: 0; background: transparent; overflow: visible;
+  /* Keep the drawer anchored above one continuous reading canvas. */
   transition: width 270ms var(--pdf-sidebar-ease-drawer);
 }
 .dsh-pdf-sidebar[data-resizing] { transition: none; }
@@ -20,40 +20,40 @@
 .dsh-pdf-sidebar-rail {
   display: flex; flex-direction: column; align-items: center;
   flex: 0 0 var(--pdf-chrome-rail-width, 56px); width: var(--pdf-chrome-rail-width, 56px);
-  min-height: 0; padding: var(--pdf-chrome-inset, 12px) 4px;
+  min-height: 0; padding: var(--pdf-chrome-inset, 12px) 0;
 }
-.dsh-pdf-sidebar-toggle-section,
 .dsh-pdf-sidebar-tabs {
   display: flex; flex-direction: column; align-items: center; flex: none; width: 100%;
   gap: 3px; min-height: 0;
 }
 .dsh-pdf-sidebar-sections {
   display: flex; flex-direction: column; align-items: center; flex: 0 1 auto; width: 100%; min-height: 42px;
-  border-top: 1px solid var(--pdf-border); padding-top: 6px; overflow: hidden;
+  padding-top: 0; overflow: hidden;
 }
 .dsh-pdf-sidebar-tabs {
   flex: 0 1 auto; min-height: 36px; overflow-y: auto; overscroll-behavior: contain;
   scrollbar-width: none; border-radius: 6px;
 }
 .dsh-pdf-sidebar-tabs::-webkit-scrollbar { display: none; }
-.dsh-pdf-reader .dsh-pdf-sidebar-tab, .dsh-pdf-reader .dsh-pdf-sidebar-toggle {
+.dsh-pdf-reader .dsh-pdf-sidebar-tab {
   display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0;
   border: 0; border-radius: var(--pdf-chrome-control-radius, 6px); background: transparent; color: var(--pdf-muted);
 }
 .dsh-pdf-reader .dsh-pdf-sidebar-tab.is-active { color: var(--pdf-accent); box-shadow: inset -2px 0 var(--pdf-accent); }
-.dsh-pdf-sidebar-divider { position: absolute; z-index: 7; inset: 12px auto 12px 0; width: 6px; border-radius: 3px; cursor: col-resize; touch-action: none; user-select: none; }
+.dsh-pdf-sidebar-divider { position: absolute; z-index: 7; inset: 12px auto 12px 0; width: 6px; border-radius: 3px; cursor: col-resize; touch-action: none; user-select: none; pointer-events: auto; }
 .dsh-pdf-sidebar-divider:hover, .dsh-pdf-sidebar-divider:focus-visible { background: color-mix(in srgb, var(--pdf-accent) 35%, transparent); outline: none; }
 .dsh-pdf-sidebar-empty { margin: 0; padding: 16px 12px; color: var(--pdf-muted); overflow-wrap: anywhere; font-size: var(--pdf-type-body); line-height: var(--pdf-leading-relaxed); }
 .dsh-pdf-sidebar-shell {
   /* This shell remains stable while the parent measures the revealing column. */
   position: absolute; z-index: 1; inset: 0 0 0 auto; display: flex; justify-content: flex-end;
   width: var(--pdf-sidebar-expanded-width, 296px); min-height: 0;
-  border: 0; border-radius: 0; overflow: hidden; background: transparent;
-  clip-path: inset(0 0 0 0);
+  border: 0; border-radius: 0; overflow: visible; background: transparent;
+  pointer-events: none;
+  clip-path: inset(-24px);
   transition: clip-path 270ms var(--pdf-sidebar-ease-drawer);
 }
 .dsh-pdf-sidebar.is-collapsed .dsh-pdf-sidebar-shell {
-  clip-path: inset(0 0 0 calc(100% - var(--pdf-chrome-rail-width, 56px)));
+  clip-path: inset(-24px -24px -24px calc(100% - var(--pdf-chrome-rail-width, 56px) - 24px));
 }
 .dsh-pdf-sidebar .dsh-pdf-panel {
   background: transparent;
@@ -68,8 +68,9 @@
 .dsh-pdf-sidebar .dsh-pdf-search-panel form :is(input, button) { height: 28px; }
 
 .dsh-pdf-sidebar-main {
+  pointer-events: auto;
   display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
-  margin: var(--pdf-chrome-inset, 12px) 0 var(--pdf-chrome-inset, 12px) 9px;
+  margin: var(--pdf-chrome-inset, 12px) 8px var(--pdf-chrome-inset, 12px) 9px;
   border: 1px solid var(--pdf-glass-edge); border-radius: var(--pdf-chrome-pod-radius, 18px);
   opacity: 1; visibility: visible;
   transition: opacity 180ms var(--pdf-sidebar-ease-out) 55ms, visibility 0s linear;
@@ -92,12 +93,10 @@
   flex: none; width: 100%; margin-top: auto;
   border-top: 1px solid var(--pdf-border); padding-top: 6px;
 }
-.dsh-pdf-sidebar-toggle svg { transition: transform 160ms var(--pdf-sidebar-ease-out); }
-.dsh-pdf-sidebar.is-collapsed .dsh-pdf-sidebar-toggle svg { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) {
   .dsh-pdf-sidebar { transition: none; }
   .dsh-pdf-sidebar-shell, .dsh-pdf-sidebar-main, .dsh-pdf-sidebar-panels,
-  .dsh-pdf-sidebar .dsh-pdf-panel-heading, .dsh-pdf-sidebar-toggle svg { transition: none; }
+  .dsh-pdf-sidebar .dsh-pdf-panel-heading { transition: none; }
   .dsh-pdf-sidebar.is-collapsed :is(.dsh-pdf-sidebar-panels, .dsh-pdf-panel-heading) {
     transform: none;
   }

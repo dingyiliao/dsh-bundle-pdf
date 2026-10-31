@@ -19,6 +19,7 @@ export interface OverlayScrollbarsProps {
   target: HTMLElement | null
   verticalLabel?: string
   horizontalLabel?: string
+  verticalSide?: 'left' | 'right'
 }
 
 const thickness = 12
@@ -36,7 +37,7 @@ function attribute(element: HTMLElement, name: string, value: string) {
 
 /** Overlay controls follow the real scroll viewport without reserving a gutter. */
 export function OverlayScrollbars({ target, verticalLabel = 'Vertical document scrollbar',
-  horizontalLabel = 'Horizontal document scrollbar' }: OverlayScrollbarsProps) {
+  horizontalLabel = 'Horizontal document scrollbar', verticalSide = 'left' }: OverlayScrollbarsProps) {
   const generatedId = `dsh-pdf-scroll-${useId().replaceAll(':', '')}`
   const overlay = useRef<HTMLDivElement>(null)
   const vertical = useRef<HTMLDivElement>(null)
@@ -117,10 +118,10 @@ export function OverlayScrollbars({ target, verticalLabel = 'Vertical document s
         attribute(track, 'aria-valuemax', String(Math.round(geometry[axis].maximum)))
         if (!overflow && document.activeElement === track) target.focus({ preventScroll: true })
         if (axis === 'vertical') {
-          style(track, 'left', px(inset)); style(track, 'top', px(inset))
+          style(track, 'left', px(verticalSide === 'right' ? Math.max(0, width - thickness - inset) : inset)); style(track, 'top', px(inset))
           style(track, 'width', px(thickness)); style(track, 'height', px(length)); style(thumb, 'height', px(thumbLength))
         } else {
-          style(track, 'left', px(inset + (hasVertical ? thickness + inset : 0)))
+          style(track, 'left', px(inset + (hasVertical && verticalSide === 'left' ? thickness + inset : 0)))
           style(track, 'top', px(Math.max(0, height - thickness - inset)))
           style(track, 'width', px(length)); style(track, 'height', px(thickness)); style(thumb, 'width', px(thumbLength))
         }
@@ -280,7 +281,7 @@ export function OverlayScrollbars({ target, verticalLabel = 'Vertical document s
       window.removeEventListener('blur', endDrag)
       if (assignedId && target.id === controls) target.removeAttribute('id')
     }
-  }, [target, generatedId])
+  }, [target, generatedId, verticalSide])
 
   return <div className="dsh-pdf-scrollbars" ref={overlay}>
     <div className="dsh-pdf-scrollbar is-vertical" ref={vertical} hidden role="scrollbar"

@@ -124,7 +124,7 @@ for (const resumePage of [1, 2]) test(resumePage === 1
   }
 })
 
-test('exact evidence jumps use the Reader history for cross-page and same-page Back and history-menu restores', async () => {
+for (const padded of [false, true]) test(`exact evidence jumps use the Reader history for cross-page and same-page Back and history-menu restores${padded ? ' with asymmetric floating gutters' : ''}`, async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
   const saved = new Map<string, PropertyDescriptor | undefined>()
   for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
@@ -139,21 +139,24 @@ test('exact evidence jumps use the Reader history for cross-page and same-page B
   const snapshot = { id: 'doc', revision: 4, contentVersion: 'v1', reader: { bytesHash: hash('bytes') },
     document: { pageCount: 3, pages: [1, 2, 3].map(page => ({ page, cropBox: [10, 20, 410, 620], userUnit: 1, rotation: 0 })) } } as WorkspaceSnapshot
   const document = { snapshot, text: async () => ({ items: [{ str: text }] }) } as unknown as NativeDocument
+  const padding = padded ? { paddingLeft: 86, paddingRight: 170 } : undefined
+  if (padding) { scroll.style.paddingLeft = `${padding.paddingLeft}px`; scroll.style.paddingRight = `${padding.paddingRight}px` }
   const state: ReaderNavigationOptions['state'] = { current: { snapshot, scrollRoot: scroll,
-    zoom: 1.5, fit: 'custom', size: { width: 500, height: 400 }, currentPage: 1 } }
+    zoom: 1.5, fit: 'custom', size: { width: 500, height: 400, ...padding }, currentPage: 1 } }
   Object.defineProperties(scroll, { clientWidth: { value: 500 }, clientHeight: { value: 400 },
-    scrollWidth: { get: () => Math.max(500, 400 * state.current.zoom) } })
+    scrollWidth: { get: () => Math.max(500, 400 * state.current.zoom + (padding ? padding.paddingLeft + padding.paddingRight : 0)) } })
   scroll.getBoundingClientRect = () => ({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 } as DOMRect)
   const views: ReaderNavigationOptions['views'] = { current: new Map() }
   const layout = () => {
-    const pages = buildPageLayout(snapshot.document.pages, () => state.current.zoom, 0, READING_TOP_INSET)
+    const pages = buildPageLayout(snapshot.document.pages, () => state.current.zoom, 0, READING_TOP_INSET).map(page => ({ ...page,
+      ...(padding ? { left: padding.paddingLeft + (scroll.scrollWidth - padding.paddingLeft - padding.paddingRight - page.width) / 2 } : {}) }))
     setWindowLayout(scroll, pages)
     views.current.clear()
     for (const page of pages) {
       const viewport = new NativeViewport(snapshot.document.pages[page.page - 1], page.scale)
       const element = dom.document.createElement('div')
       element.getBoundingClientRect = () => {
-        const left = (scroll.scrollWidth - page.width) / 2 - scroll.scrollLeft, top = page.top - scroll.scrollTop
+        const left = (page.left ?? (scroll.scrollWidth - page.width) / 2) - scroll.scrollLeft, top = page.top - scroll.scrollTop
         return { left, top, right: left + page.width, bottom: top + page.height, width: page.width, height: page.height } as DOMRect
       }
       views.current.set(page.page, { element, viewport } as unknown as PageView)

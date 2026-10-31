@@ -9,7 +9,7 @@ import { ExplanationQuestionEditor } from '../../../src/modules/viewer/component
 import { FloatingToolbar } from '../../../src/modules/viewer/components/FloatingToolbar.tsx'
 import { FloatingStatusRail } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
 import { OcrTranscriptPanel } from '../../../src/modules/viewer/components/OcrTranscriptPanel.tsx'
-import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
+import { ReadingSidebar, type ReadingSidebarSection } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
 import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderNoteEditor.tsx'
 import { ScreenshotPreview } from '../../../src/modules/viewer/components/ScreenshotPreview.tsx'
 import { SplitActionControl } from '../../../src/modules/viewer/components/SplitActionControl.tsx'
@@ -450,6 +450,92 @@ test('contextual toolbar hides when its actions cannot fit below the main toolba
       if (descriptor) Object.defineProperty(dom.HTMLElement.prototype, 'offsetHeight', descriptor)
       else Reflect.deleteProperty(dom.HTMLElement.prototype, 'offsetHeight')
     }
+  })
+})
+
+function SidebarInteractionFixture({ name }: { name: string }) {
+  const [section, setSection] = React.useState<ReadingSidebarSection>('annotations')
+  const [expanded, setExpanded] = React.useState(true)
+  return React.createElement('div', { 'data-sidebar-document': name }, React.createElement(ReadingSidebar, {
+    activeSection: section, onSectionChange: setSection, expanded, onExpandedChange: setExpanded,
+    panels: { annotations: React.createElement('input', { 'aria-label': `Comment in ${name}`, defaultValue: 'Unsubmitted comment' }),
+      search: React.createElement('input', { 'aria-label': `Search in ${name}` }) },
+    pdf: null, currentPage: 1, pageInput: '1', navigating: false,
+    onPageInputChange() {}, onPageInputSubmit() {}, onPageInputReset() {},
+    onNavigatePage() {}, onStepPage() {}, onNavigateDestination() {}, t,
+  }))
+}
+
+test('sidebar tabs own collapse and expansion while preserving panel contents and another PDF', async () => {
+  await withDom(async (dom, container, render) => {
+    await render(React.createElement(React.Fragment, null,
+      React.createElement(SidebarInteractionFixture, { name: 'first' }),
+      React.createElement(SidebarInteractionFixture, { name: 'second' })))
+    const first = container.querySelector<HTMLElement>('[data-sidebar-document="first"]')!
+    const second = container.querySelector<HTMLElement>('[data-sidebar-document="second"]')!
+    const tab = (section: string) => first.querySelector<HTMLButtonElement>(`[role="tab"][aria-label="reader.sidebar.${section}"]`)!
+    const annotations = tab('annotations'), search = tab('search')
+    const main = first.querySelector<HTMLElement>('.dsh-pdf-sidebar-main')!
+    const input = first.querySelector<HTMLInputElement>('input[aria-label="Comment in first"]')!
+    assert.equal(first.querySelector('.dsh-pdf-sidebar-toggle, .dsh-pdf-sidebar-toggle-section'), null)
+    assert.equal(annotations.getAttribute('aria-expanded'), 'true')
+    input.value = 'Keep this unfinished comment'
+    await act(async () => { annotations.focus(); annotations.click() })
+    assert.equal(main.getAttribute('aria-hidden'), 'true')
+    assert.equal(main.inert, true)
+    assert.equal(annotations.getAttribute('aria-selected'), 'true', 'collapse retains the selected section')
+    assert.equal(annotations.getAttribute('aria-expanded'), 'false')
+    assert.equal(dom.document.activeElement, annotations, 'the controlling tab remains keyboard reachable after collapse')
+    assert.equal(second.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute('aria-expanded'), 'true')
+    assert.equal(second.querySelector('.dsh-pdf-sidebar-main')!.getAttribute('aria-hidden'), 'false')
+    await act(async () => { annotations.click() })
+    assert.equal(annotations.getAttribute('aria-expanded'), 'true')
+    assert.equal(main.inert, false)
+    assert.equal(first.querySelector('input[aria-label="Comment in first"]'), input)
+    assert.equal(input.value, 'Keep this unfinished comment')
+    await act(async () => { search.focus(); search.click() })
+    assert.equal(search.getAttribute('aria-expanded'), 'true', 'another section opens instead of collapsing')
+    assert.equal(annotations.getAttribute('aria-expanded'), 'false')
+    assert.equal(first.querySelector('[role="tabpanel"][hidden] input[aria-label="Comment in first"]'), input)
+    await act(async () => { search.click() })
+    assert.equal(main.inert, true)
+    await act(async () => { annotations.click() })
+    assert.equal(annotations.getAttribute('aria-expanded'), 'true', 'choosing a different tab while collapsed opens its section')
+    assert.equal(input.value, 'Keep this unfinished comment')
+    assert.equal(first.querySelector('[role="separator"]')!.getAttribute('tabindex'), '0')
+  })
+})
+
+test('sidebar keyboard navigation opens sections, wraps focus and never toggles the current section closed', async () => {
+  await withDom(async (dom, container, render) => {
+    await render(React.createElement(SidebarInteractionFixture, { name: 'keyboard' }))
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+    const key = async (target: HTMLButtonElement, value: string) => {
+      await act(async () => { target.focus(); target.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true,
+        cancelable: true, key: value })) })
+    }
+    const assertSelected = (index: number) => {
+      assert.equal(dom.document.activeElement, tabs[index])
+      assert.equal(tabs[index]!.getAttribute('aria-selected'), 'true')
+      assert.equal(tabs[index]!.getAttribute('aria-expanded'), 'true')
+      assert.equal(tabs.filter(tab => tab.tabIndex === 0).length, 1)
+      const panel = dom.document.getElementById(tabs[index]!.getAttribute('aria-controls')!)!
+      assert.equal(panel.hidden, false)
+      assert.equal(panel.getAttribute('aria-labelledby'), tabs[index]!.id)
+      assert.equal(container.querySelector<HTMLElement>('.dsh-pdf-sidebar-main')!.inert, false)
+    }
+    await act(async () => { tabs[2]!.click() })
+    assert.equal(tabs[2]!.getAttribute('aria-expanded'), 'false')
+    await key(tabs[2]!, 'ArrowDown'); assertSelected(3)
+    await key(tabs[3]!, 'End'); assertSelected(5)
+    await key(tabs[5]!, 'ArrowDown'); assertSelected(0)
+    await key(tabs[0]!, 'ArrowUp'); assertSelected(5)
+    await key(tabs[5]!, 'Home'); assertSelected(0)
+    await key(tabs[0]!, 'Home'); assertSelected(0)
+    await key(tabs[0]!, 'x'); assertSelected(0)
+    await act(async () => { tabs[0]!.click() })
+    assert.equal(tabs[0]!.getAttribute('aria-expanded'), 'false')
+    await key(tabs[0]!, 'Home'); assertSelected(0)
   })
 })
 

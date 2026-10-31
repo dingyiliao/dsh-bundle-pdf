@@ -1,4 +1,4 @@
-/** Width shared by the PDF and reading sidebar after the docked tool rail. */
+/** Space available for sidebar sizing and auto-collapse beside the floating tool rail. */
 export function readerPaneWidth(body: HTMLElement): number {
   const toolRail = body.querySelector<HTMLElement>(':scope > [data-pdf-tool-rail]')
   const railWidth = toolRail?.getBoundingClientRect().width ?? 0

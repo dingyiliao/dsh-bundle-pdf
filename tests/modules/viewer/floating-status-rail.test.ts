@@ -4,7 +4,6 @@ import test from 'node:test'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { FloatingStatusRail, floatingStatusOrder } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
-import { ExplanationStatusBar } from '../../../src/modules/viewer/components/ExplanationStatusBar.tsx'
 
 test('floating statuses retain their first-appearance order when another status arrives', () => {
   assert.deepEqual(floatingStatusOrder([], ['save']), ['save'])
@@ -31,15 +30,6 @@ test('one rail renders independent text, progress, and cancelable statuses', () 
   assert.match(html, /role="status" aria-live="polite"/)
   assert.match(html, /<button type="button">Cancel OCR<\/button>/)
   assert.match(html, /<button type="button" disabled="">Cancel screenshot<\/button>/)
-})
-
-test('expanded explanation mode shows its title and selected question count', () => {
-  const html = renderToStaticMarkup(React.createElement(ExplanationStatusBar, {
-    count: 2, max: 5, sending: false, error: '', imageAvailable: true, selectingArea: false,
-    t: key => key, onSend() {}, onExit() {}, onSelectArea() {},
-  }))
-  assert.match(html, /reader\.explain\.title/)
-  assert.match(html, /dsh-pdf-explanation-status-count">2\/5</)
 })
 
 test('task outcomes have independent tones without changing task identity or labels', () => {

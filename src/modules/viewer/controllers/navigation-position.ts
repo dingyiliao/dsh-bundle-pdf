@@ -2,16 +2,17 @@ import type { PdfPageInfo } from '../../../core/pdf-types.js'
 import type { NavigationPosition } from '../../../navigation/index.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { NativeDocument } from '../rendering/document.js'
-import { pageIndexAtOffset, windowLayout } from '../rendering/window-layout.js'
+import { pageIndexAtOffset, pageWindowLeft, windowLayout } from '../rendering/window-layout.js'
 import { pagePixelToPdfPoint, READING_TOP_INSET, readingPageProbe, readingSafeTop } from '../rendering/page-layout.js'
 import { pdfRectToViewport, type PageView } from '../model/reader-selection.js'
+import type { PdfViewportSize } from './use-pdf-viewport-size.js'
 
 export interface ReaderViewportState {
   snapshot: WorkspaceSnapshot | null
   scrollRoot: HTMLDivElement | null
   fit: 'custom' | 'width' | 'page'
   zoom: number
-  size: { width: number; height: number }
+  size: PdfViewportSize
   currentPage: number
 }
 
@@ -21,7 +22,7 @@ export function readerPageScale(page: PdfPageInfo, state: Pick<ReaderViewportSta
   const rotated = page.rotation % 180 !== 0
   const width = (page.cropBox[2] - page.cropBox[0]) * page.userUnit
   const height = (page.cropBox[3] - page.cropBox[1]) * page.userUnit
-  const widthScale = Math.max(0.1, (state.size.width - 32) / (rotated ? height : width))
+  const widthScale = Math.max(0.1, (state.size.width - (state.size.paddingLeft ?? 16) - (state.size.paddingRight ?? 16)) / (rotated ? height : width))
   return fit === 'page' ? Math.min(widthScale,
     Math.max(0.1, (state.size.height - READING_TOP_INSET - 16) / (rotated ? width : height))) : widthScale
 }
@@ -32,6 +33,7 @@ export function captureReaderPosition(state: ReaderViewportState, views: Readonl
   if (!snapshot || !root) throw new Error(notReady)
   const outer = root.getBoundingClientRect()
   const visibleTop = outer.top + readingSafeTop(outer.height)
+  const visibleLeft = outer.left + (state.size.paddingLeft ?? 0)
   const ordered = [...views.entries()].sort(([a], [b]) => a - b)
   const visible = ([, view]: [number, PageView]) => {
     const box = view.element.getBoundingClientRect()
@@ -50,9 +52,9 @@ export function captureReaderPosition(state: ReaderViewportState, views: Readonl
         && preferred.top < root.scrollTop + root.clientHeight ? preferred
         : numeric[pageIndexAtOffset(numeric, root.scrollTop + readingPageProbe(root.clientHeight))]
       const page = snapshot.document.pages[item.page - 1]
-      const pageLeft = outer.left + (root.scrollWidth - item.width) / 2 - root.scrollLeft
+      const pageLeft = outer.left + pageWindowLeft(root, item) - root.scrollLeft
       const pageTop = outer.top + item.top - root.scrollTop
-      const screenX = Math.max(outer.left, pageLeft), screenY = Math.max(visibleTop, pageTop)
+      const screenX = Math.max(visibleLeft, pageLeft), screenY = Math.max(visibleTop, pageTop)
       const [x, y] = pagePixelToPdfPoint(page, item.scale, 0, screenX - pageLeft, screenY - pageTop)
       return { documentVersion: snapshot.contentVersion, page: page.page, x, y, fit: state.fit, scale: item.scale,
         viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)),
@@ -65,7 +67,7 @@ export function captureReaderPosition(state: ReaderViewportState, views: Readonl
   }
   const [page, view] = pair
   const box = view.element.getBoundingClientRect()
-  const screenX = Math.max(box.left, outer.left), screenY = Math.max(box.top, visibleTop)
+  const screenX = Math.max(box.left, visibleLeft), screenY = Math.max(box.top, visibleTop)
   const [x, y] = view.viewport.convertToPdfPoint(screenX - box.left, screenY - box.top)
   return { documentVersion: snapshot.contentVersion, page, x, y, scale: view.viewport.scale, fit: state.fit,
     viewportAnchor: { x: Math.max(0, Math.min(1, (screenX - outer.left) / outer.width)),
@@ -103,7 +105,7 @@ export async function resolvePdfDestination(document: NativeDocument, snapshot: 
     const box = pdfRectToViewport(base, [destination[2], destination[3], destination[4], destination[5]])
     if (box[2] <= box[0] || box[3] <= box[1]) throw new Error(invalidDestination)
     options.fit = 'custom'
-    options.scale = Math.max(0.1, Math.min((size.width - 32) / (box[2] - box[0]),
+    options.scale = Math.max(0.1, Math.min((size.width - (size.paddingLeft ?? 16) - (size.paddingRight ?? 16)) / (box[2] - box[0]),
       (size.height - READING_TOP_INSET - 16) / (box[3] - box[1])))
     const [x, y] = base.convertToPdfPoint(box[0], box[1]); options.x = x; options.y = y
   } else throw new Error(invalidDestination)

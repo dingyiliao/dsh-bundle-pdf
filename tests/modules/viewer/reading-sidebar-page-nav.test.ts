@@ -42,6 +42,8 @@ for (const expanded of [false, true]) test(`one-piece sidebar keeps one page nav
   assert.equal((html.match(/class="dsh-pdf-sidebar-rail-shell dsh-pdf-rail-shell dsh-pdf-glass"/g) ?? []).length, 1,
     'the right control rail owns one material shell')
   assert.match(html, /class="dsh-pdf-sidebar-tabs" role="tablist"/)
+  assert.doesNotMatch(html, /dsh-pdf-sidebar-toggle(?:-section)?\b/)
+  assert.match(html, new RegExp(`role="tab"[^>]*aria-label="OCR"[^>]*aria-expanded="${expanded}"`))
   assert.doesNotMatch(html, /dsh-pdf-sidebar-pod/)
   assert.match(html, new RegExp(`--pdf-sidebar-width:${expanded ? 296 : 56}px`))
   assert.match(html, /--pdf-sidebar-expanded-width:296px/)

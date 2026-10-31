@@ -2,7 +2,7 @@ import type { PdfPageInfo } from '../../../core/pdf-types.js'
 
 /** Vertical space between neighboring PDF pages. */
 export const PAGE_GAP = 16
-/** Canvas breathing room; docked reader controls reserve their own column. */
+/** Canvas breathing room above the first page. */
 export const READING_TOP_INSET = 16
 
 /** Share the visible reading edge between navigation, page detection and reflow. */
@@ -12,6 +12,8 @@ export const readingPageProbe = (viewportHeight: number): number => readingSafeT
 export interface PageGeometry {
   page: number
   top: number
+  /** Horizontal page origin in the full scrollport, including its safe padding. */
+  left?: number
   width: number
   height: number
   outerHeight: number

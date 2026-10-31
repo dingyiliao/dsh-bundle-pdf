@@ -2,7 +2,7 @@ import { type ReactNode, type RefObject } from 'react'
 import type { PdfAnnotation } from '../../../core/pdf-types.js'
 import { AnnotationCommentCard } from './AnnotationCommentCard.js'
 import { ExplanationQuestionEditor, type ExplanationQuestionEditorProps } from './ExplanationQuestionEditor.js'
-import type { ExplanationStatusBarProps } from './ExplanationStatusBar.js'
+import type { ExplanationToolsProps } from './ExplanationTools.js'
 import type { FloatingStatus } from './FloatingStatusRail.js'
 import type { ReaderModeStatus } from './ReaderModeControl.js'
 import { OverlayScrollbars } from './OverlayScrollbar.js'
@@ -33,7 +33,7 @@ export interface ReaderViewProps {
   selectionBar: ReaderSelectionBarProps
   annotationBar: ReaderAnnotationBarProps
   alerts: ReaderAlertsProps
-  floating: { statuses: readonly FloatingStatus[]; mode?: ReaderModeStatus | null; explanation?: ExplanationStatusBarProps }
+  floating: { statuses: readonly FloatingStatus[]; mode?: ReaderModeStatus | null; explanation?: ExplanationToolsProps }
   question?: { key: string; props: ExplanationQuestionEditorProps }
   comment?: {
     key: string
@@ -131,7 +131,7 @@ export function ReaderView(props: ReaderViewProps) {
           {!pages.hasDocument && <div className="dsh-pdf-empty" role="status">{pages.error ? t('reader.cannotOpen') : t('reader.loading')}</div>}
           {pages.elements}
         </div>
-        <OverlayScrollbars target={scrollRoot} verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
+        <OverlayScrollbars target={scrollRoot} verticalSide="right" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')} />
       </div>
       <ReadingSidebar {...sidebar} />
     </div>

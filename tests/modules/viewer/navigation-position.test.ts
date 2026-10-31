@@ -16,6 +16,36 @@ test('page scale uses viewport fit modes without mutating custom zoom', () => {
   assert.equal(readerPageScale(pages[0], state, 'custom', 1.75), 1.75)
 })
 
+test('floating chrome gutters reduce fit space while fixed zoom and full scrollport size stay independent', () => {
+  const size = { width: 1000, height: 800, paddingLeft: 86, paddingRight: 90 }
+  const state = { fit: 'width' as const, zoom: 2, size }
+  assert.equal(readerPageScale(pages[0], state), 824 / 400)
+  const expanded = { ...state, size: { ...size, paddingRight: 330 } }
+  assert.equal(readerPageScale(pages[0], expanded), 584 / 400)
+  assert.equal(readerPageScale(pages[0], expanded, 'custom'), 2)
+  assert.equal(readerPageScale({ ...pages[0], rotation: 90 }, expanded), 584 / 600)
+  assert.equal(readerPageScale(pages[0], expanded, 'page'), (800 - 32) / 600)
+})
+
+test('numeric and mounted history capture use the same asymmetric page origin and visible reading edge', () => {
+  const root = { scrollTop: 0, scrollLeft: 200, scrollWidth: 1616, clientHeight: 600,
+    getBoundingClientRect: () => ({ left: 10, top: 20, right: 1010, bottom: 620, width: 1000, height: 600 }),
+  } as unknown as HTMLDivElement
+  const item = { page: 1, top: 16, left: 86, width: 1200, height: 1800, outerHeight: 1816, scale: 3 }
+  setWindowLayout(root, [item])
+  const state = { snapshot, scrollRoot: root, fit: 'custom' as const, zoom: 3,
+    size: { width: 1000, height: 600, paddingLeft: 86, paddingRight: 330 }, currentPage: 1 }
+  const view = { element: { getBoundingClientRect: () => ({
+    left: 10 + item.left - root.scrollLeft, top: 20 + item.top,
+    right: 10 + item.left - root.scrollLeft + item.width, bottom: 20 + item.top + item.height,
+  }) } as HTMLElement, viewport: new NativeViewport(pages[0], 3) } as PageView
+  const numeric = captureReaderPosition(state, new Map(), 'not ready')
+  const mounted = captureReaderPosition(state, new Map([[1, view]]), 'not ready')
+  assert.deepEqual(numeric, mounted)
+  assert.equal(numeric.x, 200 / 3)
+  assert.equal(numeric.viewportAnchor?.x, 86 / 1000)
+})
+
 test('capture chooses distant numeric layout while its PageView is still unmounted', () => {
   const root = { scrollTop: 700, scrollLeft: 0, scrollWidth: 400, clientHeight: 300,
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 400, bottom: 300, width: 400, height: 300 }),

@@ -88,6 +88,189 @@ test('explanation requires a question, then submits one ordinary text turn', asy
   })
 })
 
+test('leaving explanation pauses saved materials and the current question for the same source', async () => {
+  await withExplanation(async ({ state, prompts }) => {
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Why?' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    const saved = state().active!.excerpts[0]
+    const next = { ...selection, text: 'Another paragraph' }
+    await act(async () => { state().offerTextSelection(next) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'An unfinished question' } : editor) })
+    await act(async () => { state().cancel() })
+    assert.equal(state().active, null)
+    assert.equal(state().draft?.excerpts[0], saved)
+    assert.equal(state().editor, null, 'paused editing is not rendered in reading mode')
+    let restored: ReturnType<ReturnType<typeof useReaderExplanation>['start']>
+    await act(async () => { restored = state().start() })
+    assert.equal(state().active?.excerpts[0], saved)
+    assert.equal(state().editor?.question, 'An unfinished question')
+    assert.deepEqual(restored, next.fragments, 'the Reader can precisely reveal an offscreen paused question')
+    assert.equal(state().active?.excerpts.length, 1, 'the pending question never increments the saved count')
+    await act(async () => { state().cancelEditor(); state().cancel() })
+    await act(async () => { restored = state().start() })
+    assert.equal(restored, undefined, 'reopening saved materials without a pending question does not request navigation')
+    await act(async () => { state().editQuestion(saved.id) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'An unfinished revision' } : editor) })
+    await act(async () => { state().cancel() })
+    await act(async () => { restored = state().start() })
+    assert.deepEqual(restored, saved.fragments, 'pending edits resume at the saved material instead of a new page position')
+    assert.equal(state().editor?.question, 'An unfinished revision')
+    assert.equal(state().active?.excerpts[0].question, 'Why?', 'pausing a question edit does not implicitly save it')
+    assert.deepEqual(prompts, [], 'pausing/resuming never sends a model turn or writes the PDF')
+  })
+})
+
+test('a new selection cannot silently replace a question that has not been saved', async () => {
+  await withExplanation(async ({ state }) => {
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Keep this question' } : editor) })
+    const first = state().editor
+    const next = { ...selection, text: 'Different text' }
+    await act(async () => { state().offerTextSelection(next) })
+    assert.equal(state().editor, first)
+    assert.equal(state().error, 'reader.explain.finishQuestion')
+    await act(async () => { state().cancel() })
+    assert.equal(state().editor, null)
+    let restored: ReturnType<ReturnType<typeof useReaderExplanation>['start']>
+    await act(async () => { restored = state().start(next) })
+    assert.equal(state().editor, first)
+    assert.equal(state().editor?.question, 'Keep this question', 'a new context-menu selection cannot overwrite a paused typed question')
+    assert.deepEqual(restored, selection.fragments, 'the original question remains reachable even when a different passage was offered')
+    await act(async () => { state().cancelEditor() })
+    await act(async () => { state().offerTextSelection(next) })
+    const editor = state().editor
+    assert.equal(editor?.kind === 'new' && editor.selection.text, 'Different text')
+    assert.equal(state().active?.excerpts.length, 0, 'only saved non-empty questions count as materials')
+  })
+})
+
+test('paused materials retain their exact source and cannot be rebound when reopened after a revision change', async () => {
+  await withExplanation(async ({ state, options, render, prompts }) => {
+    let current = snapshot
+    await render({ ...options, currentSnapshot: () => current })
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Why?' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    const id = state().active!.excerpts[0].id
+    await act(async () => { state().cancel() })
+    current = { ...snapshot, revision: 8 }
+    await render({ ...options, snapshot: current, currentSnapshot: () => current })
+    await act(async () => { state().start() })
+    assert.equal(state().active?.source.revision, 7)
+    assert.equal(state().error, 'reader.explain.sourceChanged')
+    await act(async () => { await state().submit() })
+    assert.deepEqual(prompts, [])
+    await act(async () => { state().removeQuestion(id) })
+    assert.equal(state().active?.excerpts.length, 0)
+    assert.equal(state().active?.source.revision, 8, 'only removing all stale evidence starts an empty fresh draft')
+  })
+})
+
+test('exit aborts image capture without losing saved materials or reviving the mode on a late result', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let finish!: (result: Awaited<ReturnType<NonNullable<ReaderExplanationOptions['regionEvidence']>['prepare']>>) => void
+    let signal: AbortSignal | undefined
+    await render({ ...options, pdf: { numPages: 3 } as NativeDocument,
+      regionEvidence: { prepare: async (_request, nextSignal) => { signal = nextSignal; return new Promise(resolve => { finish = resolve }) } } })
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Saved text' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    await act(async () => { state().beginRegion() })
+    await act(async () => { state().selectRegion(2, { rect: [0, 0, 20, 20], quadPoints: [] }) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Unfinished image question' } : editor) })
+    let pending!: Promise<void>
+    await act(async () => { pending = state().saveQuestion() })
+    await act(async () => { state().cancel() })
+    assert.equal(signal?.aborted, true)
+    assert.equal(state().draft?.excerpts.length, 1)
+    await act(async () => {
+      finish({ refId: 'late-region', documentId: 'doc-1', page: 2, rectPdf: [0, 0, 20, 20],
+        sourcePath: '/lesson.pdf', sourceDigest: baselineDigest, sourceVersion: 'fs-1',
+        contentVersion: 'content-1', revision: 7, mediaType: 'image/png', width: 20, height: 20,
+        bytes: new Uint8Array([1, 2, 3]) })
+      await pending
+    })
+    assert.equal(state().active, null)
+    assert.equal(state().draft?.excerpts.length, 1)
+    assert.equal(state().saving, false)
+    await act(async () => { state().start() })
+    assert.equal(state().active?.excerpts.length, 1)
+    assert.equal(state().editor?.question, 'Unfinished image question')
+  })
+})
+
+test('an admitted send can leave the mode, prevents duplicate submissions, and retains failures for review', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let calls = 0, fail!: (error: Error) => void
+    await render({ ...options, promptExplanation: async () => { calls++; await new Promise<void>((_resolve, reject) => { fail = reject }) } })
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Why?' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    let pending!: Promise<void>
+    await act(async () => { pending = state().submit(); await state().submit() })
+    assert.equal(calls, 1)
+    await act(async () => { state().cancel() })
+    assert.equal(state().active, null)
+    assert.equal(state().sending, true)
+    await act(async () => { fail(new Error('Could not append turn')); await pending })
+    assert.equal(state().draft?.excerpts.length, 1)
+    assert.equal(state().error, 'Could not append turn')
+    await act(async () => { state().start() })
+    assert.equal(state().error, 'Could not append turn', 'reopening does not dismiss an outstanding failure')
+    await act(async () => { state().dismissError() })
+    assert.equal(state().error, '')
+  })
+})
+
+test('admission clears exactly the sent materials even if the working revision changes while awaiting acceptance', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let current = snapshot, accept!: () => void
+    const input = { ...options, currentSnapshot: () => current,
+      promptExplanation: async () => { await new Promise<void>(resolve => { accept = resolve }) } }
+    await render(input)
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Why?' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    let pending!: Promise<void>
+    await act(async () => { pending = state().submit() })
+    current = { ...snapshot, revision: snapshot.revision + 1 }
+    await render({ ...input, snapshot: current })
+    await act(async () => { accept(); await pending })
+    assert.equal(state().active, null)
+    assert.equal(state().draft, null, 'accepted materials cannot remain available for duplicate submission')
+    assert.equal(state().sending, false)
+    await act(async () => { state().start() })
+    assert.equal(state().active?.source.revision, 8)
+    assert.equal(state().active?.excerpts.length, 0)
+  })
+})
+
+test('a late submission failure cannot affect another document or keep its mode entry locked', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let fail!: (error: Error) => void
+    let signal: AbortSignal | undefined
+    await render({ ...options, promptExplanation: async (_prompt, nextSignal) => {
+      signal = nextSignal; await new Promise<void>((_resolve, reject) => { fail = reject })
+    } })
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Why?' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    let pending!: Promise<void>
+    await act(async () => { pending = state().submit() })
+    const next = { ...snapshot, id: 'doc-2', contentVersion: 'content-2' }
+    await render({ ...options, snapshot: next, currentSnapshot: () => next })
+    assert.equal(signal?.aborted, true)
+    await act(async () => { state().start() })
+    const newDraft = state().active
+    assert.equal(newDraft?.source.documentId, 'doc-2')
+    await act(async () => { fail(new Error('Old document failed')); await pending })
+    assert.equal(state().active, newDraft)
+    assert.equal(state().error, '')
+    assert.equal(state().sending, false)
+  })
+})
+
 test('explanation draft is scoped to content identity and cleared on document switch', async () => {
   await withExplanation(async ({ state, options, render }) => {
     await act(async () => { state().start(selection) })

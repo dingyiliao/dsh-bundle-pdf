@@ -1,4 +1,5 @@
 import React, { useLayoutEffect, useRef } from 'react'
+import { readingViewportBounds } from '../rendering/pdf-viewport-geometry.js'
 
 interface FloatingToolbarProps {
   viewport: HTMLElement | null
@@ -29,7 +30,7 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
     const update = () => {
       frame = 0
       const selection = anchor.current()
-      const bounds = viewport.getBoundingClientRect()
+      const bounds = readingViewportBounds(viewport)
       const origin = parent.getBoundingClientRect()
       if (!active || !selection || bounds.width < 40 || selection.bottom <= bounds.top || selection.top >= bounds.bottom
         || selection.right <= bounds.left || selection.left >= bounds.right) {
@@ -37,8 +38,8 @@ export function FloatingToolbar({ viewport, getAnchor, label, children, active =
         return
       }
       const inset = 8, gap = 7
-      // The tool rail reserves its own column; only the PDF scrollport bounds
-      // constrain page actions, including marks near the top of the page.
+      // Use the readable strip between floating rails, while keeping the full
+      // scrollport available for large pages and PDF coordinate conversion.
       const safeTop = bounds.top + inset
       const availableHeight = Math.max(0, bounds.height - inset * 2)
       const hasCard = !!parent.querySelector('.dsh-pdf-page-comment-card')

@@ -83,16 +83,19 @@ function Fixture() {
     onRedo: record('redo'), onSave: record('save'), onBack: record('back'),
     onBackTo: (depth, revision) => { calls.push(`back-to:${depth}:${revision}`) },
     onZoom: value => { calls.push(`zoom:${value}`) } }
-  const explanation = input.mode === 'explanation' ? { count: input.count, max: 20, sending: input.sending, error: input.error,
+  const explanation = input.mode === 'explanation' ? { excerpts: Array.from({ length: input.count }, (_, index) => ({ id: `material-${index}`, kind: 'text' as const, text: `Passage ${index + 1}`, question: `Question ${index + 1}`, fragments: [{ page: index + 1, rect: [0, 0, 10, 10] as [number, number, number, number], quadPoints: [] }] })), max: 20, sending: input.sending, error: input.error,
     imageAvailable: input.imageAvailable, imageReason: input.imageAvailable ? undefined : 'Image engine unavailable',
     selectingArea: input.selectingArea, t, onSend: record('send'), onExit: record('exit-explanation'),
-    onSelectArea: record('select-area') } : undefined
+    onSelectArea: record('select-area'), onSelectText: record('select-text'),
+    onEditQuestion: (id: string) => { calls.push(`edit-question:${id}`) }, onRemoveQuestion: (id: string) => { calls.push(`remove-question:${id}`) } } : undefined
   const mode = input.mode === 'note' || input.mode === 'region' ? { kind: input.mode,
     label: t(input.mode === 'note' ? 'reader.placeNote' : 'reader.screenshotHint'), onCancel: record('cancel-mode') } : undefined
   const statuses = readerFloatingStatuses({ saveFeedback: input.tasks === 'none' ? null : { kind: 'saved', durationMs: 0, occurrence: 1 },
     documentPath: '/fixture.pdf', mode: 'text', explanationActive: input.mode === 'explanation', regionPurpose: null,
     screenshotPhase: input.tasks === 'none' ? null : input.tasks === 'cancelling' ? 'cancelling' : 'preparing',
     ocrProgress: input.tasks === 'none' ? null : input.tasks === 'cancelling' ? 'cancelling' : 'recognizing',
+    explanation: { sending: input.mode === 'explanation' && input.sending, error: input.error,
+      review: record('review-explanation'), dismiss: () => { calls.push('dismiss-explanation'); setInput(previous => ({ ...previous, error: '' })) } },
     onSaveExpired: record('expire-save'), onExitNote: record('cancel-note'),
     onCancelScreenshot: record('cancel-screenshot'), onCancelOcr: record('cancel-ocr'), t })
   const getAnchor = () => selection.current?.getBoundingClientRect() ?? null
@@ -105,7 +108,8 @@ function Fixture() {
             width: 'calc(100% - 32px)', padding: '88px 12px 32px', background: '#fff', color: '#222',
             boxShadow: '0 1px 8px #00000014', overflowWrap: 'anywhere' }}>
             <span ref={selection} data-fixture-selection style={{ position: 'absolute', top: 24, left: 12,
-              maxWidth: 'calc(100% - 24px)', background: '#fff0a0' }}>
+              // PDF zoom preserves a printed line instead of reflowing it into characters.
+              maxWidth: 'calc(100% - 24px)', whiteSpace: 'nowrap', background: '#fff0a0' }}>
               Selected PDF text
             </span>
             <p style={{ fontSize: 10, letterSpacing: 1.5, color: '#666', margin: '0 0 12px' }}>PDF READING FIXTURE · PAGE 1</p>

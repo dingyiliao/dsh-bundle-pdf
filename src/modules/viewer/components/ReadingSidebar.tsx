@@ -242,27 +242,19 @@ export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExp
     </div>
     <div className="dsh-pdf-sidebar-rail">
       <div className="dsh-pdf-sidebar-rail-shell dsh-pdf-rail-shell dsh-pdf-glass">
-      <div className="dsh-pdf-sidebar-toggle-section">
-      <button type="button" className="dsh-pdf-sidebar-toggle" aria-controls={panelId} aria-expanded={expanded}
-        aria-label={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')}
-        data-tooltip={t(expanded ? 'reader.sidebar.collapse' : 'reader.sidebar.expand')} onClick={() => {
-          onExpandedChange(!expanded)
-        }}>
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-          strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m9 5 7 7-7 7" />
-        </svg>
-      </button>
-      </div>
       <div className="dsh-pdf-sidebar-sections">
       <div className="dsh-pdf-sidebar-tabs" role="tablist" aria-orientation="vertical" aria-label={t('reader.sidebar.title')}>
         {sections.map(section => <button key={section} type="button" role="tab" id={`${panelId}-tab-${section}`}
           ref={element => { if (element) tabs.current.set(section, element); else tabs.current.delete(section) }}
           className={`dsh-pdf-sidebar-tab${activeSection === section && expanded ? ' is-active' : ''}`}
           aria-label={t(`reader.sidebar.${section}`)} aria-selected={activeSection === section}
+          aria-expanded={activeSection === section && expanded}
           aria-controls={`${panelId}-${section}`} tabIndex={activeSection === section ? 0 : -1}
           data-tooltip={t(`reader.sidebar.${section}`)}
-          onClick={() => select(section)} onKeyDown={event => {
+          onClick={() => {
+            if (activeSection === section && expanded) onExpandedChange(false)
+            else select(section)
+          }} onKeyDown={event => {
             const current = sections.indexOf(section)
             let next = current
             if (event.key === 'ArrowDown') next = (current + 1) % sections.length

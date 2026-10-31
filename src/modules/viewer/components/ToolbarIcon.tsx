@@ -1,12 +1,16 @@
 
 export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'edit' | 'comment' | 'commentedMark' | 'move' | 'close'
-  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send' | 'ocr' | 'file' | 'reload' | 'check' | 'lock' | 'warning'
+  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send' | 'ocr' | 'file' | 'reload' | 'check' | 'lock' | 'warning' | 'selectText' | 'materials'
 
 /** Compact reader controls use the same stroke weight as the sidebar rail. */
 export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: string }) {
   return <svg className="dsh-pdf-toolbar-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
     strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-icon={name}>
-    {name === 'check' ? <>
+    {name === 'selectText' ? <>
+      <path d="M4 8V4h4m8 0h4v4m0 8v4h-4M8 20H4v-4M8 9h8M12 9v7M9 16h6" />
+    </> : name === 'materials' ? <>
+      <path d="M9 6h11M9 12h11M9 18h11M3 5h1v3M3 8h2M3 11h2l-2 3h2M3 17h2v3H3" />
+    </> : name === 'check' ? <>
       <path d="m5 12 4 4L19 6" />
     </> : name === 'lock' ? <>
       <rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />

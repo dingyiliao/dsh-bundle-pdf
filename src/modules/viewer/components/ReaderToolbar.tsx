@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useLayoutEffect, useRef } from 'react'
 import type { HostOcrAvailability } from '../ports/ocr.js'
 import type { SaveFeedbackState } from '../controllers/use-reader-save.js'
 import { ReaderSaveButton } from './ReaderSaveButton.js'
@@ -8,7 +8,7 @@ import { ToolbarDisclosure } from './ToolbarDisclosure.js'
 import { ToolbarIcon, type ToolbarIconName } from './ToolbarIcon.js'
 import { ToolbarTooltip } from './ToolbarTooltip.js'
 import { ReaderModeControl, type ReaderModeStatus } from './ReaderModeControl.js'
-import { ExplanationAreaAction, type ExplanationStatusBarProps } from './ExplanationStatusBar.js'
+import { ExplanationTools, type ExplanationToolsProps } from './ExplanationTools.js'
 import { FloatingStatusRail, type FloatingStatus } from './FloatingStatusRail.js'
 
 type History = React.ComponentProps<typeof BackHistoryControl>['history']
@@ -68,9 +68,28 @@ export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, s
   state: ReaderToolbarState
   actions: ReaderToolbarActions
   mode?: ReaderModeStatus | null
-  explanation?: ExplanationStatusBarProps
+  explanation?: ExplanationToolsProps
   statuses?: readonly FloatingStatus[]
 }) {
+  const interaction = useRef<HTMLDivElement>(null)
+  const modeFocus = useRef<HTMLElement | null>(null)
+  const changeMode = (action: () => void) => {
+    const group = interaction.current
+    const focused = group?.ownerDocument.activeElement
+    modeFocus.current = focused instanceof HTMLElement && group?.contains(focused) ? focused : null
+    action()
+  }
+  useLayoutEffect(() => {
+    const previous = modeFocus.current, group = interaction.current
+    if (!previous || !group || previous.isConnected) return
+    modeFocus.current = null
+    // Only replace a focus stop removed by this toolbar's own mode command.
+    // A question editor and another Reader can keep their existing focus.
+    const focused = group.ownerDocument.activeElement
+    if (focused !== group.ownerDocument.body || group.checkVisibility?.() === false) return
+    group.querySelector<HTMLButtonElement>(explanation
+      ? '.dsh-pdf-explanation-select-text:not(:disabled)' : '.dsh-pdf-tool-explain:not(:disabled)')?.focus({ preventScroll: true })
+  }, [!!explanation])
   const disabledDiscard = !state.hasDocument || state.busy || state.saveAsPicking || state.colorPending
     || (!state.dirty && !state.formPending && !state.conflict && !state.canRedo && !state.hasUnappliedAnnotation)
   const ocrLabel = state.ocrAvailability?.status === 'available' ? t('reader.ocrPage')
@@ -94,27 +113,27 @@ export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, s
         onBack={actions.onBack} onBackTo={actions.onBackTo} />
       <ZoomMenu fit={state.fit} zoom={state.zoom} t={t} onSelect={actions.onZoom} />
     </div>
-    <div className="dsh-pdf-tool-group dsh-pdf-tool-interaction" role="group" data-tool-group="interaction" aria-label={t('reader.editing')}
+    <div ref={interaction} className="dsh-pdf-tool-group dsh-pdf-tool-interaction" role="group" data-tool-group="interaction" aria-label={t('reader.editing')}
       data-explanation-active={!!explanation || undefined} data-reader-command="">
-      <div className="dsh-pdf-tool-middle">
+      {explanation ? <ExplanationTools {...explanation} onExit={() => changeMode(explanation.onExit)} /> : <><div className="dsh-pdf-tool-middle">
         <button type="button" className="dsh-pdf-tool-explain" aria-pressed={state.explanationActive}
           aria-label={t(state.explanationActive ? 'reader.explain.exit' : 'reader.explain.start')}
           data-tooltip={t(state.explanationActive ? 'reader.explain.exit' : 'reader.explain.start')}
           disabled={!state.hasDocument || !state.canPromptExplanation || state.explanationSending || state.screenshotPreparing || state.screenshotActive}
-          onClick={actions.onToggleExplanation}><ToolbarIcon name="explain" /></button>
+          onClick={() => changeMode(actions.onToggleExplanation)}><ToolbarIcon name="explain" /></button>
         <button type="button" className="dsh-pdf-tool-note" aria-label={t('reader.note')} data-tooltip={t('reader.note')}
           aria-pressed={mode?.kind === 'note'} disabled={!state.editable || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
           onClick={() => mode?.kind === 'note' ? mode.onCancel() : actions.onNote()}><ToolbarIcon name="note" /></button>
-        {explanation ? <ExplanationAreaAction {...explanation} className="dsh-pdf-tool-screenshot" /> : <button type="button" className="dsh-pdf-tool-screenshot" aria-label={t('reader.regionScreenshot')} data-tooltip={t('reader.regionScreenshot')}
+        <button type="button" className="dsh-pdf-tool-screenshot" aria-label={t('reader.regionScreenshot')} data-tooltip={t('reader.regionScreenshot')}
           aria-pressed={mode?.kind === 'region'} disabled={!state.hasDocument || state.busy || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
-          onClick={() => mode?.kind === 'region' ? mode.onCancel() : actions.onScreenshot()}><ToolbarIcon name="crop" /></button>}
+          onClick={() => mode?.kind === 'region' ? mode.onCancel() : actions.onScreenshot()}><ToolbarIcon name="crop" /></button>
         <span data-tooltip={ocrLabel} className="dsh-pdf-tool-availability">
           <button type="button" className="dsh-pdf-tool-ocr" aria-label={t('reader.ocrPage')} title={ocrLabel}
             disabled={!state.hasDocument || state.ocrBusy || state.ocrAvailability?.status !== 'available'}
             onClick={actions.onOcr}><ToolbarIcon name="ocr" /></button>
         </span>
       </div>
-      <ReaderModeControl mode={mode} explanation={explanation} t={t} />
+      <ReaderModeControl mode={mode} t={t} /></>}
     </div>
     <div className="dsh-pdf-tool-group dsh-pdf-tool-document" role="group" data-tool-group="document" aria-label={t('reader.fileMenu')} data-reader-command="">
       <div className="dsh-pdf-tool-history">

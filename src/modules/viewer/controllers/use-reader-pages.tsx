@@ -7,6 +7,7 @@ import type { ReaderPage } from '../rendering/ReaderPage.js'
 import type { ReaderSelection, PageView } from '../model/reader-selection.js'
 import type { OcrPage } from './reader-lifetime.js'
 import type { ExplanationExcerpt } from '../../explanation/index.js'
+import type { PdfViewportSize } from './use-pdf-viewport-size.js'
 
 type Region = { rect: PdfRect; quadPoints: number[] }
 type PageComponent = typeof ReaderPage
@@ -26,7 +27,7 @@ export interface ReaderPagesOptions {
   ocrPages: ReadonlyMap<number, OcrPage>
   zoom: number
   fit: 'custom' | 'width' | 'page'
-  size: { width: number; height: number }
+  size: PdfViewportSize
   scrollRoot: HTMLDivElement | null
   mode: 'text' | 'region' | 'note'
   onFormChange(fieldId: string, value: string | boolean | string[]): Promise<boolean | void>
@@ -93,7 +94,7 @@ export function useReaderPages(options: ReaderPagesOptions): React.ReactNode {
   return useMemo(() => {
     if (!pdf || !snapshot) return null
     const { selectedPages, pinnedPages, selectedTextPages } = readerPagePins(selection, selectedAnnotation, navigationTarget)
-    return <WindowedPages key={snapshot.id} pages={snapshot.document.pages}
+    return <WindowedPages key={snapshot.id} ownerKey={`${snapshot.id}:${snapshot.contentVersion}`} pages={snapshot.document.pages}
       rotation={0} zoom={zoom} fit={fit} size={size} scrollRoot={scrollRoot}
       scaleForPage={pageScale}
       pinnedPages={pinnedPages} selectedTextPages={selectedTextPages} dragAnchorPage={draggingPage}

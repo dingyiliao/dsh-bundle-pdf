@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } from '../../../src/modules/viewer/components/ReaderToolbar.tsx'
-import type { ExplanationStatusBarProps } from '../../../src/modules/viewer/components/ExplanationStatusBar.tsx'
+import type { ExplanationToolsProps } from '../../../src/modules/viewer/components/ExplanationTools.tsx'
 
 const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
@@ -19,7 +19,7 @@ const readyState: ReaderToolbarState = {
 
 async function withToolbar(run: (f: {
   container: HTMLElement; calls: string[]; menu: React.RefObject<HTMLDetailsElement>
-  render(state?: Partial<ReaderToolbarState>, explanation?: ExplanationStatusBarProps): Promise<void>
+  render(state?: Partial<ReaderToolbarState>, explanation?: ExplanationToolsProps): Promise<void>
   openMenu(): Promise<void>
 }) => Promise<void>) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { url: 'http://localhost' }).window
@@ -39,7 +39,7 @@ async function withToolbar(run: (f: {
   const actions: ReaderToolbarActions = { onOpenMenu: record('menu'), onToggleExplanation() {}, onScreenshot: record('screenshot'),
     onNote() {}, onOcr() {}, onReload: record('reload'), onSaveAs: record('save-as'),
     onDiscard: record('discard'), onUndo: record('undo'), onRedo: record('redo'), onSave: record('save'), onBack() {}, onBackTo() {}, onZoom() {} }
-  const render = async (state: Partial<ReaderToolbarState> = {}, explanation?: ExplanationStatusBarProps) => {
+  const render = async (state: Partial<ReaderToolbarState> = {}, explanation?: ExplanationToolsProps) => {
     await act(async () => { root.render(React.createElement(ReaderToolbar, { t: key => key, menuRef: menu,
       state: { ...readyState, ...state }, explanation,
       actions })) })
@@ -208,9 +208,10 @@ test('both history entry points share staged-form, redo and mutation guards', as
 
 test('the single material shell separates scrolling tools from fixed explanation controls', async () => {
   await withToolbar(async f => {
-    const explanation: ExplanationStatusBarProps = {
-      count: 2, max: 20, sending: false, disabled: false, error: '', imageAvailable: true,
+    const explanation: ExplanationToolsProps = {
+      excerpts: [1, 2].map(n => ({ id: String(n), kind: 'text' as const, text: `Passage ${n}`, question: `Why ${n}?`, fragments: [{ page: n, rect: [0, 0, 10, 10] as [number, number, number, number], quadPoints: [] }] })), max: 20, sending: false, disabled: false, error: '', imageAvailable: true,
       selectingArea: false, t: key => key, onSend() {}, onExit() {}, onSelectArea: () => { f.calls.push('area') },
+      onSelectText: () => { f.calls.push('text') }, onEditQuestion: id => { f.calls.push(`edit:${id}`) }, onRemoveQuestion: id => { f.calls.push(`remove:${id}`) },
     }
     await f.render({ explanationActive: true }, explanation)
     const rail = f.container.querySelector('[data-pdf-tool-rail]')!
@@ -222,8 +223,11 @@ test('the single material shell separates scrolling tools from fixed explanation
     const tools = shell.querySelector('.dsh-pdf-tool-middle')!, fixed = shell.querySelector('.dsh-pdf-mode-control')!
     const area = tools.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-area')!
     assert.ok(area.classList.contains('dsh-pdf-tool-screenshot'))
-    assert.equal(tools.contains(fixed), false, 'scrolling the tool list cannot scroll away Send or Exit')
-    assert.equal(fixed.querySelector('.dsh-pdf-explanation-status-area'), null, 'area capture has exactly one entry in the tools')
+    assert.equal(tools.contains(fixed.querySelector('.dsh-pdf-explanation-status-actions')), false, 'scrolling tools cannot move Send or Exit')
+    assert.equal(rail.querySelectorAll('.dsh-pdf-explanation-status-area').length, 1)
+    assert.equal(rail.querySelector('.dsh-pdf-tool-note, .dsh-pdf-tool-ocr, .dsh-pdf-tool-explain'), null)
+    assert.equal(rail.querySelectorAll('.dsh-pdf-mode-count').length, 1)
+    assert.equal(rail.querySelector('.dsh-pdf-mode-count')?.textContent, '2')
     assert.ok(fixed.querySelector('.dsh-pdf-explanation-status-send'))
     assert.ok(fixed.querySelector('.dsh-pdf-explanation-status-exit'))
     await act(async () => { area.click() })
@@ -243,5 +247,85 @@ test('the single material shell separates scrolling tools from fixed explanation
     assert.equal(cancelling.getAttribute('aria-label'), 'reader.explain.cancelArea')
     assert.equal(cancelling.getAttribute('aria-pressed'), 'true')
     assert.equal(cancelling.disabled, false)
+  })
+})
+
+test('explanation replaces only middle tools and its materials share the question owner', async () => {
+  await withToolbar(async f => {
+    const navigation = f.container.querySelector('[data-tool-group="navigation"]')
+    const document = f.container.querySelector('[data-tool-group="document"]')
+    const excerpts: ExplanationToolsProps['excerpts'] = [{ id: 'saved-1', kind: 'text', text: 'Original passage',
+      question: 'What does it mean?', fragments: [{ page: 7, rect: [0, 0, 10, 10], quadPoints: [] }] }]
+    const props: ExplanationToolsProps = { excerpts, max: 20, sending: false, error: '', imageAvailable: true,
+      selectingArea: false, t: key => key, onSend: () => { f.calls.push('send') },
+      onExit: () => { f.calls.push('exit') }, onSelectArea() {}, onSelectText: () => { f.calls.push('text') },
+      onEditQuestion: id => { f.calls.push(`edit:${id}`) }, onRemoveQuestion: id => { f.calls.push(`remove:${id}`) } }
+    await f.render({ explanationActive: true }, props)
+    assert.equal(f.container.querySelector('[data-tool-group="navigation"]'), navigation)
+    assert.equal(f.container.querySelector('[data-tool-group="document"]'), document)
+    assert.equal(f.container.querySelector('.dsh-pdf-tool-note, .dsh-pdf-tool-ocr, .dsh-pdf-tool-explain'), null)
+    const trigger = f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-materials-trigger')!
+    await act(async () => { trigger.click() })
+    const list = f.container.querySelector<HTMLElement>('.dsh-pdf-explanation-materials')!
+    assert.equal(list.hidden, false)
+    assert.match(list.textContent!, /What does it mean\?/)
+    assert.match(list.textContent!, /Original passage/)
+    assert.ok(list.querySelector('.dsh-pdf-explanation-materials-heading button svg[data-icon="close"]'))
+    assert.ok(list.querySelector('.dsh-pdf-explanation-material-remove svg[data-icon="discard"]'))
+    await act(async () => { list.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-material-edit')!.click() })
+    assert.equal(f.calls.at(-1), 'edit:saved-1')
+    assert.equal(list.hidden, true)
+    assert.equal(f.container.ownerDocument.activeElement, trigger, 'failed or stale navigation retains a stable keyboard focus stop')
+    await act(async () => { trigger.click() })
+    await act(async () => {
+      const remove = list.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-material-remove')!
+      remove.focus(); remove.click()
+    })
+    assert.equal(f.calls.at(-1), 'remove:saved-1')
+    await f.render({ explanationActive: true }, { ...props, excerpts: [] })
+    assert.equal(f.container.ownerDocument.activeElement, trigger, 'deleting a focused row does not drop focus into the document body')
+    assert.equal(f.container.querySelector('.dsh-pdf-mode-count'), null)
+    assert.equal(f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-send')!.disabled, true)
+    assert.match(list.textContent!, /reader.explain.materialsEmpty/)
+    await f.render({ explanationActive: true }, { ...props, sending: true })
+    assert.equal(f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-send')!.disabled, true)
+    assert.ok(f.container.querySelector('.dsh-pdf-explanation-status-send .dsh-pdf-floating-status-spinner'))
+    const exit = f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-exit')!
+    assert.equal(exit.disabled, false)
+    await act(async () => { exit.click() })
+    assert.equal(f.calls.at(-1), 'exit', 'sending may leave the mode without cancelling the accepted task')
+    await f.render({ explanationActive: false })
+    assert.equal(f.container.querySelector('[data-tool-group="navigation"]'), navigation)
+    assert.equal(f.container.querySelector('[data-tool-group="document"]'), document)
+    assert.ok(f.container.querySelector('.dsh-pdf-tool-note'))
+  })
+})
+
+test('local explanation mode commands transfer removed keyboard focus without taking another view focus', async () => {
+  await withToolbar(async f => {
+    const props: ExplanationToolsProps = { excerpts: [], max: 20, sending: false, error: '', imageAvailable: true,
+      selectingArea: false, t: key => key, onSend() {}, onExit() {}, onSelectArea() {}, onSelectText() {},
+      onEditQuestion() {}, onRemoveQuestion() {} }
+    const page = f.container.ownerDocument
+    const entry = () => f.container.querySelector<HTMLButtonElement>('.dsh-pdf-tool-explain')!
+    const selectText = () => f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-select-text')!
+    await act(async () => { entry().focus(); entry().click() })
+    await f.render({ explanationActive: true }, props)
+    assert.equal(page.activeElement, selectText(), 'keyboard entry moves to the first explanation action')
+    const exit = f.container.querySelector<HTMLButtonElement>('.dsh-pdf-explanation-status-exit')!
+    await act(async () => { exit.focus(); exit.click() })
+    await f.render()
+    assert.equal(page.activeElement, entry(), 'Exit restores the same local entry point')
+
+    const outside = page.createElement('button')
+    page.body.append(outside)
+    await act(async () => { entry().focus(); entry().click(); outside.focus() })
+    await f.render({ explanationActive: true }, props)
+    assert.equal(page.activeElement, outside, 'a deferred command cannot pull focus back from another view')
+    await f.render()
+    await act(async () => { entry().focus(); entry().click() })
+    await f.render({ explanationActive: true }, { ...props, disabled: true })
+    assert.notEqual(page.activeElement, selectText(), 'a pending question retains its own automatic focus owner')
+    outside.remove()
   })
 })

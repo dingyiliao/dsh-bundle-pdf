@@ -53,5 +53,5 @@ export { renderNativeTextLayer, positionedTextSegments } from './rendering/text-
 export { PAGE_GAP, READING_TOP_INSET, readingSafeTop, readingPageProbe, pagePixelToPdfPoint,
   buildPageLayout, windowForViewport, type PageGeometry, type PageWindow } from './rendering/page-layout.js'
 export { setWindowLayout, clearWindowLayout, windowLayout, pageIndexAtOffset } from './rendering/window-layout.js'
-export { pageAtPointer, suspendScrollAnchoring } from './rendering/pdf-viewport-geometry.js'
+export { pageAtPointer, suspendScrollAnchoring, readingViewportBounds } from './rendering/pdf-viewport-geometry.js'
 export { ReaderFormCommitProvider, useReaderFormCommits } from './rendering/FormCommitContext.js'

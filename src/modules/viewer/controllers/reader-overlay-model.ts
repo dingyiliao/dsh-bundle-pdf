@@ -13,6 +13,7 @@ export interface ReaderOverlayModelOptions {
   editable: boolean
   readOnly: boolean
   getExplanationAnchor(): DOMRect | null
+  onEditExplanationQuestion(id: string): void
   getCommentAnchor(): DOMRect | null
   getCommentPosition(): DOMRect | null
   getNoteAnchor(): DOMRect | null
@@ -31,13 +32,13 @@ type OverlayModel = Pick<ReaderViewProps, 'question' | 'comment' | 'note'> & {
 /** Convert feature-owned draft/editor state into anchored overlay bindings. */
 export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayModel {
   const { explanation, annotations, viewport, documentPath, mode, regionPurpose, editable, readOnly,
-    getExplanationAnchor, getCommentAnchor, getCommentPosition, getNoteAnchor, moveNote, moveCommentCard,
+    getExplanationAnchor, onEditExplanationQuestion, getCommentAnchor, getCommentPosition, getNoteAnchor, moveNote, moveCommentCard,
     applyComment, closeComment, applyNote, t } = options
   const { active, editor, sending, saving, imageAvailability } = explanation
   const { selected, selectedNote, pendingNote, commentCardOpen, noteCardOpen, noteMode, noteText,
     noteColor, noteTextarea, commentMode, editingCommentId, thread, comment, commentTextarea } = annotations
   const explanationStatus = active ? {
-    count: active.excerpts.length, max: MAX_EXPLANATION_EXCERPTS,
+    excerpts: active.excerpts, max: MAX_EXPLANATION_EXCERPTS,
     sending: sending || saving, disabled: !!editor,
     imageAvailable: imageAvailability?.status === 'available',
     imageReason: imageAvailability?.status === 'unavailable' ? imageAvailability.reason
@@ -45,6 +46,8 @@ export function readerOverlayModel(options: ReaderOverlayModelOptions): OverlayM
         : t('reader.explain.imageChecking'),
     selectingArea: mode === 'region' && regionPurpose === 'explanation',
     onSelectArea: explanation.beginRegion, error: explanation.error, t,
+    onSelectText: explanation.selectText, onEditQuestion: onEditExplanationQuestion,
+    onRemoveQuestion: explanation.removeQuestion,
     onSend: () => { void explanation.submit() }, onExit: explanation.cancel,
   } : undefined
   const question = editor ? {

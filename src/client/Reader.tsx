@@ -7,9 +7,10 @@ import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReade
   useReaderAnnotations, useReaderScreenshot, useReaderSearch, useReaderSave, useReaderSidebarLayout, useReaderPages,
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
   usePdfWheelZoom, usePdfViewportSize, useReaderIndexing, useReaderFormCommits, ReaderFormCommitProvider,
-  clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition,
+  clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition, pdfRectToViewport, NativeViewport, readingViewportBounds,
   readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels,
   navigateAgentRequest,
+  type ReaderSelection,
   } from '../modules/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
 
@@ -233,8 +234,7 @@ export function Reader(props: ReaderProps) {
     closeToolsMenu: () => { if (toolsMenu.current) toolsMenu.current.open = false }, t })
   const { active: activeExplanation, editor: activeExplanationEditor, draftSelection: draftExplanationSelection,
     sending: explanationSending } = explanation
-  const { start: startExplanation, cancel: cancelExplanation,
-    selectRegion: selectExplanationRegion } = explanation
+  const { cancel: cancelExplanation, selectRegion: selectExplanationRegion } = explanation
   const dismissContext = useCallback(() => {
     if (hasUnappliedAnnotation) return
     regionPurpose.current = null
@@ -321,9 +321,58 @@ export function Reader(props: ReaderProps) {
   const explanationEditorAnchor = () => {
     if (activeExplanationEditor?.kind === 'edit') {
       const marker = explanation.markerAnchor.current
-      return marker?.isConnected ? marker.getBoundingClientRect() : null
+      const id = activeExplanationEditor.excerptId
+      return marker?.isConnected ? marker.getBoundingClientRect()
+        : fragmentAnchor(activeExplanation?.excerpts.find(item => item.id === id)?.fragments ?? [])
     }
     return activeExplanationEditor?.kind === 'new' ? contextualAnchor() : null
+  }
+  const latestExplanation = useRef(explanation)
+  latestExplanation.current = explanation
+  const revealExplanationQuestion = async (fragments: ReadonlyArray<ReaderSelection['fragments'][number]>, key: string, owner: number) => {
+    const ownsTarget = () => !tab.signal.aborted && ownerSequence.current === owner && latestExplanation.current.key === key
+    const fragment = fragments[0]
+    if (!fragment || !ownsTarget()) return false
+    const anchor = fragmentAnchor(fragments)
+    const safe = scrollRoot && readingViewportBounds(scrollRoot)
+    const visible = anchor && safe && anchor.left >= safe.left && anchor.right <= safe.right
+      && anchor.top >= safe.top + 16 && anchor.bottom <= safe.bottom - 16
+    let ready: boolean
+    if (visible) ready = !!await runAfterFormFlush(() => true)
+    else {
+      const geometry = state.current.snapshot?.document.pages[fragment.page - 1]
+      if (!geometry) return false
+      const viewport = new NativeViewport(geometry, 1, geometry.rotation)
+      const rect = pdfRectToViewport(viewport, fragment.rect)
+      const [x, y] = viewport.convertToPdfPoint(rect[0], rect[1])
+      ready = await jump(fragment.page, { x, y, viewportAnchor: { x: 0.08, y: 0.2 } })
+    }
+    return ready && ownsTarget()
+  }
+  const startExplanation = (initialSelection?: ReaderSelection) => {
+    const current = latestExplanation.current
+    const key = current.key, owner = ownerSequence.current
+    const pending = current.start(initialSelection)
+    if (!pending || !key) return
+    void revealExplanationQuestion(pending, key, owner).then(ready => {
+      const next = latestExplanation.current
+      if (!ready && !tab.signal.aborted && ownerSequence.current === owner && next.active?.key === key) {
+        // Keep a question paused rather than trapping the mode behind an
+        // offscreen editor if navigation could not restore its position.
+        next.cancel()
+        notifyError(t('reader.notReady'))
+      }
+    })
+  }
+  const editExplanationQuestion = async (id: string) => {
+    const current = latestExplanation.current
+    if (!current.active || current.editor || current.sending || current.saving || navigationLock.current) return
+    const excerpt = current.active.excerpts.find(item => item.id === id)
+    if (!excerpt) return
+    const key = current.active.key, owner = ownerSequence.current
+    if (!await revealExplanationQuestion(excerpt.fragments, key, owner)) return
+    const next = latestExplanation.current
+    if (next.active?.key === key && next.active.excerpts.some(item => item.id === id)) next.editQuestion(id)
   }
 
   const pageElements = useReaderPages({ PageComponent: ReaderPage, pdf, snapshot, selection,
@@ -389,13 +438,16 @@ export function Reader(props: ReaderProps) {
     regionPurpose: regionPurpose.current, screenshotPhase, ocrProgress, t,
     onSaveExpired: (occurrence: number) => setSaveFeedback(current => current?.occurrence === occurrence ? null : current),
     onExitNote: () => setMode('text'), onCancelScreenshot: cancelScreenshot, onCancelOcr: cancelOcr,
+    explanation: { sending: explanation.sending, error: explanation.error,
+      review: () => startExplanation(), dismiss: explanation.dismissError },
   }
   const floatingStatuses = [...readerFloatingStatuses(floatingOptions), ...indexing.statuses]
   const activeModeStatus = readerModeStatus(floatingOptions)
   const overlays = readerOverlayModel({
     explanation, annotations, viewport: scrollRoot, documentPath: snapshot?.path, mode, regionPurpose: regionPurpose.current,
     editable, readOnly: !!snapshot?.document.readOnly,
-    getExplanationAnchor: explanationEditorAnchor, getCommentAnchor: commentAnchor, getCommentPosition: commentPosition,
+    getExplanationAnchor: explanationEditorAnchor, onEditExplanationQuestion: id => { void editExplanationQuestion(id) },
+    getCommentAnchor: commentAnchor, getCommentPosition: commentPosition,
     getNoteAnchor: noteAnchor, moveNote: moveNoteCard, moveCommentCard,
     applyComment: () => { void applyComment() }, closeComment: closeCommentEditor,
     applyNote: () => { void applyNote() }, t,

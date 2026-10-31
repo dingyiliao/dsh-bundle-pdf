@@ -109,6 +109,21 @@ test('activity statuses preserve save occurrence while input modes stay separate
   assert.equal(statuses[1].actions?.[0].disabled, false)
 })
 
+test('explanation sends and failures stay in the shared task entry after exiting the mode', () => {
+  let reviewed = 0, dismissed = 0
+  const owner = { sending: true, error: '', review: () => { reviewed++ }, dismiss: () => { dismissed++ } }
+  const progress = readerFloatingStatuses({ ...floatingFixture(), explanationActive: false, explanation: owner })
+  assert.equal(progress[0].id, 'explanation')
+  assert.equal(progress[0].activity, 'progress')
+  const failed = readerFloatingStatuses({ ...floatingFixture(), explanationActive: false,
+    explanation: { ...owner, sending: false, error: 'Could not append the turn' } })
+  assert.equal(failed[0].content, 'Could not append the turn')
+  assert.equal(failed[0].tone, 'error')
+  failed[0].actions?.[0].onClick()
+  failed[0].actions?.[1].onClick()
+  assert.deepEqual([reviewed, dismissed], [1, 1], 'review and dismiss return to the original controller owner')
+})
+
 test('saving and unsaved feedback use progress and neutral semantics', () => {
   const saving = readerFloatingStatuses({ ...floatingFixture(), saveFeedback: { kind: 'saving', durationMs: 0, occurrence: 1 } })
   const unsaved = readerFloatingStatuses({ ...floatingFixture(), saveFeedback: { kind: 'unsaved', durationMs: 0, occurrence: 2 } })

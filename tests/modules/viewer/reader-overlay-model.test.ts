@@ -9,7 +9,8 @@ function fixture() {
     key: 'explain-1', active: { excerpts: [{ id: 'first', question: 'why' }] },
     editor: null, sending: false, saving: false,
     imageAvailability: { status: 'available', limitation: 'visual model' }, error: '',
-    beginRegion() { calls.push('region') }, async submit() { calls.push('submit') },
+    beginRegion() { calls.push('region') }, selectText() { calls.push('text') },
+    removeQuestion(id: string) { calls.push(`remove-question:${id}`) }, async submit() { calls.push('submit') },
     cancel() { calls.push('cancel') }, saveQuestion() { calls.push('save') },
     cancelEditor() { calls.push('cancel-editor') }, deleteQuestion() { calls.push('delete-question') },
     setEditor() {},
@@ -25,7 +26,7 @@ function fixture() {
   } as unknown as ReaderOverlayModelOptions['annotations']
   const options: ReaderOverlayModelOptions = {
     explanation, annotations, viewport: null, mode: 'text', regionPurpose: null,
-    editable: true, readOnly: false, getExplanationAnchor: () => null,
+    editable: true, readOnly: false, getExplanationAnchor: () => null, onEditExplanationQuestion: id => { calls.push(`edit-explanation:${id}`) },
     getCommentAnchor: () => null, getCommentPosition: () => null, getNoteAnchor: () => null,
     moveCommentCard: (_delta, position) => { calls.push(`move-comment:${position.left},${position.top}`); return true },
     applyComment: () => calls.push('apply-comment'),
@@ -38,12 +39,16 @@ function fixture() {
 test('explanation overlay exposes live count, image affordance and submit action', async () => {
   const { options, calls } = fixture()
   const model = readerOverlayModel(options)
-  assert.equal(model.explanationStatus?.count, 1)
+  assert.equal(model.explanationStatus?.excerpts.length, 1)
   assert.equal(model.explanationStatus?.imageAvailable, true)
   assert.equal(model.explanationStatus?.imageReason, 'visual model')
   model.explanationStatus?.onSend()
+  model.explanationStatus?.onSelectText()
+  model.explanationStatus?.onSelectArea()
+  model.explanationStatus?.onEditQuestion('first')
+  model.explanationStatus?.onRemoveQuestion('first')
   await Promise.resolve()
-  assert.deepEqual(calls, ['submit'])
+  assert.deepEqual(calls, ['submit', 'text', 'region', 'edit-explanation:first', 'remove-question:first'])
   assert.equal(model.question, undefined)
   assert.equal(model.comment, undefined)
   assert.equal(model.note, undefined)

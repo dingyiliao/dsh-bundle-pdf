@@ -1,10 +1,11 @@
 import React, { useId, useLayoutEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { readingViewportBounds } from '../rendering/pdf-viewport-geometry.js'
 import { MIN_NOTE_CARD_HEIGHT, MIN_NOTE_CARD_WIDTH, readNoteCardSize, saveNoteCardSize,
   type NoteCardSize } from '../model/note-card-size.js'
 
 export interface AnnotationCommentCardProps {
-  /** The scrollable PDF reading column, excluding both docked tool and reading rails. */
+  /** Full PDF scrollport; its measured padding reserves space for the floating rails. */
   viewport: HTMLElement | null
   /** Current annotation geometry in window coordinates. */
   getAnchor(): DOMRect | null
@@ -88,7 +89,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
     const update = () => {
       frame = 0
       const anchor = anchorRef.current()
-      const bounds = viewport.getBoundingClientRect()
+      const bounds = readingViewportBounds(viewport)
       const rootBounds = readerRoot.getBoundingClientRect()
       if (!anchor) {
         // Zoom briefly unbinds and rebinds a PageView. Keep the old card in
@@ -295,7 +296,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const resize = resizeRef.current
     if (resize?.pointerId === event.pointerId) {
-      const bounds = viewport?.getBoundingClientRect()
+      const bounds = viewport && readingViewportBounds(viewport)
       const card = cardRef.current?.getBoundingClientRect()
       const maxWidth = bounds && card ? Math.max(MIN_NOTE_CARD_WIDTH, bounds.right - card.left - EDGE) : Infinity
       const maxHeight = bounds && card ? Math.max(MIN_NOTE_CARD_HEIGHT, bounds.bottom - card.top - EDGE) : Infinity
@@ -349,7 +350,7 @@ export function AnnotationCommentCard({ viewport, getAnchor, getPosition, label,
       event.preventDefault()
       event.stopPropagation()
       const card = cardRef.current?.getBoundingClientRect()
-      const bounds = viewport?.getBoundingClientRect()
+      const bounds = viewport && readingViewportBounds(viewport)
       if (!card || !bounds) return
       sizeRef.current = { width: clamp((sizeRef.current?.width ?? card.width) + delta[0]!, MIN_NOTE_CARD_WIDTH,
         Math.max(MIN_NOTE_CARD_WIDTH, bounds.right - card.left - EDGE)),
