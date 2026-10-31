@@ -2488,7 +2488,33 @@ it('requires a question before saving an explanation passage, then edits or remo
     await expect.poll(() => pendingPage.inputValue()).toBe('2')
     await reader.locator('[data-pdf-page="2"] canvas[data-pdf-raster-ready="true"]').first()
       .waitFor({ state: 'visible', timeout: 20_000 })
+    await expect.poll(() => pendingPage.isEnabled()).toBe(true)
+    await expect.poll(() => mainToolbar.getByRole('button', { name: 'Start explanation mode' }).isEnabled()).toBe(true)
     const awayFromPending = await reader.locator('.dsh-pdf-scroll').evaluate(root => root.scrollTop)
+    // Page steps remain enabled during navigation. A second real user action
+    // can supersede the automatic return to the paused question's page. Keep
+    // that race deterministic by activating the step on the navigation state
+    // transition, without replacing jump/reveal or changing any timeout.
+    await mainToolbar.evaluate(element => {
+      const reader = element.closest('.dsh-pdf-reader')!
+      const input = reader.querySelector<HTMLInputElement>('.dsh-pdf-page-input')!
+      const previous = reader.querySelector<HTMLButtonElement>('.dsh-pdf-page-step')!
+      const observer = new MutationObserver(() => {
+        if (!input.disabled) return
+        observer.disconnect()
+        if (previous.disabled) throw new Error('A page step must remain available during navigation')
+        previous.click()
+      })
+      observer.observe(input, { attributes: true, attributeFilter: ['disabled'] })
+      element.querySelector<HTMLButtonElement>('.dsh-pdf-tool-explain')!.click()
+    })
+    await status.waitFor({ state: 'hidden' })
+    await editor.waitFor({ state: 'hidden' })
+    await reader.getByText('The page is not ready yet. Please retry.', { exact: true }).waitFor({ state: 'visible' })
+    // Failure preserves the uncounted question and unlocks ordinary reading.
+    // Explicit mode entry can then resume it after the newer navigation ends.
+    await expect.poll(() => pendingPage.isEnabled()).toBe(true)
+    await expect.poll(() => mainToolbar.getByRole('button', { name: 'Start explanation mode' }).isEnabled()).toBe(true)
     await mainToolbar.getByRole('button', { name: 'Start explanation mode' }).click()
     await editor.waitFor({ state: 'visible' })
     await expect.poll(() => passageQuestion.evaluate(element => document.activeElement === element)).toBe(true)

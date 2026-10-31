@@ -145,6 +145,72 @@ test('a new selection cannot silently replace a question that has not been saved
   })
 })
 
+test('switching from an explanation image region back to text cancels capture intent and keeps saved materials', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    let mode: 'text' | 'region' | 'note' = 'text', cleared = 0
+    await render({ ...options, pdf: { numPages: 3 } as NativeDocument,
+      regionEvidence: { async prepare() { throw new Error('switching input mode must not capture an image') } },
+      setMode(value) { mode = typeof value === 'function' ? value(mode) : value },
+      clearSelection() { cleared++ } })
+    await act(async () => { state().selectText() })
+    assert.equal(cleared, 0, 'inactive explanation controls cannot affect ordinary reading selections')
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Saved question' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    const saved = state().active!.excerpts[0]
+    await act(async () => { state().beginRegion() })
+    assert.equal(mode, 'region')
+    assert.equal(options.regionPurpose.current, 'explanation')
+    await act(async () => { state().offerTextSelection({ ...selection, revision: selection.revision + 1 }) })
+    assert.equal(state().error, 'reader.explain.sourceChanged')
+    cleared = 0
+    await act(async () => { state().selectText() })
+    assert.equal(mode, 'text')
+    assert.equal(options.regionPurpose.current, null)
+    assert.equal(cleared, 1)
+    assert.equal(state().error, '')
+    assert.equal(state().active?.excerpts[0], saved)
+    assert.equal(state().selectRegion(2, { rect: [0, 0, 20, 20], quadPoints: [] }), false,
+      'a late rectangle completion cannot create an image question after text mode is selected')
+
+    await act(async () => { state().offerTextSelection(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Keep this unsaved question' } : editor) })
+    const pending = state().editor
+    cleared = 0
+    await act(async () => { state().selectText() })
+    assert.equal(state().editor, pending)
+    assert.equal(cleared, 0, 'mode changes cannot discard an unfinished question')
+  })
+})
+
+test('editing another material cannot overwrite an unfinished new or existing question', async () => {
+  await withExplanation(async ({ state }) => {
+    await act(async () => { state().start(selection) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'First saved question' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    await act(async () => { state().offerTextSelection({ ...selection, text: 'Second passage' }) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Second saved question' } : editor) })
+    await act(async () => { await state().saveQuestion() })
+    const [first, second] = state().active!.excerpts
+    await act(async () => { state().editQuestion(first.id) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Unsaved revision of the first question' } : editor) })
+    const pendingEdit = state().editor
+    await act(async () => { state().editQuestion(second.id) })
+    assert.equal(state().editor, pendingEdit)
+    assert.equal(state().error, 'reader.explain.finishQuestion')
+    assert.deepEqual(state().active?.excerpts.map(item => item.question), ['First saved question', 'Second saved question'])
+
+    await act(async () => { state().cancelEditor() })
+    await act(async () => { state().offerTextSelection({ ...selection, text: 'An unfinished third passage' }) })
+    await act(async () => { state().setEditor(editor => editor ? { ...editor, question: 'Unsaved third question' } : editor) })
+    const pendingNew = state().editor
+    await act(async () => { state().editQuestion(first.id) })
+    assert.equal(state().editor, pendingNew)
+    assert.equal(state().error, 'reader.explain.finishQuestion')
+    assert.equal(state().active?.excerpts.length, 2)
+  })
+})
+
 test('paused materials retain their exact source and cannot be rebound when reopened after a revision change', async () => {
   await withExplanation(async ({ state, options, render, prompts }) => {
     let current = snapshot

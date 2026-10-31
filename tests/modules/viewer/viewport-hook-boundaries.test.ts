@@ -368,6 +368,63 @@ test('a standalone Page keeps its local pointer preview and settles an unchanged
   })
 })
 
+test('a delayed standalone zoom commit rebinds its pointer anchor to the replacement page DOM', async () => {
+  await withDom(async (dom, viewport, render, frames) => {
+    viewport.replaceChildren(dom.document.getElementById('mount')!)
+    const rect = (left: number, top: number, width: number, height: number) => ({ left, top, right: left + width,
+      bottom: top + height, width, height, x: left, y: top, toJSON() {} })
+    viewport.getBoundingClientRect = () => rect(0, 0, 500, 500)
+    Object.defineProperties(viewport, { clientWidth: { value: 500 }, clientHeight: { value: 500 } })
+    let commitScale!: (scale: number) => void
+    const requested: number[] = []
+    function Reader() {
+      const [scale, setScale] = useState(1)
+      commitScale = setScale
+      usePdfWheelZoom({ root: viewport, enabled: true, ownerKey: 'page', views: new Map(), getScale: () => scale,
+        onScale: value => { requested.push(value) } })
+      // A page renderer may replace its element before the new PageView's
+      // passive registration. The gesture must use this same-page DOM now,
+      // rather than discard its anchor because the captured node detached.
+      return React.createElement('div', { 'data-page-number': '1' },
+        React.createElement('div', { key: scale, 'data-pdf-page': '1', ref: (element: HTMLDivElement | null) => {
+          if (!element) return
+          Object.defineProperties(element, { offsetWidth: { value: 100 * scale }, offsetHeight: { value: 100 * scale } })
+          element.getBoundingClientRect = () => rect(20 - viewport.scrollLeft, 30 - viewport.scrollTop, 100 * scale, 100 * scale)
+        } }))
+    }
+    await render(React.createElement(Reader))
+    const before = viewport.querySelector<HTMLElement>('[data-pdf-page="1"]')!
+    const pointer = [50, 70] as const
+    const fraction = [(pointer[0] - before.getBoundingClientRect().left) / before.offsetWidth,
+      (pointer[1] - before.getBoundingClientRect().top) / before.offsetHeight]
+    await act(async () => {
+      before.dispatchEvent(new dom.WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true,
+        deltaY: -Math.log(2) / .002, clientX: pointer[0], clientY: pointer[1] }))
+      for (const [id, callback] of [...frames]) { frames.delete(id); callback(16) }
+      viewport.dispatchEvent(new dom.MouseEvent('pointerdown', { bubbles: true }))
+    })
+    assert.deepEqual(requested, [2])
+    assert.equal(before.style.transform, 'scale(2)', 'retain the last painted preview while React has not committed')
+    assert.equal(viewport.style.getPropertyValue('overflow-anchor'), 'none')
+    assert.ok(frames.size > 0, 'restore remains queued while the scale commit is delayed')
+    await act(async () => { commitScale(requested[0]) })
+    const after = viewport.querySelector<HTMLElement>('[data-pdf-page="1"]')!
+    assert.notEqual(after, before)
+    assert.equal(before.isConnected, false, 'React replaced the captured page during the scale commit')
+    const bounds = after.getBoundingClientRect()
+    assert.ok(Math.abs(bounds.left + fraction[0] * bounds.width - pointer[0]) <= 1)
+    assert.ok(Math.abs(bounds.top + fraction[1] * bounds.height - pointer[1]) <= 1)
+    assert.equal(before.style.transform, '')
+    assert.equal(after.style.transform, '')
+    assert.equal(frames.size, 0, 'accepting the replacement cancels the fallback retry')
+    assert.equal(wheelZoomReflow(viewport), undefined)
+    assert.equal(viewport.style.getPropertyValue('overflow-anchor'), '')
+    const restored = [viewport.scrollLeft, viewport.scrollTop]
+    viewport.dispatchEvent(new dom.Event('pdfviewchange'))
+    assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], restored, 'a late view notification cannot restore the anchor twice')
+  })
+})
+
 test('wheel zoom gives up a stale page layout after bounded restore retries and releases its preview', async () => {
   await withDom(async (dom, viewport, render, frames) => {
     const page = viewport.querySelector<HTMLElement>('[data-pdf-page]')!
