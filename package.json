@@ -1,6 +1,6 @@
 {
   "name": "@dylanl1/dsh-plugin-pdf",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
   "license": "MIT",
