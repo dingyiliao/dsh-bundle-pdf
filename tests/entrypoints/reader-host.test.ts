@@ -158,10 +158,10 @@ function infoRequest(payload: unknown, init: RequestInit = {}) {
 }
 
 const indexingWorker = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
-async function waitForIndexing(condition: () => boolean): Promise<void> {
+async function waitForIndexing(condition: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5000
-  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
-  assert.ok(condition(), 'background indexing did not reach its expected state')
+  while (!(await condition()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.ok(await condition(), 'background indexing did not reach its expected state')
 }
 function indexingEngine(embed: EmbeddingEngine['embed']): EmbeddingEngine {
   return { descriptor: { id: 'fixture', name: 'Fixture', version: '1', execution: 'local' },
@@ -205,6 +205,8 @@ test('document index choices survive global edits and wait for explicit processi
   runtime.ctx.pdfNative.executable = indexingWorker
   await apply(runtime.ctx, runtime.config, assets)
   const calls: AbortSignal[] = []
+  let finishSecond!: () => void
+  const secondGate = new Promise<void>(resolve => { finishSecond = resolve })
   ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register(indexingEngine(async request => {
     assert.equal(request.purpose, 'document', 'background preparation must never invent a query')
     calls.push(request.signal)
@@ -213,6 +215,7 @@ test('document index choices survive global edits and wait for explicit processi
       request.signal.addEventListener('abort', abort, { once: true })
       if (request.signal.aborted) abort()
     })
+    if (calls.length === 2) await secondGate
     return request.texts.map(() => [1, 0])
   }))
   const changeEngine = (engine: string) => {
@@ -224,9 +227,10 @@ test('document index choices survive global edits and wait for explicit processi
     const response = await runtime.routes.get('/api/pdf.indexing')!.fetch(infoRequest({
       type: 'client-request', method: 'pdf.indexing', rpcId: 'policy-control', payload,
     }))
-    const body = await response.json() as { result: { ok: boolean; value: { documents: Array<{
+    const body = await response.json() as { result: { ok: boolean; value: {
+      tasks: Array<{ documentId: string; state: string }>; documents: Array<{
       documentId: string; revision: number; pending: boolean; policy: { embeddingEngine: string; ocrEngine: string;
-        imageEngine: string; indexScanPages: boolean; indexImageDescriptions: boolean }
+        imageEngine: string; indexScanPages: boolean; indexImageDescriptions: boolean }; activePolicy: { embeddingEngine: string }
     }> } } }
     assert.equal(body.result.ok, true)
     return body.result.value
@@ -253,13 +257,24 @@ test('document index choices survive global edits and wait for explicit processi
     await waitForIndexing(() => calls[0]!.aborted)
     await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 2)
+    const building = await control({ action: 'status', sessionId })
+    assert.equal(building.tasks.find(task => task.documentId === opened.documentId)!.state, 'running')
+    assert.equal(building.documents[0]!.pending, true, 'embedding admission is not a ready index')
+    assert.equal(building.documents[0]!.activePolicy.embeddingEngine, 'none')
+    finishSecond()
+    await waitForIndexing(async () => {
+      const ready = await control({ action: 'status', sessionId })
+      const document = ready.documents.find(document => document.documentId === opened.documentId)!
+      return ready.tasks.some(task => task.documentId === opened.documentId && task.state === 'ready')
+        && !document.pending && document.activePolicy.embeddingEngine === 'fixture'
+    })
     const reset = await runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
       type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'reset-prefetch', payload: {},
     }))
     const body = await reset.json() as { result: { ok: boolean } }
     assert.equal(body.result.ok, true)
     await waitForIndexing(() => calls.length === 3)
-  } finally { await runtime.disposeEffects() }
+  } finally { finishSecond(); await runtime.disposeEffects() }
   assert.equal(runtime.configListeners.size, 0)
 })
 
