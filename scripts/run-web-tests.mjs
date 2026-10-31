@@ -53,7 +53,7 @@ async function stopTree(child) {
   }
 }
 
-async function run(label, argv, logfile) {
+async function run(label, argv, logfile, reportPath) {
   const log = createWriteStream(logfile)
   const child = spawn(process.execPath, [vitest, ...argv], { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
   let tail = '', stopped
@@ -74,7 +74,19 @@ async function run(label, argv, logfile) {
   try {
     const code = await new Promise((done, fail) => { child.once('error', fail); child.once('close', done) })
     await stopped
-    if (code !== 0 || stopped) throw new Error(`${label} failed (exit ${code}); ${logfile}\n${tail}`)
+    if (code !== 0 || stopped) {
+      if (reportPath) {
+        try {
+          const report = JSON.parse(await readFile(reportPath, 'utf8'))
+          const details = (report.testResults ?? []).flatMap(file => (file.assertionResults ?? [])
+            .filter(test => test.status === 'failed')
+            .flatMap(test => (test.failureMessages ?? []).filter(message => typeof message === 'string')
+              .map(message => `${test.fullName ?? test.title ?? label}\n${message}`))).join('\n\n').slice(0, 16_384)
+          if (details) console.error(`Vitest failure details (${reportPath}):\n${details}`)
+        } catch { /* A missing or incomplete report cannot replace the original process failure. */ }
+      }
+      throw new Error(`${label} failed (exit ${code}); ${logfile}\n${tail}`)
+    }
   } finally {
     clearTimeout(timer)
     process.removeListener('SIGINT', interrupt)
@@ -106,7 +118,7 @@ if (listOnly) {
     // spaces. Retain the literal variant for a title containing those symbols.
     const patterns = [...new Set([test.name, test.name.replaceAll(' > ', ' ')])].map(escapeRegex)
     await run(test.name, ['run', '--config', config, '--allowOnly=false', test.file,
-      '--testNamePattern', `^(?:${patterns.join('|')})$`, '--reporter=json', `--outputFile=${reportPath}`], `${prefix}.log`)
+      '--testNamePattern', `^(?:${patterns.join('|')})$`, '--reporter=json', `--outputFile=${reportPath}`], `${prefix}.log`, reportPath)
     const report = JSON.parse(await readFile(reportPath, 'utf8'))
     const executed = (report.testResults ?? []).flatMap(file => (file.assertionResults ?? [])
       .filter(result => !['pending', 'skipped', 'todo'].includes(result.status)).map(result => ({ file: file.name, ...result })))

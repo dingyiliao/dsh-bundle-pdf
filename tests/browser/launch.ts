@@ -4,8 +4,9 @@ import { attachPdfBrowserCoverage } from '../browser-coverage.ts'
 
 /** Use the same browser selection and coverage lifecycle for both Web suites. */
 export async function launchPdfBrowser(): Promise<Browser> {
-  if (process.env.PDF_BENCH_CHROMIUM) {
-    return attachPdfBrowserCoverage(await chromium.launch({ executablePath: process.env.PDF_BENCH_CHROMIUM }))
+  const executablePath = process.env.DSH_PDF_BROWSER_EXECUTABLE ?? process.env.PDF_BENCH_CHROMIUM
+  if (executablePath) {
+    return attachPdfBrowserCoverage(await chromium.launch({ executablePath }))
   }
   if (existsSync(chromium.executablePath())) return attachPdfBrowserCoverage(await chromium.launch())
   try { return attachPdfBrowserCoverage(await chromium.launch({ channel: 'chrome' })) }

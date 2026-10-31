@@ -112,7 +112,7 @@ await run('browser Worker smoke', [
 await verifyFingerprint()
 await run('Web PDF interaction tests with Chromium V8 coverage', [
   'scripts/run-web-tests.mjs',
-], { DSH_PDF_BROWSER_COVERAGE_DIR: browserDirectory, PDF_BENCH_CHROMIUM: browserExecutable })
+], { DSH_PDF_BROWSER_COVERAGE_DIR: browserDirectory })
 await verifyFingerprint()
 await run('map browser V8 coverage to project source', ['scripts/report-browser-coverage.mjs'], {
   DSH_PDF_BROWSER_COVERAGE_DIR: browserDirectory, DSH_PDF_BROWSER_COVERAGE_OUTPUT: browserLcov,
