@@ -19,6 +19,21 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 
 ![Multi-step navigation and back history](docs/screenshots/04-multilevel-back-history.png)
 
+<details>
+<summary>More screenshots and demos</summary>
+
+![Bookmarks and outline](docs/screenshots/02-bookmarks-and-outline.png)
+
+![Notes and annotations](docs/screenshots/03-notes-and-annotations.png)
+
+![Model tool workflow](docs/screenshots/05-model-tool-workflow.png)
+
+- [Reading and AI understanding demo](docs/demos/01-reading-and-ai-understanding.mp4)
+- [Agent tool collaboration demo](docs/demos/02-agent-tool-collaboration.mp4)
+- [Reproduction steps and engine requirements](docs/DEMOS.md)
+
+</details>
+
 ## Install
 
 Validated with DSH `0.2.1-rc.5`; other supported versions are declared in [package.json](package.json).
