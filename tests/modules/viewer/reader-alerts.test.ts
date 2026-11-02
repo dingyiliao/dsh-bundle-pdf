@@ -7,11 +7,9 @@ import { ReaderAlerts, type ReaderAlertsProps } from '../../../src/modules/viewe
 
 function props(overrides: Partial<ReaderAlertsProps> = {}): ReaderAlertsProps {
   return {
-    snapshot: null, error: '', positionNotice: '', editable: true, saveAsOpen: false,
-    savePath: '/book.pdf', target: null, targetChecking: false, overwrite: false,
-    busy: false, reloadConfirm: false, setError() {}, setPositionNotice() {},
-    setSavePath() {}, setOverwrite() {}, setSaveAsOpen() {}, setReloadConfirm() {},
-    save() {}, beginSaveAs() {}, reload() {}, t: key => key,
+    snapshot: null, error: '', positionNotice: '', editable: true,
+    reloadConfirm: false, setError() {}, setPositionNotice() {}, setReloadConfirm() {},
+    beginSaveAs() {}, reload() {}, t: key => key,
     ...overrides,
   }
 }
@@ -32,13 +30,42 @@ test('reader alerts do not label an editable AcroForm as read-only', () => {
   assert.doesNotMatch(html, /reader\.signedReadOnly|reader\.encryptedReadOnly/)
 })
 
-test('reader alerts keep Save As submit disabled until the selected target is checked and confirmed', () => {
-  const base = props({ saveAsOpen: true, target: { path: '/book.pdf', version: 'v1' } })
-  const unchecked = renderToStaticMarkup(React.createElement(ReaderAlerts, base))
-  assert.match(unchecked, /reader\.targetExists/)
-  assert.match(unchecked, /type="submit" disabled=""/)
-  const confirmed = renderToStaticMarkup(React.createElement(ReaderAlerts, { ...base, overwrite: true }))
-  assert.doesNotMatch(confirmed, /type="submit" disabled=""/)
+function saveAs(overrides: Partial<NonNullable<ReaderAlertsProps['saveAs']>> = {}): NonNullable<ReaderAlertsProps['saveAs']> {
+  return { name: 'book.pdf', directory: '/books', pickerAvailable: true, picking: false, busy: false,
+    targetChecking: false, target: null, replaceConfirm: false, error: '',
+    onNameChange() {}, onDirectoryChange() {}, onChooseDirectory() {}, onSubmit() {}, onCancel() {}, onBack() {},
+    t: key => key, ...overrides }
+}
+
+test('reader alerts present the Save As sheet with separate filename and location and require a checked target', () => {
+  const unchecked = renderToStaticMarkup(React.createElement(ReaderAlerts, props({ saveAs: saveAs() })))
+  assert.match(unchecked, /class="dsh-pdf-save-as dsh-pdf-glass" role="dialog" aria-modal="true"/)
+  assert.match(unchecked, /reader\.saveAsTitle/)
+  assert.match(unchecked, /reader\.saveName/)
+  assert.match(unchecked, /value="book\.pdf"/)
+  assert.match(unchecked, /reader\.saveLocation/)
+  assert.match(unchecked, /reader\.changeSaveLocation/)
+  assert.match(unchecked, /type="submit"[^>]*disabled=""/)
+  assert.doesNotMatch(unchecked, /type="checkbox"|reader\.savePath/)
+  const checked = renderToStaticMarkup(React.createElement(ReaderAlerts,
+    props({ saveAs: saveAs({ target: { path: '/books/book.pdf', version: null } }) })))
+  assert.match(checked, /reader\.targetNew/)
+  assert.doesNotMatch(checked, /type="submit"[^>]*disabled=""/)
+  const replacing = renderToStaticMarkup(React.createElement(ReaderAlerts,
+    props({ saveAs: saveAs({ target: { path: '/books/book.pdf', version: 'v1' }, replaceConfirm: true }) })))
+  assert.match(replacing, /reader\.replaceTitle/)
+  assert.match(replacing, /reader\.replaceAndSave/)
+  assert.match(replacing, /reader\.saveBack/)
+  assert.doesNotMatch(replacing, /reader\.saveName|type="checkbox"/)
+})
+
+test('Save As feedback is announced only in its modal while document notices remain separate', () => {
+  const html = renderToStaticMarkup(React.createElement(ReaderAlerts,
+    props({ error: 'target changed', positionNotice: 'position unavailable', saveAs: saveAs({ error: 'target changed' }) })))
+  assert.equal((html.match(/role="alert"/g) ?? []).length, 1)
+  assert.equal((html.match(/target changed/g) ?? []).length, 1)
+  assert.match(html, /position unavailable/)
+  assert.doesNotMatch(html, /class="dsh-pdf-error"/)
 })
 
 test('reader alerts preserve separate error and position announcements', () => {

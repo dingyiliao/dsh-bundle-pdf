@@ -25,8 +25,8 @@ export type ReaderProps = Pick<DocumentPreviewProps, 'resourceAddress' | 'scroll
   settings: PdfSettings
   /** Persist the translation target for the next selection in this profile. */
   rememberTranslationTargetLanguage?: (language: string) => Promise<boolean>
-  /** Desktop-only native Save As chooser; the browser keeps the in-page fallback. */
-  pickSavePath?: (defaultPath: string) => Promise<string | null>
+  /** The official Desktop directory chooser; Save As still confirms the filename and replacement. */
+  pickSaveDirectory?: () => Promise<string | null>
   /** Shell-specific resource address creation lives outside the Viewer. */
   addressForPath?: (sessionId: string, path: string) => string
   /** Only the Session which owns the resource may publish its active reader. */

@@ -7,3 +7,6 @@ export { retrievalPageText } from './paragraphs.js'
 export type { RetrievalChunk } from './text.js'
 export { createBm25Index, searchBm25, rankVectors, reciprocalRankFusion, hybridCandidates } from './ranking.js'
 export { projectPageContent } from './page-content.js'
+
+export { measureIndexOperation, recordIndexPerformance, withIndexPerformance } from './performance.js'
+export type { IndexPerformanceMetric } from './performance.js'

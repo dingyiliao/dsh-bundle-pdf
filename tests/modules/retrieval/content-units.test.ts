@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readIndexPage } from '../../../src/modules/retrieval/stored-index.ts'
 import test from 'node:test'
 import { digest, pageCacheKey, RETRIEVAL_EXTRACTION_VERSION, retrievalCacheKey, validateRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
 import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
@@ -11,13 +12,14 @@ const unit = (id: string, kind: RetrievalPageUnit['kind'], text: string, extra: 
 const native = (id: string, text: string, startUtf16 = 0, extra: Partial<RetrievalPageUnit> = {}) =>
   unit(id, 'native-text', text, { nativeRange: { startUtf16, endUtf16: startUtf16 + text.length }, ...extra })
 function fixture(pages: RetrievalPage[], options: { identity?: string; embedding?: boolean; pagesPerStep?: number } = {}) {
-  const state = { identity: options.identity ?? '', reads: 0, documentEmbeddings: 0 }
+  const state = { identity: options.identity ?? '', sourceDigest: 'same-original', reads: 0, documentEmbeddings: 0 }
   const data = new Map<string, unknown>()
   const ports: RetrievalPorts = {
-    documents: { snapshot: (_session, id) => ({ id, path: '/content-units.pdf', sourceDigest: 'same-original',
+    documents: { snapshot: (_session, id) => ({ id, path: '/content-units.pdf', sourceDigest: state.sourceDigest,
       contentVersion: 'original', pageCount: pages.length }) },
     pages: { identity: () => state.identity, async read(_session, _id, page) { state.reads++; return structuredClone(pages[page - 1]!) } },
-    cache: { async get(key) { return structuredClone(data.get(key)) }, async set(key, value) { data.set(key, structuredClone(value)) } },
+    cache: { async get(key) { return structuredClone(data.get(key)) }, async set(key, value) { data.set(key, structuredClone(value)) },
+      async clear() { data.clear() } },
     ...(options.embedding ? { embedding: { select: () => ({ fingerprint: 'embedding-config', dimensions: 2, maxBatchSize: 8,
       async embed(texts: string[], purpose: 'query' | 'document') {
         if (purpose === 'document') state.documentEmbeddings += texts.length
@@ -28,6 +30,10 @@ function fixture(pages: RetrievalPage[], options: { identity?: string; embedding
   return { state, data, ports, service: createRetrievalService(ports) }
 }
 const search = { documentId: 'doc', query: 'needle', mode: 'lexical' as const, topK: 20 }
+function assertNoSavedContent(data: Map<string, unknown>) {
+  assert.ok([...data.values()].every(value => !value || typeof value !== 'object'
+    || !('text' in value || 'content' in value || 'encoding' in value)), 'only metadata may be committed before source authority fails')
+}
 
 function deferred() {
   let resolve!: () => void
@@ -184,7 +190,7 @@ test('pipeline changes during a non-cooperative read reject late content before 
       f.state.identity = 'b'
       gate.resolve()
       await rejected
-      assert.equal(f.data.size, 0)
+      assertNoSavedContent(f.data)
       assert.equal(f.state.documentEmbeddings, 0)
     } finally { gate.resolve(); await f.service.dispose() }
   }
@@ -264,47 +270,62 @@ test('sessions with different extraction policies keep separate indexes while re
   } finally { await f.service.dispose() }
 })
 
-test('optional extraction failure preserves ranked native content without caching the partial page or inventing continuation', async () => {
+test('partial representations are checkpointed and normal resume repairs the missing layer without replacing native vectors', async () => {
   const pages: RetrievalPage[] = [{ text: 'needle native remains usable', source: 'pdf-text',
     units: [native('native', 'needle native remains usable')], failure: { code: 'pdf/index-image-unavailable' },
-    warnings: ['Image description failed; rebuild to retry.'] }]
+    warnings: ['Image description failed; resume to retry.'] }]
   const f = fixture(pages, { identity: 'partial-pipeline', embedding: true })
   try {
-    const result = await f.service.search('session', search)
+    const result = await f.service.search('session', { ...search, mode: 'semantic' })
     assert.equal(result.status, 'incomplete')
     assert.equal(result.chunks[0]!.text, pages[0]!.text)
     assert.equal(result.nextCursor, undefined)
     assert.equal(result.coverage.indexedPages, 1)
     assert.deepEqual(result.coverage.failedPages, [{ page: 1, attempts: 1, code: 'pdf/index-image-unavailable' }])
-    assert.equal(f.data.size, 0)
-    const again = await f.service.search('session', search)
-    assert.equal(again.status, 'incomplete'); assert.equal(again.coverage.totalChunks, 1); assert.equal(f.state.reads, 1)
-    pages[0] = { text: 'needle native refreshed', source: 'pdf-text', units: [native('native-new', 'needle native refreshed')] }
-    await f.service.prepare('session', { documentId: 'doc', rebuild: true })
-    const refreshed = await f.service.search('session', search)
-    assert.equal(refreshed.status, 'complete'); assert.equal(refreshed.chunks[0]!.text, pages[0].text)
+    assert.equal(f.data.has(pageCacheKey('/content-units.pdf', 'same-original', 1, 'partial-pipeline')), false,
+      'the general page cache must not claim an incomplete representation is complete')
+    const head = [...f.data.values()].find(value => value && typeof value === 'object' && 'pending' in value) as { key: string; pending: { id: string } }
+    const checkpoint = await readIndexPage({ get: async key => f.data.get(key), set: async () => {} }, head.key, head.pending.id, 1, 2, 1200)
+    assert.equal(checkpoint!.record.content.text, pages[0]!.text)
+    assert.equal(checkpoint!.record.failure!.code, 'pdf/index-image-unavailable')
+    const again = await f.service.search('session', { ...search, mode: 'semantic' })
+    assert.equal(again.status, 'incomplete'); assert.equal(again.coverage.totalChunks, 1)
+    assert.equal(f.state.documentEmbeddings, 1, 'retrying an optional layer does not encode unchanged native text again')
+    const beforeRepair = f.state.reads
+    pages[0] = { text: 'needle native remains usable', source: 'pdf-text',
+      units: [native('native', 'needle native remains usable'), unit('figure', 'image-description', 'needle repaired image insight')] }
+    await f.service.prepare('session', { documentId: 'doc' })
+    const refreshed = await f.service.search('session', { ...search, mode: 'semantic' })
+    assert.equal(refreshed.status, 'complete'); assert.equal(refreshed.indexGeneration, result.indexGeneration)
+    assert.equal(refreshed.coverage.totalChunks, 2)
+    assert.equal(refreshed.chunks.find(chunk => chunk.source === 'pdf-text')!.id, result.chunks[0]!.id)
+    assert.equal(f.state.documentEmbeddings, 2, 'only the newly available image description is encoded')
     assert.deepEqual(refreshed.coverage.failedPages, [])
-    assert.equal(f.state.reads, 2)
+    assert.equal(f.state.reads, beforeRepair + 1)
     assert.ok(f.data.has(pageCacheKey('/content-units.pdf', 'same-original', 1, 'partial-pipeline')))
   } finally { await f.service.dispose() }
 })
 
-test('background preparation reports partial content as incomplete and an explicit rebuild retries it once', async () => {
+test('a failed background preparation resumes its partial checkpoint after service recreation', async () => {
   const pages: RetrievalPage[] = [{ text: 'needle native', source: 'pdf-text', failure: { code: 'pdf/index-image-unavailable' } }]
   const f = fixture(pages, { embedding: true })
   try {
     await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-incomplete' })
-    const result = await f.service.search('session', { ...search, mode: 'semantic' })
-    assert.equal(result.status, 'incomplete'); assert.equal(result.chunks.length, 1); assert.equal(result.nextCursor, undefined)
-    assert.equal(f.state.reads, 1)
+    const reads = f.state.reads, embeddings = f.state.documentEmbeddings
+    assert.ok(reads >= 1 && reads <= 2, 'a single preparation has a bounded optional-layer retry')
+    await f.service.dispose()
     pages[0] = { text: 'needle native', source: 'pdf-text' }
-    await f.service.prepare('session', { documentId: 'doc', rebuild: true })
-    assert.equal(f.state.reads, 2)
-    assert.equal((await f.service.search('session', { ...search, mode: 'semantic' })).status, 'complete')
+    const restored = createRetrievalService(f.ports)
+    try {
+      await restored.prepare('session', { documentId: 'doc' })
+      assert.equal(f.state.reads, reads + 1)
+      assert.equal(f.state.documentEmbeddings, embeddings, 'the saved native vector survives the failed attempt and restart')
+      assert.equal((await restored.search('session', { ...search, mode: 'semantic' })).status, 'complete')
+    } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
 })
 
-test('manual source rebuild expires lexical indexes and all embedding configurations but preserves other source/policy indexes', async () => {
+test('structure rebuild reuses verified representations while source changes and explicit cache clear force fresh work', async () => {
   const f = fixture([{ text: 'needle original', source: 'pdf-text' }], { identity: 'policy-a', embedding: true })
   const originalRead = f.ports.pages.read
   let text = 'needle original'
@@ -319,37 +340,51 @@ test('manual source rebuild expires lexical indexes and all embedding configurat
     const semanticB = await f.service.search('session', { ...search, mode: 'semantic' })
     f.state.identity = 'policy-b'
     const otherPolicy = await f.service.search('session', search)
-    f.state.identity = 'policy-a'; text = 'needle refreshed'
-    await f.service.prepare('session', { documentId: 'doc', rebuild: true })
-    const freshLexical = await f.service.search('session', search)
-    assert.notEqual(freshLexical.indexGeneration, lexical.indexGeneration)
-    assert.equal(freshLexical.chunks[0]!.text, text)
+    f.state.identity = 'policy-a'; text = 'needle changed contributor output without a changed source identity'
+    const reads = f.state.reads, embedded = f.state.documentEmbeddings
+    await f.service.prepare('session', { documentId: 'doc', rebuild: true, rebuildToken: 'layout-v2' })
     const freshB = await f.service.search('session', { ...search, mode: 'semantic' })
     assert.notEqual(freshB.indexGeneration, semanticB.indexGeneration)
+    assert.equal(freshB.chunks[0]!.text, 'needle original')
+    assert.equal((await f.service.search('session', search)).indexGeneration, lexical.indexGeneration)
+    assert.equal(f.state.reads, reads); assert.equal(f.state.documentEmbeddings, embedded)
     configuration = 'a'
-    assert.notEqual((await f.service.search('session', { ...search, mode: 'semantic' })).indexGeneration, semanticA.indexGeneration)
+    assert.equal((await f.service.search('session', { ...search, mode: 'semantic' })).indexGeneration, semanticA.indexGeneration)
     f.state.identity = 'policy-b'
     assert.equal((await f.service.search('session', search)).indexGeneration, otherPolicy.indexGeneration)
+    f.state.identity = 'policy-a'; f.state.sourceDigest = 'replacement-source'; text = 'needle replaced source text'
+    await f.service.prepare('session', { documentId: 'doc' })
+    const replacement = await f.service.search('session', { ...search, mode: 'semantic' })
+    assert.equal(replacement.chunks[0]!.text, text)
+    assert.notEqual(replacement.indexGeneration, semanticA.indexGeneration)
+    assert.throws(() => f.service.validate('session', semanticA), { code: 'pdf/stale-reader' })
+    const beforeClear = { reads: f.state.reads, embedded: f.state.documentEmbeddings }
+    await f.service.rebuild()
+    await f.service.prepare('session', { documentId: 'doc' })
+    assert.equal(f.state.reads, beforeClear.reads + 1)
+    assert.equal(f.state.documentEmbeddings, beforeClear.embedded + 1)
   } finally { await f.service.dispose() }
 })
 
-test('a failed explicit refresh invalidates an older successful page cache instead of restoring false complete coverage', async () => {
+test('a changed source with partial content never restores an older source as falsely complete after restart', async () => {
   const pages: RetrievalPage[] = [{ text: 'needle old complete', source: 'pdf-text' }]
   const f = fixture(pages, { embedding: true })
   const key = pageCacheKey('/content-units.pdf', 'same-original', 1)
   try {
     assert.equal((await f.service.search('session', search)).status, 'complete')
     assert.ok(f.data.get(key))
+    f.state.sourceDigest = 'changed-source'
     pages[0] = { text: 'needle current partial', source: 'pdf-text', failure: { code: 'pdf/index-image-unavailable' } }
-    await assert.rejects(f.service.prepare('session', { documentId: 'doc', rebuild: true }), { code: 'pdf/retrieval-incomplete' })
-    assert.equal(f.data.get(key), null)
+    await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-incomplete' })
+    assert.ok(f.data.get(key), 'a verified cache for different source bytes stays independently reusable')
+    assert.equal(f.data.has(pageCacheKey('/content-units.pdf', 'changed-source', 1)), false)
     await f.service.dispose()
     const restored = createRetrievalService(f.ports)
     try {
       const result = await restored.search('session', search)
       assert.equal(result.status, 'incomplete')
       assert.equal(result.chunks[0]!.text, 'needle current partial')
-      assert.equal(f.state.reads, 3)
+      assert.ok(f.state.reads >= 3, 'the changed source must be read and its failed optional layer retried')
     } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
 })
@@ -382,7 +417,7 @@ test('source, session and permission failures abort retrieval instead of becomin
           return true
         })
         assert.equal(reads, 1, `${code} must stop before reading another page`)
-        assert.equal(f.data.size, 0)
+        assertNoSavedContent(f.data)
       } finally { await f.service.dispose() }
     }
   }
@@ -392,19 +427,21 @@ test('a projected page cannot downgrade a typed source authority failure into av
   const f = fixture([{ text: 'needle native', source: 'pdf-text', failure: { code: 'pdf/access-denied' } }])
   try {
     await assert.rejects(f.service.search('session', search), { code: 'pdf/access-denied' })
-    assert.equal(f.data.size, 0)
+    assertNoSavedContent(f.data)
   } finally { await f.service.dispose() }
 })
 
-test('a thrown extraction failure during refresh cannot resurrect the previous successful page after restart', async () => {
+test('a changed source that throws during extraction cannot resurrect old content and can resume after restart', async () => {
   const f = fixture([{ text: 'needle old complete', source: 'pdf-text' }], { embedding: true })
   const key = pageCacheKey('/content-units.pdf', 'same-original', 1)
   try {
     assert.equal((await f.service.search('session', search)).status, 'complete')
     assert.ok(f.data.get(key))
+    f.state.sourceDigest = 'changed-source'
+    const originalRead = f.ports.pages.read
     f.ports.pages.read = async () => { throw Object.assign(new Error('Recognition failed'), { code: 'pdf/index-ocr-unavailable' }) }
-    await assert.rejects(f.service.prepare('session', { documentId: 'doc', rebuild: true }), { code: 'pdf/retrieval-incomplete' })
-    assert.equal(f.data.get(key), null)
+    await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-incomplete' })
+    assert.ok(f.data.get(key), 'the old source remains a separate immutable cache entry')
     await f.service.dispose()
     const restored = createRetrievalService(f.ports)
     try {
@@ -412,6 +449,14 @@ test('a thrown extraction failure during refresh cannot resurrect the previous s
       assert.equal(result.status, 'incomplete'); assert.deepEqual(result.chunks, [])
       assert.equal(result.coverage.indexedPages, 0)
       assert.equal(result.coverage.failedPages[0]!.code, 'pdf/index-ocr-unavailable')
+      f.ports.pages.read = originalRead
+      const changed = 'needle recovered changed source'
+      f.ports.pages.read = async (...args) => ({ ...await originalRead(...args), text: changed })
+      await restored.prepare('session', { documentId: 'doc' })
+      const recovered = await restored.search('session', { ...search, mode: 'semantic' })
+      assert.equal(recovered.status, 'complete')
+      assert.equal(recovered.chunks[0]!.text, changed)
+      assert.equal(recovered.chunks[0]!.pageTextDigest, digest(changed))
     } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
 })

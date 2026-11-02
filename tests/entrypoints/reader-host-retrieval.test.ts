@@ -91,7 +91,7 @@ test('Host retrieval reauthorizes cached jobs and preserves full-document index 
           if (currentResolution === 'missing') return { error: new Error('Session was retired') }
           return { agent: currentResolution === 'foreign' ? { session: { id: 'another-session', header: {} } } : agent }
         } },
-        get: (key: string) => services.get(key),
+        get: (key: string) => key === 'profileContext' ? { home: root, name: 'desktop' } : services.get(key),
         storageDomain: { async open(definition: { name: string }) {
           const values = new Map<string, unknown>()
           domains.set(definition.name, values)

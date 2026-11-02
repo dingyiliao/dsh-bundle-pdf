@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/compatibility-manifest.mjs', import.meta.url))
 // Captured from this checkout before the V2 refactor, not from an older published binary.
 const fixture = new URL('./fixtures/compatibility-v1.json', import.meta.url)
+
+test('the declared Host runtime follows DSH and provides SQLite without a platform addon', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { engines: { node: string } }
+  assert.equal(manifest.engines.node, '^22.19.0 || >=24.0.0')
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec('CREATE TABLE runtime_probe(value TEXT); INSERT INTO runtime_probe VALUES (\'builtin\')')
+    assert.equal(db.prepare('SELECT value FROM runtime_probe').get()!.value, 'builtin')
+  } finally { db.close() }
+})
 
 test('current PDF bundle identities match the frozen pre-refactor compatibility manifest', async () => {
   const expected = JSON.parse(await readFile(fixture, 'utf8')) as {
@@ -36,7 +47,7 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
       keyExpressions: Object.fromEntries(Object.entries(expected.storage.keyExpressions).filter(([key]) => key !== 'bookmark')) },
     toolNames: atomicTools.sort(),
     // Read-only model choices add a settings endpoint; existing resource methods stay unchanged.
-    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.indexing', 'pdf.model-options', 'pdf.navigation', 'pdf.region', 'pdf.retrieval.rebuild', 'pdf.selection', 'pdf.watch'].sort(),
+    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.indexing', 'pdf.indexing.diagnostics', 'pdf.model-options', 'pdf.navigation', 'pdf.region', 'pdf.retrieval.rebuild', 'pdf.selection', 'pdf.watch'].sort(),
     providedServices: [...expected.providedServices, 'pdfAiSettings', 'pdfCapabilities', 'pdfImageEvidence', 'pdfEmbedding'].sort(),
     package: { ...expected.package, name: '@dylanl1/dsh-plugin-pdf', exports: { ...expected.package.exports,
       './capabilities': { types: './dist/types/modules/capabilities/index.d.ts', import: './dist/capabilities.js' },

@@ -404,3 +404,93 @@ test('manual rebuild fences an active old occurrence and waits for its real drai
     assert.equal(prefetch.status().documents[0]!.state, 'ready')
   } finally { gate.resolve(); await prefetch.dispose() }
 })
+
+test('run diagnostics retain each occurrence and terminal error without allowing observers to mutate or fail the lane', async () => {
+  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  const events: Event[] = []
+  let calls = 0
+  const failure = Object.assign(new Error('private provider response'), { code: 'embedding/unavailable' })
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')], selection: () => ({ identity: 'engine' }),
+    async prepare(_session, _input, _signal, report) {
+      calls++
+      report!({ indexedPages: 2, totalPages: 4, embeddedChunks: 0, totalChunks: 0, phase: 'extracting' })
+      if (calls === 1) throw failure
+    }, onDiagnostic(event) {
+      events.push({ ...event, ...(event.progress ? { progress: { ...event.progress } } : {}) })
+      if (event.progress) event.progress.indexedPages = 999
+      if (event.event === 'started') throw new Error('failed diagnostic observer')
+    } })
+  try {
+    await turn()
+    assert.deepEqual(events.map(event => event.event), ['queued', 'started', 'progress', 'failed'])
+    assert.equal(events.at(-1)?.error, failure)
+    assert.equal(prefetch.status().documents[0]?.progress?.indexedPages, 2)
+    prefetch.start('session', 'a'); await turn()
+    assert.deepEqual(events.slice(4).map(event => event.event), ['queued', 'started', 'progress', 'ready'])
+    assert.ok(events.slice(0, 4).every(event => event.occurrence === 1))
+    assert.ok(events.slice(4).every(event => event.occurrence === 2))
+    assert.equal(prefetch.status().documents[0]?.state, 'ready')
+  } finally { await prefetch.dispose() }
+  assert.equal(events.filter(event => event.event === 'cancelled').length, 0, 'disposing a completed task cannot invent cancellation')
+})
+
+test('diagnostics explain queued cancellation, replacement and close exactly once while old work drains', async () => {
+  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  const events: Event[] = [], gate = deferred()
+  let documents = [document('a'), document('b')]
+  const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine' }),
+    async prepare() { await gate.promise }, onDiagnostic: event => events.push(event) })
+  try {
+    await turn()
+    prefetch.cancel('session', 'b'); prefetch.cancel('session', 'b')
+    prefetch.rebuild('session', 'a')
+    documents = []; prefetch.refresh(); await turn()
+    const cancellations = events.filter(event => event.event === 'cancelled')
+    assert.deepEqual(cancellations.map(event => [event.documentId, event.occurrence, event.reason]),
+      [['b', 2, 'user'], ['a', 1, 'replaced'], ['a', 3, 'closed']])
+    gate.resolve(); await turn()
+    assert.equal(events.filter(event => event.event === 'ready' || event.event === 'failed').length, 0)
+  } finally { gate.resolve(); await prefetch.dispose() }
+  assert.equal(events.filter(event => event.event === 'cancelled').length, 3)
+})
+
+test('diagnostics distinguish source replacement, configuration retirement, suspension and unloading', async () => {
+  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  for (const reason of ['replaced', 'configuration', 'settings-error', 'suspended', 'disposed'] as const) {
+    const events: Event[] = [], gate = deferred()
+    let source = document('a'), selected = true, throws = false
+    const prefetch = createRetrievalPrefetch({ documents: () => [source, document('b')], selection() {
+      if (throws) throw new Error('private configuration')
+      return selected ? { identity: 'engine' } : undefined
+    }, async prepare() { await gate.promise }, onDiagnostic: event => events.push(event) })
+    try {
+      await turn()
+      if (reason === 'replaced') { source = { ...source, contentVersion: 'new' }; prefetch.refresh() }
+      else if (reason === 'configuration') { selected = false; prefetch.refresh() }
+      else if (reason === 'settings-error') { throws = true; prefetch.refresh() }
+      else if (reason === 'suspended') void prefetch.suspend()
+      else void prefetch.dispose()
+      await turn()
+      const cancellations = events.filter(event => event.event === 'cancelled')
+      assert.equal(cancellations[0]?.reason, reason === 'settings-error' ? 'configuration' : reason)
+      assert.ok(!cancellations.some((event, index) => cancellations.slice(index + 1).some(other => other.occurrence === event.occurrence)))
+      if (reason === 'suspended') assert.equal(cancellations.length, 2, 'queued and running tasks both retain suspension reasons')
+      if (reason === 'disposed') assert.equal(cancellations.length, 2, 'queued and running tasks both retain unload reasons')
+    } finally { gate.resolve(); await prefetch.dispose() }
+  }
+})
+
+test('plan-scoped diagnostics remain passive even when the observer rejects asynchronously', async () => {
+  const events: string[] = []
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
+    selection: () => ({ identity: 'engine', planId: 'saved-plan' }),
+    async prepare(_session, input, _signal, report) {
+      assert.equal(input.indexPlanId, 'saved-plan')
+      report!({ indexedPages: 1, totalPages: 1, embeddedChunks: 0, totalChunks: 0, phase: 'ready' })
+    }, async onDiagnostic(event) { events.push(event.event); throw new Error('isolated asynchronous observer') } })
+  try {
+    await turn()
+    assert.equal(prefetch.status().documents[0]?.state, 'ready')
+    assert.deepEqual(events, ['queued', 'started', 'progress', 'ready'])
+  } finally { await prefetch.dispose() }
+})

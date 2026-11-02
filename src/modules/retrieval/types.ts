@@ -26,9 +26,15 @@ export interface RetrievalEmbedding {
 }
 export interface RetrievalCache {
   get(key: string): Promise<unknown>
+  /** Presence only; consumers still validate immutable data before querying it. */
+  has?(key: string): Promise<boolean>
   set(key: string, value: unknown): Promise<void>
-  /** Remove all derived records. Required when this cache supports explicit rebuilds. */
+  /** All records are durable before success; implementations may commit one transaction. */
+  setMany?(entries: readonly (readonly [string, unknown])[]): Promise<void>
+  /** Remove all derived records for an explicit global cache reset. */
   clear?(): Promise<void>
+  /** Remove an obsolete checkpoint after all readers of its generation drain. */
+  delete?(key: string): Promise<void>
 }
 export type RetrievalPageUnitKind = 'native-text' | 'ocr-text' | 'image-description'
 export interface RetrievalPageUnitProducer {
@@ -70,8 +76,8 @@ export interface RetrievalPage {
   /** When supplied, these are the complete searchable units for this page. */
   units?: RetrievalPageUnit[]
   contentIdentity?: string
-  /** Available representations are usable, but optional extraction was incomplete.
-   * Such pages are never persisted and retry only through an explicit rebuild. */
+  /** Available representations are checkpointed; retry replaces the page
+   * atomically and reuses successfully cached source layers and vectors. */
   failure?: RetrievalPageFailure
 }
 export interface RetrievalPorts {
@@ -86,6 +92,8 @@ export interface RetrievalPorts {
     read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<RetrievalPage>
   }
   cache?: RetrievalCache
+  /** Host-only diagnostic observer, after caller authority is revalidated and before shared errors are sanitized. */
+  onFailure?(sessionId: string, documentId: string, error: unknown): void
   embedding?: { select(sessionId: string): RetrievalEmbedding | undefined }
   limits?: Partial<{
     pagesPerStep: number; embeddingBatchesPerStep: number; maxChunks: number
@@ -105,8 +113,10 @@ export interface RetrievalInput {
 }
 /** Query-free preparation shares the same scoped index as later searches. */
 export type RetrievalPrepareInput = Pick<RetrievalInput, 'documentId' | 'fromPage' | 'maxPages'> & {
-  /** Re-extract and re-embed this source with the selected engine, preserving unrelated indexes. */
+  /** Start a fresh structural generation, reusing validated source layers and vectors. */
   rebuild?: boolean
+  /** Stable attempt identity makes a forced rebuild resumable across retries. */
+  rebuildToken?: string
 }
 /** Observable work counts, separate from task completion and document authority. */
 export interface RetrievalProgress {
@@ -148,6 +158,9 @@ export interface RetrievalService {
   state(): 'ready' | 'rebuilding' | 'failed' | 'disposed'
   prepare(sessionId: string, input: RetrievalPrepareInput, signal?: AbortSignal,
     onProgress?: (progress: RetrievalProgress) => void): Promise<void>
+  /** Cooperatively finish one bounded unit; false preserves resumable work. */
+  prepareSlice(sessionId: string, input: RetrievalPrepareInput, signal?: AbortSignal,
+    onProgress?: (progress: RetrievalProgress) => void): Promise<boolean>
   search(sessionId: string, input: RetrievalInput, signal?: AbortSignal): Promise<RetrievalResult>
   /** Revalidate after adapter awaits, including reference issuance; never an authorization grant. */
   validate(sessionId: string, result: RetrievalResult): void

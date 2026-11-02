@@ -40,12 +40,13 @@ function IndexTaskContent({ task, connected, t }: { task: PdfIndexingTask; conne
   return <span className="dsh-pdf-indexing-task">
     <strong className="dsh-pdf-indexing-task-title">{task.title}</strong>
     <span className="dsh-pdf-indexing-phase">{connected ? indexingLabel(task, t) : t('reader.indexing.unavailable')}</span>
-    {connected && task.state === 'running' && progress && <>
+    {task.failureCode && <span className="dsh-pdf-indexing-phase">{task.failureCode}</span>}
+    {connected && progress && task.state !== 'ready' && <>
       <span className="dsh-pdf-indexing-progress-label">{t('reader.indexing.pages')} <span>{progress.indexedPages}/{progress.totalPages}</span></span>
       <progress aria-label={`${t('reader.indexing.pages')}: ${task.title}`} max={progress.totalPages} value={progress.indexedPages} />
       <span className="dsh-pdf-indexing-progress-label">{t('reader.indexing.chunks')} <span>{progress.embeddedChunks}/{progress.totalChunks}</span></span>
       <progress aria-label={`${t('reader.indexing.chunks')}: ${task.title}`} max={Math.max(1, progress.totalChunks)}
-        value={progress.indexedPages === progress.totalPages ? progress.embeddedChunks : undefined} />
+        value={task.state !== 'running' || progress.indexedPages === progress.totalPages ? progress.embeddedChunks : undefined} />
     </>}
     {connected && progress?.reusedChunks !== undefined && progress.computedChunks !== undefined && <span className="dsh-pdf-indexing-phase">
       {t('reader.indexing.reused')}: {progress.reusedChunks} · {t('reader.indexing.computed')}: {progress.computedChunks}
@@ -61,15 +62,62 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     useCallback(() => api?.getSnapshot(sessionId) ?? empty, [api, sessionId]),
   )
   const requests = useRef(new Map<string, AbortController>())
+  const currentSnapshot = useRef(snapshot)
+  currentSnapshot.current = snapshot
   const [pending, setPending] = useState(new Set<string>())
+  const [copied, setCopied] = useState(new Map<string, number>())
   const errorCallback = useRef(onError)
   errorCallback.current = onError
   useEffect(() => {
     setPending(new Set())
+    setCopied(new Map())
     return () => { for (const controller of requests.current.values()) controller.abort(); requests.current.clear() }
   }, [api, sessionId, documentId, signal])
 
   const connected = snapshot.status === 'ready'
+  async function diagnostics(task: PdfIndexingTask, action: 'report' | 'open'): Promise<void> {
+    const key = `diagnostics:${task.documentId}:${task.occurrence}`
+    if (!api?.diagnostics || !connected || signal.aborted || requests.current.has(key)) return
+    const controller = new AbortController()
+    requests.current.set(key, controller)
+    setPending(current => new Set(current).add(key))
+    const active = () => !controller.signal.aborted && !signal.aborted && requests.current.get(key) === controller
+      && currentSnapshot.current.status === 'ready'
+      && currentSnapshot.current.tasks.some(current => current.documentId === task.documentId && current.occurrence === task.occurrence)
+    try {
+      const report = api.diagnostics(sessionId, task.documentId, task.occurrence, action,
+        AbortSignal.any([signal, controller.signal]))
+      if (action === 'open') {
+        const result = await report
+        if (!active()) return
+        if (!result.canOpen) throw new Error(t('reader.indexing.logsUnavailable'))
+      } else {
+        if (navigator.clipboard?.write && typeof ClipboardItem === 'function') {
+          const data = report.then(result => {
+            if (!active()) throw new DOMException('Diagnostic view was closed', 'AbortError')
+            return new Blob([result.report], { type: 'text/plain' })
+          })
+          // Start the write in the click gesture, before RPC completion consumes
+          // transient activation. A failed constructor/write must still observe
+          // the data promise if it never requests the deferred clipboard bytes.
+          void data.catch(() => {})
+          await navigator.clipboard.write([new ClipboardItem({ 'text/plain': data })])
+        } else {
+          const result = await report
+          if (!active()) return
+          if (!navigator.clipboard?.writeText) throw new Error(t('reader.indexing.copyUnavailable'))
+          await navigator.clipboard.writeText(result.report)
+        }
+        if (active()) setCopied(current => new Map(current).set(task.documentId, task.occurrence))
+      }
+    } catch (error) { if (active()) errorCallback.current(error) }
+    finally {
+      if (requests.current.get(key) === controller) {
+        requests.current.delete(key)
+        setPending(current => { const next = new Set(current); next.delete(key); return next })
+      }
+    }
+  }
   async function command(action: 'start' | 'rebuild' | 'cancel', target: string): Promise<void> {
     const settings = snapshot.documents?.find(value => value.documentId === target)
     const enabled = settings ? action === 'cancel'
@@ -123,23 +171,31 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     const enabled = settings ? active
       ? settings.enabled || settings.activeEnabled
       : settings.enabled : snapshot.enabled
-    const action = active ? 'cancel' : task.state === 'failed' ? 'rebuild' : 'start'
-    const actionLabel = t(active ? 'reader.cancel' : task.state === 'failed' ? 'reader.indexing.rebuild' : 'reader.indexing.retry')
+    const action = active ? 'cancel' : 'start'
+    const actionLabel = t(active ? 'reader.cancel' : 'reader.indexing.retry')
+    const diagnosticKey = `diagnostics:${task.documentId}:${task.occurrence}`
     return { id: `indexing:${task.documentId}`, occurrence: task.occurrence,
       className: 'dsh-pdf-indexing-status', kind: task.state === 'failed' ? 'error' : 'indexing',
       tone: !connected ? 'neutral' : task.state === 'failed' ? 'error' : task.state === 'ready' ? 'success'
         : task.state === 'running' ? 'progress' : 'neutral',
       activity: connected && active ? 'progress' : 'dot',
-      title: task.failureCode ? `${task.title}: ${task.failureCode}` : task.title,
+      title: task.title,
       summary: `${task.title} · ${connected ? indexingLabel(task, t) : t('reader.indexing.unavailable')}`,
       content: <IndexTaskContent task={task} connected={connected} t={t} />,
-      actions: completed ? [{ label: t('reader.indexing.done'),
-        ariaLabel: `${t('reader.indexing.done')}: ${task.title}`, disabled: !connected,
-        onClick: () => api.dismiss(sessionId, task.documentId, task.occurrence) }]
-        : [{ label: actionLabel,
+      ...(completed ? { dismiss: { label: t('reader.activityDismiss'),
+        ariaLabel: `${t('reader.activityDismiss')}: ${task.title}`, disabled: !connected,
+        onClick: () => api.dismiss(sessionId, task.documentId, task.occurrence) } }
+        : { actions: [{ label: actionLabel,
           ariaLabel: `${active ? t('reader.indexing.cancel') : actionLabel}: ${task.title}`,
           disabled: !connected || !enabled || pending.has(task.documentId),
-          onClick: () => { void command(action, task.documentId) } }],
+          onClick: () => { void command(action, task.documentId) } }] }),
+      ...(api.diagnostics ? { menuActions: [{ label: t(copied.get(task.documentId) === task.occurrence ? 'reader.indexing.copied' : 'reader.indexing.copyDiagnostics'),
+          ariaLabel: `${t('reader.indexing.copyDiagnostics')}: ${task.title}`,
+          disabled: !connected || signal.aborted || pending.has(diagnosticKey),
+          onClick: () => { void diagnostics(task, 'report') } },
+        { label: t('reader.indexing.openLogs'), ariaLabel: `${t('reader.indexing.openLogs')}: ${task.title}`,
+          disabled: !connected || signal.aborted || pending.has(diagnosticKey),
+          onClick: () => { void diagnostics(task, 'open') } }] } : {}),
     } satisfies FloatingStatus
   }) : []
   if (api && snapshot.status === 'unavailable' && documentId) statuses.unshift({ id: 'indexing-connection', kind: 'error',
@@ -152,7 +208,8 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
       : current?.state === 'queued' || current?.state === 'running' ? 'reader.indexing.running' : 'reader.indexing.start')
   const control: ReaderIndexingControl | undefined = api ? {
     enabled,
-    label: t(settings?.pending || current?.state === 'ready' || current?.state === 'failed' ? 'reader.indexing.update' : 'reader.indexing.start'),
+    label: t(current?.state === 'failed' || current?.state === 'cancelled' ? 'reader.indexing.retry'
+      : settings?.pending || current?.state === 'ready' ? 'reader.indexing.update' : 'reader.indexing.start'),
     statusLabel: connected && enabled && current ? indexingLabel(current, t) : statusLabel,
     disabled: !documentId || !connected || !enabled || signal.aborted || pending.has(documentId)
       || pending.has(`configuration:${documentId}`)

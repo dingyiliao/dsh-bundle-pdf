@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { encodeCachedVector, readCachedVector } from '../../../src/modules/retrieval/cache.ts'
+import { cacheDerived, encodeCachedVector, readCachedPage, readCachedVector } from '../../../src/modules/retrieval/cache.ts'
 import { cosineSimilarity } from '../../../src/modules/retrieval/ranking.ts'
 import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
 
@@ -56,6 +56,25 @@ test('cache failures are misses and a failed best-effort migration does not disc
   assert.equal(await readCachedVector(undefined, 'vector', 2), undefined)
   assert.equal(await readCachedVector({ async get() { throw new Error('offline') }, async set() {} }, 'vector', 2), undefined)
   assert.deepEqual(await readCachedVector({ async get() { return [3, 4] }, async set() { throw new Error('full') } }, 'vector', 2), [3, 4])
+})
+
+test('durable storage failures preserve the original error while optional cache failures remain recoverable misses', async () => {
+  const cause = new Error('synthetic filesystem failure')
+  const failure = Object.assign(new Error('The durable record cannot be read or written.', { cause }),
+    { code: 'pdf/index-storage-write-failed', budget: { kind: 'record', limit: 100, used: 80, requested: 40 } })
+  const durable: RetrievalCache = { async get() { throw failure }, async set() { throw failure } }
+  await assert.rejects(readCachedVector(durable, 'vector', 2), error => error === failure)
+  await assert.rejects(readCachedPage(durable, 'page'), error => error === failure)
+  await assert.rejects(cacheDerived(durable, 'page', { text: 'derived' }), error => error === failure)
+  await assert.rejects(readCachedVector({ async get() { return [3, 4] }, async set() { throw failure } }, 'vector', 2),
+    error => error === failure, 'legacy vector migration cannot hide a failed durable write')
+  assert.equal(failure.cause, cause)
+  assert.deepEqual(failure.budget, { kind: 'record', limit: 100, used: 80, requested: 40 })
+  const optional: RetrievalCache = { async get() { throw new Error('optional cache unavailable') },
+    async set() { throw new Error('optional cache unavailable') } }
+  assert.equal(await readCachedVector(optional, 'vector', 2), undefined)
+  assert.equal(await readCachedPage(optional, 'page'), undefined)
+  await cacheDerived(optional, 'page', { text: 'derived' })
 })
 
 test('corrupt vector records, unknown formats and dimension mismatches are safe misses', async () => {

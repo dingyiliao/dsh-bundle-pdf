@@ -1,3 +1,5 @@
+// Shared platform-neutral path primitives come from the DSH SDK.
+export { isAbsoluteWorkspacePath, pathPartsOf, resolveWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 import { parseFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 
 /** Require a DSH session file address with a non-empty, NUL-free PDF path. */

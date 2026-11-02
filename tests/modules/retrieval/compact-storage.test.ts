@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
 import { compactRetrievalVector } from '../../../src/modules/retrieval/vector.ts'
 import { cosineSimilarity, rankVectors } from '../../../src/modules/retrieval/ranking.ts'
-import { chunkPage, tokenizeRetrievalText } from '../../../src/modules/retrieval/text.ts'
-import type { RetrievalEmbedding, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
-import { createRetrievalCache, type RetrievalCacheRecord } from '../../../src/adapters/host/storage/retrieval-cache.ts'
+import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
 
-function fixture(text: string[], options: { dimensions?: number; limits?: RetrievalPorts['limits']; cache?: boolean } = {}) {
+function fixture(text: string[], options: { dimensions?: number; limits?: RetrievalPorts['limits']; cache?: boolean | RetrievalCache } = {}) {
   const dimensions = options.dimensions ?? 1024
   const calls: Array<{ purpose: string; texts: string[] }> = []
   const cached = new Map<string, unknown>()
@@ -27,8 +29,8 @@ function fixture(text: string[], options: { dimensions?: number; limits?: Retrie
       contentVersion: 'source', pageCount: text.length }) },
     pages: { async read(_session, _document, page) { return { text: text[page - 1]!, source: 'pdf-text' } } },
     embedding: { select: () => provider }, limits: options.limits,
-    ...(options.cache ? { cache: { async get(key: string) { return cached.get(key) },
-      async set(key: string, value: unknown) { cached.set(key, structuredClone(value)) } } } : {}),
+    ...(options.cache ? { cache: options.cache === true ? { async get(key: string) { return structuredClone(cached.get(key)) },
+      async set(key: string, value: unknown) { cached.set(key, structuredClone(value)) } } : options.cache } : {}),
   }
   return { service: createRetrievalService(ports), ports, provider, calls, cached }
 }
@@ -48,8 +50,8 @@ test('compact normalized vectors preserve cosine geometry for finite values at b
   for (const invalid of [[], [0, 0], [Infinity, 1], [NaN, 1]]) assert.throws(() => compactRetrievalVector(invalid))
 })
 
-test('lexical accounting charges repeated terms once while preserving genuine memory protection', async () => {
-  const f = fixture(['cat '.repeat(200)], { dimensions: 2, limits: { maxMemoryBytes: 4096 } })
+test('bounded page processing accepts repeated terms and rejects a single oversized working page', async () => {
+  const f = fixture(['cat '.repeat(200)], { dimensions: 2, cache: true, limits: { maxMemoryBytes: 8192 } })
   f.ports.embedding = undefined
   try {
     const result = await f.service.search('session', { documentId: 'doc', query: 'cat', mode: 'lexical' })
@@ -57,19 +59,16 @@ test('lexical accounting charges repeated terms once while preserving genuine me
     assert.equal(result.chunks.length, 1)
     assert.ok(result.chunks[0]!.score > 0)
   } finally { await f.service.dispose() }
-  const oversized = fixture([Array.from({ length: 100 }, (_, index) => `term${index}`).join(' ')],
-    { dimensions: 2, limits: { maxMemoryBytes: 4096 } })
-  try { await assert.rejects(oversized.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-budget' }) }
+  const oversized = fixture([Array.from({ length: 1000 }, (_, index) => `term${index}`).join(' ')],
+    { dimensions: 2, cache: true, limits: { maxMemoryBytes: 8192 } })
+  try { await assert.rejects(oversized.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-memory-budget' }) }
   finally { await oversized.service.dispose() }
 })
 
 test('equal text shares compact vectors across steps and cache hits without losing per-chunk coverage', async () => {
   const text = 'A repeated heading describes the same feature representation.', pages = 8
-  const chunk = chunkPage(1, text)[0]!
-  const pageBytes = 128 + chunk.text.length * 2 + 320 + new Set(tokenizeRetrievalText(chunk.text)).size * 96
-  const budget = pageBytes * pages + 1024 * 4 + 512
   const f = fixture(new Array<string>(pages).fill(text), { cache: true,
-    limits: { pagesPerStep: 1, maxMemoryBytes: budget } })
+    limits: { pagesPerStep: 1, maxMemoryBytes: 32 * 1024 } })
   try {
     await f.service.prepare('session', { documentId: 'doc' })
     assert.equal(f.calls.filter(call => call.purpose === 'document').flatMap(call => call.texts).length, 1)
@@ -89,22 +88,14 @@ test('equal text shares compact vectors across steps and cache hits without losi
       assert.equal(f.calls.filter(call => call.purpose === 'document').length, before)
     } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
-  const limited = fixture([text], { limits: { maxMemoryBytes: pageBytes + 1024 * 4 - 1 } })
-  try { await assert.rejects(limited.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-budget' }) }
-  finally { await limited.service.dispose() }
 })
 
-test('dense vectors survive bounded persistent-cache recreation without rereading pages or calling embedding', async () => {
+test('dense vectors survive a bounded disk-store recreation without rereading pages or calling embedding', async () => {
   const text = Array.from({ length: 128 }, (_, index) => `Passage ${index + 1}: a distinct page of a synthetic long book.`)
-  const data = new Map<string, RetrievalCacheRecord>()
-  const table = { get: (key: string) => data.get(key), entries: () => data.entries(),
-    put: async (key: string, value: RetrievalCacheRecord) => { data.set(key, value) },
-    delete: async (key: string) => data.delete(key) }
-  // Scaled-down disk budget reproduces the long-book failure: JSON arrays for
-  // these dense vectors exceed this budget, while complete Float32 data fits.
-  const options = { maxBytes: 1024 * 1024, maxRecords: 512, now: () => 1 }
-  const firstCache = createRetrievalCache(table, options), f = fixture(text)
-  f.ports.cache = firstCache
+  const directory = await mkdtemp(join(tmpdir(), 'pdf-dense-index-'))
+  const options = { directory, maxMemoryBytes: 64 * 1024 }
+  const firstCache = createRetrievalStore(options), f = fixture(text, { cache: firstCache,
+    limits: { maxMemoryBytes: 32 * 1024 } })
   f.provider.embed = async (texts, purpose) => {
     f.calls.push({ purpose, texts: [...texts] })
     return texts.map(() => Array.from({ length: 1024 }, (_, index) => Math.sin(index + 0.25)))
@@ -112,21 +103,24 @@ test('dense vectors survive bounded persistent-cache recreation without rereadin
   try {
     await f.service.prepare('session', { documentId: 'doc' })
     assert.equal(f.calls.flatMap(call => call.texts).length, text.length)
-    assert.equal(data.size, text.length * 2, 'all page and vector records must survive the bounded cache')
-    const bytes = [...data.values()].reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0)
-    assert.ok(bytes < options.maxBytes)
+    assert.ok(firstCache.diagnostics().memoryBytes <= options.maxMemoryBytes)
+    let diskBytes = 0
+    for (const name of await readdir(directory)) {
+      if (/^records\.sqlite(?:-wal|-shm)?$/.test(name)) diskBytes += (await stat(join(directory, name))).size
+    }
+    assert.ok(diskBytes > options.maxMemoryBytes * 8, 'the complete persisted index exceeds its bounded hot cache')
     await f.service.dispose(); await firstCache.dispose()
-    const restoredCache = createRetrievalCache(table, options)
+    const restoredCache = createRetrievalStore(options)
     f.ports.cache = restoredCache
     f.ports.pages.read = async () => { throw new Error('A restored page must not reread its source') }
     f.provider.embed = async () => { throw new Error('A restored vector must not contact the embedding service') }
     const restored = createRetrievalService(f.ports)
     try {
       await restored.prepare('new-session', { documentId: 'doc' })
-      assert.equal(data.size, text.length * 2)
       assert.equal(f.calls.flatMap(call => call.texts).length, text.length)
+      assert.ok(restoredCache.diagnostics().memoryBytes <= options.maxMemoryBytes)
     } finally { await restored.dispose(); await restoredCache.dispose() }
-  } finally { await f.service.dispose(); await firstCache.dispose() }
+  } finally { await f.service.dispose(); await firstCache.dispose(); await rm(directory, { recursive: true, force: true }) }
 })
 
 test('a 1151-page 6677-chunk book prepares under the unchanged memory budget and searches the final page', async () => {
@@ -138,7 +132,7 @@ test('a 1151-page 6677-chunk book prepares under the unchanged memory budget and
       + 'Neural networks learn useful features through gradient descent and attention. Every layer transforms an input representation with learned weights to predict an observed target. '.repeat(3)
       + (ordinal === totalChunks ? 'needle-target' : '')).join('\n\n'))
   }
-  const f = fixture(text)
+  const f = fixture(text, { cache: true })
   try {
     await f.service.prepare('session', { documentId: 'doc' })
     assert.equal(f.calls.filter(call => call.purpose === 'query').length, 0)

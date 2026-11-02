@@ -222,11 +222,15 @@ test('Reader dirty-document actions confirm reload, expose Save As, and route ke
     await clickReaderCommand(container, 'reader.redo')
     assert.deepEqual(calls, ['reload', 'undo', 'redo'])
     await clickReaderCommand(container, 'reader.saveAs')
-    const saveAs = container.querySelector<HTMLFormElement>('.dsh-pdf-dialog')!
-    assert.equal(saveAs.querySelector('input')?.getAttribute('value'), '/tmp/reader-boundary-annotated.pdf')
+    const saveAs = container.querySelector<HTMLDialogElement>('.dsh-pdf-save-as')!
+    assert.equal(saveAs.getAttribute('role'), 'dialog')
+    assert.equal(saveAs.querySelector<HTMLInputElement>('input')?.value, 'reader-boundary-annotated.pdf')
+    assert.equal(saveAs.querySelector('.dsh-pdf-save-as-directory')?.textContent?.replace(/\/+$/, ''), '/tmp')
+    assert.equal(dom.document.activeElement, saveAs.querySelector('input'), 'filename editing is ready without another click')
+    assert.equal(saveAs.querySelector('input[type=checkbox]'), null, 'replacement is a dedicated confirmation step')
     await act(async () => { [...saveAs.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent === 'reader.cancel')!.click() })
-    assert.equal(container.querySelector('.dsh-pdf-dialog'), null)
+    assert.equal(container.querySelector('.dsh-pdf-save-as'), null)
 
     const reader = container.querySelector<HTMLElement>('.dsh-pdf-reader')!
     await act(async () => { reader.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true }))
@@ -299,16 +303,27 @@ test('Reader rejects stale OCR output and explains a capability loss after the m
   })
 })
 
-test('Reader handles native Save As failure and exits screenshot mode with Escape', async () => {
+test('Reader keeps a directory picker failure inside Save As and exits screenshot mode with Escape', async () => {
   await withReader(async ({ container, render, props, api, dom }) => {
     const dirty = fixtureSnapshot({ dirty: true, canUndo: true })
     api.open = async () => dirty
     let discarded = false
     api.discard = async () => { discarded = true; return fixtureSnapshot() }
-    await render({ ...props, pickSavePath: async () => { throw new Error('The system save dialog failed') } })
+    let pickerCalls = 0
+    await render({ ...props, pickSaveDirectory: async () => { pickerCalls++; throw new Error('The system directory dialog failed') } })
     await act(async () => { await Promise.resolve() })
     await clickReaderCommand(container, 'reader.saveAs')
-    assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /The system save dialog failed/)
+    const dialog = container.querySelector<HTMLDialogElement>('.dsh-pdf-save-as')!
+    assert.ok(dialog)
+    assert.equal(pickerCalls, 0, 'opening Save As only opens the filename/location sheet')
+    const choose = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'reader.changeSaveLocation')!
+    await act(async () => { choose.click(); await Promise.resolve() })
+    assert.equal(pickerCalls, 1)
+    assert.match(dialog.querySelector('[role="alert"]')?.textContent ?? '', /The system directory dialog failed/)
+    assert.equal(container.querySelectorAll('[role="alert"]').length, 1, 'the picker error is not duplicated outside the modal')
+    await act(async () => { [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent === 'reader.cancel')!.click() })
+    assert.equal(container.querySelector('.dsh-pdf-save-as'), null)
 
     await clickReaderCommand(container, 'reader.discard')
     assert.equal(discarded, true)
@@ -1054,5 +1069,134 @@ test('Reader cancels a command waiting for refresh when another resource takes t
     assert.equal(container.querySelector('.dsh-pdf-mode-region'), null)
     await clickReaderCommand(container, 'reader.regionScreenshot')
     assert.ok(container.querySelector('.dsh-pdf-mode-region'), 'the replacement document accepts its own commands')
+  })
+})
+
+/** Supply browser layout/painting ports while leaving Reader, Page and editor logic intact. */
+function exposeReaderPageAndCards(dom: Window & typeof globalThis, api: PdfClientApi) {
+  const previousBounds = dom.HTMLElement.prototype.getBoundingClientRect
+  const previousContext = Object.getOwnPropertyDescriptor(dom.HTMLCanvasElement.prototype, 'getContext')!
+  const previousBitmap = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap')
+  dom.HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.classList.contains('dsh-pdf-reader')) return new dom.DOMRect(0, 0, 1100, 700)
+    if (this.classList.contains('dsh-pdf-scroll')) return new dom.DOMRect(0, 0, 900, 700)
+    if (this.classList.contains('dsh-pdf-page') || this.classList.contains('dsh-pdf-page-wrap')
+      || this.classList.contains('dsh-pdf-tile-surface') || this.classList.contains('dsh-pdf-links')) return new dom.DOMRect(100, 80, 400, 600)
+    if (this.classList.contains('dsh-pdf-page-comment-card')) {
+      return new dom.DOMRect(parseFloat(this.style.left) || 0, parseFloat(this.style.top) || 0,
+        parseFloat(this.style.width) || 300, 160)
+    }
+    return previousBounds.call(this)
+  }
+  Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', { configurable: true, value: () => ({
+    fillRect() {}, drawImage() {}, save() {}, beginPath() {}, rect() {}, clip() {}, restore() {},
+  }) })
+  Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true,
+    value: async () => ({ width: 400, height: 600, close() {} }) })
+  api.native.tile = async (_session, _document, _reader, request) => ({
+    bytes: new Uint8Array([137, 80, 78, 71]), width: request.width, height: request.height, mime: 'image/png',
+  })
+  return () => {
+    dom.HTMLElement.prototype.getBoundingClientRect = previousBounds
+    Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', previousContext)
+    if (previousBitmap) Object.defineProperty(globalThis, 'createImageBitmap', previousBitmap)
+    else Reflect.deleteProperty(globalThis, 'createImageBitmap')
+  }
+}
+
+test('Reader persists comment placement and independently moves the sticky-note card and its closed marker', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    const restore = exposeReaderPageAndCards(dom, api)
+    const highlight = { id: 'commented-highlight', page: 1, subtype: 'Highlight',
+      rect: [40, 400, 100, 420] as [number, number, number, number],
+      commentPosition: [250, 300] as [number, number], color: [1, 1, 0] as [number, number, number],
+      contents: 'Read this paragraph again', flags: 0, supported: true, editable: true }
+    const note = { id: 'standalone-note', page: 1, subtype: 'Text',
+      rect: [100, 250, 180, 330] as [number, number, number, number],
+      color: [1, 1, 0] as [number, number, number], contents: 'Review this later', flags: 0, supported: true, editable: true }
+    let current = fixtureSnapshot({ document: { ...fixtureSnapshot().document, annotations: [highlight, note] } })
+    const writes: Parameters<PdfClientApi['change']>[3][] = []
+    api.open = async () => current
+    api.change = async (_session, id, revision, operations) => {
+      assert.equal(id, current.id); assert.equal(revision, current.revision)
+      writes.push(operations)
+      current = { ...current, revision: revision + 1, dirty: true, canUndo: true,
+        document: { ...current.document, annotations: current.document.annotations.map(annotation => {
+          const update = operations.find(operation => operation.type === 'update' && operation.id === annotation.id)
+          return update?.type === 'update' ? { ...annotation, ...update.patch } : annotation
+        }) } }
+      return current
+    }
+    try {
+      await render(props)
+      await waitForReader(() => !!container.querySelector('[data-pdf-note-id="standalone-note"]'), 'native PageView did not expose its sticky-note marker')
+      const row = [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-comment-item')]
+        .find(button => button.textContent?.includes('Read this paragraph again'))!
+      await act(async () => { row.click() })
+      await waitForReader(() => container.querySelector<HTMLElement>('.dsh-pdf-page-comment-card')?.dataset.visible === 'true',
+        'the comment did not attach to its real page anchor')
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.moveCommentCard"]')!
+        .dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })) })
+      await waitForReader(() => writes.length === 1, 'moving the comment did not reach the shared mutation API')
+      assert.deepEqual(writes[0], [{ type: 'update', id: highlight.id, patch: { commentPosition: [252, 300] } }])
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.closeComments"]')!.click() })
+      const marker = () => container.querySelector<HTMLButtonElement>('[data-pdf-note-id="standalone-note"]')!
+      await act(async () => { marker().click() })
+      await waitForReader(() => container.querySelector<HTMLElement>('[data-card-kind="note"]')?.dataset.visible === 'true', 'the note card did not open at its marker')
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.moveNoteCard"]')!
+        .dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })) })
+      await waitForReader(() => writes.length === 2, 'moving the note card did not persist its PDF anchor')
+      const moved = current.document.annotations.find(annotation => annotation.id === note.id)!.rect!
+      assert.equal(moved[0], 100); assert.equal(moved[2], 180)
+      assert.ok(moved[1] < 250 && moved[1] > 247, 'moving down on screen decreases the PDF Y coordinate at the live page scale')
+      assert.ok(Math.abs(moved[3] - moved[1] - 80) < 1e-6, 'moving preserves the note height')
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.closeNote"]')!.click() })
+      assert.equal(container.querySelector('[data-card-kind="note"]'), null)
+      await act(async () => { marker().dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })) })
+      await waitForReader(() => writes.length === 3, 'moving the closed note marker did not persist its PDF anchor')
+      const movedMarker = current.document.annotations.find(annotation => annotation.id === note.id)!.rect!
+      assert.ok(movedMarker[0] > moved[0] && movedMarker[0] < moved[0] + 3)
+      assert.ok(Math.abs(movedMarker[1] - moved[1]) < 1e-6)
+      assert.ok(Math.abs(movedMarker[2] - movedMarker[0] - 80) < 1e-6, 'moving the closed marker preserves note width')
+      assert.equal(current.dirty, true); assert.equal(current.revision, 4)
+      await act(async () => { marker().click() })
+      await waitForReader(() => !!container.querySelector('[data-card-kind="note"]'), 'the moved marker did not reopen its note')
+      assert.match(container.querySelector('.dsh-pdf-note-body')?.textContent ?? '', /Review this later/)
+    } finally { restore() }
+  })
+})
+
+test('Reader creates an embedded bookmark through its sidebar editor and the shared revision-checked mutation API', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    let current = fixtureSnapshot({ document: { ...fixtureSnapshot().document, outline: [] } })
+    const operations: Parameters<PdfClientApi['change']>[3][] = []
+    api.open = async () => current
+    api.native.outline = async () => (current.document.outline ?? []).map(item => ({ id: item.id, title: item.title,
+      dest: [(item.page ?? 1) - 1, { name: 'Fit' }], items: [] }))
+    api.change = async (_session, id, revision, changes) => {
+      assert.equal(id, current.id); assert.equal(revision, 1)
+      operations.push(changes)
+      const addition = changes[0]!
+      assert.equal(addition.type, 'outline-add')
+      assert.ok(addition.type === 'outline-add')
+      current = { ...current, revision: 2, dirty: true, document: { ...current.document,
+        outline: [{ id: addition.id, title: addition.title, page: addition.page, children: [] }] } }
+      return current
+    }
+    await render(props)
+    await act(async () => { container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="reader.sidebar.bookmarks"]')!.click() })
+    await waitForReader(() => !!container.querySelector('[aria-label="reader.sidebar.addPdfBookmark"]'), 'the editable bookmark panel did not load')
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.sidebar.addPdfBookmark"]')!.click() })
+    const editor = container.querySelector<HTMLFormElement>('.dsh-pdf-outline-name-editor')!
+    assert.ok(editor, 'Add bookmark opens an inline title editor')
+    const name = editor.querySelector<HTMLInputElement>('input')!
+    const setter = Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!
+    await act(async () => { setter.call(name, 'A useful reading stop'); name.dispatchEvent(new dom.Event('input', { bubbles: true })) })
+    await act(async () => { editor.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitForReader(() => operations.length === 1, 'the inline editor did not submit its bookmark')
+    assert.equal(current.dirty, true); assert.equal(current.revision, 2)
+    assert.equal(current.document.outline?.[0]?.title, 'A useful reading stop')
+    await waitForReader(() => container.querySelector('.dsh-pdf-bookmark-panel')?.textContent?.includes('A useful reading stop') ?? false,
+      'the created bookmark did not appear in the Reader sidebar')
   })
 })

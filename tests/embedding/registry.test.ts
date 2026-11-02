@@ -11,6 +11,21 @@ function engine(embed: EmbeddingEngine['embed'] = async request => request.texts
 }
 const code = (expected: string) => (error: unknown) => error instanceof EmbeddingError && error.code === expected
 
+test('Host embedding errors retain structural causes for diagnostics while the public message stays classified', async () => {
+  const registry = new EmbeddingRegistry()
+  const cause = Object.assign(new Error('private server response and token'), { code: 'ECONNRESET' })
+  registry.register(engine(async () => { throw cause }))
+  try {
+    await assert.rejects(registry.embed({ texts: ['document'], purpose: 'document' }, binding), error => {
+      assert.ok(error instanceof EmbeddingError)
+      assert.equal(error.cause, cause)
+      assert.equal(error.code, 'engine-unavailable')
+      assert.ok(!error.message.includes('private'))
+      return true
+    })
+  } finally { registry.dispose() }
+})
+
 test('invalid provider model descriptions and availability states cannot enter the usable catalog', async () => {
   const registry = new EmbeddingRegistry()
   const base = engine()

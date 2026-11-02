@@ -1,14 +1,20 @@
 import { createHash } from 'node:crypto'
 import { EmbeddingError, type EmbeddingEngine, type EmbeddingEngineOutput, type EmbeddingEngineRequest, type EmbeddingModel } from '../../../embedding/index.js'
 import type { EngineConfiguration } from '../../../modules/engines/index.js'
+import { recordIndexPerformance } from '../../../modules/retrieval/index.js'
 
 export const QWEN3_RETRIEVAL_INSTRUCTION = 'Given a search query, retrieve relevant passages from the document that answer the query'
 const localEndpoint = 'http://127.0.0.1:8001/v1/embeddings'
 const modelName = 'mlx-community/Qwen3-Embedding-0.6B-8bit'
+const metadataTtlMs = 2000
+const metadataCacheLimit = 128
+const metadataPendingLimit = 32
 
 interface Options {
   fetch?: typeof fetch
   maxResponseBytes?: number
+  /** Monotonic test clock; discovery freshness is an internal adapter policy. */
+  now?: () => number
   /** Host-owned references, never raw credentials from settings. Resolved once per operation. */
   resolveCredential?: (reference: string, signal: AbortSignal) => Promise<string | undefined>
 }
@@ -54,7 +60,10 @@ function configuration(input: EngineConfiguration): Configuration {
 }
 
 async function readJson(response: Response, limit: number): Promise<unknown> {
-  if (!response.ok) { await response.body?.cancel(); throw new EmbeddingError('engine-unavailable', 'The embedding endpoint returned an error.') }
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw Object.assign(new EmbeddingError('engine-unavailable', 'The embedding endpoint returned an error.'), { status: response.status })
+  }
   const length = Number(response.headers.get('content-length'))
   if (Number.isFinite(length) && length > limit) { await response.body?.cancel(); throw new EmbeddingError('limit-exceeded', 'The embedding response exceeds its size limit.') }
   const reader = response.body?.getReader()
@@ -79,7 +88,10 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
   // Keep the persisted ID so an existing service binding retains its configuration.
   const id = 'local-qwen3-embedding'
   const requestFetch = options.fetch ?? fetch
+  const now = options.now ?? performance.now.bind(performance)
   const revisions = new Map<string, string>()
+  const metadata = new Map<string, { revision?: string; expires: number }>()
+  const pending = new Map<string, { controller: AbortController; waiters: Set<object>; settled: boolean; promise: Promise<string | undefined> }>()
   const descriptor = { id, name: 'Embedding service', version: '3', execution: 'service' as const,
     configurationFields: [
       { key: 'endpoint', label: 'Embedding endpoint', type: 'string' as const },
@@ -122,31 +134,93 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
     }
     return result
   }
-  const verifyMetadata = async (config: Configuration, signal: AbortSignal, requestHeaders: Headers): Promise<string | undefined> => {
-    const url = new URL(config.endpoint)
-    url.pathname = url.pathname.replace(/\/embeddings\/?$/, '/models')
-    const response = await requestFetch(url.toString(), { headers: requestHeaders, redirect: 'error', signal })
-    const raw = await readJson(response, 64 * 1024) as { data?: { id?: unknown; embedding?: Record<string, unknown> }[] }
-    const entry = Array.isArray(raw?.data) ? raw.data.find(item => item?.id === config.model) : undefined
-    if (!entry) throw new EmbeddingError('engine-unavailable', 'The embedding model is not listed by the service at /models.')
-    const metadata = entry?.embedding
-    // Standard OpenAI-compatible services do not have this extension. When a
-    // service supplies it, honor its stronger revision and truncation contract.
-    if (metadata !== undefined && (!metadata || typeof metadata.revision !== 'string' || !metadata.revision.trim()
-        || metadata.revision.length > 512 || metadata.dimensions !== config.dimensions
-        || metadata.truncation !== false || typeof metadata.maxInputCharacters !== 'number'
-        || metadata.maxInputCharacters < config.maxInputCharacters || typeof metadata.maxBatchSize !== 'number'
-        || metadata.maxBatchSize < config.maxBatchSize || metadata.queryEncoding !== 'client-instruction')) {
-      throw new EmbeddingError('engine-unavailable', 'The embedding endpoint must report matching model metadata and non-truncating inputs at /v1/models.')
-    }
+  const rememberRevision = (config: Configuration, revision: string | undefined) => {
     const identity = configurationIdentity(config)
     revisions.delete(identity)
-    const revision = metadata?.revision as string | undefined
     if (revision !== undefined) {
       revisions.set(identity, revision)
       if (revisions.size > 128) revisions.delete(revisions.keys().next().value!)
     }
-    return revision
+  }
+  const discoveryKey = (config: Configuration, requestHeaders: Headers) => createHash('sha256')
+    .update(JSON.stringify([configurationIdentity(config), config.maxBatchSize, config.maxInputCharacters,
+      requestHeaders.get('authorization')])).digest('hex')
+  const readMetadata = async (config: Configuration, signal: AbortSignal, requestHeaders: Headers): Promise<string | undefined> => {
+    const url = new URL(config.endpoint)
+    url.pathname = url.pathname.replace(/\/embeddings\/?$/, '/models')
+    const started = performance.now()
+    let raw: { data?: { id?: unknown; embedding?: Record<string, unknown> }[] }
+    try {
+      const response = await requestFetch(url.toString(), { headers: requestHeaders, redirect: 'error', signal })
+      raw = await readJson(response, 64 * 1024) as typeof raw
+    } finally { recordIndexPerformance({ stage: 'metadata-http', durationMs: performance.now() - started, requests: 1 }) }
+    signal.throwIfAborted()
+    const entry = Array.isArray(raw?.data) ? raw.data.find(item => item?.id === config.model) : undefined
+    if (!entry) throw new EmbeddingError('engine-unavailable', 'The embedding model is not listed by the service at /models.')
+    const attestation = entry?.embedding
+    // Standard OpenAI-compatible services do not have this extension. When a
+    // service supplies it, honor its stronger revision and truncation contract.
+    if (attestation !== undefined && (!attestation || typeof attestation.revision !== 'string' || !attestation.revision.trim()
+        || attestation.revision.length > 512 || attestation.dimensions !== config.dimensions
+        || attestation.truncation !== false || typeof attestation.maxInputCharacters !== 'number'
+        || attestation.maxInputCharacters < config.maxInputCharacters || typeof attestation.maxBatchSize !== 'number'
+        || attestation.maxBatchSize < config.maxBatchSize || attestation.queryEncoding !== 'client-instruction')) {
+      throw new EmbeddingError('engine-unavailable', 'The embedding endpoint must report matching model metadata and non-truncating inputs at /v1/models.')
+    }
+    return attestation?.revision as string | undefined
+  }
+  const verifyMetadata = async (config: Configuration, signal: AbortSignal, requestHeaders: Headers): Promise<string | undefined> => {
+    signal.throwIfAborted()
+    const key = discoveryKey(config, requestHeaders), cached = metadata.get(key)
+    if (cached && cached.expires > now()) {
+      metadata.delete(key); metadata.set(key, cached)
+      rememberRevision(config, cached.revision)
+      return cached.revision
+    }
+    metadata.delete(key)
+    let job = pending.get(key)
+    if (!job) {
+      if (pending.size >= metadataPendingLimit) throw new EmbeddingError('engine-unavailable', 'Too many embedding model checks are pending. Retry shortly.')
+      const created = { controller: new AbortController(), waiters: new Set<object>(), settled: false,
+        promise: Promise.resolve<string | undefined>(undefined) }
+      pending.set(key, created)
+      created.promise = Promise.resolve().then(() => {
+        created.controller.signal.throwIfAborted()
+        return readMetadata(config, created.controller.signal, requestHeaders)
+      }).then(revision => {
+        created.controller.signal.throwIfAborted()
+        rememberRevision(config, revision)
+        // Cache only successful attestations, scoped to the actual resolved
+        // credential, requested capabilities and this adapter instance.
+        metadata.set(key, { revision, expires: now() + metadataTtlMs })
+        while (metadata.size > metadataCacheLimit) metadata.delete(metadata.keys().next().value!)
+        return revision
+      }).finally(() => {
+        created.settled = true
+        if (pending.get(key) === created) pending.delete(key)
+      })
+      void created.promise.catch(() => {})
+      job = created
+    }
+    if (job.controller.signal.aborted) {
+      throw new EmbeddingError('engine-unavailable', 'The previous model check is still cancelling. Retry shortly.')
+    }
+    const shared = job, waiter = {}
+    shared.waiters.add(waiter)
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (result: { revision?: string } | { error: unknown }) => {
+        if (settled) return
+        settled = true; signal.removeEventListener('abort', abort); shared.waiters.delete(waiter)
+        // A caller leaving does not cancel another caller's metadata request.
+        if (!shared.settled && !shared.waiters.size) shared.controller.abort()
+        if ('error' in result) reject(result.error); else resolve(result.revision)
+      }
+      const abort = () => finish({ error: signal.reason ?? new DOMException('Model check cancelled', 'AbortError') })
+      signal.addEventListener('abort', abort, { once: true })
+      shared.promise.then(revision => finish({ revision }), error => finish({ error }))
+      if (signal.aborted) abort()
+    })
   }
   const embed = async (request: EmbeddingEngineRequest, input: EngineConfiguration): Promise<EmbeddingEngineOutput> => {
     const config = configuration(input)
@@ -161,14 +235,22 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
     const serviceRevision = await verifyMetadata(config, request.signal, requestHeaders)
     const verifiedModel = describe(input)
     request.signal.throwIfAborted()
-    const response = await requestFetch(config.endpoint, { method: 'POST', redirect: 'error', signal: request.signal,
-      headers: requestHeaders, body: JSON.stringify({ model: config.model, input: texts, encoding_format: 'float' }) })
-    const raw = await readJson(response, options.maxResponseBytes ?? 4 * 1024 * 1024) as { model?: unknown; model_revision?: unknown; data?: unknown }
+    const started = performance.now()
+    let raw: { model?: unknown; model_revision?: unknown; data?: unknown }
+    try {
+      const response = await requestFetch(config.endpoint, { method: 'POST', redirect: 'error', signal: request.signal,
+        headers: requestHeaders, body: JSON.stringify({ model: config.model, input: texts, encoding_format: 'float' }) })
+      raw = await readJson(response, options.maxResponseBytes ?? 4 * 1024 * 1024) as typeof raw
+    } finally { recordIndexPerformance({ stage: 'embedding-http', durationMs: performance.now() - started, requests: 1, records: texts.length }) }
     request.signal.throwIfAborted()
     if (!raw || typeof raw !== 'object' || !Array.isArray(raw.data) || raw.data.length !== texts.length
         || serviceRevision !== undefined && raw.model_revision !== serviceRevision
         || raw.model_revision !== undefined && (typeof raw.model_revision !== 'string' || !raw.model_revision.trim() || raw.model_revision.length > 512)
-        || raw.model !== undefined && raw.model !== config.model) throw new EmbeddingError('invalid-result', 'The embedding response does not match the requested model, revision or batch.')
+        || raw.model !== undefined && raw.model !== config.model) {
+      // A stale attestation must not make every retry fail for its entire TTL.
+      metadata.delete(discoveryKey(config, requestHeaders))
+      throw new EmbeddingError('invalid-result', 'The embedding response does not match the requested model, revision or batch.')
+    }
     const vectors: number[][] = Array.from({ length: texts.length })
     const indices = new Set<number>()
     for (const item of raw.data) {

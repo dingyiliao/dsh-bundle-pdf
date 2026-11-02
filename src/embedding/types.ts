@@ -4,8 +4,8 @@ export type EmbeddingErrorCode = 'disabled' | 'not-configured' | 'engine-unavail
   | 'invalid-request' | 'invalid-result' | 'limit-exceeded' | 'timeout' | 'cancelled'
 
 export class EmbeddingError extends Error {
-  constructor(readonly code: EmbeddingErrorCode, message: string) {
-    super(message)
+  constructor(readonly code: EmbeddingErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = 'EmbeddingError'
   }
 }

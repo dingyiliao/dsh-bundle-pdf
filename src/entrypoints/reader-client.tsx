@@ -34,9 +34,9 @@ export const name = 'pdf-reader-client'
 export const inject = ['connection', 'documentPreviews', 'slots', 'locale', 'configForms', 'uiSession', 'sidebarRight']
 const NS = 'pdfReader'
 const ID = '@dylanl1/dsh-plugin-pdf'
-const desktopSavePicker = (globalThis as typeof globalThis & {
-  __DSH_SAVE_FILE_PICKER__?: { pick(defaultPath: string): Promise<string | null> }
-}).__DSH_SAVE_FILE_PICKER__
+const desktopDirectoryPicker = (globalThis as typeof globalThis & {
+  __DSH_DIRECTORY_PICKER__?: { pick(): Promise<string | null> }
+}).__DSH_DIRECTORY_PICKER__
 
 interface ClientContext {
   fiber?: { readonly uid: number | null }
@@ -187,7 +187,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
       agentNavigation={agentNavigation}
       promptExplanation={props.sessionId === file.sessionId
         ? (content, signal) => sendExplanationPrompt(ctx.uiSession.adapter.current, file.sessionId, content, signal) : undefined}
-      pickSavePath={desktopSavePicker?.pick}
+      pickSaveDirectory={desktopDirectoryPicker ? () => desktopDirectoryPicker.pick() : undefined}
       addressForPath={sessionFileAddress}
       evidenceNavigation={evidenceNavigation}
       rememberTranslationTargetLanguage={rememberTranslationTargetLanguage}

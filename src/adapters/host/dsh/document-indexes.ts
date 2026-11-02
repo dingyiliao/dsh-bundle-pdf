@@ -7,7 +7,7 @@ import type { RetrievalPrepareInput, RetrievalProgress } from '../../../modules/
 import type { PdfRetrieval } from './retrieval.js'
 
 type Policies = ReturnType<typeof createDocumentIndexPolicies>
-interface Plan { id: string; value: ResolvedIndexPlan; force?: boolean }
+interface Plan { id: string; value: ResolvedIndexPlan; force?: boolean; started?: boolean; incomplete?: boolean; inFlight?: number }
 interface Runtime { api: PdfRetrieval; users: number; used: number; plan: string; retired?: boolean }
 const identity = (value: ResolvedIndexPlan) => createHash('sha256').update(canonicalEngineJson(value as EngineJson)).digest('hex')
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }) }
@@ -109,12 +109,58 @@ export function createDocumentIndexes(options: {
         return
       }
       const previous = candidates.get(owner.path)
-      if (previous && identity(previous.value) === key && (!force || previous.force)) return
+      if (previous && identity(previous.value) === key
+        && (!force || previous.force && (!previous.started || previous.inFlight || previous.incomplete))) return
       if (!force && identity(active(owner.path).value) === key) {
         candidates.delete(owner.path); changed(); return
       }
       candidates.set(owner.path, { value, id: force ? `${key}:${randomUUID()}` : key, ...(force ? { force: true } : {}) })
       changed()
+    })
+  }
+  async function prepare(sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
+    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean): Promise<boolean> {
+    return owned(sessionId, input.documentId, async owner => {
+      await options.policies.settled(owner.path)
+      if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
+        fail('pdf/retrieval-engine-unavailable', 'Semantic search is disabled in PDF settings.')
+      }
+      const candidate = candidates.get(owner.path), plan = candidate ?? active(owner.path)
+      if (candidate && (input.fromPage !== undefined && input.fromPage !== 1 || input.maxPages !== undefined)) {
+        fail('pdf/invalid-request', 'A replacement index must cover the whole PDF before it can become active.')
+      }
+      if (input.indexPlanId && input.indexPlanId !== plan.id) fail('pdf/stale-reader', 'The queued PDF index configuration has changed.')
+      plan.started = true
+      plan.incomplete = false
+      plan.inFlight = (plan.inFlight ?? 0) + 1
+      try {
+        const complete = await use(plan, signal, async (api, active) => {
+          const request = { documentId: input.documentId,
+            ...(input.fromPage ? { fromPage: input.fromPage } : {}), ...(input.maxPages ? { maxPages: input.maxPages } : {}),
+            ...(plan.force ? { rebuild: true, rebuildToken: plan.id } : {}) }
+          if (slice && api.prepareSlice) return api.prepareSlice(sessionId, request, active, onProgress)
+          await api.prepare(sessionId, request, active, onProgress)
+          return true
+        })
+        signal.throwIfAborted()
+        plan.incomplete = !complete
+        if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
+          fail('pdf/retrieval-engine-unavailable', 'Semantic search was disabled during indexing.')
+        }
+        if (candidate) {
+          if (candidates.get(owner.path) !== candidate) fail('pdf/stale-reader', 'The PDF index update was superseded.')
+          // A durable quantum is resumable work, not a completed replacement.
+          // Existing queries keep their accepted plan until the final quantum.
+          if (complete) {
+            await options.policies.activate(owner.path, plan.value)
+            if (plan.force) for (const [id, runtime] of runtimes) {
+              if (id !== plan.id && runtime.plan === identity(plan.value)) runtime.retired = true
+            }
+            activeIds.set(owner.path, plan.id); candidates.delete(owner.path); changed()
+          }
+        }
+        return complete
+      } finally { plan.inFlight-- }
     })
   }
   return {
@@ -152,33 +198,10 @@ export function createDocumentIndexes(options: {
     },
     async prepare(sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
       onProgress?: (progress: RetrievalProgress) => void) {
-      return owned(sessionId, input.documentId, async owner => {
-        await options.policies.settled(owner.path)
-        if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
-          fail('pdf/retrieval-engine-unavailable', 'Semantic search is disabled in PDF settings.')
-        }
-        const candidate = candidates.get(owner.path), plan = candidate ?? active(owner.path)
-        if (candidate && (input.fromPage !== undefined && input.fromPage !== 1 || input.maxPages !== undefined)) {
-          fail('pdf/invalid-request', 'A replacement index must cover the whole PDF before it can become active.')
-        }
-        if (input.indexPlanId && input.indexPlanId !== plan.id) fail('pdf/stale-reader', 'The queued PDF index configuration has changed.')
-        await use(plan, signal, (api, active) => api.prepare(sessionId, { documentId: input.documentId,
-          ...(input.fromPage ? { fromPage: input.fromPage } : {}), ...(input.maxPages ? { maxPages: input.maxPages } : {}),
-          ...(plan.force ? { rebuild: true } : {}) }, active, onProgress))
-        signal.throwIfAborted()
-        if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
-          fail('pdf/retrieval-engine-unavailable', 'Semantic search was disabled during indexing.')
-        }
-        if (candidate) {
-          if (candidates.get(owner.path) !== candidate) fail('pdf/stale-reader', 'The PDF index update was superseded.')
-          await options.policies.activate(owner.path, plan.value)
-          if (plan.force) for (const [id, runtime] of runtimes) {
-            if (id !== plan.id && runtime.plan === identity(plan.value)) runtime.retired = true
-          }
-          activeIds.set(owner.path, plan.id); candidates.delete(owner.path); changed()
-        }
-      })
+      await prepare(sessionId, input, signal, onProgress, false)
     },
+    prepareSlice: (sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
+      onProgress?: (progress: RetrievalProgress) => void) => prepare(sessionId, input, signal, onProgress, true),
     async search(sessionId: string, input: Parameters<PdfRetrieval['search']>[1], signal: AbortSignal) {
       return owned(sessionId, input.documentId, async owner => {
         await options.policies.settled(owner.path)

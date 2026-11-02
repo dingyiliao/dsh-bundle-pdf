@@ -11,11 +11,18 @@ import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
+import { encodePng } from '../../../src/adapters/host/pdfium/png.ts'
+import { withIndexPerformance, type IndexPerformanceMetric } from '../../../src/modules/retrieval/performance.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
 const skip = !existsSync(executable)
 const signal = new AbortController().signal
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
 
 function agent(sessionId: string): PdfAgent {
   return { session: { id: sessionId, header: {} } }
@@ -382,22 +389,150 @@ test('a changed workspace revision invalidates in-flight native page and OCR ren
 
 test('corrupt page geometry is rejected before a native render is requested', { skip }, async () => {
   const state = memoryWorkspace(await nativeFixture())
-  let corrupt = false
+  let corrupt: 'unit' | 'missing' | undefined
   const workspaces = { ...state.workspaces,
     readSnapshot(sessionId: string, id: string) {
       const snapshot = state.workspaces.readSnapshot(sessionId, id)
       if (!corrupt) return snapshot
       const first = snapshot.document.pages[0]!
       return { ...snapshot, document: { ...snapshot.document,
-        pages: [{ ...first, userUnit: 0 }, ...snapshot.document.pages.slice(1)] } }
+        pages: corrupt === 'missing' ? [] : [{ ...first, userUnit: 0 }, ...snapshot.document.pages.slice(1)] } }
     },
   }
   const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-service-corrupt-geometry'
   try {
     const opened = await open(service, sessionId)
-    corrupt = true
-    await assert.rejects(service.renderPage(sessionId, opened.id, 1, 512, signal), { code: 'pdf/invalid-page' })
-    await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/invalid-page' })
+    for (const fault of ['unit', 'missing'] as const) {
+      corrupt = fault
+      await assert.rejects(service.renderPage(sessionId, opened.id, 1, 512, signal), { code: 'pdf/invalid-page' })
+      await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/invalid-page' })
+    }
   } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('slow OCR PNG compression releases the native lease for UI reads and handle reclamation', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture()), gate = deferred(), encoding = deferred()
+  const metrics: IndexPerformanceMetric[] = []
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    async encodeOcrPng(...args) { encoding.resolve(); await gate.promise; return encodePng(...args) },
+  })
+  const sessionId = 'pdf-service-compression-lease'; let deadline: ReturnType<typeof setTimeout> | undefined
+  let image: ReturnType<typeof service.renderOcrImage> | undefined
+  try {
+    const opened = await open(service, sessionId)
+    image = withIndexPerformance(metric => metrics.push(metric), () => service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal))
+    await encoding.promise
+    assert.equal(metrics.filter(metric => metric.stage === 'native-render').length, 1)
+    assert.equal(metrics.filter(metric => metric.stage === 'png-encode').length, 0)
+    // A real native read, not a mocked scheduler, must complete while the PNG
+    // encoder is deliberately stopped. PDFium itself remains FIFO serialized.
+    const read = await Promise.race([service.readPageText(sessionId, opened.id, 2, signal), new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error('Native read was blocked by PNG compression')), 2000)
+    })])
+    assert.deepEqual(read.content.items.map(item => item.str), ['Native PDF test page 2'])
+    await service.releaseDocument(opened.id)
+    assert.equal(service.diagnostics().documents, 0)
+    gate.resolve()
+    const rendered = await image
+    assert.deepEqual([...rendered.png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+    assert.equal(rendered.png.readUInt32BE(16), rendered.width)
+    assert.equal(rendered.png.readUInt32BE(20), rendered.height)
+    assert.ok(rendered.width <= 512 && rendered.height <= 512)
+    assert.equal(metrics.filter(metric => metric.stage === 'png-encode').length, 1)
+    assert.ok(metrics.every(metric => metric.durationMs >= 0))
+  } finally {
+    clearTimeout(deadline); gate.resolve(); await image?.catch(() => undefined)
+    await service.dispose(); await state.workspaces.dispose()
+  }
+})
+
+test('OCR pixels encoded outside the lease still fence revision, content, bytes and cancellation', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'pdf-service-encode-fences'
+  let changed: 'revision' | 'content' | 'bytes' | undefined, gate = deferred(), encoding = deferred()
+  const workspaces = { ...state.workspaces, readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+    const snapshot = state.workspaces.readSnapshot(...args)
+    if (changed === 'revision') return { ...snapshot, revision: snapshot.revision + 1 }
+    if (changed === 'content') return { ...snapshot, contentVersion: 'changed-during-encode' }
+    if (changed === 'bytes') return { ...snapshot, bytes: Uint8Array.from([...snapshot.bytes, 0]) }
+    return snapshot
+  } }
+  const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess,
+    async encodeOcrPng(...args) { encoding.resolve(); await gate.promise; return encodePng(...args) },
+  })
+  try {
+    const opened = await open(service, sessionId)
+    for (const fault of ['revision', 'content', 'bytes', 'cancel'] as const) {
+      changed = undefined; gate = deferred(); encoding = deferred()
+      const abort = new AbortController(), image = service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, abort.signal)
+      const rejected = assert.rejects(image, fault === 'cancel' ? /Cancelled while encoding/ : { code: 'pdf/stale-reader' })
+      await encoding.promise
+      if (fault === 'cancel') abort.abort(new Error('Cancelled while encoding'))
+      else changed = fault
+      gate.resolve(); await rejected
+      assert.equal(service.diagnostics().documents, 1)
+    }
+  } finally { gate.resolve(); await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('disposing during OCR compression closes native resources and never publishes the late image', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture()), gate = deferred(), encoding = deferred()
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    async encodeOcrPng(...args) { encoding.resolve(); await gate.promise; return encodePng(...args) },
+  })
+  const sessionId = 'pdf-service-encode-unload'
+  try {
+    const opened = await open(service, sessionId)
+    const image = service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal)
+    const rejected = assert.rejects(image, { code: 'pdf/unavailable' })
+    await encoding.promise
+    await service.dispose()
+    assert.equal(service.diagnostics().documents, 0)
+    gate.resolve(); await rejected
+    await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/unavailable' })
+  } finally { gate.resolve(); await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('OCR rejects corrupt pixel buffers before handing them to the encoder', { skip }, async t => {
+  const state = memoryWorkspace(await nativeFixture()), request = NativeWorker.prototype.request
+  let encodes = 0, fault: 'dimensions' | 'bytes' = 'bytes'
+  t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker, ...args: Parameters<NativeWorker['request']>) {
+    const reply = await request.apply(this, args)
+    if ((args[0] as { command: string }).command !== 'render') return reply
+    return fault === 'bytes' ? { ...reply, bytes: reply.bytes.subarray(4) }
+      : { ...reply, value: { ...reply.value as object, width: 0 } }
+  })
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    async encodeOcrPng(...args) { encodes++; return encodePng(...args) },
+  })
+  const sessionId = 'pdf-service-ocr-pixel-bound'
+  try {
+    const opened = await open(service, sessionId)
+    for (const mode of ['dimensions', 'bytes'] as const) {
+      fault = mode
+      await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/native-protocol' })
+    }
+    assert.equal(encodes, 0)
+    await service.releaseDocument(opened.id); assert.equal(service.diagnostics().documents, 0)
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('unloading when native pixels arrive never admits PNG compression after the lease', { skip }, async t => {
+  const state = memoryWorkspace(await nativeFixture()), request = NativeWorker.prototype.request
+  let service!: ReturnType<typeof createPdfService>, unloading: Promise<void> | undefined, encodes = 0
+  t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker, ...args: Parameters<NativeWorker['request']>) {
+    const reply = await request.apply(this, args)
+    if ((args[0] as { command: string }).command === 'render') unloading = service.dispose()
+    return reply
+  })
+  service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    async encodeOcrPng(...args) { encodes++; return encodePng(...args) },
+  })
+  const sessionId = 'pdf-service-unload-after-raster'
+  try {
+    const opened = await open(service, sessionId)
+    await assert.rejects(service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal), { code: 'pdf/unavailable' })
+    await unloading
+    assert.equal(encodes, 0); assert.equal(service.diagnostics().documents, 0)
+  } finally { await unloading; await service.dispose(); await state.workspaces.dispose() }
 })

@@ -45,7 +45,7 @@ function adapterFixture(options: NonNullable<Parameters<typeof createPdfRetrieva
   references.put = async (...args) => { state.savedReferences++; await put(...args) }
   const retrieval = createPdfRetrieval({ readSnapshot: () => state.snapshot }, {
     async readPageText(_sessionId, _id, page) {
-      state.onRead?.(++state.reads)
+      state.reads++; state.onRead?.(state.reads)
       if (state.failedPages.has(page)) throw Object.assign(new Error('Fixture extraction failure'), { code: 'pdf/fixture-extraction' })
       return { snapshot: state.snapshot, content: { items: [{ str: state.texts.get(page) ?? state.text, transform: [1, 0, 0, 1, 0, 0],
         width: 100, height: 10, dir: 'ltr', fontName: 'Helvetica', hasEOL: false }], styles: {}, lang: null,
@@ -221,6 +221,36 @@ test('unavailable embedding probes preserve lexical retrieval without advertisin
   }
 })
 
+test('sliced Host preparation reauthorizes each quantum, releases its pin and resumes through the shared full-preparation path', async () => {
+  const registry = new EmbeddingRegistry()
+  registry.register(testEngine())
+  let pins = 0, releases = 0, freshChecks = 0, denied = false
+  const { retrieval, state } = adapterFixture({ embeddings: registry, settings: fixtureSettings, limits: { pagesPerStep: 1 },
+    async retain() {
+      if (denied) throw Object.assign(new Error('Caller no longer owns this PDF'), { code: 'pdf/unknown-document' })
+      pins++; return () => { pins--; releases++ }
+    }, async freshSource() { freshChecks++ } })
+  state.snapshot.document.pageCount = 7
+  try {
+    const complete = await retrieval.prepareSlice(sessionId, { documentId: 'document' }, signal)
+    assert.equal(complete, false, 'one page quantum must yield before the seven-page document is complete')
+    assert.equal(pins, 0, 'a yielded or completed quantum retains no working-copy owner')
+    assert.ok(releases > 0)
+    assert.equal(freshChecks, 2, 'authority is checked before and after the quantum, including ready-cache hits')
+    const reads = state.reads, priorReleases = releases
+    denied = true
+    await assert.rejects(retrieval.prepareSlice(sessionId, { documentId: 'document' }, signal), { code: 'pdf/unknown-document' })
+    assert.equal(state.reads, reads, 'resuming a resident index must not bypass its caller permission')
+    denied = false
+    await retrieval.prepare(sessionId, { documentId: 'document' }, signal)
+    assert.equal(state.reads, 7, 'full preparation resumes the existing durable index without re-extracting completed pages')
+    assert.equal(pins, 0)
+    assert.ok(releases > priorReleases)
+    assert.equal(await retrieval.prepareSlice(sessionId, { documentId: 'document' }, signal), true)
+    assert.equal(state.reads, 7)
+  } finally { await retrieval.dispose(); registry.dispose() }
+})
+
 test('background preparation rejects an unavailable embedding engine before extraction and releases its document pin', async () => {
   const registry = new EmbeddingRegistry()
   let pins = 0, releases = 0, freshChecks = 0, embeds = 0
@@ -243,6 +273,49 @@ test('background preparation rejects an unavailable embedding engine before extr
     assert.equal(state.savedReferences, 0)
     assert.equal(embeds, 0)
   } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('default disabled embeddings preserve automatic lexical reading while conflicted warm snapshots are rejected', async () => {
+  const { retrieval, state } = adapterFixture()
+  try {
+    assert.equal((await retrieval.availability(sessionId, signal)).status, 'unavailable')
+    assert.equal((await retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'auto' }, signal)).effectiveMode, 'lexical')
+    state.snapshot.conflict = true
+    await assert.rejects(retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'lexical' }, signal), { code: 'pdf/stale-reader' })
+  } finally { await retrieval.dispose() }
+})
+
+test('session cancellation reaches an admitted embedding quantum and releases its document pins after the worker drains', async () => {
+  const registry = new EmbeddingRegistry()
+  let entered!: () => void, finish!: () => void, pins = 0
+  const started = new Promise<void>(resolve => { entered = resolve }), gate = new Promise<void>(resolve => { finish = resolve })
+  registry.register({ ...testEngine(), async embed(request) {
+    entered(); await gate; request.signal.throwIfAborted(); return request.texts.map(() => [1, 0])
+  } })
+  const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings,
+    async retain() { pins++; return () => { pins-- } } })
+  try {
+    const work = retrieval.prepareSlice(sessionId, { documentId: 'document' }, signal)
+    const cancelled = assert.rejects(work, { code: 'pdf/cancelled' })
+    await started; retrieval.cancelSession(sessionId)
+    assert.ok(pins > 0, 'a noncooperative worker remains pinned until its admitted work actually drains')
+    finish(); await cancelled
+    assert.equal(pins, 0)
+  } finally { finish(); await retrieval.dispose(); registry.dispose() }
+})
+
+test('unloading while an engine availability probe is pending cannot report that engine as usable', async () => {
+  const registry = new EmbeddingRegistry()
+  let entered!: () => void, finish!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), gate = new Promise<void>(resolve => { finish = resolve })
+  registry.register({ ...testEngine(), async availability() { entered(); await gate; return { status: 'available' } } })
+  const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings })
+  try {
+    const checking = retrieval.availability(sessionId, signal)
+    await started; await retrieval.dispose(); finish()
+    const result = await checking
+    assert.equal(result.status, 'unavailable'); assert.match(result.reason!, /unloading/)
+  } finally { finish(); await retrieval.dispose(); registry.dispose() }
 })
 
 test('embedding probe contract errors and caller cancellation are not disguised as unavailable engines', async () => {
@@ -366,9 +439,9 @@ test('service metadata updates rebuild warm vectors before querying and survive 
   const records = new Map<string, unknown>()
   const cache = { get: async (key: string) => records.get(key),
     set: async (key: string, value: unknown) => { records.set(key, value) }, clear: async () => { records.clear() } }
-  let revision = 'A'
+  let revision = 'A', discoveryTime = 0
   const requests: Array<{ revision: string; purpose: 'document' | 'query' }> = []
-  const engine = () => createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {
+  const engine = () => createOpenAiCompatibleEmbeddingEngine({ now: () => discoveryTime, fetch: (async (url, init) => {
     if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'fixture-embedding', embedding: {
       revision, dimensions: 2, truncation: false, maxInputCharacters: 16000,
       maxBatchSize: 8, queryEncoding: 'client-instruction',
@@ -393,7 +466,7 @@ test('service metadata updates rebuild warm vectors before querying and survive 
     const warm = await runtime.retrieval.search(sessionId, input, signal)
     assert.equal(warm.indexGeneration, cold.indexGeneration)
     assert.deepEqual(requests, [{ revision: 'A', purpose: 'document' }, { revision: 'A', purpose: 'query' }, { revision: 'A', purpose: 'query' }])
-    revision = 'B'
+    revision = 'B'; discoveryTime += 2000
     const changed = await runtime.retrieval.search(sessionId, input, signal)
     assert.notEqual(changed.indexGeneration, warm.indexGeneration)
     assert.deepEqual(requests.slice(3), [{ revision: 'B', purpose: 'document' }, { revision: 'B', purpose: 'query' }])
@@ -544,4 +617,48 @@ test('hybrid tools reuse original evidence for shared-draft annotation and ackno
     await dispose(); navigation.dispose(); contexts.dispose(); registry.dispose()
     await pdf.dispose(); await state.workspaces.dispose()
   }
+})
+
+test('Host diagnostics retain structured embedding failure causes while retrieval callers receive the sanitized shared failure', async () => {
+  const registry = new EmbeddingRegistry(), raw = Object.assign(new Error('private provider body', { cause:
+    Object.assign(new Error('private socket address'), { code: 'ECONNRESET' }) }), { status: 503 })
+  const engine = testEngine()
+  engine.embed = async () => { throw raw }
+  registry.register(engine)
+  const events: Array<{ session: string; document: string; error: unknown }> = []
+  const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings,
+    onFailure(session, document, error) { events.push({ session, document, error }) } })
+  try {
+    await assert.rejects(retrieval.prepare(sessionId, { documentId: 'document' }, signal), error => {
+      assert.ok(error instanceof Error)
+      assert.equal((error as Error & { code?: string }).code, 'engine-unavailable')
+      assert.equal(error.cause, undefined)
+      assert.ok(!error.message.includes('private'))
+      return true
+    })
+    assert.equal(events.length, 1)
+    assert.equal(events[0]!.session, sessionId)
+    assert.equal(events[0]!.document, 'document')
+    assert.ok(events[0]!.error instanceof EmbeddingError)
+    assert.equal((events[0]!.error as EmbeddingError).cause, raw)
+  } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('scoped availability failures reach Host diagnostics before the unavailable response discards provider details', async () => {
+  const registry = new EmbeddingRegistry(), raw = new EmbeddingError('timeout', 'private endpoint')
+  const engine = testEngine()
+  engine.availability = async () => { throw raw }
+  registry.register(engine)
+  const events: Array<{ session: string; document: string; error: unknown }> = []
+  const { retrieval } = adapterFixture({ embeddings: registry, settings: fixtureSettings,
+    onFailure(session, document, error) { events.push({ session, document, error }); throw new Error('diagnostic sink failed') } })
+  try {
+    await assert.rejects(retrieval.prepare(sessionId, { documentId: 'document' }, signal), { code: 'pdf/retrieval-engine-unavailable' })
+    assert.deepEqual(events.map(({ session, document }) => [session, document]), [[sessionId, 'document']])
+    assert.equal(events[0]!.error, raw)
+    const response = await retrieval.availability(sessionId, signal)
+    assert.equal(response.status, 'unavailable')
+    assert.equal(events.length, 1, 'unscoped capability probes do not invent task diagnostic ownership')
+    assert.ok(!JSON.stringify(response).includes('private'))
+  } finally { await retrieval.dispose(); registry.dispose() }
 })

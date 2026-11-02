@@ -16,7 +16,7 @@ function deferred() {
   const promise = new Promise<void>(yes => { resolve = yes })
   return { promise, resolve }
 }
-interface Call { kind: string; runtime: number; sessionId?: string; documentId?: string; rebuild?: boolean; fromPage?: number; maxPages?: number }
+interface Call { kind: string; runtime: number; sessionId?: string; documentId?: string; rebuild?: boolean; rebuildToken?: string; fromPage?: number; maxPages?: number }
 interface Runtime {
   id: number; plan: ResolvedIndexPlan; closed: boolean; cancelled: string[]
   lifetime: AbortController; pending: Set<Promise<unknown>>
@@ -36,6 +36,7 @@ function fixture(maxRuntimes?: number) {
   const runtimes: Runtime[] = [], calls: Call[] = []
   const state = { clears: 0, createError: undefined as Error | undefined,
     onPrepare: undefined as ((runtime: Runtime, call: Call, active: AbortSignal) => Promise<void>) | undefined,
+    onPrepareSlice: undefined as ((runtime: Runtime, call: Call, active: AbortSignal) => Promise<boolean>) | undefined,
     onSearch: undefined as ((runtime: Runtime, call: Call, active: AbortSignal) => Promise<void>) | undefined,
     onAvailability: undefined as ((runtime: Runtime, call: Call, active: AbortSignal) => Promise<void>) | undefined,
     onDispose: undefined as ((runtime: Runtime) => Promise<void>) | undefined,
@@ -61,6 +62,14 @@ function fixture(maxRuntimes?: number) {
       async prepare(sessionId, input, active, progress) {
         await run({ kind: 'prepare', runtime: runtime.id, sessionId, ...input }, active, state.onPrepare)
         progress?.({ indexedPages: 1, totalPages: 1, embeddedChunks: 1, totalChunks: 1, phase: 'ready', reusedChunks: 0, computedChunks: 1 })
+      },
+      async prepareSlice(sessionId, input, active, progress) {
+        let complete = true
+        await run({ kind: 'prepareSlice', runtime: runtime.id, sessionId, ...input }, active,
+          async (...args) => { complete = await state.onPrepareSlice?.(...args) ?? true })
+        progress?.({ indexedPages: 1, totalPages: complete ? 1 : 2, embeddedChunks: 1, totalChunks: complete ? 1 : 2,
+          phase: complete ? 'ready' : 'extracting', reusedChunks: 0, computedChunks: 1 })
+        return complete
       },
       async search(sessionId, input, active) {
         await run({ kind: 'search', runtime: runtime.id, sessionId, documentId: input.documentId }, active, state.onSearch)
@@ -121,6 +130,73 @@ test('queries retain the ready plan until a full candidate succeeds, then all vi
   } finally { gate.resolve(); await f.api.dispose() }
 })
 
+test('yielded replacement quanta preserve their plan and never activate before the final quantum', async () => {
+  const f = fixture()
+  try {
+    const accepted = await f.search()
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a', true)
+    const selected = f.api.selection(f.documents[0]!)!
+    f.state.onPrepareSlice = async () => false
+    assert.equal(await f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal), false)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
+    assert.equal(f.api.settings('a', 'doc-a').pending, true)
+    assert.equal((await f.search()).indexGeneration, accepted.indexGeneration)
+    assert.equal((await f.search('b', 'doc-b')).indexGeneration, accepted.indexGeneration)
+    await f.api.stage('a', 'doc-a', true)
+    assert.deepEqual(f.api.selection(f.documents[0]!), selected, 'a paused force generation coalesces duplicate rebuild requests')
+    f.state.onPrepareSlice = async () => true
+    assert.equal(await f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal), true)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-b')
+    const updated = await f.search()
+    assert.notEqual(updated.indexGeneration, accepted.indexGeneration)
+    assert.equal((await f.search('b', 'doc-b')).indexGeneration, updated.indexGeneration)
+    assert.deepEqual(f.calls.filter(call => call.kind === 'prepareSlice').map(call => call.rebuildToken),
+      [selected.planId, selected.planId], 'all slices reuse the durable rebuild token')
+    assert.equal(f.runtimes.length, 2)
+  } finally { await f.api.dispose() }
+})
+
+test('a superseded sliced candidate cannot activate or continue using an old plan id', async () => {
+  const f = fixture(), entered = deferred(), gate = deferred()
+  try {
+    const accepted = await f.search()
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
+    const selected = f.api.selection(f.documents[0]!)!
+    f.state.onPrepareSlice = async () => { entered.resolve(); await gate.promise; return false }
+    const work = f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal)
+    const rejected = assert.rejects(work, { code: 'pdf/stale-reader' })
+    await entered.promise
+    await f.configure('embed-c'); await f.api.stage('a', 'doc-a')
+    gate.resolve(); await rejected
+    await assert.rejects(f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal), { code: 'pdf/stale-reader' })
+    assert.equal((await f.search()).indexGeneration, accepted.indexGeneration)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a')
+  } finally { gate.resolve(); await f.api.dispose() }
+})
+
+test('sliced preparation falls back to a legacy full adapter and only then activates its candidate', async () => {
+  const documents = [{ sessionId: 'a', id: 'doc', path: '/legacy.pdf', contentVersion: 'v1', sourceDigest: 'source', conflict: false }]
+  let settings = { ...defaultSettings, embeddingEngine: 'embed-a' }, fullCalls = 0
+  const records = new Map<string, unknown>()
+  const policies = createDocumentIndexPolicies({ key: path => path, get: key => records.get(key),
+    async put(key, value) { records.set(key, value) } }, () => settings)
+  const api = createDocumentIndexes({ documents: () => documents, policies,
+    create() {
+      // This external adapter implements the pre-slicing public surface.
+      return { async availability() { return { status: 'available' } },
+        async prepare() { fullCalls++ }, async search() { throw new Error('Unused legacy search') },
+        cancelSession() {}, async rebuild() {}, async dispose() {} }
+    }, async clearCache() {} })
+  try {
+    api.settings('a', 'doc'); await policies.settled('/legacy.pdf')
+    settings = { ...settings, embeddingEngine: 'embed-b' }; api.refresh()
+    await api.stage('a', 'doc')
+    assert.equal(await api.prepareSlice('a', { documentId: 'doc' }, signal), true)
+    assert.equal(fullCalls, 1)
+    assert.equal(policies.active('/legacy.pdf').policy.embeddingEngine, 'embed-b')
+  } finally { await api.dispose() }
+})
+
 test('per-file content flags survive saves and later engine selection always comes from global settings', async () => {
   const f = fixture()
   try {
@@ -155,6 +231,17 @@ test('unowned documents cannot inspect settings, stage builds, allocate runtimes
     assert.equal((await f.api.availability('a', signal)).status, 'unavailable')
     const abort = new AbortController(); abort.abort(new Error('caller left'))
     await assert.rejects(f.api.availability('a', abort.signal), /caller left/)
+  } finally { await f.api.dispose() }
+})
+
+test('global disable between admission and runtime allocation cannot start a stale query engine', async () => {
+  const f = fixture()
+  try {
+    f.api.settings('a', 'doc-a'); await f.policies.settled('/book.pdf')
+    const pending = f.search()
+    f.updateDefaults({ embeddingEngine: 'none' })
+    await assert.rejects(pending, { code: 'pdf/retrieval-engine-unavailable' })
+    assert.equal(f.runtimes.length, 0)
   } finally { await f.api.dispose() }
 })
 
@@ -245,6 +332,7 @@ test('enabling global search for a PDF opened while disabled asks for an explici
     f.updateDefaults({ embeddingEngine: 'embed-a' }); f.api.refresh()
     assert.equal(f.api.settings('a', 'doc-a').enabled, true)
     assert.equal(f.api.settings('a', 'doc-a').activeEnabled, false)
+    assert.equal(f.api.selection(f.documents[0]!), undefined, 'reenabling an engine does not implicitly select an unbuilt replacement')
     const reason = 'Build or update this PDF\'s semantic index in the search panel before searching.'
     assert.deepEqual(await f.api.availability('a', signal, 'doc-a'), { status: 'unavailable', reason })
     await assert.rejects(f.search(), { code: 'pdf/retrieval-engine-unavailable', message: reason })
@@ -276,6 +364,74 @@ test('staging is idempotent, force creates one fresh runtime, and ordinary resum
     assert.equal(f.runtimes.length, 2, 'normal resume preserves the most recently refreshed runtime')
     assert.equal(f.calls.at(-2)!.rebuild, undefined)
   } finally { await f.api.dispose() }
+})
+
+test('a failed forced build resumes with the same durable reset token instead of starting another generation', async () => {
+  const f = fixture()
+  try {
+    const accepted = await f.search()
+    await f.api.stage('a', 'doc-a', true)
+    const candidate = f.api.selection(f.documents[0]!)!
+    f.state.onPrepare = async () => { throw new Error('temporary storage outage') }
+    await assert.rejects(f.api.prepare('a', { documentId: 'doc-a', indexPlanId: candidate.planId }, signal), /temporary storage outage/)
+    assert.equal((await f.search()).indexGeneration, accepted.indexGeneration)
+    await f.api.stage('a', 'doc-a')
+    assert.deepEqual(f.api.selection(f.documents[0]!), candidate)
+    f.state.onPrepare = undefined
+    await f.api.prepare('a', { documentId: 'doc-a', indexPlanId: candidate.planId }, signal)
+    const preparations = f.calls.filter(call => call.kind === 'prepare')
+    assert.deepEqual(preparations.map(call => ({ rebuild: call.rebuild, token: call.rebuildToken })), [
+      { rebuild: true, token: candidate.planId }, { rebuild: true, token: candidate.planId },
+    ])
+    assert.equal(f.runtimes.length, 2, 'resume retains the candidate runtime and its disk checkpoint')
+  } finally { await f.api.dispose() }
+})
+
+test('an explicit forced rebuild after failure gets a new token while repeated live requests coalesce', async () => {
+  const f = fixture(), entered = deferred(), gate = deferred()
+  try {
+    await f.api.stage('a', 'doc-a', true)
+    const first = f.api.selection(f.documents[0]!)!
+    f.state.onPrepare = async () => { entered.resolve(); await gate.promise; throw new Error('failed build') }
+    const work = f.api.prepare('a', { documentId: 'doc-a', indexPlanId: first.planId }, signal)
+    const failure = assert.rejects(work, /failed build/)
+    await entered.promise
+    await f.api.stage('a', 'doc-a', true)
+    assert.deepEqual(f.api.selection(f.documents[0]!), first, 'a live force generation is not reset by duplicate requests')
+    gate.resolve(); await failure
+    await f.api.stage('a', 'doc-a', true)
+    const replacement = f.api.selection(f.documents[0]!)!
+    assert.notEqual(replacement.planId, first.planId, 'a new explicit rebuild after settlement owns a new generation token')
+    await f.api.stage('a', 'doc-a', true)
+    assert.deepEqual(f.api.selection(f.documents[0]!), replacement, 'queued requests still coalesce')
+    f.state.onPrepare = undefined
+    await f.api.prepare('a', { documentId: 'doc-a', indexPlanId: replacement.planId }, signal)
+    assert.equal(f.calls.filter(call => call.kind === 'prepare').at(-1)!.rebuildToken, replacement.planId)
+  } finally { gate.resolve(); await f.api.dispose() }
+})
+
+test('cancelling a forced build keeps its token for resume and permits a separate explicit reset', async () => {
+  const f = fixture(), entered = deferred(), controller = new AbortController()
+  try {
+    await f.api.stage('a', 'doc-a', true)
+    const candidate = f.api.selection(f.documents[0]!)!
+    f.state.onPrepare = async (_runtime, _call, active) => {
+      entered.resolve()
+      await new Promise<void>(resolve => {
+        active.addEventListener('abort', () => resolve(), { once: true })
+        if (active.aborted) resolve()
+      })
+    }
+    const preparing = f.api.prepare('a', { documentId: 'doc-a' }, controller.signal)
+    const cancelled = assert.rejects(preparing, /cancelled by caller/)
+    await entered.promise
+    controller.abort(new Error('cancelled by caller'))
+    await cancelled
+    await f.api.stage('a', 'doc-a')
+    assert.deepEqual(f.api.selection(f.documents[0]!), candidate)
+    await f.api.stage('a', 'doc-a', true)
+    assert.notEqual(f.api.selection(f.documents[0]!)!.planId, candidate.planId)
+  } finally { controller.abort(); await f.api.dispose() }
 })
 
 test('LRU eviction waits for real runtime disposal and allocation failure does not poison the queue', async () => {

@@ -1,6 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { ToolbarIcon } from './ToolbarIcon.js'
-import { ReaderPopover } from './ReaderPopover.js'
+import { ReaderPopover, readerPopoverContains } from './ReaderPopover.js'
 
 export interface FloatingStatusAction {
   label: string
@@ -15,6 +15,10 @@ export interface FloatingStatus {
   /** Compact text for the task trigger; rich progress stays inside the popover. */
   summary?: ReactNode
   actions?: readonly FloatingStatusAction[]
+  /** Occasional actions share an overflow menu instead of competing with progress. */
+  menuActions?: readonly FloatingStatusAction[]
+  /** Dismisses the notification, independently of the underlying task. */
+  dismiss?: FloatingStatusAction
   activity?: 'progress' | 'dot'
   /** Outcome semantics are independent of the task's kind and animation. */
   tone?: 'progress' | 'success' | 'error' | 'neutral'
@@ -40,7 +44,26 @@ export function floatingStatusOrder(previous: readonly string[], active: readonl
   return ordered
 }
 
-function FloatingStatusCard({ status }: { status: FloatingStatus }) {
+function FloatingStatusCard({ status, active, t, onDismissFocus }: {
+  status: FloatingStatus
+  active: boolean
+  t(key: string): string
+  onDismissFocus(): void
+}) {
+  const menuTrigger = useRef<HTMLButtonElement>(null)
+  const menuId = useId()
+  const [menuOwner, setMenuOwner] = useState<{ id: string; occurrence?: number } | null>(null)
+  const keyboardOpen = useRef(false)
+  const hasMenu = !!status.menuActions?.length
+  const hasControls = hasMenu || !!status.dismiss
+  const menuOpen = active && hasMenu && menuOwner?.id === status.id && menuOwner.occurrence === status.occurrence
+  const menuLabel = `${t('reader.activityMore')}: ${status.title ?? status.id}`
+  useEffect(() => { if (!active) setMenuOwner(null) }, [active])
+  useLayoutEffect(() => {
+    if (!menuOpen || !keyboardOpen.current) return
+    keyboardOpen.current = false
+    menuTrigger.current?.ownerDocument.getElementById(menuId)?.querySelector<HTMLElement>('button:not(:disabled)')?.focus({ preventScroll: true })
+  }, [menuOpen, menuId])
   const onExpire = useRef(status.onExpire)
   const occurrence = useRef(status.occurrence)
   onExpire.current = status.onExpire
@@ -54,13 +77,42 @@ function FloatingStatusCard({ status }: { status: FloatingStatus }) {
     return () => clearTimeout(timer)
   }, [status.id, status.durationMs, status.occurrence])
 
-  return <div className={`dsh-pdf-floating-status dsh-pdf-glass${status.className ? ` ${status.className}` : ''}`}
+  return <div className={`dsh-pdf-floating-status dsh-pdf-glass${hasControls ? ' dsh-pdf-status-with-controls' : ''}${status.className ? ` ${status.className}` : ''}`}
+    style={hasControls ? { '--pdf-status-controls-width': `${(hasMenu ? 28 : 0) + (status.dismiss ? 28 : 0) + (hasMenu && status.dismiss ? 4 : 0)}px` } as CSSProperties : undefined}
     data-status-id={status.id} data-kind={status.kind} data-tone={statusTone(status)} title={status.title}>
     {status.activity === 'progress' && <span className="dsh-pdf-floating-status-spinner" aria-hidden="true" />}
     {status.activity === 'dot' && <span className="dsh-pdf-floating-status-dot" aria-hidden="true" />}
     <span className="dsh-pdf-floating-status-content">{status.content}</span>
+    {hasControls && <div className="dsh-pdf-status-controls">
+      {hasMenu && <button ref={menuTrigger} type="button" className="dsh-pdf-status-icon-action"
+        aria-label={menuLabel} aria-expanded={menuOpen} aria-controls={menuId} data-tooltip={t('reader.activityMore')}
+        onClick={event => {
+          keyboardOpen.current = event.detail === 0
+          setMenuOwner(menuOpen ? null : { id: status.id, occurrence: status.occurrence })
+        }}><ToolbarIcon name="more" /></button>}
+      {status.dismiss && <button type="button" className="dsh-pdf-status-icon-action"
+        disabled={status.dismiss.disabled} aria-label={status.dismiss.ariaLabel ?? status.dismiss.label}
+        data-tooltip={status.dismiss.label} onClick={() => {
+          setMenuOwner(null); onDismissFocus(); status.dismiss!.onClick()
+        }}><ToolbarIcon name="close" /></button>}
+    </div>}
     {status.actions?.map((action, index) => <button key={`${action.label}:${index}`} type="button" disabled={action.disabled} aria-label={action.ariaLabel}
       onClick={action.onClick}>{action.label}</button>)}
+    {hasMenu && <ReaderPopover anchor={menuTrigger} open={menuOpen} onClose={() => setMenuOwner(null)}
+      id={menuId} className="dsh-pdf-status-menu dsh-pdf-glass" role="group" aria-label={menuLabel}
+      onBlur={event => {
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)
+          && !menuTrigger.current?.contains(event.relatedTarget)) setMenuOwner(null)
+      }} onKeyDown={event => {
+        if (event.key !== 'Escape' || !menuOpen) return
+        event.preventDefault(); event.stopPropagation(); setMenuOwner(null); menuTrigger.current?.focus({ preventScroll: true })
+      }}>
+      {status.menuActions!.map((action, index) => <button key={index} type="button" disabled={action.disabled}
+        aria-label={action.ariaLabel} onClick={() => {
+          if (!menuOpen) return
+          setMenuOwner(null); menuTrigger.current?.focus({ preventScroll: true }); action.onClick()
+        }}>{action.label}</button>)}
+    </ReaderPopover>}
   </div>
 }
 
@@ -70,6 +122,7 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
+  const inlinePopover = useRef<HTMLDivElement>(null)
   const [rail, setRail] = useState(false)
   useLayoutEffect(() => { setRail(!!root.current?.closest('[data-pdf-tool-rail]')) }, [])
   const popoverId = useId()
@@ -85,7 +138,8 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
   useEffect(() => {
     if (!open || rail) return
     const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false)
+      if (event.target instanceof Node && !root.current?.contains(event.target)
+        && !(inlinePopover.current && readerPopoverContains(inlinePopover.current, event.target))) setOpen(false)
     }
     document.addEventListener('pointerdown', close)
     return () => document.removeEventListener('pointerdown', close)
@@ -95,7 +149,8 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
   const primary = visible.find(status => status.kind === 'error')
     ?? visible.find(status => status.activity === 'progress') ?? visible.at(-1)
   const running = visible.filter(status => status.activity === 'progress' || status.kind === 'saving').length
-  const content = visible.length ? visible.map(status => <FloatingStatusCard key={status.id} status={status} />)
+  const content = visible.length ? visible.map(status => <FloatingStatusCard key={status.id} status={status} active={open} t={t}
+    onDismissFocus={() => trigger.current?.focus({ preventScroll: true })} />)
     : <p className="dsh-pdf-activity-empty">{t('reader.activityEmpty')}</p>
   return <div className="dsh-pdf-floating-status-rail" ref={root} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); root.current?.querySelector('button')?.focus() }
@@ -114,6 +169,6 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
     </button>
     {rail ? <ReaderPopover anchor={trigger} open={open} onClose={() => setOpen(false)} id={popoverId}
       className="dsh-pdf-activity-popover dsh-pdf-glass" role="group" aria-label={t('reader.activity')}>{content}</ReaderPopover>
-      : <div id={popoverId} className="dsh-pdf-activity-popover dsh-pdf-glass" role="group" aria-label={t('reader.activity')} hidden={!open}>{content}</div>}
+      : <div ref={inlinePopover} id={popoverId} data-pdf-popover-id={popoverId} className="dsh-pdf-activity-popover dsh-pdf-glass" role="group" aria-label={t('reader.activity')} hidden={!open}>{content}</div>}
   </div>
 }

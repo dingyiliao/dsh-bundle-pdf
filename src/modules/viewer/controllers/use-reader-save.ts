@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../shared/contracts.js'
+import { createSaveLocation, resolveSaveLocation } from '../model/save-location.js'
 
 export type SaveFeedback = 'saving' | 'saved' | 'unsaved' | 'failed'
 export interface SaveFeedbackState { kind: SaveFeedback; durationMs: number; occurrence: number; path?: string }
@@ -14,7 +15,7 @@ export interface ReaderSaveOptions {
   operationLock: MutableRefObject<boolean>
   currentSnapshot(): WorkspaceSnapshot | null
   act(operation: (current: WorkspaceSnapshot) => Promise<WorkspaceSnapshot>, conflictOnStaleSave?: boolean): Promise<WorkspaceSnapshot | undefined>
-  pickSavePath?: (defaultPath: string) => Promise<string | null>
+  pickSaveDirectory?: () => Promise<string | null>
   openResource(address: string): void
   addressForPath(sessionId: string, path: string): string
   setError: Dispatch<SetStateAction<string>>
@@ -22,22 +23,48 @@ export interface ReaderSaveOptions {
   t(key: string): string
 }
 
-/** The save flow owns feedback, target inspection and picker lifetime, not the PDF write transaction. */
+/** Own the Save As draft and target inspection; Host owns the PDF write transaction. */
 export function useReaderSave(options: ReaderSaveOptions) {
   const { api, sessionId, resourceAddress, tabSignal, snapshot, ownerSequence, operationLock,
-    currentSnapshot, act, pickSavePath, openResource, addressForPath, setError, onError, t } = options
+    currentSnapshot, act, pickSaveDirectory, openResource, addressForPath, setError, onError, t } = options
   const [feedback, setFeedback] = useState<SaveFeedbackState | null>(null)
   const [saveAsOpen, setSaveAsOpen] = useState(false)
   const [saveAsPicking, setSaveAsPicking] = useState(false)
-  const [savePath, setSavePath] = useState('')
-  const [overwrite, setOverwrite] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveDirectory, setSaveDirectory] = useState('')
+  const [replaceConfirm, setReplaceConfirm] = useState(false)
   const [target, setTarget] = useState<{ path: string; version: string | null } | null>(null)
   const [targetChecking, setTargetChecking] = useState(false)
   const [reloadConfirm, setReloadConfirm] = useState(false)
-  const pickerLock = useRef(false)
+  const [targetAttempt, setTargetAttempt] = useState(0)
+  const pickerLock = useRef<object | null>(null)
+  const dialogOwner = useRef<object | null>(null)
   const feedbackOccurrence = useRef(0)
   const feedbackOwner = useRef<{ sessionId: string; resourceAddress: string } | null>(null)
   const previousDirty = useRef<{ id: string; revision: number; dirty: boolean } | null>(null)
+  const location = resolveSaveLocation(saveDirectory, saveName)
+  const savePath = 'path' in location ? location.path : undefined
+
+  const closeSaveAs = useCallback(() => {
+    dialogOwner.current = null
+    pickerLock.current = null
+    setSaveAsPicking(false)
+    setSaveAsOpen(false)
+    setReplaceConfirm(false)
+    setTarget(null)
+    setTargetChecking(false)
+  }, [])
+
+  useEffect(() => {
+    closeSaveAs()
+    const abort = () => closeSaveAs()
+    tabSignal.addEventListener('abort', abort, { once: true })
+    return () => {
+      tabSignal.removeEventListener('abort', abort)
+      dialogOwner.current = null
+      pickerLock.current = null
+    }
+  }, [api, sessionId, resourceAddress, snapshot?.id, tabSignal, closeSaveAs])
 
   const showFeedback = useCallback((kind: SaveFeedback | null, durationMs = 2600, path?: string) => {
     setFeedback(kind ? { kind, durationMs, occurrence: ++feedbackOccurrence.current, path } : null)
@@ -61,7 +88,8 @@ export function useReaderSave(options: ReaderSaveOptions) {
   }, [snapshot?.id, snapshot?.revision, snapshot?.dirty, feedback, showFeedback])
 
   const save = async (path?: string, confirmedTarget?: { version: string | null; overwrite: boolean }) => {
-    const checkedTarget = confirmedTarget ?? (target && target.path === path ? { version: target.version, overwrite } : undefined)
+    const checkedTarget = confirmedTarget ?? (target && target.path === path
+      ? { version: target.version, overwrite: replaceConfirm } : undefined)
     if (path && !checkedTarget) { setError(t('reader.targetUnchecked')); return }
     const original = currentSnapshot()
     const originalPath = original?.path
@@ -91,7 +119,7 @@ export function useReaderSave(options: ReaderSaveOptions) {
     const saved = result ?? committed
     if (saved) {
       showFeedback('saved', 2000, saved.path)
-      setSaveAsOpen(false); setOverwrite(false)
+      closeSaveAs()
       if (path && saved.path !== originalPath) {
         const nextAddress = addressForPath(sessionId, saved.path)
         feedbackOwner.current = { sessionId, resourceAddress: nextAddress }
@@ -99,51 +127,79 @@ export function useReaderSave(options: ReaderSaveOptions) {
       }
     } else if (attempted) {
       if (attemptOwner !== ownerSequence.current) setFeedback(current => current?.kind === 'saving' ? null : current)
-      else if (failed) showFeedback('failed', 0, originalPath)
+      else if (failed) {
+        showFeedback('failed', 0, originalPath)
+        if (path && dialogOwner.current) {
+          // A target can change after inspection. Refresh it after a refused
+          // write and require a new replacement decision for its new version.
+          setTarget(null); setReplaceConfirm(false); setTargetAttempt(value => value + 1)
+        }
+      }
       else setFeedback(previousFeedback)
     }
   }
 
-  const beginSaveAs = async () => {
+  const beginSaveAs = () => {
     const current = currentSnapshot()
     if (!current || operationLock.current || pickerLock.current) return
-    const defaultPath = /\.pdf$/i.test(current.path) ? current.path.replace(/\.pdf$/i, '-annotated.pdf') : `${current.path}-annotated.pdf`
-    if (!pickSavePath) { setSavePath(defaultPath); setSaveAsOpen(true); return }
+    const initial = createSaveLocation(current.path)
+    dialogOwner.current = {}
+    setSaveName(initial.name); setSaveDirectory(initial.directory)
+    setTarget(null); setReplaceConfirm(false); setError(''); setSaveAsOpen(true)
+    setTargetAttempt(value => value + 1)
+  }
+
+  const chooseSaveDirectory = async () => {
+    const dialog = dialogOwner.current
+    if (!dialog || !pickSaveDirectory || operationLock.current || pickerLock.current) return
     const owner = ownerSequence.current
-    pickerLock.current = true
+    const request = {}
+    pickerLock.current = request
     setSaveAsPicking(true)
+    const active = () => dialogOwner.current === dialog && pickerLock.current === request
+      && owner === ownerSequence.current && !tabSignal.aborted
     try {
-      const path = await pickSavePath(defaultPath)
-      if (!path || owner !== ownerSequence.current || tabSignal.aborted) return
+      const directory = await pickSaveDirectory()
+      if (!directory || !active()) return
       setError('')
-      const inspected = await api.inspectTarget(sessionId, path, tabSignal)
-      if (owner !== ownerSequence.current || tabSignal.aborted) return
-      // The OS confirms replacement; Host still checks the observed target version.
-      await save(path, { version: inspected.version, overwrite: inspected.version !== null })
+      setSaveDirectory(directory)
     } catch (failure) {
-      if (owner === ownerSequence.current && !tabSignal.aborted && !(failure instanceof Error && failure.name === 'AbortError')) onError(failure)
+      if (active() && !(failure instanceof Error && failure.name === 'AbortError')) onError(failure)
     } finally {
-      pickerLock.current = false
-      if (!tabSignal.aborted) setSaveAsPicking(false)
+      if (pickerLock.current === request) {
+        pickerLock.current = null
+        if (!tabSignal.aborted) setSaveAsPicking(false)
+      }
     }
+  }
+
+  const submitSaveAs = async () => {
+    if (!dialogOwner.current || !savePath || saveAsPicking || targetChecking || operationLock.current
+      || !target || target.path !== savePath) return
+    if (target.version !== null && !replaceConfirm) { setReplaceConfirm(true); return }
+    await save(savePath)
   }
 
   useEffect(() => {
     setTarget(null)
-    setOverwrite(false)
-    if (!saveAsOpen || !savePath.trim()) { setTargetChecking(false); return }
+    setReplaceConfirm(false)
+    if (!saveAsOpen || !savePath) { setTargetChecking(false); return }
     const controller = new AbortController()
+    const owner = dialogOwner.current
+    const active = () => !controller.signal.aborted && !tabSignal.aborted && dialogOwner.current === owner
     setTargetChecking(true)
     const timer = setTimeout(() => {
       void api.inspectTarget(sessionId, savePath, controller.signal).then(result => {
-        if (!controller.signal.aborted) setTarget({ path: savePath, version: result.version })
-      }).catch(failure => { if (!controller.signal.aborted) onError(failure) })
-        .finally(() => { if (!controller.signal.aborted) setTargetChecking(false) })
+        if (active()) setTarget({ path: savePath, version: result.version })
+      }).catch(failure => { if (active()) onError(failure) })
+        .finally(() => { if (active()) setTargetChecking(false) })
     }, 300)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [api, sessionId, saveAsOpen, savePath, onError])
+  }, [api, sessionId, saveAsOpen, savePath, targetAttempt, tabSignal, onError])
 
-  return { feedback, setFeedback, showFeedback, saveAsOpen, setSaveAsOpen, saveAsPicking,
-    savePath, setSavePath, overwrite, setOverwrite, target, targetChecking, reloadConfirm, setReloadConfirm,
-    save, beginSaveAs }
+  return { feedback, setFeedback, showFeedback, saveAsOpen, closeSaveAs, saveAsPicking,
+    savePath, saveName, setSaveName, saveDirectory, setSaveDirectory,
+    locationError: 'error' in location ? location.error : undefined,
+    replaceConfirm, backToSaveAs: () => setReplaceConfirm(false),
+    target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs, chooseSaveDirectory, submitSaveAs }
 }

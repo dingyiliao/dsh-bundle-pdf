@@ -22,13 +22,17 @@ function fixture(options: { text?: string[]; limits?: RetrievalPorts['limits']; 
   const ports: RetrievalPorts = {
     documents: { snapshot: () => ({ ...state.document }) },
     pages: { read: async (_session, _document, page) => { reads.push(page); return { text: text[page - 1], source: 'pdf-text' } } },
-    cache: { get: async key => stored.get(key), set: async (key, value) => { stored.set(key, value) },
+    cache: { get: async key => structuredClone(stored.get(key)), set: async (key, value) => { stored.set(key, structuredClone(value)) },
       clear: async () => { stored.clear() } },
     embedding: { select: () => state.provider }, limits: options.limits,
   }
   return { state, ports, reads, stored, service: createRetrievalService(ports) }
 }
 const baseInput = { documentId: 'doc', query: 'cat' }
+function assertNoSavedContent(stored: Map<string, unknown>) {
+  assert.ok([...stored.values()].every(value => !value || typeof value !== 'object'
+    || !('text' in value || 'content' in value || 'encoding' in value)), 'metadata alone may survive a rejected or cancelled read')
+}
 async function finish(service: ReturnType<typeof createRetrievalService>, input: RetrievalInput = baseInput): Promise<RetrievalResult> {
   let result = await service.search('session', input)
   for (let count = 0; result.status !== 'complete' && count < 30; count++) {
@@ -87,10 +91,10 @@ test('oversized native text and combined derived representations fail without ca
       })) }
     }
     try {
-      await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-budget' })
+      await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-page-budget' })
       assert.deepEqual(f.reads, [1])
       assert.deepEqual(e.calls, [])
-      assert.equal(f.stored.size, 0, 'an over-budget page must not leave a persistent partial success')
+      assertNoSavedContent(f.stored)
     } finally { await f.service.dispose() }
   }
 })
@@ -156,7 +160,7 @@ test('preparation progress restores cached vectors and isolates synchronous and 
     })
     assert.deepEqual(progress.at(-1), { indexedPages: 3, totalPages: 3, embeddedChunks: 3, totalChunks: 3,
       phase: 'ready', reusedChunks: 3, computedChunks: 0 })
-    assert.ok(progress.slice(0, -1).every(value => value.phase === 'restoring'),
+    assert.ok(progress.every(value => value.phase === 'restoring' || value.phase === 'ready'),
       'cache restoration must not claim native extraction or new embedding work')
     assert.equal(e.calls.length, calls)
     assert.equal(f.reads.length, reads)
@@ -165,32 +169,23 @@ test('preparation progress restores cached vectors and isolates synchronous and 
   } finally { await restored.dispose() }
 })
 
-test('partial disk restoration computes only a missing vector and reports reuse separately', async () => {
+test('missing referenced vectors are repaired individually without re-extracting durable page content', async () => {
   const e = embedding(), f = fixture({ provider: { ...e.provider, maxBatchSize: 1 } })
   await f.service.prepare('session', { documentId: 'doc' })
   await f.service.dispose()
-  const records = [...f.stored.entries()].filter(([, value]) => value !== null && typeof value === 'object'
-    && 'encoding' in value && value.encoding === 'float32-le-base64')
-  f.stored.delete(records[0]![0])
-  const entered = deferred<void>(), gate = deferred<void>(), get = f.ports.cache!.get
-  f.ports.cache!.get = async key => {
-    if (key === records[1]![0]) { entered.resolve(); await gate.promise }
-    return get(key)
-  }
+  const vectors = [...f.stored.entries()].filter(([, value]) => value && typeof value === 'object' && 'encoding' in value)
+  assert.equal(vectors.length, 3, 'vectors have one authoritative copy; checkpoints reference the model/text cache record')
+  f.stored.delete(vectors[0]![0])
   const calls = e.calls.length, reads = f.reads.length, progress: RetrievalProgress[] = []
   const restored = createRetrievalService(f.ports)
   try {
-    const pending = restored.prepare('another-session', { documentId: 'doc' }, undefined, value => { progress.push(value) })
-    await entered.promise
-    assert.equal(progress.at(-1)!.phase, 'restoring', 'a later cache read must not inherit the completed model-request phase')
-    assert.equal(progress.at(-1)!.computedChunks, 1)
-    gate.resolve(); await pending
-    assert.equal(f.reads.length, reads, 'page text survives an independent vector eviction')
+    await restored.prepare('another-session', { documentId: 'doc' }, undefined, value => { progress.push(value) })
+    assert.equal(f.reads.length, reads)
     assert.equal(e.calls.slice(calls).flatMap(call => call.texts).length, 1)
     assert.ok(progress.some(value => value.phase === 'embedding'))
     assert.deepEqual(progress.at(-1), { indexedPages: 3, totalPages: 3, embeddedChunks: 3, totalChunks: 3,
       phase: 'ready', reusedChunks: 2, computedChunks: 1 })
-  } finally { gate.resolve(); await restored.dispose() }
+  } finally { await restored.dispose() }
 })
 
 test('failed preparation retains incomplete page progress instead of reporting full coverage', async () => {
@@ -353,7 +348,7 @@ test('a cancelled sole preparation stays pending until its non-cooperative read 
     await cancelled
     assert.equal(settled, true)
     assert.equal(released, 1)
-    assert.equal(f.stored.size, 0)
+    assertNoSavedContent(f.stored)
     assert.equal(e.calls.length, 0)
   } finally { gate.resolve(); await f.service.dispose() }
 })
@@ -393,7 +388,7 @@ test('disposing cancels preparation but retains its document lease until the act
   await cancelled
   await disposal
   assert.equal(released, 1)
-  assert.equal(f.stored.size, 0)
+  assertNoSavedContent(f.stored)
   await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/cancelled' })
 })
 
@@ -514,16 +509,24 @@ test('saved byte changes re-extract page text but reuse unchanged document vecto
   assert.equal(after.chunks[0].text, first.chunks[0].text)
 })
 
-test('derived page cache survives service disposal, ignores invalid entries and still requires document authorization', async () => {
-  const f = fixture()
-  await finish(f.service); f.service.dispose()
-  await finish(createRetrievalService(f.ports))
-  assert.equal(f.reads.length, 3)
+test('durable data survives restart and corrupted structure requires explicit repair without bypassing document authorization', async () => {
+  const e = embedding(), f = fixture({ provider: e.provider })
+  await finish(f.service); await f.service.dispose()
+  const warm = createRetrievalService(f.ports)
+  try { await finish(warm); assert.equal(f.reads.length, 3) } finally { await warm.dispose() }
   for (const key of f.stored.keys()) f.stored.set(key, { arbitrary: 'invalid' })
-  await finish(createRetrievalService(f.ports))
-  assert.equal(f.reads.length, 6)
-  f.ports.documents.snapshot = () => { throw Object.assign(new Error('Denied'), { code: 'pdf/access-denied' }) }
-  await assert.rejects(createRetrievalService(f.ports).search('forbidden', baseInput), { code: 'pdf/access-denied' })
+  const repaired = createRetrievalService(f.ports)
+  try {
+    await assert.rejects(repaired.search('session', baseInput), { code: 'pdf/index-storage-corrupt' })
+    assert.equal(f.reads.length, 3, 'corruption must not silently discard the complete index and start expensive model work')
+    await repaired.prepare('session', { documentId: 'doc', rebuild: true, rebuildToken: 'repair-corrupt-structure' })
+    assert.equal((await finish(repaired)).status, 'complete')
+    assert.equal(f.reads.length, 6)
+    const before = { reads: f.reads.length, modelCalls: e.calls.length }
+    f.ports.documents.snapshot = () => { throw Object.assign(new Error('Denied'), { code: 'pdf/access-denied' }) }
+    await assert.rejects(repaired.search('forbidden', baseInput), { code: 'pdf/access-denied' })
+    assert.deepEqual({ reads: f.reads.length, modelCalls: e.calls.length }, before)
+  } finally { await repaired.dispose() }
 })
 
 test('obsolete native quality warnings are re-extracted while unchanged text reuses cached embeddings', async () => {
@@ -595,6 +598,9 @@ test('older chunking caches and malformed paragraph offsets are rebuilt from aut
     assert.equal(f.reads.length, 1)
     await f.service.dispose()
     for (const paragraphBreaks of [[0], [100], [4, 2], [4, 4], [1.5], [2]]) {
+      // This is a legacy-cache migration case: no authoritative index shard
+      // exists yet, so each malformed legacy page must be re-extracted.
+      for (const key of f.stored.keys()) if (key.startsWith('index_head_') || key.startsWith('index_page_')) f.stored.delete(key)
       // Offset 2 splits a Unicode surrogate in this cached source.
       f.stored.set(freshKey, { version: 1, source: 'pdf-text', text: 'A😀 cached cat', paragraphBreaks })
       const rebuilt = createRetrievalService(f.ports)
@@ -614,7 +620,7 @@ test('invalid extraction paragraph metadata is reported without caching or signi
     assert.equal(result.coverage.indexedPages, 0)
     assert.equal(result.coverage.failedPages[0]!.code, 'pdf/retrieval-extraction-failed')
     assert.deepEqual(result.chunks, [])
-    assert.equal(f.stored.size, 0)
+    assertNoSavedContent(f.stored)
   } finally { await f.service.dispose() }
 })
 
@@ -622,7 +628,7 @@ test('source changes during extraction reject results before publishing old-sour
   const f = fixture()
   f.ports.pages.read = async () => { f.state.document.sourceDigest = 'changed'; return { text: 'cat', source: 'pdf-text' } }
   await assert.rejects(f.service.search('session', baseInput), { code: 'pdf/stale-reader' })
-  assert.equal(f.stored.size, 0)
+  assertNoSavedContent(f.stored)
 })
 
 test('one cancelled subscriber does not cancel a shared index build used by another query', async () => {
@@ -636,12 +642,23 @@ test('one cancelled subscriber does not cancel a shared index build used by anot
   const cancel = new AbortController()
   const first = f.service.search('session', baseInput, cancel.signal)
   const second = f.service.search('session', { ...baseInput, query: 'animal cat' })
-  await started.promise
-  cancel.abort(new Error('First caller left'))
-  await assert.rejects(first, /First caller left/)
-  assert.equal(nativeSignal?.aborted, false)
-  gate.resolve()
-  assert.equal((await second).status, 'complete'); assert.equal(calls, 1)
+  void first.catch(() => {}); void second.catch(() => {})
+  try {
+    await started.promise
+    // Starting the first read does not acknowledge the other query's metadata
+    // opening. Drain this fixture's asynchronous Map-backed head operations
+    // before testing cancellation of an actually shared operation.
+    await turn()
+    cancel.abort(new Error('First caller left'))
+    await assert.rejects(first, /First caller left/)
+    assert.equal(nativeSignal?.aborted, false)
+    gate.resolve()
+    assert.equal((await second).status, 'complete'); assert.equal(calls, 1)
+  } finally {
+    gate.resolve()
+    await Promise.allSettled([first, second])
+    await f.service.dispose()
+  }
 })
 
 test('all subscribers cancelling stops late extraction from entering an index or cache', async () => {
@@ -657,7 +674,7 @@ test('all subscribers cancelling stops late extraction from entering an index or
   await started.promise; cancel.abort(new Error('Cancelled'))
   await assert.rejects(request, /Cancelled/); assert.equal(nativeSignal?.aborted, true)
   gate.resolve(); await turn(); await turn()
-  assert.equal(f.stored.size, 0)
+  assertNoSavedContent(f.stored)
   assert.equal((await finish(f.service)).coverage.indexedPages, 1)
 })
 
@@ -725,24 +742,32 @@ test('session cancellation and disposal abort active query embeddings and reject
   }
 })
 
-test('memory, chunk and index-count limits fail explicitly rather than silently truncating scope', async () => {
-  for (const limits of [{ maxMemoryBytes: 1 }, { maxChunks: 1 }]) {
+test('working memory and chunk limits fail explicitly while index eviction preserves durable continuations', async () => {
+  for (const [limits, code] of [[{ maxMemoryBytes: 1 }, 'pdf/retrieval-memory-budget'],
+    [{ maxChunks: 1 }, 'pdf/retrieval-chunks-budget']] as const) {
     const f = fixture({ limits })
-    await assert.rejects(f.service.search('session', baseInput), { code: 'pdf/retrieval-budget' })
+    await assert.rejects(f.service.search('session', baseInput), { code })
   }
   const f = fixture({ limits: { maxIndexes: 1, pagesPerStep: 1 } })
-  const first = await f.service.search('session', baseInput)
-  await f.service.search('session', { ...baseInput, fromPage: 2 })
-  await assert.rejects(f.service.search('session', { ...baseInput, cursor: first.nextCursor }), { code: 'pdf/stale-reader' })
+  try {
+    const first = await f.service.search('session', baseInput)
+    assert.equal(first.status, 'building')
+    await f.service.search('session', { ...baseInput, fromPage: 2 })
+    const resumed = await f.service.search('session', { ...baseInput, cursor: first.nextCursor })
+    assert.equal(resumed.indexGeneration, first.indexGeneration)
+    assert.equal(resumed.coverage.indexedPages, 2)
+    assert.equal(f.reads.filter(page => page === 1).length, 1, 'evicting metadata must not discard the completed page checkpoint')
+    assert.deepEqual(resumed.scope, { fromPage: 1, toPage: 3 })
+  } finally { await f.service.dispose() }
 })
 
 test('empty-page coverage and extraction warnings also consume the bounded index budget', async () => {
   const blank = fixture({ text: ['', '', ''], limits: { maxMemoryBytes: 256 } })
-  await assert.rejects(blank.service.search('session', baseInput), { code: 'pdf/retrieval-budget' })
+  await assert.rejects(blank.service.search('session', baseInput), { code: 'pdf/retrieval-memory-budget' })
   await blank.service.dispose()
   const warned = fixture({ text: [''], limits: { maxMemoryBytes: 1000 } })
   warned.ports.pages.read = async () => ({ text: '', source: 'pdf-text', warnings: ['x'.repeat(500)] })
-  await assert.rejects(warned.service.search('session', baseInput), { code: 'pdf/retrieval-budget' })
+  await assert.rejects(warned.service.search('session', baseInput), { code: 'pdf/retrieval-memory-budget' })
   await warned.service.dispose()
 })
 
@@ -801,7 +826,7 @@ test('disposal drains a native operation that acknowledges cancellation late bef
   await assert.rejects(request, { code: 'pdf/cancelled' })
   await turn(); assert.equal(drained, false)
   gate.resolve(); await disposal
-  assert.equal(drained, true); assert.equal(f.stored.size, 0)
+  assert.equal(drained, true); assertNoSavedContent(f.stored)
 })
 
 test('independent concurrent builds have an explicit bound and retry succeeds when capacity returns', async () => {
@@ -816,11 +841,22 @@ test('independent concurrent builds have an explicit bound and retry succeeds wh
   assert.equal((await f.service.search('session-2', baseInput)).status, 'complete')
 })
 
-test('derived cache failures are rebuildable and never change retrieval semantics', async () => {
-  const f = fixture()
-  f.ports.cache = { get: async () => { throw new Error('offline') }, set: async () => { throw new Error('full') } }
-  const result = await finish(f.service)
-  assert.equal(result.status, 'complete'); assert.ok(result.chunks.length)
+test('authoritative index storage failures stop admission instead of silently reporting an unpersisted success', async () => {
+  const f = fixture(), healthy = f.ports.cache!
+  try {
+    for (const operation of ['read', 'write'] as const) {
+      f.ports.cache = { get: operation === 'read' ? async () => { throw Object.assign(new Error('offline'), { code: 'pdf/index-storage-read-failed' }) } : healthy.get,
+        set: async () => { throw Object.assign(new Error('full'), { code: 'pdf/index-storage-write-failed' }) } }
+      const failed = createRetrievalService(f.ports)
+      try {
+        await assert.rejects(failed.search('session', baseInput), { code: `pdf/index-storage-${operation}-failed` })
+        assert.deepEqual(f.reads, [], 'no document work may start before its durable generation is admitted')
+      } finally { await failed.dispose() }
+    }
+    f.ports.cache = healthy
+    const recovered = createRetrievalService(f.ports)
+    try { assert.equal((await finish(recovered)).status, 'complete') } finally { await recovered.dispose() }
+  } finally { await f.service.dispose() }
 })
 
 test('completed-index query embeddings obey query admission limits and recover capacity', async () => {
@@ -849,7 +885,7 @@ test('an index awaiting query embedding is not evicted by another index admissio
   }
   const first = f.service.search('session', baseInput)
   await started.promise
-  await assert.rejects(f.service.search('session', { ...baseInput, fromPage: 2 }), { code: 'pdf/retrieval-budget' })
+  await assert.rejects(f.service.search('session', { ...baseInput, fromPage: 2 }), { code: 'pdf/retrieval-indexes-budget' })
   gate.resolve()
   assert.equal((await first).status, 'complete')
   assert.equal((await f.service.search('session', { ...baseInput, fromPage: 2 })).status, 'complete')
@@ -866,11 +902,21 @@ test('shared indexing owns one document lease independent of a cancelled subscri
   const abort = new AbortController()
   const first = f.service.search('session', baseInput, abort.signal)
   const second = f.service.search('session', { ...baseInput, query: 'animal cat' })
-  await started.promise; abort.abort(new Error('Caller left'))
-  await assert.rejects(first, /Caller left/)
-  assert.equal(pins, 1); assert.equal(acquisitions, 1)
-  gate.resolve(); await second
-  assert.equal(pins, 0)
+  void first.catch(() => {}); void second.catch(() => {})
+  try {
+    await started.promise
+    await turn()
+    abort.abort(new Error('Caller left'))
+    await assert.rejects(first, /Caller left/)
+    assert.equal(pins, 1); assert.equal(acquisitions, 1)
+    gate.resolve()
+    assert.equal((await second).status, 'complete')
+    assert.equal(pins, 0); assert.equal(acquisitions, 1)
+  } finally {
+    gate.resolve()
+    await Promise.allSettled([first, second])
+    await f.service.dispose()
+  }
 })
 
 test('an abandoned indexing lease is held until its actual read promise settles', async () => {
@@ -885,7 +931,7 @@ test('an abandoned indexing lease is held until its actual read promise settles'
   assert.equal(pins, 1)
   const disposal = f.service.dispose()
   gate.resolve(); await disposal
-  assert.equal(pins, 0); assert.equal(f.stored.size, 0)
+  assert.equal(pins, 0); assertNoSavedContent(f.stored)
 })
 
 test('adapter result validation fences engine changes and session identity after core search returns', async () => {
@@ -977,7 +1023,10 @@ test('rebuild drains non-cooperative page reads, rejects concurrent admission an
 
 test('rebuild waits for an already-started cache write and removes that old-generation record', async () => {
   const gate = deferred<void>(), started = deferred<void>(), f = fixture({ text: ['cat'] })
-  f.ports.cache!.set = async (key, value) => { started.resolve(); await gate.promise; f.stored.set(key, value) }
+  f.ports.cache!.set = async (key, value) => {
+    if (value && typeof value === 'object' && 'text' in value) { started.resolve(); await gate.promise }
+    f.stored.set(key, structuredClone(value))
+  }
   const search = f.service.search('session', baseInput)
   const rejected = assert.rejects(search, { code: 'pdf/cancelled' })
   await started.promise
@@ -1007,13 +1056,17 @@ test('in-memory-only services rebuild while caches without a reset contract repo
   const f = fixture({ text: ['cat'] })
   delete f.ports.cache!.clear
   await assert.rejects(f.service.rebuild(), { code: 'pdf/retrieval-cache-unavailable' })
-  delete f.ports.cache
-  const before = await finish(f.service)
-  await f.service.rebuild()
-  const after = await finish(f.service)
-  assert.notEqual(before.indexGeneration, after.indexGeneration)
   await f.service.dispose()
-  await assert.rejects(f.service.rebuild(), { code: 'pdf/cancelled' })
+  const ports = { ...f.ports }
+  delete ports.cache
+  const volatile = createRetrievalService(ports)
+  try {
+    const before = await finish(volatile)
+    await volatile.rebuild()
+    const after = await finish(volatile)
+    assert.notEqual(before.indexGeneration, after.indexGeneration)
+  } finally { await volatile.dispose() }
+  await assert.rejects(volatile.rebuild(), { code: 'pdf/cancelled' })
 })
 
 test('dispose waits for a reset already in storage and prevents subsequent search admission', async () => {

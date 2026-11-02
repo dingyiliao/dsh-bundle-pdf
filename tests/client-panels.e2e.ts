@@ -18,6 +18,73 @@ const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'session.v3
 const MODEL_FIXTURE = join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl')
 const FILE_NAME = 'panel-coverage.pdf'
 
+it('keeps the Save As sheet focused and usable in a narrow short reader', async () => {
+  const { build } = await import('esbuild')
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/save-as-dialog.web.fixture.tsx')],
+    bundle: true, write: false, format: 'iife', platform: 'browser' })
+  const css = await Promise.all(['reader.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+  const opened = await browser()
+  try {
+    const page = await opened.newPage({ viewport: { width: 760, height: 600 }, reducedMotion: 'reduce' })
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.setContent('<div id="save-as-root" style="height:100%;width:100%"></div>')
+    await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f4f5f7; --dsw-alias-bg-layer-1:#fff; --dsw-alias-label-primary:#202124; --dsw-alias-label-secondary:#70747c; --dsw-alias-border-l2:#d8dbe1; --dsw-alias-link:#4278ed; --dsw-alias-button-primary-fill:#17191d; --dsw-alias-label-primary-foreground:#fff; --dsw-alias-interactive-bg-hover:#e8eaf0; --dsw-alias-interactive-bg-active:#dfe2e9; --dsw-alias-interactive-bg-hover-danger:#fff0f1; } html,body { margin:0;height:100%; } ${css.join('\n')}` })
+    await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
+    const trigger = page.getByRole('button', { name: '另存为', exact: true })
+    await trigger.click()
+    const dialog = page.getByRole('dialog', { name: '另存 PDF 副本', exact: true })
+    const name = dialog.getByRole('textbox', { name: '文件名', exact: true })
+    const save = dialog.getByRole('button', { name: '保存副本', exact: true })
+    await expect.poll(() => name.evaluate(element => ({ focused: element === document.activeElement,
+      start: (element as HTMLInputElement).selectionStart, end: (element as HTMLInputElement).selectionEnd,
+      stemEnd: (element as HTMLInputElement).value.lastIndexOf('.') })))
+      .toEqual({ focused: true, start: 0, end: '概率论与数理统计-annotated'.length, stemEnd: '概率论与数理统计-annotated'.length })
+    await save.focus(); await save.press('Tab')
+    expect(await name.evaluate(element => element === document.activeElement)).toBe(true)
+    await name.press('Shift+Tab')
+    expect(await save.evaluate(element => element === document.activeElement)).toBe(true)
+    if (process.env.DSH_PDF_SAVE_AS_SCREENSHOT) {
+      await mkdir(dirname(process.env.DSH_PDF_SAVE_AS_SCREENSHOT), { recursive: true })
+      await page.screenshot({ path: process.env.DSH_PDF_SAVE_AS_SCREENSHOT })
+    }
+    await save.press('Escape')
+    await dialog.waitFor({ state: 'detached' })
+    expect(await trigger.evaluate(element => element === document.activeElement)).toBe(true)
+
+    await trigger.click()
+    await dialog.getByRole('button', { name: '更改位置…', exact: true }).click()
+    const directory = dialog.getByRole('textbox', { name: '保存位置', exact: true })
+    expect(await directory.evaluate(element => element === document.activeElement)).toBe(true)
+    await directory.fill('/Users/reader/Documents/学习资料/用于验证很长保存目录不会撑开弹窗的路径')
+    await page.evaluate(() => (window as typeof window & { __pdfSaveAsDialogFixture: { set(input: { replaceConfirm?: boolean; error?: string }): void } })
+      .__pdfSaveAsDialogFixture.set({ replaceConfirm: true }))
+    const replacement = page.getByRole('dialog', { name: '替换已有 PDF？', exact: true })
+    expect(await replacement.getByRole('button', { name: '替换并保存', exact: true })
+      .evaluate(element => element === document.activeElement)).toBe(true)
+    await replacement.getByRole('button', { name: '返回', exact: true }).click()
+    expect(await name.evaluate(element => element === document.activeElement)).toBe(true)
+
+    await page.setViewportSize({ width: 360, height: 320 })
+    await page.evaluate(() => (window as typeof window & { __pdfSaveAsDialogFixture: { set(input: { error: string }): void } })
+      .__pdfSaveAsDialogFixture.set({ error: '保存位置暂时不可用，请检查目标文件夹后重试。'.repeat(16) }))
+    await expect.poll(() => dialog.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+    const bounds = (await dialog.boundingBox())!
+    expect(bounds.x).toBeGreaterThanOrEqual(15)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(345)
+    expect(bounds.y).toBeGreaterThanOrEqual(15)
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(305)
+    await save.scrollIntoViewIfNeeded()
+    const saveBounds = (await save.boundingBox())!
+    expect(saveBounds.y).toBeGreaterThanOrEqual(bounds.y)
+    expect(saveBounds.y + saveBounds.height).toBeLessThanOrEqual(bounds.y + bounds.height)
+    await save.press('Escape')
+    await dialog.waitFor({ state: 'detached' })
+    expect(await trigger.evaluate(element => element === document.activeElement)).toBe(true)
+    expect(errors).toEqual([])
+  } finally { await opened.close() }
+})
+
 async function documentBytes(): Promise<Uint8Array> {
   const document = await PDFDocument.create()
   const font = await document.embedFont(StandardFonts.Helvetica)

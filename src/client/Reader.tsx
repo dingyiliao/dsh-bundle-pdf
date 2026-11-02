@@ -189,11 +189,12 @@ export function Reader(props: ReaderProps) {
     updateColor: updateAnnotationColor, openCommentEditor, closeCommentEditor, applyComment, applyNote } = annotations
   const saveFlow = useReaderSave({ api, sessionId, resourceAddress: props.resourceAddress, tabSignal: tab.signal,
     snapshot, ownerSequence, operationLock, currentSnapshot: () => state.current.snapshot, act: actAfterFormFlush,
-    pickSavePath: props.pickSavePath, openResource: address => tab.actions.openResource(address, { replaceTab: true }),
+    pickSaveDirectory: props.pickSaveDirectory, openResource: address => tab.actions.openResource(address, { replaceTab: true }),
     addressForPath: props.addressForPath ?? (() => { throw new Error('PDF resource address adapter is unavailable') }),
     setError, onError: notifyError, t })
   const { feedback: saveFeedback, setFeedback: setSaveFeedback, showFeedback: showSaveFeedback,
-    saveAsOpen, setSaveAsOpen, saveAsPicking, savePath, setSavePath, overwrite, setOverwrite,
+    saveAsOpen, closeSaveAs, saveAsPicking, saveName, setSaveName, saveDirectory, setSaveDirectory,
+    locationError, replaceConfirm, backToSaveAs, chooseSaveDirectory, submitSaveAs,
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs } = saveFlow
   const beginSaveAsAfterFormFlush = () => { void runAfterFormFlush(beginSaveAs) }
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
@@ -253,7 +254,7 @@ export function Reader(props: ReaderProps) {
   const discardChanges = async () => {
     if (operationLock.current) return
     const next = await actAfterFormFlush(current => api.discard(sessionId, current.id, current.revision, tab.signal))
-    if (next) { showSaveFeedback(null); dismissContext(); annotations.clearPending(); setSaveAsOpen(false); setReloadConfirm(false); screenshotCtl.reset() }
+    if (next) { showSaveFeedback(null); dismissContext(); annotations.clearPending(); closeSaveAs(); setReloadConfirm(false); screenshotCtl.reset() }
   }
   const cancelScreenshot = screenshotCtl.cancel
   const beginScreenshot = () => screenshotCtl.begin(!!activeExplanation)
@@ -476,9 +477,16 @@ export function Reader(props: ReaderProps) {
       openCommentEditor, deleteAnnotation: () => { void deleteAnnotation() }, clearAnnotation, t,
     }}
     alerts={{
-      snapshot, error, positionNotice, editable, saveAsOpen, savePath, target, targetChecking,
-      overwrite, busy, reloadConfirm, setError, setPositionNotice, setSavePath, setOverwrite,
-      setSaveAsOpen, setReloadConfirm, save: path => { void save(path) },
+      snapshot, error, positionNotice, editable, reloadConfirm, setError, setPositionNotice, setReloadConfirm,
+      saveAs: saveAsOpen ? {
+        name: saveName, directory: saveDirectory, pickerAvailable: !!props.pickSaveDirectory,
+        picking: saveAsPicking, busy, target, targetChecking, replaceConfirm, error,
+        nameError: locationError === 'name' ? t('reader.saveNameInvalid') : undefined,
+        directoryError: locationError === 'directory' ? t('reader.saveDirectoryInvalid') : undefined,
+        onNameChange: setSaveName, onDirectoryChange: setSaveDirectory,
+        onChooseDirectory: () => { void chooseSaveDirectory() }, onSubmit: () => { void submitSaveAs() },
+        onCancel: closeSaveAs, onBack: backToSaveAs, t,
+      } : undefined,
       beginSaveAs: beginSaveAsAfterFormFlush,
       reload: () => { void actAfterFormFlush(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
     }}

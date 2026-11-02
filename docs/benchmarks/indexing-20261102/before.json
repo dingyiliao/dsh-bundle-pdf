@@ -1,0 +1,713 @@
+{
+  "scope": "Synthetic real-filesystem diagnostic; no PDFium, OCR, inference, network or user data. Warm OS file cache is not flushed. Times include validation/chunking and file durability calls. No before/after improvement claim.",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.7.0",
+    "cpu": "Apple M5 Pro"
+  },
+  "runs": [
+    {
+      "repeat": 0,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1160.133667,
+        "cpuMs": 342.663,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.5611660000000143
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 21.648376000000127
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 11.889712999998949
+          },
+          "get:derived": {
+            "count": 64,
+            "ms": 8.736581000000001
+          },
+          "set:derived": {
+            "count": 64,
+            "ms": 505.140129
+          },
+          "set:page-checkpoint": {
+            "count": 64,
+            "ms": 515.2122500000003
+          }
+        },
+        "store": {
+          "memoryBytes": 1352684,
+          "entries": 97,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 130,
+          "cacheHits": 33
+        },
+        "pageReads": 32,
+        "docBatches": 32,
+        "docTexts": 32,
+        "disk": {
+          "files": 97,
+          "bytes": 663926
+        }
+      },
+      "warmMs": 0.2900409999999738,
+      "restored": {
+        "ms": 12.332709000000023,
+        "cpuMs": 20.93,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.24837400000001253
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 7.647584999999481
+          }
+        },
+        "store": {
+          "memoryBytes": 672116,
+          "entries": 33,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 33,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 0,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1569.0107500000001,
+        "cpuMs": 432.584,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.1723330000002079
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 16.834874999999784
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 18.59524899999974
+          },
+          "get:derived": {
+            "count": 144,
+            "ms": 13.761752000000797
+          },
+          "set:derived": {
+            "count": 144,
+            "ms": 1149.0488790000024
+          },
+          "set:page-checkpoint": {
+            "count": 32,
+            "ms": 295.18116999999893
+          }
+        },
+        "store": {
+          "memoryBytes": 5229604,
+          "entries": 161,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 178,
+          "cacheHits": 17
+        },
+        "pageReads": 16,
+        "docBatches": 16,
+        "docTexts": 128,
+        "disk": {
+          "files": 161,
+          "bytes": 2594194
+        }
+      },
+      "warmMs": 0.42395799999985684,
+      "restored": {
+        "ms": 32.28045800000018,
+        "cpuMs": 56.436,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.2927919999997357
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 20.39329000000089
+          }
+        },
+        "store": {
+          "memoryBytes": 2585472,
+          "entries": 17,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 17,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 0,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1295.172833,
+        "cpuMs": 379.1,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.16074999999955253
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 17.395875000000615
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 14.46020900000076
+          },
+          "get:derived": {
+            "count": 129,
+            "ms": 7.610456000002159
+          },
+          "set:derived": {
+            "count": 129,
+            "ms": 1006.1492460000009
+          },
+          "set:page-checkpoint": {
+            "count": 9,
+            "ms": 199.76395799999955
+          }
+        },
+        "store": {
+          "memoryBytes": 5315962,
+          "entries": 131,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 140,
+          "cacheHits": 3
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 131,
+          "bytes": 2641213
+        }
+      },
+      "warmMs": 0.2627910000001066,
+      "restored": {
+        "ms": 23.757916999999907,
+        "cpuMs": 26.945,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.20604200000070705
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 10.970542000000023
+          }
+        },
+        "store": {
+          "memoryBytes": 2627174,
+          "entries": 2,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 2,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1160.5711249999995,
+        "cpuMs": 292.333,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.1713740000004691
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 16.677458000000115
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 12.694244000002072
+          },
+          "get:derived": {
+            "count": 64,
+            "ms": 9.361585000001469
+          },
+          "set:derived": {
+            "count": 64,
+            "ms": 506.4467059999979
+          },
+          "set:page-checkpoint": {
+            "count": 64,
+            "ms": 528.0619179999985
+          }
+        },
+        "store": {
+          "memoryBytes": 1352684,
+          "entries": 97,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 130,
+          "cacheHits": 33
+        },
+        "pageReads": 32,
+        "docBatches": 32,
+        "docTexts": 32,
+        "disk": {
+          "files": 97,
+          "bytes": 663926
+        }
+      },
+      "warmMs": 0.3547499999995125,
+      "restored": {
+        "ms": 13.447250000000167,
+        "cpuMs": 15.128,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.23062499999923602
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 9.016499000003023
+          }
+        },
+        "store": {
+          "memoryBytes": 672116,
+          "entries": 33,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 33,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1568.3859160000002,
+        "cpuMs": 394.469,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.14320799999950395
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 15.528874999999971
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 17.73207999999977
+          },
+          "get:derived": {
+            "count": 144,
+            "ms": 13.389745000001312
+          },
+          "set:derived": {
+            "count": 144,
+            "ms": 1160.971379999999
+          },
+          "set:page-checkpoint": {
+            "count": 32,
+            "ms": 285.94416499999625
+          }
+        },
+        "store": {
+          "memoryBytes": 5229604,
+          "entries": 161,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 178,
+          "cacheHits": 17
+        },
+        "pageReads": 16,
+        "docBatches": 16,
+        "docTexts": 128,
+        "disk": {
+          "files": 161,
+          "bytes": 2594194
+        }
+      },
+      "warmMs": 0.19937500000014552,
+      "restored": {
+        "ms": 23.965291999999863,
+        "cpuMs": 25.784,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.15429199999925913
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 14.552544000002854
+          }
+        },
+        "store": {
+          "memoryBytes": 2585472,
+          "entries": 17,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 17,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1266.223332999999,
+        "cpuMs": 380.181,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.14529200000015408
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 14.412415999999212
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 14.483584999999948
+          },
+          "get:derived": {
+            "count": 129,
+            "ms": 5.480373999999756
+          },
+          "set:derived": {
+            "count": 129,
+            "ms": 982.9783700000025
+          },
+          "set:page-checkpoint": {
+            "count": 9,
+            "ms": 201.00795800000014
+          }
+        },
+        "store": {
+          "memoryBytes": 5315962,
+          "entries": 131,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 140,
+          "cacheHits": 3
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 131,
+          "bytes": 2641213
+        }
+      },
+      "warmMs": 0.22308399999928952,
+      "restored": {
+        "ms": 25.138333000000785,
+        "cpuMs": 27.149,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.3262079999985872
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 12.495582999999897
+          }
+        },
+        "store": {
+          "memoryBytes": 2627174,
+          "entries": 2,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 2,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1150.3109169999989,
+        "cpuMs": 278.607,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.1724579999990965
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 14.451750000000175
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 12.479457999996157
+          },
+          "get:derived": {
+            "count": 64,
+            "ms": 9.390414000004967
+          },
+          "set:derived": {
+            "count": 64,
+            "ms": 509.91129299999557
+          },
+          "set:page-checkpoint": {
+            "count": 64,
+            "ms": 519.2887079999928
+          }
+        },
+        "store": {
+          "memoryBytes": 1352684,
+          "entries": 97,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 130,
+          "cacheHits": 33
+        },
+        "pageReads": 32,
+        "docBatches": 32,
+        "docTexts": 32,
+        "disk": {
+          "files": 97,
+          "bytes": 663926
+        }
+      },
+      "warmMs": 0.26670800000101735,
+      "restored": {
+        "ms": 14.318957999999839,
+        "cpuMs": 17.171,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.3401670000002923
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 10.015792000001966
+          }
+        },
+        "store": {
+          "memoryBytes": 672116,
+          "entries": 33,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 33,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1486.374667,
+        "cpuMs": 307.1,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.12624999999934516
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 15.614125000001877
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 13.472787000000608
+          },
+          "get:derived": {
+            "count": 144,
+            "ms": 9.242167000005793
+          },
+          "set:derived": {
+            "count": 144,
+            "ms": 1101.4827039999946
+          },
+          "set:page-checkpoint": {
+            "count": 32,
+            "ms": 282.9263310000006
+          }
+        },
+        "store": {
+          "memoryBytes": 5229604,
+          "entries": 161,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 178,
+          "cacheHits": 17
+        },
+        "pageReads": 16,
+        "docBatches": 16,
+        "docTexts": 128,
+        "disk": {
+          "files": 161,
+          "bytes": 2594194
+        }
+      },
+      "warmMs": 0.2211669999996957,
+      "restored": {
+        "ms": 24.40283400000044,
+        "cpuMs": 29.578,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.21820800000023155
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 14.886458999997558
+          }
+        },
+        "store": {
+          "memoryBytes": 2585472,
+          "entries": 17,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 17,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 1238.9384169999994,
+        "cpuMs": 358.406,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.14887400000043272
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 16.324666000000434
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 17.01708300000064
+          },
+          "get:derived": {
+            "count": 129,
+            "ms": 5.75004499998613
+          },
+          "set:derived": {
+            "count": 129,
+            "ms": 964.0725000000039
+          },
+          "set:page-checkpoint": {
+            "count": 9,
+            "ms": 186.94704199999796
+          }
+        },
+        "store": {
+          "memoryBytes": 5315962,
+          "entries": 131,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 0,
+          "diskWrites": 140,
+          "cacheHits": 3
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 131,
+          "bytes": 2641213
+        }
+      },
+      "warmMs": 0.2323340000002645,
+      "restored": {
+        "ms": 26.333834000000934,
+        "cpuMs": 29.986,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.23758300000190502
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 12.193832999999358
+          }
+        },
+        "store": {
+          "memoryBytes": 2627174,
+          "entries": 2,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 2,
+          "diskWrites": 0,
+          "cacheHits": 1
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    }
+  ]
+}

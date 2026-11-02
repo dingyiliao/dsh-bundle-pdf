@@ -17,6 +17,8 @@ async function withSave(run: (fixture: {
   render(options: ReaderSaveOptions): Promise<void>
   paths: string[]
   errors: unknown[]
+  saves: Array<{ path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }>
+  inspections: string[]
 }) => Promise<void>): Promise<void> {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
   const saved = new Map<string, PropertyDescriptor | undefined>()
@@ -28,13 +30,16 @@ async function withSave(run: (fixture: {
   const tab = new AbortController()
   const paths: string[] = []
   const errors: unknown[] = []
+  const saves: Array<{ path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }> = []
+  const inspections: string[] = []
   const snapshot = { id: 'doc-1', revision: 4, path: '/original.pdf', dirty: true } as WorkspaceSnapshot
   let latest: ReturnType<typeof useReaderSave> | undefined
   const Harness = (props: ReaderSaveOptions) => { latest = useReaderSave(props); return null }
   const options: ReaderSaveOptions = {
     api: { async save(_sessionId: string, _id: string, _revision: number, request: { path?: string }) {
+      saves.push({ ...request })
       return { ...snapshot, path: request.path ?? snapshot.path, dirty: false }
-    }, async inspectTarget() { return { version: null } } } as unknown as PdfClientApi,
+    }, async inspectTarget(_sessionId: string, path: string) { inspections.push(path); return { version: null } } } as unknown as PdfClientApi,
     sessionId: 'session-1', resourceAddress: 'session-file:///original.pdf', tabSignal: tab.signal, snapshot,
     ownerSequence: { current: 1 }, operationLock: { current: false }, currentSnapshot: () => snapshot,
     act: async operation => {
@@ -45,7 +50,7 @@ async function withSave(run: (fixture: {
     setError() {}, onError: error => { errors.push(error) }, t: key => key,
   }
   const render = async (next: ReaderSaveOptions) => { await act(async () => root.render(React.createElement(Harness, next))) }
-  try { await render(options); await run({ state: () => latest!, options, render, paths, errors }) }
+  try { await render(options); await run({ state: () => latest!, options, render, paths, errors, saves, inspections }) }
   finally {
     await act(async () => root.unmount())
     tab.abort()
@@ -72,20 +77,45 @@ test('same-file save reports success even when the caller drops a stale RPC snap
   })
 })
 
-test('native Save As inspects the target and replaces this resource only after a successful save', async () => {
-  await withSave(async ({ state, options, render, paths }) => {
-    const picked: string[] = []
-    await render({ ...options, pickSavePath: async defaultPath => {
-      picked.push(defaultPath)
-      return '/copy.pdf'
-    } })
-    await act(async () => { await state().beginSaveAs() })
-    assert.deepEqual(picked, ['/original-annotated.pdf'])
+async function waitForSave(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 2_000
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+test('Save As opens the draft, chooses only a directory, and rebinds this resource only after explicit save', async () => {
+  await withSave(async ({ state, options, render, paths, saves, inspections }) => {
+    let picks = 0
+    await render({ ...options, pickSaveDirectory: async () => { picks++; return '/copies' } })
+    await act(async () => { state().beginSaveAs() })
+    assert.equal(state().saveAsOpen, true)
+    assert.equal(state().saveName, 'original-annotated.pdf')
+    assert.equal(state().saveDirectory, '/')
+    assert.equal(picks, 0, 'opening the sheet must not launch a system dialog')
+    assert.deepEqual(saves, [])
+    await act(async () => { state().setSaveName('copy.pdf'); await state().chooseSaveDirectory() })
+    assert.equal(picks, 1)
+    assert.equal(state().saveDirectory, '/copies')
+    assert.equal(state().savePath, '/copies/copy.pdf')
+    assert.deepEqual(saves, [], 'directory selection must never save implicitly')
+    await waitForSave(() => !!state().target, 'the composed target is inspected')
+    assert.deepEqual(inspections, ['/copies/copy.pdf'])
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [{ path: '/copies/copy.pdf', overwrite: false, expectedTargetVersion: null }])
     assert.equal(state().feedback?.kind, 'saved')
-    assert.equal(state().feedback?.path, '/copy.pdf')
+    assert.equal(state().feedback?.path, '/copies/copy.pdf')
     assert.equal(state().feedback?.durationMs, 2000)
-    assert.equal(paths.length, 1)
-    assert.match(paths[0], /copy\.pdf/)
+    assert.equal(state().saveAsOpen, false)
+    assert.deepEqual(paths, ['session-file://session-1/copies/copy.pdf'])
   })
 })
 
@@ -209,18 +239,177 @@ test('failed feedback survives a fresh edit but clears when the document becomes
   })
 })
 
-test('native picker cancellation and target-inspection failures never claim that saving failed', async () => {
-  await withSave(async ({ state, options, render, errors }) => {
+test('directory cancellation and target-inspection failures preserve the draft and never claim a failed save', async () => {
+  await withSave(async ({ state, options, render, errors, saves }) => {
     await act(async () => { state().showFeedback('unsaved') })
     const previous = state().feedback
-    await render({ ...options, pickSavePath: async () => null })
-    await act(async () => { await state().beginSaveAs() })
+    await render({ ...options, pickSaveDirectory: async () => null })
+    await act(async () => { state().beginSaveAs(); await state().chooseSaveDirectory() })
     assert.equal(state().feedback, previous)
+    assert.equal(state().saveAsOpen, true)
+    assert.equal(state().saveDirectory, '/')
+    assert.equal(state().saveAsPicking, false)
+    assert.deepEqual(saves, [])
     const failure = new Error('Cannot inspect target')
-    await render({ ...options, pickSavePath: async () => '/copy.pdf',
-      api: { ...options.api, inspectTarget: async () => { throw failure } } })
-    await act(async () => { await state().beginSaveAs() })
+    await render({ ...options, api: { ...options.api, inspectTarget: async () => { throw failure } } })
+    await act(async () => { state().beginSaveAs() })
+    await waitForSave(() => errors.length === 1, 'the target failure is reported')
     assert.equal(state().feedback, previous)
+    assert.equal(state().saveAsOpen, true)
     assert.deepEqual(errors, [failure])
+    assert.deepEqual(saves, [])
+  })
+})
+
+test('existing targets require a separate replacement decision bound to the inspected version', async () => {
+  await withSave(async ({ state, options, render, paths, saves }) => {
+    await render({ ...options, api: { ...options.api, inspectTarget: async () => ({ version: 'target-v1' }) } })
+    await act(async () => { state().beginSaveAs() })
+    await waitForSave(() => !!state().target, 'the existing target is inspected')
+    await act(async () => { await state().submitSaveAs() })
+    assert.equal(state().replaceConfirm, true)
+    assert.deepEqual(saves, [])
+    assert.deepEqual(paths, [])
+    await act(async () => { state().backToSaveAs() })
+    assert.equal(state().replaceConfirm, false)
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [])
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [{ path: '/original-annotated.pdf', overwrite: true, expectedTargetVersion: 'target-v1' }])
+    assert.equal(paths.length, 1)
+  })
+})
+
+test('a refused replacement refreshes the target and requires fresh consent while preserving the name and directory', async () => {
+  await withSave(async ({ state, options, render, paths, errors }) => {
+    const requests: Array<{ path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }> = []
+    let targetVersion = 'target-v1'
+    let inspections = 0
+    const failure = Object.assign(new Error('Target changed after inspection'), { code: 'PDF_STALE_VERSION' })
+    await render({ ...options, api: { ...options.api,
+      inspectTarget: async () => { inspections++; return { version: targetVersion } },
+      save: async (_session, _id, _revision, request) => {
+        requests.push({ ...request })
+        if (requests.length === 1) { targetVersion = 'target-v2'; throw failure }
+        return { ...options.snapshot!, path: request.path!, dirty: false }
+      },
+    } })
+    await act(async () => { state().beginSaveAs(); state().setSaveDirectory('/copies'); state().setSaveName('chosen.pdf') })
+    await waitForSave(() => !!state().target, 'the first target version is inspected')
+    await act(async () => { await state().submitSaveAs() })
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(errors, [failure])
+    assert.equal(state().feedback?.kind, 'failed')
+    assert.equal(state().replaceConfirm, false)
+    assert.equal(state().saveAsOpen, true)
+    assert.equal(state().saveName, 'chosen.pdf')
+    assert.equal(state().saveDirectory, '/copies')
+    assert.deepEqual(paths, [])
+    await waitForSave(() => state().target?.version === 'target-v2', 'failed writes must obtain a new target version')
+    assert.equal(inspections, 2)
+    await act(async () => { await state().submitSaveAs() })
+    assert.equal(requests.length, 1, 'new target contents need another explicit replacement decision')
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(requests, [
+      { path: '/copies/chosen.pdf', overwrite: true, expectedTargetVersion: 'target-v1' },
+      { path: '/copies/chosen.pdf', overwrite: true, expectedTargetVersion: 'target-v2' },
+    ])
+    assert.equal(state().feedback?.kind, 'saved')
+    assert.equal(paths.length, 1)
+  })
+})
+
+test('invalid or unchecked targets cannot save, and changing the name revokes old replacement consent', async () => {
+  await withSave(async ({ state, options, render, saves }) => {
+    await render({ ...options, api: { ...options.api, inspectTarget: async () => ({ version: 'existing' }) } })
+    await act(async () => { state().beginSaveAs() })
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [], 'inspection must finish before submission')
+    await waitForSave(() => !!state().target, 'the target is inspected')
+    await act(async () => { await state().submitSaveAs() })
+    assert.equal(state().replaceConfirm, true)
+    await act(async () => { state().setSaveName('../outside.pdf') })
+    assert.equal(state().locationError, 'name')
+    assert.equal(state().target, null)
+    assert.equal(state().replaceConfirm, false)
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [])
+    await act(async () => { state().setSaveName('other.pdf') })
+    await waitForSave(() => state().target?.path === '/other.pdf', 'the new target needs its own inspection')
+    await act(async () => { await state().submitSaveAs() })
+    assert.equal(state().replaceConfirm, true)
+    assert.deepEqual(saves, [], 'the previous filename consent cannot carry over')
+  })
+})
+
+test('closing a sheet ignores a late directory result and cannot clear a newer dialog picker', async () => {
+  await withSave(async ({ state, options, render, saves, errors }) => {
+    const first = deferred<string | null>(), second = deferred<string | null>()
+    let picks = 0
+    await render({ ...options, pickSaveDirectory: () => ++picks === 1 ? first.promise : second.promise })
+    await act(async () => { state().beginSaveAs() })
+    let oldRequest!: Promise<void>, newRequest!: Promise<void>
+    await act(async () => { oldRequest = state().chooseSaveDirectory() })
+    assert.equal(state().saveAsPicking, true)
+    await act(async () => { state().closeSaveAs() })
+    await act(async () => { state().beginSaveAs() })
+    await act(async () => { newRequest = state().chooseSaveDirectory() })
+    await act(async () => { first.resolve('/late-old'); await oldRequest })
+    assert.equal(state().saveAsOpen, true)
+    assert.equal(state().saveAsPicking, true, 'an old finally must not unlock the current picker')
+    assert.equal(state().saveDirectory, '/')
+    await act(async () => { second.resolve('/new'); await newRequest })
+    assert.equal(state().saveDirectory, '/new')
+    assert.equal(state().saveAsPicking, false)
+    assert.deepEqual(saves, [])
+    assert.deepEqual(errors, [])
+  })
+})
+
+test('document, API, session and tab changes retire pending directory picks without leaking errors or values', async () => {
+  for (const change of ['document', 'api', 'session', 'tab'] as const) {
+    await withSave(async ({ state, options, render, saves, errors }) => {
+      const pending = deferred<string | null>()
+      const input = { ...options, pickSaveDirectory: () => pending.promise }
+      await render(input)
+      await act(async () => { state().beginSaveAs() })
+      let picking!: Promise<void>
+      await act(async () => { picking = state().chooseSaveDirectory() })
+      const replacement = { ...options.snapshot!, id: 'new-document', path: '/new.pdf' }
+      const next = change === 'document' ? { ...input, snapshot: replacement, resourceAddress: 'session-file:///new.pdf', currentSnapshot: () => replacement }
+        : change === 'api' ? { ...input, api: { ...options.api } }
+          : change === 'session' ? { ...input, sessionId: 'new-session' }
+            : { ...input, tabSignal: new AbortController().signal }
+      await render(next)
+      assert.equal(state().saveAsOpen, false, `${change} replacement closes the old sheet`)
+      assert.equal(state().saveAsPicking, false)
+      await act(async () => { pending.reject(new Error('Old picker failed')); await picking })
+      assert.equal(state().saveAsOpen, false)
+      assert.equal(state().saveDirectory, '/')
+      assert.deepEqual(errors, [])
+      assert.deepEqual(saves, [])
+    })
+  }
+})
+
+test('cancelling a sheet ignores stale inspection and an aborted tab cannot accept a picker result', async () => {
+  await withSave(async ({ state, options, render, errors, saves }) => {
+    const inspected = deferred<{ version: string | null }>(), picked = deferred<string | null>()
+    let entered = false
+    const tab = new AbortController()
+    await render({ ...options, tabSignal: tab.signal, pickSaveDirectory: () => picked.promise,
+      api: { ...options.api, inspectTarget: async () => { entered = true; return inspected.promise } } })
+    await act(async () => { state().beginSaveAs() })
+    await waitForSave(() => entered, 'target inspection begins')
+    await act(async () => { state().closeSaveAs(); inspected.resolve({ version: 'stale-target' }); await Promise.resolve() })
+    assert.equal(state().target, null)
+    await act(async () => { state().beginSaveAs() })
+    let request!: Promise<void>
+    await act(async () => { request = state().chooseSaveDirectory() })
+    await act(async () => { tab.abort(); picked.resolve('/late'); await request })
+    assert.equal(state().saveAsOpen, false)
+    assert.equal(state().saveAsPicking, false)
+    assert.deepEqual(errors, [])
+    assert.deepEqual(saves, [])
   })
 })

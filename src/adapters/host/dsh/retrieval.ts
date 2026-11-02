@@ -42,6 +42,8 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     cache?: RetrievalCache; embeddings?: EmbeddingRegistry; settings?: () => PdfSettings
     limits?: Parameters<typeof createRetrievalService>[0]['limits']
     content?: PdfPageContent
+    /** Receives Host-only failures before the shared retrieval privacy boundary. */
+    onFailure?(sessionId: string, documentId: string, error: unknown): void
     /** Resolve the caller's session policy and re-read the actual source, including ready-cache hits. */
     freshSource?(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
     retain?: (sessionId: string, documentId: string, signal: AbortSignal) => Promise<() => void>
@@ -58,7 +60,10 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     return { id: current.id, path: current.path, sourceDigest: hash(current.bytes),
       contentVersion: current.contentVersion, pageCount: current.document.pageCount }
   }
-  function selection(): { backend: RetrievalEmbedding; configuration: string; registry: EmbeddingRegistry } | { reason: string } {
+  function reportFailure(sessionId: string, documentId: string, error: unknown): void {
+    try { void Promise.resolve(options.onFailure?.(sessionId, documentId, error)).catch(() => {}) } catch { /* Passive observer. */ }
+  }
+  function selection(sessionId?: string, documentId?: string): { backend: RetrievalEmbedding; configuration: string; registry: EmbeddingRegistry } | { reason: string } {
     const registry = options.embeddings
     const settings = options.settings?.() ?? defaultSettings
     if (!settings.embeddingEngine || settings.embeddingEngine === 'none') {
@@ -83,7 +88,10 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
           try { return (await registry.availability(binding, signal)).status === 'available' }
           catch (error) {
             signal.throwIfAborted()
-            if (error instanceof EmbeddingError && ['engine-unavailable', 'not-configured', 'timeout'].includes(error.code)) return false
+            if (error instanceof EmbeddingError && ['engine-unavailable', 'not-configured', 'timeout'].includes(error.code)) {
+              if (sessionId && documentId) reportFailure(sessionId, documentId, error)
+              return false
+            }
             throw error
           }
         },
@@ -111,6 +119,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
   }
   const imageEvidence = createImageEvidenceRegistry(workspaces, references)
   const service = createRetrievalService({ documents: { snapshot, retain: options.retain }, cache: options.cache, limits: options.limits,
+    onFailure: options.onFailure,
     embedding: { select }, pages: { ...(options.content ? { identity: options.content.identity } : {}), async read(sessionId, id, page, signal) {
       if (options.content) return projectPageContent(await options.content.read(sessionId, id, page, signal))
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
@@ -126,11 +135,11 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
         : state === 'rebuilding' ? 'PDF search indexes are being reset. Retry semantic search shortly; pdf_keyword_search remains available.'
           : 'PDF retrieval is unloading; pdf_keyword_search remains available.' }
   }
-  async function availability(_sessionId: string, signal: AbortSignal, _documentId?: string) {
+  async function availability(sessionId: string, signal: AbortSignal, documentId?: string) {
     signal.throwIfAborted()
     const operation = operationalAvailability()
     if (operation) return operation
-    let selected = selection()
+    let selected = selection(sessionId, documentId)
     if ('reason' in selected) return { status: 'unavailable' as const, reason: selected.reason }
     for (let attempt = 0; attempt < 2; attempt++) {
       const backend = selected.backend
@@ -138,7 +147,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       signal.throwIfAborted()
       const currentOperation = operationalAvailability()
       if (currentOperation) return currentOperation
-      const latest = selection()
+      const latest = selection(sessionId, documentId)
       if ('reason' in latest || latest.configuration !== selected.configuration || latest.registry !== selected.registry
           || latest.backend.generation !== backend.generation) {
         return { status: 'unavailable' as const, reason: 'Selected embedding engine changed during the availability check.' }
@@ -152,26 +161,33 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     }
     return { status: 'unavailable' as const, reason: 'Embedding model changed repeatedly during the availability check.' }
   }
+  async function prepare(sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal,
+    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean): Promise<boolean> {
+    // Each quantum reauthorizes its caller and owns a lease only until its work
+    // drains. Yielding does not retain a document or authorize the next turn.
+    const release = await options.retain?.(sessionId, input.documentId, signal)
+    try {
+      signal.throwIfAborted()
+      await options.freshSource?.(sessionId, input.documentId, signal)
+      const ready = await availability(sessionId, signal, input.documentId)
+      if (ready.status !== 'available') {
+        throw Object.assign(new Error(ready.reason), { code: 'pdf/retrieval-engine-unavailable' })
+      }
+      await options.content?.prepare(sessionId, signal, input.documentId)
+      const complete = slice ? await service.prepareSlice(sessionId, input, signal, onProgress)
+        : await service.prepare(sessionId, input, signal, onProgress).then(() => true)
+      await options.content?.verify(sessionId, signal)
+      await options.freshSource?.(sessionId, input.documentId, signal)
+      return complete
+    } finally { release?.() }
+  }
   return {
     availability,
     async prepare(sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal, onProgress?: (progress: RetrievalProgress) => void) {
-      // A queued background task must reauthorize and pin its working copy before
-      // reading even the initial snapshot. Pins do not create document owners.
-      const release = await options.retain?.(sessionId, input.documentId, signal)
-      try {
-        signal.throwIfAborted()
-        await options.freshSource?.(sessionId, input.documentId, signal)
-        const ready = await availability(sessionId, signal)
-        if (ready.status !== 'available') {
-          throw Object.assign(new Error(ready.reason), { code: 'pdf/retrieval-engine-unavailable' })
-        }
-        await options.content?.prepare(sessionId, signal)
-        if (input.rebuild) options.content?.refresh(sessionId, input.documentId)
-        await service.prepare(sessionId, input, signal, onProgress)
-        await options.content?.verify(sessionId, signal)
-        await options.freshSource?.(sessionId, input.documentId, signal)
-      } finally { release?.() }
+      await prepare(sessionId, input, signal, onProgress, false)
     },
+    prepareSlice: (sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal, onProgress?: (progress: RetrievalProgress) => void) =>
+      prepare(sessionId, input, signal, onProgress, true),
     async search(sessionId: string, input: RetrievalInput, signal: AbortSignal) {
       signal.throwIfAborted()
       // Even a ready shared index requires the current caller's authority
@@ -180,11 +196,11 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       try {
         signal.throwIfAborted()
         await options.freshSource?.(sessionId, input.documentId, signal)
-        await options.content?.prepare(sessionId, signal)
+        await options.content?.prepare(sessionId, signal, input.documentId)
         if (input.mode !== 'lexical' && service.state() === 'ready') {
           // Learn remotely reported model identity before the core captures its
           // index key, including direct callers that did not request pdf_status.
-          const ready = await availability(sessionId, signal)
+          const ready = await availability(sessionId, signal, input.documentId)
           if (ready.status !== 'available' && input.mode !== 'auto' && input.mode !== undefined) {
             throw Object.assign(new Error(ready.reason), { code: 'pdf/retrieval-engine-unavailable' })
           }
@@ -276,4 +292,6 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     async dispose() { options.content?.dispose(); await service.dispose() },
   }
 }
-export type PdfRetrieval = ReturnType<typeof createPdfRetrieval>
+type PdfRetrievalApi = ReturnType<typeof createPdfRetrieval>
+/** Consumers may supply an older full-preparation adapter without quanta. */
+export type PdfRetrieval = Omit<PdfRetrievalApi, 'prepareSlice'> & Partial<Pick<PdfRetrievalApi, 'prepareSlice'>>

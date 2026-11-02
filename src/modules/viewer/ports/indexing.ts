@@ -1,4 +1,5 @@
 import type { PdfDocumentIndexPolicy, PdfIndexingSnapshot } from '../../../contracts/indexing.js'
+import type { PdfIndexingDiagnostics } from '../../../contracts/indexing-diagnostics.js'
 
 /** Session-scoped Host progress, mirrored without giving the Viewer a second task owner. */
 export type PdfIndexingClientSnapshot = Omit<PdfIndexingSnapshot, 'revision'> & {
@@ -20,4 +21,5 @@ export interface PdfIndexingApi {
   useDefaults(sessionId: string, documentId: string, revision: number, signal: AbortSignal): Promise<void>
   /** Hide only this completed occurrence across views of the same resource Session. */
   dismiss(sessionId: string, documentId: string, occurrence: number): void
+  diagnostics?(sessionId: string, documentId: string, occurrence: number, action: 'report' | 'open', signal: AbortSignal): Promise<PdfIndexingDiagnostics>
 }

@@ -13,6 +13,7 @@ import { NativeViewport } from '../../../shared/geometry/native-viewport.js'
 import type { NativeOutlineItem, NativeTextContent, ReaderDescriptor } from '../../../shared/native.js'
 import { binaryResult, type PdfDispatch } from '../dsh/index.js'
 import type { createWorkingCopyService, HostWorkspaceSnapshot } from '../../../modules/working-copy/index.js'
+import { recordIndexPerformance } from '../../../modules/retrieval/index.js'
 
 const id = z.string().min(1).max(512)
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -39,6 +40,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   executable: string; subprocess: NativeProcessRuntime; cacheBytes?: number; timeoutMs?: number
   capabilities?: CapabilityRegistry
   textRecovery?: TextRecovery
+  /** Internal encoder port for controlled compression and native-lease tests. */
+  encodeOcrPng?: typeof encodePng
 }) {
   const worker = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
   const capabilities = options.capabilities ?? new CapabilityRegistry()
@@ -383,7 +386,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     region: readonly [number, number, number, number] | undefined, maxEdge: number,
     signal: AbortSignal, forms = true): Promise<{ snapshot: HostWorkspaceSnapshot; png: Buffer; width: number; height: number;
       pdfRegion: [number, number, number, number] }> {
-    return withHandleLease(async () => {
+    const raster = await withHandleLease(async () => {
       signal.throwIfAborted()
       const snapshot = workspaces.readSnapshot(sessionId, documentId)
       if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
@@ -393,19 +396,36 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (!geometry) fail('pdf/invalid-page', 'Page geometry is unavailable')
       const { pdfRegion, ...render } = ocrRegionRenderPlan(geometry, region, maxEdge)
       const { width, height } = render
-      await descriptor(snapshot, signal)
-      const reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
-        rotation: 0, ...render, annotations: false, forms }, undefined, signal, 10)
+      const { bytesHash } = await descriptor(snapshot, signal)
+      const started = performance.now()
+      let reply: Awaited<ReturnType<NativeWorker['request']>>
+      try {
+        reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
+          rotation: 0, ...render, annotations: false, forms }, undefined, signal, 10)
+      } finally { recordIndexPerformance({ stage: 'native-render', durationMs: performance.now() - started, records: 1 }) }
       const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
-      if (value.width !== width || value.height !== height) fail('pdf/native-protocol', 'Native OCR image dimensions do not match')
-      const png = await encodePng(reply.bytes, width, height)
-      signal.throwIfAborted()
-      const latest = workspaces.readSnapshot(sessionId, documentId)
-      if (latest.contentVersion !== snapshot.contentVersion || latest.revision !== snapshot.revision) {
-        fail('pdf/stale-reader', 'PDF changed during OCR image render; retry')
+      if (value.width !== width || value.height !== height || reply.bytes.length !== width * height * 4) {
+        fail('pdf/native-protocol', 'Native OCR image dimensions do not match')
       }
-      return { snapshot, png, width, height, pdfRegion }
+      return { snapshot, rgba: reply.bytes, bytesHash, width, height, pdfRegion }
     })
+    // The reply owns its pixels. Compression no longer holds the mutable native
+    // document lease, so queued UI/native reads may proceed while zlib works.
+    signal.throwIfAborted()
+    if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+    const started = performance.now()
+    let png: Buffer
+    try { png = await (options.encodeOcrPng ?? encodePng)(raster.rgba, raster.width, raster.height) }
+    finally { recordIndexPerformance({ stage: 'png-encode', durationMs: performance.now() - started, records: 1, bytes: raster.rgba.byteLength }) }
+    signal.throwIfAborted()
+    if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+    const latest = workspaces.readSnapshot(sessionId, documentId)
+    if (latest.contentVersion !== raster.snapshot.contentVersion || latest.revision !== raster.snapshot.revision
+        || workspaces.bytesHash(latest.bytes) !== raster.bytesHash) {
+      fail('pdf/stale-reader', 'PDF changed during OCR image render; retry')
+    }
+    const { rgba: _rgba, bytesHash: _bytesHash, ...image } = raster
+    return { ...image, png }
   }
   /** Reclaim render state; the registry keeps the document ID and durable draft. */
   async function releaseDocument(documentId: string): Promise<void> {

@@ -167,7 +167,7 @@ export class EmbeddingRegistry {
       return result
     } catch (error) {
       if (error instanceof EmbeddingError) throw error
-      throw new EmbeddingError('engine-unavailable', 'The embedding engine request failed.')
+      throw new EmbeddingError('engine-unavailable', 'The embedding engine request failed.', { cause: error })
     } finally {
       clearTimeout(timer)
       signal?.removeEventListener('abort', cancel)

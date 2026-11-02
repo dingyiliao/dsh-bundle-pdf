@@ -65,6 +65,76 @@ others, and matching document-encoding identities reuse vectors across query or
 batch-size changes. Disabling semantic indexing takes effect immediately;
 otherwise pending choices replace the active plan only after a successful update.
 
+### Persistent index and restart recovery
+
+Current Host indexes live at
+`<DSH_HOME>/storages/dsh-plugin-pdf/<profile>/<namespace hash>/retrieval-v1`.
+SQLite stores immutable page content, provenance and model/text vectors. Small
+V2 page checkpoints reference those records; V1 inline pages remain readable. A
+head points to the accepted and pending generations. The serialized hot cache
+is bounded to 8 MiB, with a separate 8 MiB SQLite page cache and mmap disabled;
+one record is capped at 64 MiB.
+Search streams pages and retains only query statistics and bounded candidates.
+These limits describe cache/record accounting, not measured process RSS.
+
+Successful checkpoints survive failure, cancellation, cache eviction and Host
+restart. **Resume indexing** repairs unfinished work. **Rebuild index** creates a
+new structural generation while reusing valid source layers and vectors; clearing
+derived caches explicitly is the operation that discards these reusable results.
+Source or relevant engine identity changes select different records. Already
+persisted model output is reused; interruption before an output is durably written
+can require recomputation.
+
+Old Storage Domain cache records migrate in the background once. Rendering does
+not wait for migration, but indexing waits for it to finish so old OCR/vector work
+is not skipped. Migration is cancellable and retryable, and its completion marker
+survives cache clearing. Checkpoints are not an access grant: every Session still
+passes source and permission checks before reading or using a shared index.
+
+The implementation uses exact streaming cosine/BM25 scoring and a bounded
+candidate window; it does not add an ANN database. Superseded page generations
+are collected after active readers release them. Interrupted cleanup keeps a
+durable marker and retries on a later index open. Reusable source layers and
+vectors remain available. Disk exhaustion and damaged records are explicit
+storage failures.
+
+Historical durability regression (2026-11-01, before the SQLite migration): `tests/modules/retrieval/durable-index.test.ts`
+uses a real temporary filesystem and deterministic fake model. Its 12-page
+native/OCR fixture contains about 40,000 positioned spans per page. The former
+whole-corpus accounting reaches 70,307,758 bytes (over 64 MiB); the disk-backed
+index completes, writes 63,535,686 bytes, and retains 28,170 bytes in a 65,536-byte
+test hot-cache budget. Reopening computes no additional document vectors and
+does not reread source pages. These figures verify storage/cache accounting,
+not process RSS, real OCR/model speed or disk requirements for arbitrary PDFs.
+Separate fault-injection cases cover failed batches, cancelled builds, failed
+page commits, missing/corrupt shards, source changes and concurrent generation
+publication. Run them with:
+
+```bash
+node --import tsx --test tests/modules/retrieval/durable-index.test.ts
+```
+
+### Indexing diagnostics
+
+The task panel offers **Copy diagnostics** and **Open log directory**. Failed and
+cancelled tasks keep their last page and passage counts. Each attempt has its own
+run ID; retrying retains the preceding failure instead of replacing it.
+
+Host logs live at `<DSH_HOME>/logs/dsh-plugin-pdf/<profile>/indexing-YYYY-MM-DD.jsonl`.
+The launcher's home and profile are used, including custom and development homes;
+standalone integrations use the `standalone` directory. Dates use UTC. Files rotate
+at 2 MiB, retaining at most 28 files for 14 days. Logs contain timings, phases,
+page/layer activity, error codes, HTTP status and structural causes. They exclude
+PDF text, images, paths, prompts, credentials and raw provider responses. Routine
+progress is sampled; failures and final states are recorded separately. Diagnostic
+I/O failures do not fail indexing and are reported in the copied diagnostic.
+
+Older attempts remain in the files after Host restart; the copy action covers the
+current Host's bounded task history. Opening the directory requires a native Host
+desktop. These diagnostics cannot recover failures that occurred before logging was installed.
+Failed and cancelled tasks now offer Resume indexing; explicit structural rebuild
+is separate from discarding cached extraction and embedding output.
+
 The built-in OpenAI-compatible adapter now supplies `documentFingerprint`.
 Old vector keys are not migrated or matched by guesswork, so the first upgrade
 may recompute document embeddings. Existing aggregate `PageContent` records
@@ -127,10 +197,10 @@ configuration. The adapter includes a learned service revision in the cache
 fingerprint and checks revision consistency within the operation, so reported
 version changes automatically separate old indexes. Cache identity is managed
 internally; there is no `modelRevision` setting. If a service changes the model
-behind the same name without reporting a new revision, use **Recompute entire
-index** under **Search → Current PDF index** to refresh one PDF, or **Clear all
-index caches** in PDF settings to reset this profile's retrieval caches and old
-searches. The profile reset drains background work before clearing, then resumes
+behind the same name without reporting a new revision, correct its engine identity
+or use **Clear all index caches** in PDF settings to discard this profile's cached
+results and old searches. **Rebuild index** in Search rebuilds structure while
+reusing valid source layers and document vectors; it does not force a model rerun. The profile reset drains background work before clearing, then resumes
 still-open PDFs with their active plans; pending choices still need an explicit
 update. Other documents rebuild on their next open or search, leaving PDFs,
 drafts and saved policies unchanged.
@@ -273,40 +343,36 @@ missing geometry. OCR-derived candidates are not promoted to native coordinates.
   engine generation. Incomplete coverage produces progress, not a global
   best-match or no-answer claim.
 - Production keeps at most four immutable-plan runtimes. Each has at most two
-  resident indexes, an estimated 64 MiB index budget, two simultaneous build jobs
+  resident index summaries, a 64 MiB metadata/current-page budget, two simultaneous build jobs
   and eight admitted queries; each index is capped at 20,000 chunks. Across four
-  runtimes this permits at most eight indexes and 256 MiB of indexed-data budget,
-  allocated as data becomes resident rather than reserved up front.
+  runtimes this permits at most eight index summaries and 256 MiB of accounted
+  metadata/current-page budgets, allocated as work runs rather than reserved up front.
   Build/query admission limits are per runtime, not Host-wide limits of two/eight;
   background document preparation still runs one document at a time. The generic
   retrieval service's standalone defaults remain eight indexes and 64 MiB per
   instance; production limits each instance to two indexes while preserving that
-  original per-plan memory budget. Active indexes
+  original per-plan working-memory budget. Active indexes
   cannot be evicted mid-query; each build step retains its own document lease.
   These are admission estimates, not a guarantee of total process RSS; larger
-  scopes may need to be split explicitly.
-  Lexical estimates count one posting per distinct term/chunk pair. Resident
-  cosine-search vectors use normalized Float32 storage shared by identical text;
+  scopes may need to be split explicitly when exceeding the chunk guard.
+  Search reads one page at a time; cosine-search vectors use normalized Float32 storage;
   persisted vectors use versioned little-endian Float32/Base64 records with an
   integrity checksum. At a compatible cache key, existing numeric-array records
   migrate on a valid hit without requesting another embedding; this does not
   migrate the old built-in adapter's keys across the document-fingerprint change.
-- The separate `pdf_retrieval_<profile>` Storage Domain stores derived text and
-  vectors with default limits of 64 MiB serialized data, 12,000 records and 7 days.
-  Individual records are limited to 2 MiB. Cache loss/corruption can be rebuilt
-  and must not damage drafts. The cache may contain document text; it is local
-  plugin storage, not an encrypted vault or an authorization token.
-- Derived record keys use filename-safe `retrieval_<digest>` identifiers, as
-  required by DSH's per-record JSON backend. Persistence is verified against the
-  real backend, including closing and recreating the domain and retrieval
-  service. An earlier colon-prefixed key was rejected by that backend; affected
-  installations need one initial build because those records were never saved.
-- After restart, the service restores text and vectors and reconstructs its
-  in-memory search structures; it does not persist Session authorization or query
+- The filesystem store described above owns complete indexes and reusable
+  source/vector records. Its hot-cache limit does not evict disk records; no TTL
+  applies to the durable index. Legacy `pdf_retrieval_<namespace hash>` records
+  are imported once and the old domain is closed. Storage failures cannot damage
+  drafts. Records may contain document text; this is local plugin storage, not
+  an encrypted vault or an authorization token.
+- After restart, the service restores page summaries and streams content and
+  vectors when needed; it does not persist Session authorization or query
   cursors. The task panel distinguishes restoration, native page extraction and
   new embedding requests, and reports reused/newly computed passage counts.
-  Missing, expired, evicted or invalid records are rebuilt individually. Unchanged
-  valid records require neither source extraction nor document embedding.
+  Missing checkpoints are repaired on resume. Corrupt records are reported and
+  can be bypassed by a structural rebuild using other validated cached results.
+  Unchanged valid records require neither source extraction nor document embedding.
 - Reuse vectors by text/model identity after source revalidation; annotation-only
   edits do not rebuild the text index.
 - Extraction-version changes invalidate cached page text and quality metadata.
@@ -467,8 +533,10 @@ serialized bytes) avoids document embedding but still starts a new native helper
 it is not expected to beat a warm same-runtime query. Built-SDK Node RSS snapshots
 ranged from 198.1 to 213.5 MB and exclude the PDFium child and MLX process.
 
-Cache persistence here is a JSON round-trip in memory, not a measurement of the
-DSH storage driver. UI takeover and navigation are exercised at their Host
+Those historical v1 measurements used a JSON round-trip in memory, not the DSH
+storage driver. The current v2 runner uses the SQLite batch store and a
+temporary directory across runtime restarts; its disk timings need a new explicit
+model-enabled run and are not represented by the table above. UI takeover and navigation are exercised at their Host
 contracts, not by mounting a browser or testing viewport scrolling/back history.
 These six synthetic text pages validate the integration path, not broad retrieval
 quality, complex layouts or large-document performance.
@@ -523,3 +591,8 @@ shared-job leases, query admission, cancellation/unload, real Cordis contributor
 registration, current semantic capability reporting and the exact evidence-to-draft
 chain. These gates do not establish broad semantic accuracy or real Desktop UX
 acceptance; the development-corpus and environment limitations above still apply.
+
+
+## 2026-11-02 持久化与调度复测
+
+当前存储使用 SQLite 批量事务、V2 不可变内容引用与跨页 embedding 批处理，自动迁移旧 JSON；旧章节的文件写入和内存后端数字为历史结果。后台任务按有界步骤轮转，恢复只读取页头和向量，首次查询才加载位置数据。新 [固定合成基准及原始结果](./benchmarks/indexing-20261102/README.md) 单独测量本地索引成本，不代替 OCR、视觉模型或网络端到端耗时。

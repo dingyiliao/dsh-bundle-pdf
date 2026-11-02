@@ -3,8 +3,9 @@ import { PDF_INDEXING_METHOD, indexingSnapshotSchema, type indexingRequestSchema
   type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
 import type { PdfConnection } from './pdf-api.js'
 import type { PdfIndexingClientSnapshot } from '../../../modules/viewer/index.js'
+import { PDF_INDEXING_DIAGNOSTICS_METHOD, indexingDiagnosticsResultSchema } from '../../../contracts/indexing-diagnostics.js'
 const reply = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: indexingSnapshotSchema }),
+  z.object({ ok: z.literal(true), value: z.unknown() }),
   z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
 ])
 interface SessionStore {
@@ -43,7 +44,7 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
     signal.addEventListener('abort', done, { once: true })
     if (signal.aborted) done()
   })
-  const call = async (input: object, signal: AbortSignal): Promise<PdfIndexingSnapshot> => {
+  const request = async (input: object, signal: AbortSignal, method: string): Promise<unknown> => {
     signal.throwIfAborted()
     let abort!: () => void
     const cancelled = new Promise<never>((_resolve, reject) => {
@@ -53,13 +54,15 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
     })
     try {
       const response = reply.parse(await Promise.race([
-        connection.rpc.call('/api', PDF_INDEXING_METHOD, input, signal), cancelled,
+        connection.rpc.call('/api', method, input, signal), cancelled,
       ]))
       signal.throwIfAborted()
       if (!response.ok) throw Object.assign(new Error(response.error.message), { code: response.error.code })
       return response.value
     } finally { signal.removeEventListener('abort', abort) }
   }
+  const call = async (input: object, signal: AbortSignal): Promise<PdfIndexingSnapshot> =>
+    indexingSnapshotSchema.parse(await request(input, signal, PDF_INDEXING_METHOD))
   function watch(sessionId: string, entry: SessionStore): void {
     if (disposed || lifetime.aborted || entry.watch || !entry.listeners.size) return
     const controller = new AbortController()
@@ -105,6 +108,11 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       control({ action: 'configure', sessionId, documentId, revision, policy }, signal),
     useDefaults: (sessionId: string, documentId: string, revision: number, signal: AbortSignal) =>
       control({ action: 'defaults', sessionId, documentId, revision }, signal),
+    async diagnostics(sessionId: string, documentId: string, occurrence: number, action: 'report' | 'open', signal: AbortSignal) {
+      if (disposed) throw new DOMException('Indexing connection is closed', 'AbortError')
+      return indexingDiagnosticsResultSchema.parse(await request({ action, sessionId, documentId, occurrence },
+        AbortSignal.any([signal, lifetime, disposal.signal]), PDF_INDEXING_DIAGNOSTICS_METHOD))
+    },
     dismiss(sessionId: string, documentId: string, occurrence: number) {
       if (disposed || lifetime.aborted) return
       const entry = get(sessionId)

@@ -55,14 +55,14 @@ function fixture(options: { cache?: boolean; pagesPerStep?: number } = {}) {
     } },
     embedding: { select: session => providers.get(session) },
     limits: { pagesPerStep: options.pagesPerStep ?? 1 },
-    ...(options.cache ? { cache: { async get(key: string) { return cache.get(key) },
-      async set(key: string, value: unknown) { cache.set(key, structuredClone(value)) } } } : {}),
+    ...(options.cache ? { cache: { async get(key: string) { return structuredClone(cache.get(key)) },
+      async set(key: string, value: unknown) { cache.set(key, structuredClone(value)) }, async clear() { cache.clear() } } } : {}),
   }
   return { service: createRetrievalService(ports), ports, state, documents, providers, reads, calls, pins, revoked, cache }
 }
 const documentCalls = (f: ReturnType<typeof fixture>) => f.calls.filter(call => call.purpose === 'document').flatMap(call => call.texts)
 
-test('document rebuild refreshes ready text and vectors without invalidating another source or disabling warm reuse', async () => {
+test('document structure rebuild preserves verified text and vectors without invalidating another source or disabling warm reuse', async () => {
   const f = fixture({ cache: true })
   f.documents.set('b', { ...f.documents.get('b')!, sourceDigest: 'other-source' })
   try {
@@ -74,17 +74,19 @@ test('document rebuild refreshes ready text and vectors without invalidating ano
     const otherWindow = await f.service.search('b', input('b', { maxPages: 2 }))
     assert.ok(previousWindow.nextCursor); assert.ok(otherWindow.nextCursor)
     const reads = f.reads.length, embeddings = documentCalls(f).length
-    f.state.onRead = async (session, page) => session === 'a' ? `Refreshed cat material on page ${page}.` : undefined
-    await f.service.prepare('a', { documentId: 'document-a', rebuild: true })
-    assert.equal(f.reads.length, reads + 3, 'ready pages must be reread rather than restored from cache')
-    assert.equal(documentCalls(f).length, embeddings + 3, 'fresh text must be encoded again')
+    f.state.onRead = async () => { throw new Error('verified pages must not be re-extracted during structure rebuild') }
+    await f.service.prepare('a', { documentId: 'document-a', rebuild: true, rebuildToken: 'structure-v2' })
+    assert.equal(f.reads.length, reads)
+    assert.equal(documentCalls(f).length, embeddings)
     const refreshed = await f.service.search('a', input('a'))
     assert.notEqual(refreshed.indexGeneration, before.indexGeneration)
-    assert.ok(refreshed.chunks.every(chunk => chunk.text.includes('Refreshed cat material')))
-    await assert.rejects(f.service.search('a', input('a', { maxPages: 2, cursor: previousWindow.nextCursor })), { code: 'pdf/stale-reader' })
+    assert.deepEqual(refreshed.chunks.map(chunk => chunk.text), before.chunks.map(chunk => chunk.text))
+    const existingWindow = await f.service.search('a', input('a', { maxPages: 2, cursor: previousWindow.nextCursor }))
+    assert.equal(existingWindow.indexGeneration, previousWindow.indexGeneration, 'a separate immutable range remains independently reusable')
     const freshEmbeddings = documentCalls(f).length
-    await f.service.prepare('a', { documentId: 'document-a', rebuild: true })
-    assert.equal(documentCalls(f).length, freshEmbeddings + 3, 'even unchanged text must get fresh embeddings on an explicit rebuild')
+    await f.service.prepare('a', { documentId: 'document-a', rebuild: true, rebuildToken: 'structure-v3' })
+    assert.equal(documentCalls(f).length, freshEmbeddings, 'another explicit structure generation still reuses identity-valid vectors')
+    assert.notEqual((await f.service.search('a', input('a'))).indexGeneration, refreshed.indexGeneration)
     const unchanged = await f.service.search('b', input('b'))
     assert.equal(unchanged.indexGeneration, other.indexGeneration)
     const otherContinuation = await f.service.search('b', input('b', { maxPages: 2, cursor: otherWindow.nextCursor }))
@@ -109,7 +111,7 @@ test('rebuild waits for admitted same-source cache writes and respects cancellat
   const originalSet = f.ports.cache!.set
   let hold = true
   f.ports.cache!.set = async (key, value) => {
-    if (hold) { entered.resolve(); await gate.promise }
+    if (hold && value && typeof value === 'object' && 'text' in value) { entered.resolve(); await gate.promise }
     await originalSet(key, value)
   }
   const original = f.service.prepare('a', { documentId: 'document-a' }).catch(error => {
@@ -130,9 +132,10 @@ test('rebuild waits for admitted same-source cache writes and respects cancellat
     assert.equal(rebuilt, false)
     hold = false; gate.resolve()
     await Promise.all([original, rebuild])
-    assert.equal(f.reads.length, 6)
+    assert.equal(f.reads.length, 3, 'rebuild waits for the first generation and reuses its committed page contents')
+    assert.equal(documentCalls(f).length, 3, 'the second generation does not repeat successful encoding')
     assert.equal(rebuilt, true)
-    assert.equal(f.pins.get('a'), 0); assert.equal(f.pins.get('b'), 0)
+    assert.equal(f.pins.get('a') ?? 0, 0); assert.equal(f.pins.get('b') ?? 0, 0)
   } finally { hold = false; gate.resolve(); await original.catch(() => undefined); await f.service.dispose() }
 })
 
@@ -299,7 +302,7 @@ test('continuation cursors and result fences stay Session-local while cancellati
   } finally { await f.service.dispose() }
 })
 
-test('different content, range, engine binding, dimensions, generation and chunk encoding cannot share an index', { timeout: 30_000 }, async t => {
+test('content and encoding namespaces remain distinct while registration lifetimes reuse durable generations', { timeout: 30_000 }, async t => {
   for (const distinction of ['digest', 'range', 'configuration', 'dimensions', 'generation', 'input-limit', 'page-count'] as const) {
     await t.test(distinction, async () => {
       const f = fixture({ cache: true })
@@ -315,7 +318,11 @@ test('different content, range, engine binding, dimensions, generation and chunk
         const scope = distinction === 'range' ? { fromPage: 2, maxPages: 1 } : {}
         await f.service.prepare('b', { documentId: 'document-b', ...scope })
         const b = await f.service.search('b', input('b', scope))
-        assert.notEqual(b.indexGeneration, a.indexGeneration)
+        if (distinction === 'generation') {
+          assert.equal(b.indexGeneration, a.indexGeneration, 'new provider registrations reuse the same attested document-encoding records')
+          f.service.validate('a', a)
+          assert.throws(() => f.service.validate('b', a), { code: 'pdf/stale-reader' }, 'sharing disk data never shares a Session result fence')
+        } else assert.notEqual(b.indexGeneration, a.indexGeneration)
         assert.equal(b.status, 'complete')
         assert.deepEqual(b.document, f.documents.get('b'))
         if (distinction === 'configuration') assert.equal(documentCalls(f).length, 6,
@@ -356,7 +363,8 @@ test('an attested document encoder reuses vectors across query and transport cha
     const progress: RetrievalProgress[] = []
     await f.service.prepare('b', { documentId: 'document-b' }, undefined, value => progress.push(value))
     const after = await f.service.search('b', input('b'))
-    assert.notEqual(before.indexGeneration, after.indexGeneration, 'query and continuation identities remain distinct')
+    assert.equal(before.indexGeneration, after.indexGeneration, 'the durable generation follows document encoding, not query/transport settings')
+    assert.throws(() => f.service.validate('b', before), { code: 'pdf/stale-reader' }, 'query and Session result fences remain distinct')
     assert.equal(documentCalls(f).length, 3, 'all original document vectors were reused without encoding again')
     assert.equal(progress.at(-1)?.reusedChunks, 3); assert.equal(progress.at(-1)?.computedChunks, 0)
     assert.ok(f.calls.some(call => call.session === 'b' && call.purpose === 'query'), 'the new binding still computes its own query')
@@ -367,4 +375,58 @@ test('an attested document encoder reuses vectors across query and transport cha
     await f.service.prepare('b', { documentId: 'document-b' })
     assert.equal(documentCalls(f).length, 6, 'different weights cannot restore the previous document vectors')
   } finally { await f.service.dispose() }
+})
+
+test('shared failures reach only authorized Host diagnostic observers while callers keep sanitized errors', async () => {
+  const f = fixture(), entered = deferred(), gate = deferred()
+  const raw = Object.assign(new Error('private provider message and /session-a/source.pdf', { cause:
+    Object.assign(new Error('private socket address'), { code: 'ECONNRESET' }) }), { code: 'engine-unavailable', status: 503 })
+  const observed: Array<{ sessionId: string; documentId: string; error: unknown }> = []
+  f.ports.onFailure = (sessionId, documentId, error) => {
+    observed.push({ sessionId, documentId, error })
+    if (sessionId === 'a') throw new Error('diagnostic sink failure')
+    return Promise.reject(new Error('async diagnostic sink failure')) as never
+  }
+  f.state.onRead = async (_session, page) => { if (page === 1) { entered.resolve(); await gate.promise }; return undefined }
+  for (const provider of f.providers.values()) provider.embed = async () => { throw raw }
+  const first = f.service.prepare('a', { documentId: 'document-a' })
+  const check = (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.equal((error as Error & { code?: string }).code, 'engine-unavailable')
+    assert.equal(error.message, 'The shared PDF indexing step could not complete.')
+    assert.equal(error.cause, undefined)
+    assert.equal('status' in error, false)
+    assert.ok(!JSON.stringify(error).includes('private'))
+    return true
+  }
+  const rejectedFirst = assert.rejects(first, check)
+  try {
+    await entered.promise
+    const second = f.service.prepare('b', { documentId: 'document-b' })
+    const rejectedSecond = assert.rejects(second, check)
+    await turn(); gate.resolve()
+    await Promise.all([rejectedFirst, rejectedSecond])
+    assert.deepEqual(observed.map(({ sessionId, documentId }) => [sessionId, documentId]), [['a', 'document-a'], ['b', 'document-b']])
+    assert.ok(observed.every(event => event.error === raw), 'only the Host observer sees the original structured cause')
+  } finally { gate.resolve(); await f.service.dispose(); await rejectedFirst }
+})
+
+test('a caller whose authority is revoked before a shared failure receives no provider diagnostics', async () => {
+  const f = fixture(), entered = deferred(), gate = deferred()
+  const observed: string[] = []
+  f.ports.onFailure = sessionId => { observed.push(sessionId) }
+  f.state.onRead = async (_session, page) => { if (page === 1) { entered.resolve(); await gate.promise }; return undefined }
+  for (const provider of f.providers.values()) provider.embed = async () => {
+    throw Object.assign(new Error('private provider body'), { code: 'engine-unavailable' })
+  }
+  const first = f.service.prepare('a', { documentId: 'document-a' })
+  const rejectedFirst = assert.rejects(first, { code: 'pdf/access-denied' })
+  try {
+    await entered.promise
+    const second = f.service.prepare('b', { documentId: 'document-b' })
+    const rejectedSecond = assert.rejects(second, { code: 'engine-unavailable' })
+    await turn(); f.revoked.add('a'); gate.resolve()
+    await Promise.all([rejectedFirst, rejectedSecond])
+    assert.deepEqual(observed, ['b'])
+  } finally { gate.resolve(); await f.service.dispose(); await rejectedFirst }
 })

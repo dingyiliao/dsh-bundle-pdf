@@ -45,7 +45,7 @@ async function withIndexing(run: (f: {
 }) => Promise<void>, initial = running(), timer?: TestContext) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
   const previous = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, Node: dom.Node, Element: dom.Element,
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, navigator: dom.navigator, Node: dom.Node, Element: dom.Element,
     HTMLElement: dom.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
     Object.defineProperty(globalThis, key, { configurable: true, value })
@@ -173,12 +173,18 @@ test('ready indexing remains visible across elapsed time, other PDF progress and
   }, running(), context)
 })
 
-test('Done dismisses completion without changing the search rebuild action or hiding later work', async () => {
+test('closing a notification dismisses completion without changing the search rebuild action or hiding later work', async () => {
   await withIndexing(async f => {
     await f.publish({ ...running(), revision: 'ready', tasks: [{ ...running().tasks[0]!, state: 'ready' }] })
     const card = f.container.querySelector('[data-status-id="indexing:a"]')!
     assert.equal(card.getAttribute('data-tone'), 'success')
-    await act(async () => { card.querySelector<HTMLButtonElement>('[aria-label="Done: alpha.pdf"]')!.click() })
+    const activity = f.container.querySelector<HTMLButtonElement>('.dsh-pdf-activity-trigger')!
+    await act(async () => { activity.click() })
+    await act(async () => {
+      const close = card.querySelector<HTMLButtonElement>('[aria-label="Close notification: alpha.pdf"]')!
+      close.focus(); close.click()
+    })
+    assert.equal(f.container.ownerDocument.activeElement, activity, 'closing a completed notification returns focus to the task entry')
     assert.equal(f.container.querySelector('[data-status-id="indexing:a"]'), null)
     assert.equal(f.state().control!.label, 'Update index')
     assert.equal(f.state().control!.statusLabel, 'Index ready')
@@ -191,15 +197,19 @@ test('Done dismisses completion without changing the search rebuild action or hi
   })
 })
 
-test('failed tasks offer rebuild in the task panel and search while disabled engines stay unavailable', async () => {
+test('failed tasks resume their checkpoints from the task panel and search while disabled engines stay unavailable', async () => {
   await withIndexing(async f => {
     await f.publish({ ...running(), revision: 'failed', tasks: [{ ...running().tasks[0]!, state: 'failed' }] })
-    assert.equal(f.state().control!.label, 'Update index')
+    assert.equal(f.state().control!.label, 'Resume indexing')
     assert.equal(f.state().control!.statusLabel, 'Indexing failed')
-    const button = f.container.querySelector<HTMLButtonElement>('[aria-label="Rebuild index: alpha.pdf"]')!
+    const button = f.container.querySelector<HTMLButtonElement>('[aria-label="Resume indexing: alpha.pdf"]')!
     await act(async () => { button.click() })
     assert.deepEqual(f.calls.map(({ action, sessionId, id }) => ({ action, sessionId, id })),
-      [{ action: 'rebuild', sessionId: 'session-a', id: 'a' }])
+      [{ action: 'start', sessionId: 'session-a', id: 'a' }])
+    await act(async () => { f.state().control!.onRebuild!() })
+    assert.equal(f.calls.at(-1)!.action, 'rebuild', 'discarding progress remains an explicit separate action')
+    await f.publish({ ...running(), revision: 'cancelled', tasks: [{ ...running().tasks[0]!, state: 'cancelled' }] })
+    assert.equal(f.state().control!.label, 'Resume indexing')
     await f.publish({ ...idle(), enabled: false })
     assert.equal(f.state().control!.enabled, false)
     assert.equal(f.state().control!.disabled, true)
@@ -396,4 +406,256 @@ test('restoring defaults also uses the displayed document revision when the mirr
     assert.equal(f.calls[1]!.revision, 2)
     assert.deepEqual(f.failures, [])
   }, { ...idle(), documents: [documentSettings()] })
+})
+
+async function openDiagnosticMenu(container: HTMLElement, title = 'alpha.pdf'): Promise<HTMLElement> {
+  const activity = container.querySelector<HTMLButtonElement>('.dsh-pdf-activity-trigger')!
+  if (activity.getAttribute('aria-expanded') !== 'true') await act(async () => { activity.click() })
+  const more = container.querySelector<HTMLButtonElement>(`[aria-label="More task actions: ${title}"]`)
+  assert.ok(more, 'diagnostics are discovered through the task’s more-actions trigger')
+  if (more.getAttribute('aria-expanded') !== 'true') await act(async () => { more.click() })
+  const menu = container.ownerDocument.querySelector<HTMLElement>(`[role="group"][aria-label="More task actions: ${title}"]`)
+  assert.ok(menu)
+  assert.equal(menu.hidden, false)
+  return menu
+}
+
+test('task cards expose one contextual action while diagnostics stay in the more menu and only completion can be dismissed', async () => {
+  await withIndexing(async f => {
+    f.api.diagnostics = async () => ({ directory: '/logs', report: 'report', canOpen: true })
+    await f.render(f.options)
+    for (const state of ['running', 'failed', 'cancelled', 'ready'] as const) {
+      await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, state }] })
+      const status = f.state().statuses.find(status => status.id === 'indexing:a')!
+      assert.equal(status.menuActions?.length, 2)
+      assert.deepEqual(status.menuActions?.map(action => action.label), ['Copy diagnostics', 'Open log folder'])
+      if (state === 'ready') {
+        assert.equal(status.actions?.length ?? 0, 0)
+        assert.equal(status.dismiss?.ariaLabel, 'Close notification: alpha.pdf')
+      } else {
+        assert.equal(status.dismiss, undefined)
+        assert.equal(status.actions?.length, 1)
+        assert.equal(status.actions![0]!.label, state === 'running' ? 'Cancel' : 'Resume indexing')
+      }
+    }
+    assert.deepEqual(f.calls, [], 'presenting actions does not start, stop or clear the Host index')
+  })
+})
+
+test('task diagnostics copy a Host report, acknowledge in the menu and open the fixed log directory', async () => {
+  await withIndexing(async f => {
+    assert.equal(f.container.querySelector('[aria-label="Copy diagnostics: alpha.pdf"]'), null, 'older adapters do not expose unusable controls')
+    const invoked: unknown[][] = [], copied: string[] = []
+    f.api.diagnostics = async (...args) => { invoked.push(args); return { directory: '/home/logs/pdf/desktop', report: 'safe diagnostic report', canOpen: true } }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text) } } })
+    await f.render(f.options)
+    const copy = () => f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!
+    await openDiagnosticMenu(f.container)
+    await act(async () => { copy().click() })
+    assert.deepEqual(copied, ['safe diagnostic report'])
+    assert.deepEqual(invoked[0]!.slice(0, 4), ['session-a', 'a', 1, 'report'])
+    assert.ok(invoked[0]![4] instanceof AbortSignal)
+    await openDiagnosticMenu(f.container)
+    assert.equal(copy().textContent, 'Copied')
+    assert.doesNotMatch(f.container.textContent ?? '', /safe diagnostic report/, 'diagnostic text is copied, never rendered as document UI')
+    await openDiagnosticMenu(f.container)
+    await act(async () => { f.container.querySelector<HTMLButtonElement>('[aria-label="Open log folder: alpha.pdf"]')!.click() })
+    assert.deepEqual(invoked[1]!.slice(0, 4), ['session-a', 'a', 1, 'open'])
+    await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, occurrence: 2 }] })
+    await openDiagnosticMenu(f.container)
+    assert.equal(copy().textContent, 'Copy diagnostics', 'a new attempt does not inherit the old copy acknowledgment')
+    assert.deepEqual(f.failures, [])
+  })
+})
+
+test('diagnostic requests share their own pending guard and leave index cancellation available', async () => {
+  await withIndexing(async f => {
+    let finish!: () => void, calls = 0
+    f.api.diagnostics = async () => { calls++; await new Promise<void>(resolve => { finish = resolve }); return { directory: '/logs', report: 'report', canOpen: true } }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } })
+    await f.render(f.options)
+    const status = f.state().statuses.find(value => value.id === 'indexing:a')!
+    await act(async () => { status.menuActions![0]!.onClick(); status.menuActions![1]!.onClick() })
+    assert.equal(calls, 1)
+    assert.equal(f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.disabled, true)
+    assert.equal(f.container.querySelector<HTMLButtonElement>('[aria-label="Open log folder: alpha.pdf"]')!.disabled, true)
+    const cancel = f.container.querySelector<HTMLButtonElement>('[aria-label="Cancel indexing: alpha.pdf"]')!
+    assert.equal(cancel.disabled, false)
+    await act(async () => { cancel.click() })
+    assert.equal(f.calls.at(-1)?.action, 'cancel')
+    await act(async () => { finish() })
+    assert.equal(f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.disabled, false)
+  })
+})
+
+test('clipboard, Host and folder-opening failures reach the existing error owner without false acknowledgments', async () => {
+  await withIndexing(async f => {
+    f.api.diagnostics = async () => ({ directory: '/logs', report: 'report', canOpen: false })
+    await f.render(f.options)
+    const click = async (label: string) => { await openDiagnosticMenu(f.container); await act(async () => { f.container.querySelector<HTMLButtonElement>(`[aria-label="${label}: alpha.pdf"]`)!.click() }) }
+    await click('Copy diagnostics')
+    assert.match(String(f.failures.at(-1)), /Clipboard access is unavailable/)
+    await click('Open log folder')
+    assert.match(String(f.failures.at(-1)), /Opening the log folder is unavailable/)
+    const denied = new Error('clipboard denied')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw denied } } })
+    await click('Copy diagnostics')
+    assert.equal(f.failures.at(-1), denied)
+    const host = new Error('diagnostics unavailable')
+    f.api.diagnostics = async () => { throw host }
+    await click('Copy diagnostics')
+    assert.equal(f.failures.at(-1), host)
+    assert.equal(f.container.querySelector('[aria-label="Copy diagnostics: alpha.pdf"]')?.textContent, 'Copy diagnostics')
+    assert.equal(f.failures.length, 4)
+  })
+})
+
+test('diagnostics cannot copy or report late failures after attempt, view or cancellation boundaries', async () => {
+  let finishAfterUnmount!: () => void, afterUnmountSignal!: AbortSignal
+  let copied = 0
+  await withIndexing(async f => {
+    let finish!: () => void, reject!: (error: Error) => void, requestSignal!: AbortSignal
+    f.api.diagnostics = async (_session, _id, _occurrence, _action, signal) => {
+      requestSignal = signal
+      await new Promise<void>((resolve, fail) => { finish = resolve; reject = fail })
+      return { directory: '/logs', report: 'stale report', canOpen: true }
+    }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { copied++ } } })
+    await f.render(f.options)
+    const click = async () => { await openDiagnosticMenu(f.container); await act(async () => { f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.click() }) }
+    await click()
+    await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, occurrence: 2 }] })
+    await act(async () => { finish() })
+    assert.equal(copied, 0, 'a report for a replaced attempt is not copied')
+    await click()
+    await f.render({ ...f.options, sessionId: 'session-b', documentId: 'b' })
+    assert.equal(requestSignal.aborted, true)
+    await act(async () => { reject(new Error('late session failure')) })
+    assert.deepEqual(f.failures, [])
+    const lifetime = new AbortController()
+    await f.render({ ...f.options, signal: lifetime.signal })
+    await click()
+    lifetime.abort()
+    await act(async () => { finish() })
+    assert.equal(copied, 0)
+    await f.render(f.options)
+    await click()
+    finishAfterUnmount = finish; afterUnmountSignal = requestSignal
+  })
+  assert.equal(afterUnmountSignal.aborted, true)
+  await act(async () => { finishAfterUnmount() })
+  assert.equal(copied, 0)
+})
+
+test('failed and cancelled cards retain last measured progress and visible failure codes', async () => {
+  await withIndexing(async f => {
+    for (const state of ['failed', 'cancelled'] as const) {
+      await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, state, failureCode: 'pdf/embedding-timeout' }] })
+      const card = f.container.querySelector('[data-status-id="indexing:a"]')!
+      assert.match(card.textContent ?? '', /pdf\/embedding-timeout/)
+      assert.equal(card.querySelector<HTMLProgressElement>('progress[aria-label="Read pages: alpha.pdf"]')?.value, 3)
+      assert.equal(card.querySelector<HTMLProgressElement>('progress[aria-label="Indexed passages: alpha.pdf"]')?.value, 2)
+      assert.match(card.textContent ?? '', /3\/10.*2\/6/)
+    }
+    let calls = 0
+    f.api.diagnostics = async () => { calls++; return { directory: '/logs', report: 'report', canOpen: true } }
+    await f.publish({ ...running(), status: 'unavailable' })
+    await act(async () => { f.state().statuses.find(value => value.id === 'indexing:a')!.menuActions![0]!.onClick() })
+    assert.equal(calls, 0, 'disconnected controls do not issue diagnostic requests')
+    const lifetime = new AbortController(); lifetime.abort()
+    await f.render({ ...f.options, signal: lifetime.signal })
+    await act(async () => { f.state().statuses.find(value => value.id === 'indexing:a')!.menuActions![0]!.onClick() })
+    assert.equal(calls, 0)
+  })
+})
+
+class DeferredClipboardItem {
+  constructor(readonly data: Record<string, Promise<Blob>>) {}
+}
+async function withClipboardConstructor(constructor: unknown, run: () => Promise<void>) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem')
+  Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: constructor })
+  try { await run() }
+  finally {
+    if (previous) Object.defineProperty(globalThis, 'ClipboardItem', previous)
+    else Reflect.deleteProperty(globalThis, 'ClipboardItem')
+  }
+}
+
+test('modern clipboard writes start within the click gesture and resolve the report bytes after RPC completion', async () => {
+  await withClipboardConstructor(DeferredClipboardItem, () => withIndexing(async f => {
+    let finish!: () => void
+    const order: string[] = [], copied: string[] = []
+    f.api.diagnostics = async () => {
+      order.push('rpc-start')
+      await new Promise<void>(resolve => { finish = resolve })
+      order.push('rpc-end')
+      return { directory: '/logs', report: 'deferred report', canOpen: true }
+    }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      async write(items: DeferredClipboardItem[]) {
+        order.push('clipboard-start')
+        const blob = await items[0]!.data['text/plain']!
+        assert.equal(blob.type, 'text/plain')
+        copied.push(await blob.text())
+      },
+    } })
+    await f.render(f.options)
+    await openDiagnosticMenu(f.container)
+    await act(async () => {
+      f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.click()
+      assert.deepEqual(order, ['rpc-start', 'clipboard-start'], 'write must be admitted before the report is available')
+    })
+    assert.deepEqual(copied, [])
+    await act(async () => { finish() })
+    assert.deepEqual(copied, ['deferred report'])
+    assert.equal(f.container.querySelector('[aria-label="Copy diagnostics: alpha.pdf"]')?.textContent, 'Copied')
+    assert.deepEqual(f.failures, [])
+  }))
+})
+
+test('deferred clipboard data rejects after owner replacement without copying or acknowledging stale bytes', async () => {
+  await withClipboardConstructor(DeferredClipboardItem, () => withIndexing(async f => {
+    let finish!: () => void, copied = 0, writes = 0
+    f.api.diagnostics = async () => {
+      await new Promise<void>(resolve => { finish = resolve })
+      return { directory: '/logs', report: 'old report', canOpen: true }
+    }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      async write(items: DeferredClipboardItem[]) { writes++; await items[0]!.data['text/plain']; copied++ },
+    } })
+    await f.render(f.options)
+    await openDiagnosticMenu(f.container)
+    await act(async () => { f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.click() })
+    assert.equal(writes, 1)
+    await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, occurrence: 2 }] })
+    await act(async () => { finish() })
+    assert.equal(copied, 0)
+    assert.equal(f.container.querySelector('[aria-label="Copy diagnostics: alpha.pdf"]')?.textContent, 'Copy diagnostics')
+    assert.deepEqual(f.failures, [])
+  }))
+})
+
+test('synchronous ClipboardItem and write failures observe deferred report rejection without unhandled promises', async () => {
+  for (const stage of ['constructor', 'write'] as const) {
+    const error = new Error(`${stage} denied`)
+    const constructor = stage === 'constructor' ? class { constructor() { throw error } } : DeferredClipboardItem
+    await withClipboardConstructor(constructor, () => withIndexing(async f => {
+      let reject!: (error: Error) => void
+      f.api.diagnostics = () => new Promise((_resolve, fail) => { reject = fail })
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        write() { assert.equal(stage, 'write'); throw error },
+      } })
+      await f.render(f.options)
+      await openDiagnosticMenu(f.container)
+    await act(async () => { f.container.querySelector<HTMLButtonElement>('[aria-label="Copy diagnostics: alpha.pdf"]')!.click() })
+      assert.deepEqual(f.failures, [error])
+      await act(async () => {
+        reject(new Error('late report rejection'))
+        await new Promise<void>(resolve => setImmediate(resolve))
+      })
+      assert.deepEqual(f.failures, [error], 'the original clipboard failure has a single owner')
+      assert.equal(f.container.querySelector('[aria-label="Copy diagnostics: alpha.pdf"]')?.textContent, 'Copy diagnostics')
+    }))
+  }
 })

@@ -3,6 +3,24 @@ import { createPortal } from 'react-dom'
 
 const OPEN_EVENT = 'pdf-tool-popover-open'
 
+/** Portaled descendants belong to their originating popup for outside clicks. */
+export function readerPopoverContains(menu: HTMLElement, target: Node): boolean {
+  if (menu.contains(target)) return true
+  const id = menu.dataset.pdfPopoverId
+  if (!id) return false
+  const owner = menu.closest('.dsh-pdf-reader') ?? menu.ownerDocument
+  let popup = target instanceof Element ? target.closest<HTMLElement>('[data-pdf-popover-id]') : null
+  const seen = new Set<string>()
+  while (popup?.dataset.pdfPopoverParent && !seen.has(popup.dataset.pdfPopoverParent)) {
+    const parent = popup.dataset.pdfPopoverParent
+    if (parent === id) return true
+    seen.add(parent)
+    popup = [...owner.querySelectorAll<HTMLElement>('[data-pdf-popover-id]')]
+      .find(item => item.dataset.pdfPopoverId === parent) ?? null
+  }
+  return false
+}
+
 /** Tool menus share a reader-owned layer outside the rail's scrolling/material layers. */
 export function ReaderPopover({ anchor, open, onClose, anchorStyleProperties, children, className = '', ...attributes }: {
   anchor: RefObject<HTMLElement | null>
@@ -34,9 +52,16 @@ export function ReaderPopover({ anchor, open, onClose, anchorStyleProperties, ch
       const origin = owner.getBoundingClientRect()
       const rail = trigger.closest('[data-pdf-tool-rail]')?.getBoundingClientRect()
       const content = rail ? null : owner.querySelector<HTMLElement>('.dsh-pdf-scroll')
-      const bounds = content?.getBoundingClientRect() ?? origin
+      // A padded/zoomed scroll viewport can extend beyond its clipped Reader.
+      // Popups must fit the visible intersection, including nested task menus.
+      const viewport = content?.getBoundingClientRect() ?? origin
+      const leftEdge = Math.max(origin.left, viewport.left), rightEdge = Math.min(origin.right, viewport.right)
+      const topEdge = Math.max(origin.top, viewport.top), bottomEdge = Math.min(origin.bottom, viewport.bottom)
+      const bounds = { left: leftEdge, right: rightEdge, top: topEdge, bottom: bottomEdge,
+        width: Math.max(0, rightEdge - leftEdge), height: Math.max(0, bottomEdge - topEdge) }
       const button = trigger.getBoundingClientRect()
-      const clips = [trigger.closest('.dsh-pdf-tool-middle'), trigger.closest('.dsh-pdf-rail-shell')]
+      const clips = [trigger.closest('.dsh-pdf-tool-middle'), trigger.closest('.dsh-pdf-rail-shell'),
+        trigger.closest('[data-pdf-popover-id]')]
       if (button.height > 0 && clips.some(element => {
         const clip = element?.getBoundingClientRect()
         return clip && clip.height > 0 && (button.bottom <= clip.top || button.top >= clip.bottom)
@@ -54,18 +79,7 @@ export function ReaderPopover({ anchor, open, onClose, anchorStyleProperties, ch
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(place) }
     menu.dataset.pdfPopoverParent = trigger.closest<HTMLElement>('[data-pdf-popover-id]')?.dataset.pdfPopoverId ?? ''
-    const ownsPopupTarget = (target: Node): boolean => {
-      if (menu.contains(target)) return true
-      let popup = target instanceof Element ? target.closest<HTMLElement>('[data-pdf-popover-id]') : null
-      const seen = new Set<string>()
-      while (popup?.dataset.pdfPopoverParent && !seen.has(popup.dataset.pdfPopoverParent)) {
-        const parent = popup.dataset.pdfPopoverParent
-        if (parent === id) return true
-        seen.add(parent)
-        popup = [...owner.querySelectorAll<HTMLElement>('[data-pdf-popover-id]')].find(item => item.dataset.pdfPopoverId === parent) ?? null
-      }
-      return false
-    }
+    const ownsPopupTarget = (target: Node) => readerPopoverContains(menu, target)
     const outside = (event: PointerEvent) => {
       if (event.target instanceof Node && !ownsPopupTarget(event.target) && !trigger.contains(event.target)) close.current()
     }

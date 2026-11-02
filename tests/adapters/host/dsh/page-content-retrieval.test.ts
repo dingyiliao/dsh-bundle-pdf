@@ -5,6 +5,7 @@ import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.
 import { EmbeddingRegistry } from '../../../../src/embedding/index.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, type SavedReference } from '../../../../src/modules/evidence/index.ts'
 import { createPageRepresentation, parsePageContent, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, type PageContent } from '../../../../src/modules/document/index.ts'
+import { readIndexHead, readIndexPage } from '../../../../src/modules/retrieval/stored-index.ts'
 import { HostOcrService } from '../../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../../src/modules/image-understanding/index.ts'
 import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
@@ -95,11 +96,33 @@ function fixture(options: { scan?: boolean; describe?: boolean; imageEngine?: st
     async freshSource(session, id, active) { active.throwIfAborted(); snapshot(session, id); state.freshChecks++;
       if (state.diskChanged) throw Object.assign(new Error('Original PDF changed on disk'), { code: 'pdf/source-changed' }) },
     async retain(session, id, active) { active.throwIfAborted(); snapshot(session, id); state.pins++; return () => { state.pins-- } } })
-  return { state, content, retrieval, references, issued, data,
+  return { state, content, retrieval, references, issued, data, cache,
     updateSettings(change: Partial<PdfSettings>) { settings = { ...settings, ...change } },
     async dispose() { await retrieval.dispose(); ocr.dispose(); image.dispose(); embeddings.dispose() } }
 }
 const query = (text: string) => ({ documentId: 'doc-a', query: text, mode: 'lexical' as const })
+
+async function assertIncompleteNativeCheckpoint(f: ReturnType<typeof fixture>, code: string): Promise<void> {
+  const layers = [...f.data].filter(([key]) => key.startsWith('pagecontent_'))
+  assert.equal(layers.length, 1, 'failed enrichment must not publish a successful aggregate or derived layer')
+  assert.ok(layers[0]![0].startsWith('pagecontent_native_'))
+  const native = parsePageContent(layers[0]![1])
+  assert.equal(native?.extractionIdentity, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION)
+  assert.equal(native?.failure, undefined)
+  assert.ok(native!.blocks.flatMap(block => block.representations).every(rep => rep.kind === 'native-text'))
+
+  const keys = [...f.data.keys()].filter(key => key.startsWith('index_head_'))
+  assert.equal(keys.length, 1)
+  const key = keys[0]!.slice('index_head_'.length), head = await readIndexHead(f.cache, key)
+  assert.equal(head?.active, undefined, 'incomplete coverage must not become the accepted complete index')
+  assert.ok(head?.pending)
+  const stored = await readIndexPage(f.cache, key, head.pending.id, 1, undefined, 1200)
+  assert.equal(stored?.record.failure?.code, code, 'the resumable checkpoint retains its explicit partial failure')
+  assert.equal(stored?.record.content.text, f.state.native)
+  assert.ok(stored!.record.content.units!.every(unit => unit.kind === 'native-text'))
+  assert.ok(stored!.record.content.warnings!.some(warning => /failed/.test(warning)))
+  assert.equal(stored!.chunks.length, 1, 'available native evidence remains queryable from the partial checkpoint')
+}
 
 test('native, OCR and image-description retrieval issue distinct truthful evidence with their exact returned text', async () => {
   const f = fixture()
@@ -214,8 +237,8 @@ test('missing vision engines and invalid outputs preserve native retrieval with 
       assert.equal(f.state.recognitions, 0)
       assert.equal(f.state.descriptions, invalid === 'missing-engine' ? 0 : 1)
       assert.deepEqual(f.state.renders, invalid === 'missing-engine' ? [] : [1])
-      assert.ok([...f.data.values()].every(value => parsePageContent(value)?.extractionIdentity === NATIVE_PAGE_CONTENT_EXTRACTION_VERSION),
-        'only the successful native layer is retained, not a complete aggregate or a failed description')
+      await assertIncompleteNativeCheckpoint(f,
+        invalid === 'missing-engine' ? 'pdf/index-image-unavailable' : 'pdf/image-invalid-result')
     } finally { await f.dispose() }
   }
 })
@@ -265,20 +288,42 @@ test('native page text is re-attested before evidence issuance even when content
   } finally { await f.dispose() }
 })
 
-test('manual document reindex refreshes derived content and search quotes through the shared preparation path', async () => {
+test('manual structural reindex reuses valid content while a changed source produces fresh search evidence', async () => {
   const f = fixture()
   try {
     const original = await f.retrieval.search('a', query('ocrkeyword'), signal)
+    const semantic = await f.retrieval.search('a', { ...query('ocrkeyword'), mode: 'semantic' }, signal)
+    const recognitions = f.state.recognitions, descriptions = f.state.descriptions
+    const contentReads = new Map(f.state.contentReads)
     f.state.ocr = 'newocrkeyword refreshed recognition'
     const warm = await f.retrieval.search('a', query('ocrkeyword'), signal)
     assert.equal(warm.candidates[0]!.quote, original.candidates[0]!.quote)
     await f.retrieval.prepare('a', { documentId: 'doc-a', rebuild: true }, signal)
+    const rebuilt = await f.retrieval.search('a', { ...query('ocrkeyword'), mode: 'semantic' }, signal)
+    assert.notEqual(rebuilt.indexGeneration, semantic.indexGeneration, 'explicit rebuild publishes a new structural generation')
+    assert.equal(rebuilt.status, 'complete')
+    assert.deepEqual(rebuilt.coverage.ocrPages, [2])
+    assert.deepEqual(rebuilt.coverage.imageDescriptionPages, [1, 2, 3])
+    const unchanged = await f.retrieval.search('a', query('ocrkeyword'), signal)
+    assert.equal(unchanged.candidates[0]!.quote, original.candidates[0]!.quote)
+    assert.equal(f.state.recognitions, recognitions, 'unchanged source and OCR identity reuse the durable successful layer')
+    assert.equal(f.state.descriptions, descriptions, 'a structural rebuild does not repeat successful visual model work')
+    assert.deepEqual(f.state.contentReads, contentReads)
+    assert.equal((await f.retrieval.search('a', query('newocrkeyword'), signal)).candidates.length, 0,
+      'an unreported producer output change cannot silently replace its validated cached representation')
+
+    f.state.bytes = new Uint8Array([8, 9, 10]); f.state.version = 'v2'
+    await f.retrieval.prepare('a', { documentId: 'doc-a' }, signal)
     const refreshed = await f.retrieval.search('a', query('newocrkeyword'), signal)
-    assert.equal(refreshed.candidates.length, 1, 'manual refresh must expire the ready lexical index as well as rebuild its embedding index')
+    assert.equal(refreshed.candidates.length, 1, 'a new source digest cannot reuse evidence from the previous PDF bytes')
     assert.equal(refreshed.candidates[0]!.quote, f.state.ocr)
     assert.equal(refreshed.candidates[0]!.evidence.source, 'ocr-text')
     assert.equal(refreshed.candidates[0]!.evidence.snapshot.text, f.state.ocr)
+    assert.equal(refreshed.candidates[0]!.evidence.sourceDigest, evidenceSha256(f.state.bytes))
+    assert.notEqual(refreshed.candidates[0]!.evidence.sourceDigest, original.candidates[0]!.evidence.sourceDigest)
     assert.notEqual(refreshed.indexGeneration, original.indexGeneration)
+    assert.equal(f.state.recognitions, recognitions + 2)
+    assert.equal(f.state.descriptions, descriptions + 3)
     assert.equal(f.state.pins, 0)
   } finally { await f.dispose() }
 })
@@ -330,7 +375,8 @@ test('optional image interpretation failure returns the available native evidenc
   const f = fixture()
   f.state.imageFailure = true
   try {
-    const result = await f.retrieval.search('a', { ...query('nativekeyword'), fromPage: 1, maxPages: 1 }, signal)
+    const input = { ...query('nativekeyword'), mode: 'semantic' as const, fromPage: 1, maxPages: 1 }
+    const result = await f.retrieval.search('a', input, signal)
     assert.equal(result.status, 'incomplete')
     assert.equal(result.candidates.length, 1)
     assert.equal(result.candidates[0]!.source, 'native-text')
@@ -338,10 +384,26 @@ test('optional image interpretation failure returns the available native evidenc
     assert.equal(result.coverage.failedPages.length, 1)
     assert.equal(result.coverage.failedPages[0]!.page, 1)
     assert.equal(result.nextCursor, undefined)
-    assert.ok([...f.data.values()].every(value => parsePageContent(value)?.extractionIdentity === NATIVE_PAGE_CONTENT_EXTRACTION_VERSION),
-      'the successful native layer is retained without claiming a complete aggregate or retrieval page')
-    const again = await f.retrieval.search('a', { ...query('nativekeyword'), fromPage: 1, maxPages: 1 }, signal)
+    assert.equal(result.coverage.failedPages[0]!.code, 'pdf/image-failed')
+    await assertIncompleteNativeCheckpoint(f, 'pdf/image-failed')
+    const again = await f.retrieval.search('a', input, signal)
     assert.equal(again.status, 'incomplete')
-    assert.equal(f.state.descriptions, 1, 'the immutable partial index retries only on explicit rebuild')
+    assert.equal(f.state.descriptions, 1, 'searching the partial checkpoint does not silently repeat optional model calls')
+
+    f.state.imageFailure = false
+    const nativeReads = f.state.nativeReads.length
+    await f.retrieval.prepare('a', { documentId: 'doc-a', fromPage: 1, maxPages: 1 }, signal)
+    assert.equal(f.state.nativeReads.length, nativeReads, 'resume reuses the successful native layer while repairing its failed enrichment')
+    const resumed = await f.retrieval.search('a', input, signal)
+    assert.equal(resumed.status, 'complete')
+    assert.equal(resumed.indexGeneration, result.indexGeneration, 'resume repairs the existing pending generation')
+    assert.deepEqual(resumed.coverage.failedPages, [])
+    assert.deepEqual(resumed.coverage.imageDescriptionPages, [1])
+    assert.ok(resumed.candidates.some(candidate => candidate.evidence.source === 'pdf-text'))
+    assert.equal(f.state.descriptions, 2)
+    f.state.denied = true
+    await assert.rejects(f.retrieval.search('a', input, signal), { code: 'pdf/access-denied' })
+    assert.equal(f.state.descriptions, 2, 'a repaired cached index still cannot bypass current caller authorization')
+    assert.equal(f.state.pins, 0)
   } finally { await f.dispose() }
 })

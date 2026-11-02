@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { PdfDocumentIndexPolicy } from '../../../contracts/indexing.js'
 import type { ReaderIndexingControl } from '../controllers/use-reader-indexing.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
@@ -8,6 +8,7 @@ export function DocumentIndexSettings({ control, t }: {
   control: ReaderIndexingControl
   t(key: string): string
 }) {
+  const id = useId()
   const configuration = control.configuration
   const [draft, setDraft] = useState<Partial<PdfDocumentIndexPolicy>>()
   const [failure, setFailure] = useState<{ message: string; defaults: boolean }>()
@@ -36,24 +37,37 @@ export function DocumentIndexSettings({ control, t }: {
   return <details className="dsh-pdf-search-indexing" aria-label={t('reader.indexing.title')} open>
     <summary><strong>{t('reader.indexing.title')}</strong><ToolbarIcon name="chevronDown" /></summary>
     <div className="dsh-pdf-index-settings-content">
-      <div className="dsh-pdf-search-indexing-heading">
-        <span className="dsh-pdf-muted" role="status">{control.statusLabel}</span>
-        {control.enabled && <button type="button" disabled={control.disabled || !!draft || !!failure}
-          onClick={control.onStart}>{control.label}</button>}
-      </div>
+      {control.statusLabel !== t('reader.indexing.start') && (control.statusLabel !== control.label || control.disabled) &&
+        <div className="dsh-pdf-search-indexing-heading" role="status">{control.statusLabel}</div>}
       {configuration && value && <>
-        <p className="dsh-pdf-muted">{t('reader.indexing.nativeAlways')}</p>
-        <label className="dsh-pdf-index-toggle">
-          <input type="checkbox" checked={value.indexScanPages} disabled={disabled}
-            onChange={event => { void persist({ ...value, indexScanPages: event.target.checked }) }} />
-          <span>{t('reader.indexing.scanPages')}</span>
-        </label>
-        <label className="dsh-pdf-index-toggle">
-          <input type="checkbox" checked={value.indexImageDescriptions} disabled={disabled}
-            onChange={event => { void persist({ ...value, indexImageDescriptions: event.target.checked }) }} />
-          <span>{t('reader.indexing.imageDescriptions')}</span>
-        </label>
-        <p className="dsh-pdf-muted" role="status" aria-live="polite">
+        <div className="dsh-pdf-index-options" role="group" aria-label={t('reader.indexing.content')}>
+          <label className="dsh-pdf-index-option">
+            <input type="checkbox" checked={value.indexScanPages} disabled={disabled}
+              aria-labelledby={`${id}-scan-title`} aria-describedby={`${id}-scan-help`}
+              onChange={event => { void persist({ ...value, indexScanPages: event.target.checked }) }} />
+            <span className="dsh-pdf-index-option-copy">
+              <span id={`${id}-scan-title`} className="dsh-pdf-index-option-title">
+                <span className="dsh-pdf-index-option-full-title">{t('reader.indexing.scanPages')}</span>
+                <span className="dsh-pdf-index-option-short-title" aria-hidden="true">{t('reader.indexing.scanShort')}</span>
+              </span>
+              <span id={`${id}-scan-help`} className="dsh-pdf-index-option-help">{t('reader.indexing.scanHelp')}</span>
+            </span>
+          </label>
+          <label className="dsh-pdf-index-option">
+            <input type="checkbox" checked={value.indexImageDescriptions} disabled={disabled}
+              aria-labelledby={`${id}-image-title`} aria-describedby={`${id}-image-help`}
+              onChange={event => { void persist({ ...value, indexImageDescriptions: event.target.checked }) }} />
+            <span className="dsh-pdf-index-option-copy">
+              <span id={`${id}-image-title`} className="dsh-pdf-index-option-title">
+                <span className="dsh-pdf-index-option-full-title">{t('reader.indexing.imageDescriptions')}</span>
+                <span className="dsh-pdf-index-option-short-title" aria-hidden="true">{t('reader.indexing.imageShort')}</span>
+              </span>
+              <span id={`${id}-image-help`} className="dsh-pdf-index-option-help">{t('reader.indexing.imageHelp')}</span>
+            </span>
+          </label>
+          <p className="dsh-pdf-index-native">{t('reader.indexing.nativeAlways')}</p>
+        </div>
+        <p className="dsh-pdf-index-save-status" role="status" aria-live="polite">
           {t(configuration.saving ? 'reader.indexing.savingSettings' : failure ? 'reader.indexing.settingsNotSaved'
             : control.enabled && configuration.value.pending ? 'reader.indexing.settingsPending' : 'reader.indexing.settingsSaved')}
         </p>
@@ -66,14 +80,25 @@ export function DocumentIndexSettings({ control, t }: {
             {t('reader.indexing.retrySettings')}
           </button>
         </div>}
-        <p className="dsh-pdf-muted">{t('reader.indexing.documentOnly')}</p>
+      </>}
+      {control.enabled && <button type="button" className="dsh-pdf-index-primary-action"
+        disabled={control.disabled || !!draft || !!failure} onClick={control.onStart}>{control.label}</button>}
+      {configuration && value && <>
         <div className="dsh-pdf-index-secondary-actions">
           <button type="button" disabled={disabled} onClick={() => { void persist() }}>{t('reader.indexing.useDefaults')}</button>
           {control.enabled && control.onRebuild && <button type="button" disabled={control.disabled || !!draft || !!failure}
-            onClick={control.onRebuild}>{t('reader.indexing.forceRebuild')}</button>}
+            onClick={control.onRebuild}>{t('reader.indexing.rebuild')}</button>}
         </div>
       </>}
-      <p className="dsh-pdf-muted">{t('reader.indexing.searchHint')}</p>
+      <details className="dsh-pdf-index-help">
+        <summary>{t('reader.indexing.details')}<ToolbarIcon name="chevronDown" /></summary>
+        {configuration && <div className="dsh-pdf-index-compact-help">
+          <p><strong>{t('reader.indexing.scanPages')}</strong> · {t('reader.indexing.scanHelp')}</p>
+          <p><strong>{t('reader.indexing.imageDescriptions')}</strong> · {t('reader.indexing.imageHelp')}</p>
+        </div>}
+        <p>{t('reader.indexing.documentOnly')}</p>
+        <p>{t('reader.indexing.searchHint')}</p>
+      </details>
     </div>
   </details>
 }

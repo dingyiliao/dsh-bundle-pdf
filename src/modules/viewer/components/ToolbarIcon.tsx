@@ -1,12 +1,16 @@
 
 export type ToolbarIconName = 'tools' | 'back' | 'zoom' | 'undo' | 'redo' | 'save' | 'saveAs' | 'discard' | 'edit' | 'comment' | 'commentedMark' | 'move' | 'close'
-  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send' | 'ocr' | 'file' | 'reload' | 'check' | 'lock' | 'warning' | 'selectText' | 'materials'
+  | 'copy' | 'explain' | 'translate' | 'highlight' | 'underline' | 'strike' | 'note' | 'crop' | 'chevronDown' | 'activity' | 'send' | 'ocr' | 'file' | 'reload' | 'check' | 'lock' | 'warning' | 'selectText' | 'materials' | 'more'
 
 /** Compact reader controls use the same stroke weight as the sidebar rail. */
 export function ToolbarIcon({ name, accent }: { name: ToolbarIconName; accent?: string }) {
   return <svg className="dsh-pdf-toolbar-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
     strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-icon={name}>
-    {name === 'selectText' ? <>
+    {name === 'more' ? <>
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    </> : name === 'selectText' ? <>
       <path d="M4 8V4h4m8 0h4v4m0 8v4h-4M8 20H4v-4M8 9h8M12 9v7M9 16h6" />
     </> : name === 'materials' ? <>
       <path d="M9 6h11M9 12h11M9 18h11M3 5h1v3M3 8h2M3 11h2l-2 3h2M3 17h2v3H3" />

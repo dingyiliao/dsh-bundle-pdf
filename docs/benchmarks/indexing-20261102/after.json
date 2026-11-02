@@ -1,0 +1,821 @@
+{
+  "scope": "Synthetic real-filesystem diagnostic; no PDFium, OCR, inference, network or user data. Warm OS file cache is not flushed. Times include validation/chunking and file durability calls. No before/after improvement claim.",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.7.0",
+    "cpu": "Apple M5 Pro"
+  },
+  "runs": [
+    {
+      "repeat": 0,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 41.234708999999995,
+        "cpuMs": 65.403,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 3.6888760000000076
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.709541999999999
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 0.8079200000000526
+          },
+          "get:derived": {
+            "count": 96,
+            "ms": 1.1375810000000968
+          },
+          "set:derived": {
+            "count": 32,
+            "ms": 6.374999999999972
+          },
+          "setMany": {
+            "count": 38,
+            "ms": 8.306669999999926
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1046124,
+          "entries": 129,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 162,
+          "cacheHits": 65,
+          "commits": 73,
+          "importedRecords": 0
+        },
+        "pageReads": 32,
+        "docBatches": 3,
+        "docTexts": 32,
+        "disk": {
+          "files": 3,
+          "bytes": 1742576
+        }
+      },
+      "warmMs": 0.14304199999999412,
+      "restored": {
+        "ms": 4.066292000000004,
+        "cpuMs": 5.795,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.8357500000000044
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 0.6898340000000474
+          },
+          "get:derived": {
+            "count": 32,
+            "ms": 0.6844559999999689
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 443132,
+          "entries": 65,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 0,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 54.56100000000001,
+        "cpuMs": 71.774,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.267832999999996
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.21841700000001651
+          },
+          "get:page-checkpoint": {
+            "count": 33,
+            "ms": 0.40916499999997313
+          },
+          "get:derived": {
+            "count": 161,
+            "ms": 2.0318769999999517
+          },
+          "set:derived": {
+            "count": 16,
+            "ms": 10.606251999999984
+          },
+          "setMany": {
+            "count": 32,
+            "ms": 14.092084
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3870084,
+          "entries": 177,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 194,
+          "cacheHits": 35,
+          "commits": 51,
+          "importedRecords": 0
+        },
+        "pageReads": 16,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2900296
+        }
+      },
+      "warmMs": 0.11104200000002606,
+      "restored": {
+        "ms": 5.703290999999979,
+        "cpuMs": 7.128,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7834170000000142
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 0.43178999999989287
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 2.3691280000000177
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1615292,
+          "entries": 145,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 0,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 74.73416699999999,
+        "cpuMs": 91.891,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.6546249999999816
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.21562499999998863
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 0.08700100000001498
+          },
+          "get:derived": {
+            "count": 195,
+            "ms": 4.358121999999867
+          },
+          "set:derived": {
+            "count": 1,
+            "ms": 8.19945899999999
+          },
+          "setMany": {
+            "count": 17,
+            "ms": 17.55229200000005
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3938600,
+          "entries": 132,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 141,
+          "cacheHits": 69,
+          "commits": 21,
+          "importedRecords": 0
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2607776
+        }
+      },
+      "warmMs": 0.08691700000002811,
+      "restored": {
+        "ms": 4.5025830000000155,
+        "cpuMs": 4.704,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7669579999999314
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 0.1648330000000442
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 2.139835999999491
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1594616,
+          "entries": 130,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 22.887292000000002,
+        "cpuMs": 21.753,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.3967500000000541
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.1713760000000093
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 0.5279620000000591
+          },
+          "get:derived": {
+            "count": 96,
+            "ms": 0.8397109999993404
+          },
+          "set:derived": {
+            "count": 32,
+            "ms": 4.217043999999817
+          },
+          "setMany": {
+            "count": 38,
+            "ms": 5.749830999999972
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1046124,
+          "entries": 129,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 162,
+          "cacheHits": 65,
+          "commits": 73,
+          "importedRecords": 0
+        },
+        "pageReads": 32,
+        "docBatches": 3,
+        "docTexts": 32,
+        "disk": {
+          "files": 3,
+          "bytes": 1742576
+        }
+      },
+      "warmMs": 0.07120900000001029,
+      "restored": {
+        "ms": 2.6192499999999654,
+        "cpuMs": 2.817,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7004990000000362
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 0.501124000000118
+          },
+          "get:derived": {
+            "count": 32,
+            "ms": 0.5491660000000707
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 443132,
+          "entries": 65,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 43.65116599999999,
+        "cpuMs": 43.59,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.257333000000017
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.16304100000002109
+          },
+          "get:page-checkpoint": {
+            "count": 33,
+            "ms": 0.31458200000008674
+          },
+          "get:derived": {
+            "count": 161,
+            "ms": 1.8839989999996192
+          },
+          "set:derived": {
+            "count": 16,
+            "ms": 6.9673320000001695
+          },
+          "setMany": {
+            "count": 32,
+            "ms": 12.185169999999971
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3870084,
+          "entries": 177,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 194,
+          "cacheHits": 35,
+          "commits": 51,
+          "importedRecords": 0
+        },
+        "pageReads": 16,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2883816
+        }
+      },
+      "warmMs": 0.08433300000001509,
+      "restored": {
+        "ms": 4.923167000000035,
+        "cpuMs": 5.58,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7677909999999883
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 0.3783309999998892
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 2.1399959999996554
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1615292,
+          "entries": 145,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 1,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 59.56379099999998,
+        "cpuMs": 64.168,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.2247919999999795
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.22474900000003117
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 0.06720800000005056
+          },
+          "get:derived": {
+            "count": 195,
+            "ms": 2.6735530000004815
+          },
+          "set:derived": {
+            "count": 1,
+            "ms": 6.618999999999971
+          },
+          "setMany": {
+            "count": 17,
+            "ms": 11.922043999999971
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3938600,
+          "entries": 132,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 141,
+          "cacheHits": 69,
+          "commits": 21,
+          "importedRecords": 0
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2607776
+        }
+      },
+      "warmMs": 0.08245799999997416,
+      "restored": {
+        "ms": 4.495790999999997,
+        "cpuMs": 4.475,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7863330000000133
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 0.17462499999999181
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 2.154331999999556
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1594616,
+          "entries": 130,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 32,
+      "paragraphs": 1,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 22.552333999999973,
+        "cpuMs": 21.572,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.2216659999999706
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.19775000000004184
+          },
+          "get:page-checkpoint": {
+            "count": 64,
+            "ms": 0.5498369999995703
+          },
+          "get:derived": {
+            "count": 96,
+            "ms": 0.8506740000000832
+          },
+          "set:derived": {
+            "count": 32,
+            "ms": 4.475836000000129
+          },
+          "setMany": {
+            "count": 38,
+            "ms": 5.506042000000207
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1046124,
+          "entries": 129,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 162,
+          "cacheHits": 65,
+          "commits": 73,
+          "importedRecords": 0
+        },
+        "pageReads": 32,
+        "docBatches": 3,
+        "docTexts": 32,
+        "disk": {
+          "files": 3,
+          "bytes": 1742576
+        }
+      },
+      "warmMs": 0.05866699999995717,
+      "restored": {
+        "ms": 2.6307089999999675,
+        "cpuMs": 3.077,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7313750000000141
+          },
+          "get:page-checkpoint": {
+            "count": 32,
+            "ms": 0.48695700000013176
+          },
+          "get:derived": {
+            "count": 32,
+            "ms": 0.5621249999999236
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 443132,
+          "entries": 65,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 97,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 16,
+      "paragraphs": 8,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 43.461584000000016,
+        "cpuMs": 41.15,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.0957089999999994
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.25691699999993034
+          },
+          "get:page-checkpoint": {
+            "count": 33,
+            "ms": 0.3159979999999223
+          },
+          "get:derived": {
+            "count": 161,
+            "ms": 1.8070080000001667
+          },
+          "set:derived": {
+            "count": 16,
+            "ms": 7.086997999999937
+          },
+          "setMany": {
+            "count": 32,
+            "ms": 12.374707000000058
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3870084,
+          "entries": 177,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 194,
+          "cacheHits": 35,
+          "commits": 51,
+          "importedRecords": 0
+        },
+        "pageReads": 16,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2900296
+        }
+      },
+      "warmMs": 0.07029099999999744,
+      "restored": {
+        "ms": 4.79400000000004,
+        "cpuMs": 5.088,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7462919999999826
+          },
+          "get:page-checkpoint": {
+            "count": 16,
+            "ms": 0.3753330000000119
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 2.0802519999997457
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1615292,
+          "entries": 145,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 161,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "pages": 1,
+      "paragraphs": 128,
+      "dimensions": 1024,
+      "cold": {
+        "ms": 55.86920800000007,
+        "cpuMs": 67.566,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 1.1550830000000474
+          },
+          "set:head": {
+            "count": 2,
+            "ms": 0.1693749999998886
+          },
+          "get:page-checkpoint": {
+            "count": 3,
+            "ms": 0.0615839999999821
+          },
+          "get:derived": {
+            "count": 195,
+            "ms": 2.676590999999803
+          },
+          "set:derived": {
+            "count": 1,
+            "ms": 6.441500000000019
+          },
+          "setMany": {
+            "count": 17,
+            "ms": 10.228125000000091
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 3938600,
+          "entries": 132,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 141,
+          "cacheHits": 69,
+          "commits": 21,
+          "importedRecords": 0
+        },
+        "pageReads": 1,
+        "docBatches": 8,
+        "docTexts": 128,
+        "disk": {
+          "files": 3,
+          "bytes": 2607776
+        }
+      },
+      "warmMs": 0.07408300000008694,
+      "restored": {
+        "ms": 4.250833000000057,
+        "cpuMs": 4.224,
+        "io": {
+          "get:head": {
+            "count": 2,
+            "ms": 0.7667500000000018
+          },
+          "get:page-checkpoint": {
+            "count": 1,
+            "ms": 0.16162500000007185
+          },
+          "get:derived": {
+            "count": 128,
+            "ms": 1.9900350000004892
+          }
+        },
+        "store": {
+          "backend": "sqlite",
+          "sqliteCacheBytes": 8388608,
+          "memoryBytes": 1594616,
+          "entries": 130,
+          "pendingCalls": 0,
+          "pendingBytes": 0,
+          "diskReads": 131,
+          "diskWrites": 0,
+          "cacheHits": 1,
+          "commits": 0,
+          "importedRecords": 0
+        },
+        "additionalPageReads": 0,
+        "additionalDocBatches": 0
+      }
+    }
+  ]
+}

@@ -78,12 +78,16 @@ export async function readCachedPage(cache: RetrievalCache | undefined, key: str
   if (!cache) return undefined
   try {
     return validateRetrievalPage(await cache.get(key))
-  } catch { return undefined }
+  } catch (error) { if (storageFailure(error)) throw error; return undefined }
 }
 
 /** Derived caches are disposable; an unavailable cache must not break reading. */
 export async function cacheDerived(cache: RetrievalCache | undefined, key: string, value: unknown): Promise<void> {
-  try { await cache?.set(key, value) } catch { /* The next request can rebuild it. */ }
+  try { await cache?.set(key, value) } catch (error) { if (storageFailure(error)) throw error }
+}
+function storageFailure(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    && error.code.startsWith('pdf/index-storage-')
 }
 
 export function validVector(value: unknown, dimensions: number): value is number[] {
@@ -92,7 +96,7 @@ export function validVector(value: unknown, dimensions: number): value is number
     && value.some(item => item !== 0)
 }
 
-interface CachedRetrievalVector {
+export interface CachedRetrievalVector {
   version: 1
   encoding: 'float32-le-base64'
   dimensions: number
@@ -110,7 +114,7 @@ export function encodeCachedVector(input: ArrayLike<number>): CachedRetrievalVec
     data: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex') }
 }
 
-function decodeCachedVector(value: unknown, dimensions: number): number[] | undefined {
+export function decodeCachedVector(value: unknown, dimensions: number): number[] | undefined {
   if (!Number.isSafeInteger(dimensions) || dimensions < 1 || !value || typeof value !== 'object' || Array.isArray(value)) return
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== 5 || record.version !== 1 || record.encoding !== 'float32-le-base64'
@@ -140,5 +144,5 @@ export async function readCachedVector(cache: RetrievalCache | undefined, key: s
       return [...value]
     }
     return decodeCachedVector(value, dimensions)
-  } catch { return undefined }
+  } catch (error) { if (storageFailure(error)) throw error; return undefined }
 }

@@ -12,7 +12,7 @@ const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
 }
 const defaults: PdfDocumentIndexPolicy = { indexScanPages: false, indexImageDescriptions: false }
-const scanLabel = 'Recognize scanned or damaged text', imageLabel = 'Include image descriptions'
+const scanLabel = 'Text recognition (OCR)', imageLabel = 'Image descriptions'
 const t = (key: string) => readerLocales.en[key] ?? key
 interface Pending {
   kind: 'configure' | 'defaults'
@@ -69,8 +69,15 @@ async function withSettings(run: (fixture: {
     return element
   }
   const toggle = (label: string) => {
-    const element = [...container.querySelectorAll<HTMLLabelElement>('.dsh-pdf-index-toggle')]
-      .find(item => item.textContent === label)?.querySelector('input')
+    const element = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(input => {
+      const ids = input.getAttribute('aria-labelledby')?.split(/\s+/)
+      const name = ids?.map(id => {
+        const label = dom.document.getElementById(id)?.cloneNode(true) as HTMLElement | undefined
+        label?.querySelectorAll('[aria-hidden="true"]').forEach(element => element.remove())
+        return label?.textContent ?? ''
+      }).join(' ') ?? input.closest('label')?.textContent
+      return name === label
+    })
     assert.ok(element, `${label} checkbox must be rendered`)
     return element
   }
@@ -117,7 +124,7 @@ test('the PDF sidebar contains only two independent content switches and never c
     assert.equal(f.container.querySelector('select'), null, 'enabling either content source never reveals an engine selector')
     assert.deepEqual(f.work, { starts: 0, rebuilds: 0 }, 'saving switches must not start model work')
     await f.click(f.button('Update index'))
-    await f.click(f.button('Recompute entire index'))
+    await f.click(f.button('Rebuild index'))
     assert.deepEqual(f.work, { starts: 1, rebuilds: 1 })
   })
 })
@@ -130,7 +137,7 @@ test('a failed content choice retains its value and retries the exact two-flag p
     assert.match(f.container.querySelector('[role="alert"]')!.textContent ?? '', /Index settings changed/)
     assert.match(f.container.textContent ?? '', /Settings could not be saved/)
     assert.equal(f.button('Update index').disabled, true)
-    assert.equal(f.button('Recompute entire index').disabled, true)
+    assert.equal(f.button('Rebuild index').disabled, true)
     await f.click(f.button('Retry saving'))
     assert.deepEqual(f.calls[1], f.calls[0])
     await f.accept({ ...defaults, indexScanPages: true })
@@ -211,7 +218,7 @@ test('global engine disable leaves document content choices editable but hides m
     assert.equal(f.container.querySelector('select'), null)
     assert.equal(f.toggle(scanLabel).disabled, false)
     assert.equal(f.toggle(imageLabel).disabled, false)
-    assert.equal([...f.container.querySelectorAll('button')].some(button => /Update index|Recompute/.test(button.textContent ?? '')), false)
+    assert.equal([...f.container.querySelectorAll('button')].some(button => /Update index|Rebuild index/.test(button.textContent ?? '')), false)
     assert.equal(f.container.querySelector('.dsh-pdf-index-impact'), null)
     assert.doesNotMatch(f.container.textContent ?? '', /existing index is still using its previous settings|Update to encode/)
     assert.match(f.container.textContent ?? '', /Settings saved/)
@@ -234,7 +241,7 @@ test('pending impact messages, disabled state, disclosure and legacy controls re
       const control = f.control(), configuration = control.configuration!
       await f.render({ ...control, configuration: { ...configuration, value: { ...configuration.value, pending: true, impact } } })
       assert.equal(f.container.querySelector('.dsh-pdf-index-impact')!.textContent, impacts[impact])
-      assert.match(f.container.textContent ?? '', /existing index is still using its previous settings/)
+      assert.match(f.container.textContent ?? '', /Settings saved · Update needed/)
     }
     const control = f.control(), configuration = control.configuration!
     await f.render({ ...control, disabled: true, configuration: { ...configuration, saving: true } })

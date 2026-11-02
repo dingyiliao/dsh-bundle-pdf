@@ -10,6 +10,41 @@ const snapshot = (state: 'running' | 'cancelled'): PdfIndexingSnapshot => ({ rev
       phase: 'restoring', reusedChunks: 0, computedChunks: 0 } }] })
 const ok = (value: PdfIndexingSnapshot) => ({ ok: true, value })
 
+test('diagnostics use the separate validated carrier without replacing progress snapshots', async () => {
+  const lifetime = new AbortController(), requests: unknown[] = []
+  let result: unknown = { ok: true, value: { directory: '/logs', report: '{"version":1}', canOpen: true } }
+  const api = createPdfIndexingApi({ rpc: { async call(path, method, input) {
+    assert.equal(path, '/api'); assert.equal(method, 'pdf.indexing.diagnostics'); requests.push(input)
+    return result
+  } } }, lifetime.signal)
+  try {
+    const before = api.getSnapshot('session')
+    assert.equal((await api.diagnostics('session', 'doc', 3, 'report', lifetime.signal)).report, '{"version":1}')
+    await api.diagnostics('session', 'doc', 3, 'open', lifetime.signal)
+    assert.deepEqual(requests, [{ action: 'report', sessionId: 'session', documentId: 'doc', occurrence: 3 },
+      { action: 'open', sessionId: 'session', documentId: 'doc', occurrence: 3 }])
+    assert.equal(api.getSnapshot('session'), before)
+    result = { ok: true, value: { directory: '/logs', report: 123, canOpen: true } }
+    await assert.rejects(api.diagnostics('session', 'doc', 3, 'report', lifetime.signal))
+    result = { ok: false, error: { code: 'pdf/log-directory-unavailable', message: 'No desktop' } }
+    await assert.rejects(api.diagnostics('session', 'doc', 3, 'open', lifetime.signal), { code: 'pdf/log-directory-unavailable' })
+  } finally { api.dispose(); lifetime.abort() }
+  await assert.rejects(api.diagnostics('session', 'doc', 3, 'report', new AbortController().signal), { name: 'AbortError' })
+})
+
+test('disposing or cancelling diagnostics rejects even a non-cooperative transport', async () => {
+  const lifetime = new AbortController()
+  const api = createPdfIndexingApi({ rpc: { call: async () => new Promise<unknown>(() => {}) } }, lifetime.signal)
+  const cancelled = new AbortController()
+  const first = api.diagnostics('session', 'doc', 1, 'report', cancelled.signal)
+  cancelled.abort(new Error('changed PDF'))
+  await assert.rejects(first, /changed PDF/)
+  const second = api.diagnostics('session', 'doc', 1, 'open', lifetime.signal)
+  api.dispose()
+  await assert.rejects(second, { name: 'AbortError' })
+  lifetime.abort()
+})
+
 test('PDF views share one session subscription and manual actions immediately publish validated progress', async () => {
   const lifetime = new AbortController(), requests: unknown[] = []
   const api = createPdfIndexingApi({ rpc: { async call(path, method, input) {

@@ -1,3 +1,4 @@
+import { measureIndexOperation } from '../../../modules/retrieval/index.js'
 import { createHash } from 'node:crypto'
 import { appendPageRepresentation, buildNativePageContent, createPageRepresentation, parsePageContent, fatalContentError,
   ocrPageContentSpans, pageContentBlockId, PageRepresentationSchema, PAGE_CONTENT_VERSION,
@@ -10,6 +11,7 @@ import type { AgentPageReadPort } from '../../../modules/evidence/index.js'
 import type { createPdfService } from '../pdfium/pdf-service.js'
 import type { RetrievalCache } from '../../../modules/retrieval/index.js'
 import { defaultSettings, type PdfSettings } from '../../../shared/contracts.js'
+import type { IndexingDiagnosticActivity } from './indexing-diagnostics.js'
 
 const PIPELINE_VERSION = 'page-content-v3-shared-vision-clean-1024-description-v1'
 const LAYER_VERSION = 'page-content-layers-v1-clean-1024'
@@ -38,11 +40,10 @@ interface Selection {
 }
 
 export interface PdfPageContent {
-  prepare(sessionId: string, signal: AbortSignal): Promise<void>
+  prepare(sessionId: string, signal: AbortSignal, documentId?: string): Promise<void>
   identity(sessionId: string): string
   verify(sessionId: string, signal: AbortSignal): Promise<void>
   read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<PageContent>
-  refresh(sessionId: string, documentId: string): void
   cancelSession(sessionId: string): void
   dispose(): void
 }
@@ -53,9 +54,9 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
   ocr(): HostOcrService | undefined
   image(): HostImageUnderstandingService | undefined
   cache?: RetrievalCache
+  onActivity?(sessionId: string, documentId: string, activity: IndexingDiagnosticActivity): void
 }): PdfPageContent {
   const selections = new Map<string, Selection>()
-  const refreshes = new Map<string, { sessionId: string; pageCount: number; done: Set<number> }>()
   const lifetime = new AbortController()
   const configuration = () => {
     const settings = options.settings()
@@ -67,7 +68,11 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
   }
   const generation = (kind: 'ocr' | 'image', selection: SelectedEngine) => kind === 'ocr'
     ? options.ocr()?.generation(selection.binding) : options.image()?.generation(selection.binding)
-  async function prepare(sessionId: string, signal: AbortSignal) {
+  const reportActivity = (sessionId: string, documentId: string, activity: IndexingDiagnosticActivity) => {
+    try { void Promise.resolve(options.onActivity?.(sessionId, documentId, activity)).catch(() => {}) }
+    catch { /* Diagnostics cannot own or interrupt engine preparation or content extraction. */ }
+  }
+  async function prepare(sessionId: string, signal: AbortSignal, documentId?: string) {
     const config = configuration()
     const active = AbortSignal.any([signal, lifetime.signal])
     active.throwIfAborted()
@@ -85,6 +90,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
         active.throwIfAborted()
         const critical = fatalContentError(error)
         if (critical !== undefined) throw critical
+        if (documentId) reportActivity(sessionId, documentId, { layer: kind, event: 'failed', error })
         return { binding, generation: kind === 'ocr' ? options.ocr()?.generation(binding) : options.image()?.generation(binding),
           reason: `Selected ${kind} engine is unavailable or not configured.` }
       }
@@ -124,20 +130,27 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       }
     }
   }
-  const sourceKey = (sessionId: string, documentId: string) => {
-    const snapshot = workspaces.readSnapshot(sessionId, documentId)
-    return hash([snapshot.path, pageContentDigestBytes(snapshot.bytes)])
-  }
   async function read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<PageContent> {
     const active = AbortSignal.any([signal, lifetime.signal])
     active.throwIfAborted()
-    if (!selections.has(sessionId)) await prepare(sessionId, active)
+    if (!selections.has(sessionId)) await prepare(sessionId, active, documentId)
     const selection = selections.get(sessionId)!, selectedIdentity = identity(sessionId)
     if (selectedIdentity !== selection.fingerprint) throw fail('PDF content engine selection changed; restart indexing.')
     const before = workspaces.readSnapshot(sessionId, documentId)
     const sourceDigest = pageContentDigestBytes(before.bytes)
     const geometry = before.document.pages[page - 1]
     if (!geometry || page < 1 || !Number.isSafeInteger(page)) throw new Error('PDF content page is outside the document.')
+    const activity = (layer: IndexingDiagnosticActivity['layer'], event: IndexingDiagnosticActivity['event'], error?: unknown) => {
+      reportActivity(sessionId, documentId, { page, layer, event, ...(error === undefined ? {} : { error }) })
+    }
+    const observe = async <T>(layer: IndexingDiagnosticActivity['layer'], operation: () => Promise<T>): Promise<T> => {
+      activity(layer, 'started')
+      try {
+        const value = await measureIndexOperation(`content-${layer}`, operation, { records: 1 })
+        activity(layer, 'ready')
+        return value
+      } catch (error) { activity(layer, 'failed', error); throw error }
+    }
     const check = () => {
       active.throwIfAborted()
       const current = workspaces.readSnapshot(sessionId, documentId)
@@ -164,20 +177,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       check()
       return value
     }
-    const refreshKey = `${sourceKey(sessionId, documentId)}:${selection.fingerprint}`
-    const refresh = refreshes.get(refreshKey)
-    if (refresh && !refresh.done.has(page)) {
-      // An explicit rebuild retires the old success before work can fail or be
-      // cancelled. Otherwise a scan with no surviving text could resurrect it.
-      try {
-        for (const retired of [key, layerKey('native'), ...(selection.scan ? [layerKey('ocr')] : []),
-          ...(selection.describe ? [layerKey('image')] : [])]) {
-          const previous = await get(retired)
-          if (previous !== undefined && previous !== null) await save(retired, null)
-        }
-      } catch { check() /* Derived storage is optional; source/lifetime fences remain mandatory. */ }
-    }
-    if (!refresh || refresh.done.has(page)) {
+    {
       let cached: PageContent | undefined
       try { cached = parsePageContent(await options.cache?.get(key)) } catch { /* Derived storage is optional. */ }
       check()
@@ -205,11 +205,14 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       || native.extractionIdentity !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION || native.failure
       || native.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) native = undefined
     if (!native) {
-      const extracted = await pages.readPageText(sessionId, documentId, page, active, { recover: false })
-      check()
-      native = buildNativePageContent({ sourceDigest, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
-        pageRect: [...geometry.cropBox], content: extracted.content })
-      await save(layerKey('native'), native)
+      native = await observe('native', async () => {
+        const extracted = await pages.readPageText(sessionId, documentId, page, active, { recover: false })
+        check()
+        const value = buildNativePageContent({ sourceDigest, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
+          pageRect: [...geometry.cropBox], content: extracted.content })
+        await save(layerKey('native'), value)
+        return value
+      })
     }
     let content = { ...native, extractionIdentity: selection.fingerprint }
     const needsOcr = selection.scan && (!content.nativeText.text.trim()
@@ -217,7 +220,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     if (needsOcr || selection.describe) {
       type Rendered = Awaited<ReturnType<Pages['renderOcrImage']>>
       const failures: { error: unknown; warning: string }[] = []
-      const operations: { run(rendered: Rendered): Promise<void>; warning: string }[] = []
+      const operations: { kind: 'ocr' | 'image'; run(rendered: Rendered): Promise<void>; warning: string }[] = []
       const recordFailure = (error: unknown, warning: string) => {
         // Authorization, source and lifetime changes invalidate the whole read.
         check()
@@ -237,7 +240,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
           if (available.status !== 'available') throw Object.assign(new Error(available.reason ?? `Selected ${kind} engine is unavailable.`),
             { code: kind === 'ocr' ? 'pdf/index-ocr-unavailable' : 'pdf/index-image-unavailable' })
           return engine.identity
-        } catch (error) { recordFailure(error, warning); return undefined }
+        } catch (error) { activity(kind, 'failed', error); recordFailure(error, warning); return undefined }
       }
       const visual = content.blocks.find(block => block.kind === 'visual-region')!
       // Broken native mappings and their OCR repair are alternatives for one text block.
@@ -256,7 +259,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       if (needsOcr) {
         const warning = 'Optional OCR enrichment failed; available page text is retained.'
         const identity = await restore('ocr', ocrBlock.id) ? undefined : await candidate('ocr', warning)
-        if (identity) operations.push({ warning, async run(rendered) {
+        if (identity) operations.push({ kind: 'ocr', warning, async run(rendered) {
           const service = options.ocr()!
           const languages = service.selectedDescriptor(selection.ocr.binding)?.languages
           const result = await service.recognize({ sessionId, image: rendered.png, mediaType: 'image/png',
@@ -280,7 +283,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       if (selection.describe) {
         const warning = 'Optional image description failed; available page text is retained.'
         const identity = await restore('image', visual.id) ? undefined : await candidate('image', warning)
-        if (identity) operations.push({ warning, async run(rendered) {
+        if (identity) operations.push({ kind: 'image', warning, async run(rendered) {
           const service = options.image()!
           const result = await service.understand({ sessionId, image: { data: rendered.png, mediaType: 'image/png',
             width: rendered.width, height: rendered.height }, prompt: DESCRIPTION_PROMPT,
@@ -305,12 +308,15 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       let rendered: Rendered | undefined
       if (operations.length) {
         try {
-          rendered = await pages.renderOcrImage(sessionId, documentId, page, undefined, 1024, active, false)
-          check()
+          rendered = await observe('render', async () => {
+            const value = await pages.renderOcrImage(sessionId, documentId, page, undefined, 1024, active, false)
+            check()
+            return value
+          })
         } catch (error) { recordFailure(error, 'Optional page image rendering failed; available page text is retained.') }
       }
       if (rendered) for (const operation of operations) {
-        try { await operation.run(rendered) } catch (error) { recordFailure(error, operation.warning) }
+        try { await observe(operation.kind, () => operation.run(rendered!)) } catch (error) { recordFailure(error, operation.warning) }
       }
       if (failures.length) {
         const first = failures[0]!.error
@@ -330,22 +336,11 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       }
     } catch { /* A failed derived cache write never loses an extraction. */ }
     check()
-    if (!content.failure && refresh && refreshes.get(refreshKey) === refresh) {
-      refresh.done.add(page)
-      if (refresh.done.size >= refresh.pageCount) refreshes.delete(refreshKey)
-    }
     return content
   }
   return { prepare, identity, verify, read,
-    refresh(sessionId, documentId) {
-      const snapshot = workspaces.readSnapshot(sessionId, documentId)
-      const key = `${sourceKey(sessionId, documentId)}:${identity(sessionId)}`
-      refreshes.delete(key)
-      refreshes.set(key, { sessionId, pageCount: snapshot.document.pageCount, done: new Set() })
-      while (refreshes.size > 8) refreshes.delete(refreshes.keys().next().value!)
-    },
-    cancelSession(sessionId) { selections.delete(sessionId); for (const [key, request] of refreshes) if (request.sessionId === sessionId) refreshes.delete(key) },
-    dispose() { lifetime.abort(new Error('PDF page content is unloading.')); selections.clear(); refreshes.clear() },
+    cancelSession(sessionId) { selections.delete(sessionId) },
+    dispose() { lifetime.abort(new Error('PDF page content is unloading.')); selections.clear() },
   }
 }
 

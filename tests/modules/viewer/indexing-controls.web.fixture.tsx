@@ -18,6 +18,7 @@ const lifetime = new AbortController()
 const hosts = new Map<string, PdfIndexingSnapshot>()
 const waiters = new Set<Waiter>()
 const calls: Array<{ action: string; sessionId: string; documentId: string }> = []
+const diagnosticCalls: Array<{ action: string; sessionId: string; documentId: string; occurrence: number }> = []
 const errors: string[] = []
 let revision = 0
 const t = (key: string) => readerLocales.en[key] ?? key
@@ -43,6 +44,13 @@ function changed(sessionId: string, value: Omit<PdfIndexingSnapshot, 'revision'>
   for (const waiter of [...waiters]) if (waiter.sessionId === sessionId) waiter.resolve(respond(snapshot))
 }
 const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal) {
+  if (method === 'pdf.indexing.diagnostics') {
+    const input = raw as { action: string; sessionId: string; documentId: string; occurrence: number }
+    diagnosticCalls.push({ ...input })
+    return { ok: true, value: { directory: '/test-home/logs/dsh-plugin-pdf/desktop', canOpen: true,
+      report: JSON.stringify({ diagnosticId: `fixture-index-${input.occurrence}`, sessionId: input.sessionId,
+        documentId: input.documentId, occurrence: input.occurrence }) } }
+  }
   if (method !== 'pdf.indexing') throw new Error(`Unexpected fixture RPC: ${method}`)
   const input = raw as { action: string; sessionId: string; documentId: string; revision?: string | number; policy?: PdfDocumentIndexPolicy }
   const current = host(input.sessionId)
@@ -74,7 +82,8 @@ const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal
     documentId: input.documentId, title: `${input.documentId}.pdf`,
     occurrence: input.action === 'cancel' ? previous?.occurrence ?? 1 : (previous?.occurrence ?? 0) + 1,
     state: input.action === 'cancel' ? 'cancelled' : 'running',
-    ...(input.action === 'cancel' ? {} : { progress: { indexedPages: 1, totalPages: 3, embeddedChunks: 0, totalChunks: 3, phase: 'extracting' as const } }),
+    ...(input.action === 'cancel' ? previous?.progress ? { progress: previous.progress } : {}
+      : { progress: { indexedPages: 1, totalPages: 3, embeddedChunks: 0, totalChunks: 3, phase: 'extracting' as const } }),
   }
   changed(input.sessionId, { enabled: current.enabled, tasks: [task] })
   return respond(host(input.sessionId))
@@ -132,12 +141,14 @@ createRoot(document.getElementById('indexing-root')!).render(<>
 </>)
 
 Object.assign(window, { __pdfIndexingFixture: {
-  calls: () => structuredClone(calls), errors: () => [...errors], revision: () => api.getSnapshot('session-a').revision,
+  calls: () => structuredClone(calls), diagnosticCalls: () => structuredClone(diagnosticCalls),
+  errors: () => [...errors], revision: () => api.getSnapshot('session-a').revision,
   show(name: string) { for (const element of document.querySelectorAll<HTMLElement>('[data-view-shell]')) element.style.display = element.dataset.viewShell === name ? '' : 'none' },
   publish(state: PdfIndexingTask['state'], sessionId = 'session-a', documentId = 'alpha') {
     const value = host(sessionId), current = value.tasks.find(task => task.documentId === documentId)
     changed(sessionId, { enabled: value.enabled, tasks: [{ documentId, title: `${documentId}.pdf`,
-      occurrence: current?.occurrence ?? 1, state, ...(state === 'failed' ? { failureCode: 'fixture/unavailable' } : {}) }],
+      occurrence: current?.occurrence ?? 1, state, ...(current?.progress ? { progress: current.progress } : {}),
+      ...(state === 'failed' ? { failureCode: 'fixture/unavailable' } : {}) }],
       documents: value.documents?.map(settings => state === 'ready' && settings.documentId === documentId
         ? { ...settings, activePolicy: settings.policy, activeEnabled: settings.enabled, pending: false, impact: 'none' } : settings) })
   },

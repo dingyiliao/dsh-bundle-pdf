@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
@@ -10,7 +11,7 @@ import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } fr
 import { registerPdfAgentTools } from '../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfRetrieval } from '../src/adapters/host/dsh/retrieval.ts'
 import { createPdfService } from '../src/adapters/host/pdfium/index.ts'
-import { createRetrievalCache, type RetrievalCacheRecord } from '../src/adapters/host/storage/retrieval-cache.ts'
+import { createRetrievalStore } from '../src/adapters/host/filesystem/retrieval-store.ts'
 import { createMemoryEvidenceReferenceStore, type PdfTextEvidence } from '../src/modules/evidence/index.ts'
 import { createAgentNavigation, createReaderContexts } from '../src/modules/navigation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
@@ -47,7 +48,7 @@ for (const [index, text] of paragraphs.entries()) {
   page.drawText(text, { font, x: 48, y: 670, size: 12, maxWidth: 500, lineHeight: 18 })
 }
 const bytes = await fixture.save()
-const records = new Map<string, RetrievalCacheRecord>()
+const cacheDirectory = await mkdtemp(join(tmpdir(), 'pdf-retrieval-integration-'))
 const sessionId = 'synthetic-real-embedding-retrieval'
 const agent = { session: { id: sessionId, header: {} } }
 const signal = AbortSignal.timeout(120_000)
@@ -81,10 +82,7 @@ function createRuntime(maxBatchSize = 8) {
     return transport.embed(request, config)
   } }
   registry.register(counted)
-  const cache = createRetrievalCache({ get: key => records.get(key),
-    async put(key, record) { records.set(key, structuredClone(record)) },
-    async delete(key) { return records.delete(key) }, entries: () => records.entries(),
-  } as Parameters<typeof createRetrievalCache>[0])
+  const cache = createRetrievalStore({ directory: cacheDirectory })
   const binding = { engineId: transport.descriptor.id,
     config: { endpoint: values.endpoint!, maxBatchSize,
       queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION } }
@@ -129,13 +127,26 @@ function createRuntime(maxBatchSize = 8) {
     async dispose() {
       await disposeTools()
       navigation.dispose(); contexts.dispose(); registry.dispose()
-      await cache.dispose(); await pdf.dispose(); await workspace.workspaces.dispose()
+      await retrieval.dispose(); await cache.dispose(); await pdf.dispose(); await workspace.workspaces.dispose()
     },
   }
 }
 
-let runtime = createRuntime()
+async function cacheSummary() {
+  let records = 0, diskBytes = 0
+  for (const bucket of await readdir(cacheDirectory, { withFileTypes: true })) {
+    if (!bucket.isDirectory() || !/^[a-f0-9]{2}$/.test(bucket.name)) continue
+    for (const record of await readdir(join(cacheDirectory, bucket.name), { withFileTypes: true })) {
+      if (!record.isFile() || !/^[a-f0-9]{64}\.json$/.test(record.name)) continue
+      records++; diskBytes += (await stat(join(cacheDirectory, bucket.name, record.name))).size
+    }
+  }
+  return { kind: 'atomic-json-files', records, diskBytes }
+}
+
+let runtime!: ReturnType<typeof createRuntime>
 try {
+  runtime = createRuntime()
   const opened = await runtime.run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
   const cold = await measured(() => runtime.search(opened.documentId))
   assert.ok(cold.metrics.embedding.documents > 0)
@@ -167,17 +178,14 @@ try {
   assert.equal(afterAnnotation.metrics.embedding.documents, 0, 'Draft annotation does not re-embed unchanged source text')
   const model = runtime.model
   await runtime.dispose()
-  const serializedCache = JSON.stringify([...records])
-  // Re-create both the cache adapter and logical documents; only persisted cache
-  // records survive. This is a cache-adapter restart, not a DSH process restart.
-  records.clear()
-  for (const [key, value] of JSON.parse(serializedCache) as [string, RetrievalCacheRecord][]) records.set(key, value)
+  // Re-create both the disk adapter and logical documents. The original runtime
+  // has drained and closed; only the files in this temporary directory survive.
   runtime = createRuntime()
   const reopened = await runtime.run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
   assert.notEqual(reopened.documentId, opened.documentId)
   const restored = await measured(() => runtime.search(reopened.documentId))
   assert.equal(restored.metrics.embedding.documents, 0, 'Restored derived cache must reuse document vectors with a new logical document ID')
-  const measuredCache = { records: records.size, serializedBytes: Buffer.byteLength(serializedCache) }
+  const measuredCache = await cacheSummary()
   await runtime.rebuild()
   const prepared = await measured(() => runtime.prepare(reopened.documentId))
   assert.ok(prepared.metrics.embedding.documents > 0, 'A reset must force actual document preparation')
@@ -189,12 +197,15 @@ try {
   // six pages exceed four one-input embedding batches in a single indexing step.
   await runtime.dispose()
   runtime = createRuntime(1)
+  // Changing batching alone reuses a matching document index. Clear explicitly
+  // so this separate probe exercises a genuine unfinished indexing cursor.
+  await runtime.rebuild()
   const continuationDocument = await runtime.run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
   const continued = await runtime.search(continuationDocument.documentId)
   assert.ok(continued.steps > 1, 'The real model probe must exercise ID-only continuation')
   assert.equal(runtime.workspace.writes(), 0)
-  const output = { benchmark: 'real-pdfium-local-embedding-integration-v1', ...environmentMetadata(),
-    sdk: values.sdk, model, fixture: { kind: 'synthetic-memory-only', pages: paragraphs.length, bytes: bytes.length },
+  const output = { benchmark: 'real-pdfium-local-embedding-integration-v2', ...environmentMetadata(),
+    sdk: values.sdk, model, fixture: { kind: 'synthetic-generated', pages: paragraphs.length, bytes: bytes.length },
     coldIndex: cold.metrics, warmQuery: warm.metrics, annotation: annotation.metrics,
     afterAnnotation: afterAnnotation.metrics, reopenedCache: restored.metrics,
     documentPreparation: prepared.metrics, firstPreparedQuery: preparedQuery.metrics,
@@ -205,9 +216,13 @@ try {
       shortIdContinuation: { steps: continued.steps, embeddingBatchSize: 1, onlySearchId: true, complete: true } },
     limitations: ['Cold means empty retrieval cache; the separate MLX service may already be warm.',
       'CPU/RSS cover this Node benchmark process, excluding the PDFium child and external MLX server.',
-      'Cache records survive JSON round-trip in memory; no DSH storage driver or full desktop UI is mounted.',
+      'Index checkpoints and vectors survive closing and reopening the real atomic JSON file store; no DSH process restart or full desktop UI is mounted.',
+      'The continuation probe explicitly clears the derived store; changing batch size alone does not invalidate matching document vectors.',
       'Navigation is an acknowledged Host contract, not a browser viewport or multi-level back interaction.',
       'Six synthetic text pages demonstrate the integration path, not general retrieval quality or large-document performance.'] }
   if (values.out) await writeFile(values.out, JSON.stringify(output, null, 2) + '\n')
   console.log(JSON.stringify(output, null, 2))
-} finally { await runtime.dispose() }
+} finally {
+  try { await runtime?.dispose() }
+  finally { await rm(cacheDirectory, { recursive: true, force: true }) }
+}

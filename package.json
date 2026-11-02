@@ -1,6 +1,6 @@
 {
   "name": "@dylanl1/dsh-plugin-pdf",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
   "license": "MIT",
@@ -90,7 +90,8 @@
     "package:native": "node scripts/package-native.mjs",
     "package:main": "node scripts/package-main.mjs",
     "package:smoke": "node scripts/smoke-package-install.mjs",
-    "release:publish": "node scripts/publish-npm.mjs"
+    "release:publish": "node scripts/publish-npm.mjs",
+    "bench:indexing": "node --import tsx bench/indexing.ts"
   },
   "dsh": {
     "bundle": {
@@ -186,6 +187,6 @@
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.19.0 || >=24.0.0"
   }
 }

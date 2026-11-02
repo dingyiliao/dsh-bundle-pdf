@@ -1,0 +1,32 @@
+{
+  "baseline": {
+    "verifiedAgainstPreviousValidation": {
+      "src/modules/retrieval/service.ts": true,
+      "src/modules/retrieval/stored-index.ts": true,
+      "src/adapters/host/filesystem/retrieval-store.ts": true,
+      "src/adapters/host/dsh/retrieval-prefetch.ts": true
+    },
+    "sha256": {
+      "src/modules/retrieval/service.ts": "9fa8d7b9d7be27b4404b435e1cc0658ce9c317eaf13f1064199fddbc27bcc701",
+      "src/modules/retrieval/stored-index.ts": "d439cbba25a53f573b352aee4de356a5c7517b44fc1bb4767f2699c591db022f",
+      "src/adapters/host/filesystem/retrieval-store.ts": "d7c9a825d2c4b92cbb92e1c1d0b2144f4e2ea7c5a771e6de4f7b301c8550e525",
+      "src/adapters/host/dsh/retrieval-prefetch.ts": "e94e5ab34162ac34a1de1a9811626d8d266d13613f1658d4fe5ba355007a15e5"
+    }
+  },
+  "after": {
+    "src/modules/retrieval/service.ts": "3c79167dd850476cd261d206414cc91941667559897aa96513632220faa9bd5c",
+    "src/modules/retrieval/stored-index.ts": "f8c4cf223e2a3d4bc869314bf859de8b7cb9e2da947617d24ecb33282194b821",
+    "src/adapters/host/filesystem/retrieval-store.ts": "a50a29b261f91f3cca00ec27579a760575022b9b0688083952fa969774708136",
+    "src/adapters/host/dsh/retrieval-prefetch.ts": "da208020d48e92a15c67ac1715e0780e7d7c2be9dd311df8a22a78a338c02f16"
+  },
+  "runtime": "Node v26.7.0; macOS arm64; Apple M5 Pro",
+  "repetitions": 3,
+  "fixtures": "bench/indexing.ts; same pages, paragraph text, 1024-dimensional fake vectors and 8 MiB serialized cache in both versions",
+  "limitations": [
+    "Synthetic local-persistence benchmark; no model inference, OCR, network or PDFium in timed sections.",
+    "Warm filesystem/OS cache; no system-wide CPU, RSS or power measurements.",
+    "Wall time includes chunking, validation, serialization and durable writes.",
+    "Baseline source snapshot precedes implementation and its four source hashes match the previous durable-index validation.",
+    "Source tree is uncommitted; these results do not identify a published release."
+  ]
+}
