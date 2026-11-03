@@ -8,6 +8,7 @@ export interface RetrievalBinding {
   provider?: RetrievalEmbedding
   selectionIdentity: string
   extractionIdentity: string
+  indexExtractionIdentity?: string
   lifetime: { valid: boolean; id: string }
   signal: AbortSignal
 }

@@ -266,6 +266,91 @@ test('a failed candidate and a cancelled candidate leave the accepted active pla
   } finally { await f.api.dispose() }
 })
 
+test('a resumed candidate completes its frozen plan while edits to desired settings stay pending', async () => {
+  const f = fixture()
+  try {
+    const original = await f.search()
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a', true)
+    const selected = f.api.selection(f.documents[0]!)!
+    f.state.onPrepareSlice = async () => false
+    assert.equal(await f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal), false)
+    const initial = f.api.settings('a', 'doc-a')
+    await f.api.configure('a', 'doc-a', initial.revision, { ...initial.policy, indexImageDescriptions: true })
+    assert.deepEqual(f.api.selection(f.documents[0]!), selected, 'editing preferences does not change the retained task')
+    assert.equal((await f.search()).indexGeneration, original.indexGeneration)
+    f.state.onPrepareSlice = async () => true
+    assert.equal(await f.api.prepareSlice('a', { documentId: 'doc-a', indexPlanId: selected.planId }, signal), true)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-b')
+    assert.equal(f.policies.active('/book.pdf').policy.indexImageDescriptions, false)
+    assert.equal(f.api.settings('a', 'doc-a').policy.indexImageDescriptions, true)
+    assert.equal(f.api.settings('a', 'doc-a').pending, true)
+    assert.deepEqual(f.calls.filter(call => call.kind === 'prepareSlice').map(call => call.rebuildToken),
+      [selected.planId, selected.planId], 'continuing does not rotate the durable checkpoint token')
+    await f.api.stage('a', 'doc-a')
+    const update = f.api.selection(f.documents[0]!)!
+    assert.notEqual(update.planId, selected.planId, 'an explicit update accepts the pending preferences')
+    await f.api.prepare('a', { documentId: 'doc-a', indexPlanId: update.planId }, signal)
+    assert.equal(f.policies.active('/book.pdf').policy.indexImageDescriptions, true)
+    assert.equal(f.api.settings('a', 'doc-a').pending, false)
+  } finally { await f.api.dispose() }
+})
+
+test('an explicit update queued behind a preference write supersedes an older completed build before activation', async () => {
+  const f = fixture(), build = deferred(), buildEntered = deferred(), writing = deferred(), writeGate = deferred()
+  try {
+    const original = await f.search()
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
+    const previous = f.api.selection(f.documents[0]!)!
+    f.state.onPrepare = async () => { buildEntered.resolve(); await build.promise }
+    const preparing = f.api.prepare('a', { documentId: 'doc-a', indexPlanId: previous.planId }, signal)
+    const superseded = assert.rejects(preparing, { code: 'pdf/stale-reader' })
+    await buildEntered.promise
+    f.updateDefaults({ embeddingEngine: 'embed-c' })
+    let writes = 0
+    f.state.onPut = async () => { if (++writes === 1) { writing.resolve(); await writeGate.promise } }
+    const current = f.api.settings('a', 'doc-a')
+    const configuring = f.api.configure('a', 'doc-a', current.revision, { ...current.policy, indexImageDescriptions: true })
+    await writing.promise
+    const staging = f.api.stage('a', 'doc-a')
+    build.resolve(); await turn()
+    writeGate.resolve()
+    await configuring; await staging; await superseded
+    const replacement = f.api.selection(f.documents[0]!)!
+    assert.notEqual(replacement.planId, previous.planId)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-a', 'a superseded completion must not promote its frozen plan')
+    assert.equal((await f.search('b', 'doc-b')).indexGeneration, original.indexGeneration)
+    f.state.onPrepare = undefined
+    await f.api.prepare('a', { documentId: 'doc-a', indexPlanId: replacement.planId }, signal)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-c')
+    assert.equal(f.policies.active('/book.pdf').policy.indexImageDescriptions, true)
+    assert.equal(f.api.settings('a', 'doc-a').pending, false)
+  } finally { build.resolve(); writeGate.resolve(); await f.api.dispose() }
+})
+
+test('an activation already writing completes before a later explicit update stages its replacement', async () => {
+  const f = fixture(), writing = deferred(), writeGate = deferred()
+  try {
+    await f.search()
+    await f.configure('embed-b'); await f.api.stage('a', 'doc-a')
+    const previous = f.api.selection(f.documents[0]!)!
+    let writes = 0
+    f.state.onPut = async () => { if (++writes === 1) { writing.resolve(); await writeGate.promise } }
+    const preparing = f.api.prepare('a', { documentId: 'doc-a', indexPlanId: previous.planId }, signal)
+    await writing.promise
+    f.updateDefaults({ embeddingEngine: 'embed-c' })
+    const staging = f.api.stage('a', 'doc-a')
+    writeGate.resolve()
+    await preparing; await staging
+    const replacement = f.api.selection(f.documents[0]!)!
+    assert.notEqual(replacement.planId, previous.planId, 'old activation must not erase a later staged candidate')
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-b')
+    assert.equal(f.api.settings('a', 'doc-a').pending, true)
+    await f.api.prepare('a', { documentId: 'doc-a', indexPlanId: replacement.planId }, signal)
+    assert.equal(f.policies.active('/book.pdf').policy.embeddingEngine, 'embed-c')
+    assert.equal(f.api.settings('a', 'doc-a').pending, false)
+  } finally { writeGate.resolve(); await f.api.dispose() }
+})
+
 test('a queued or superseded candidate cannot promote an obsolete policy and partial candidates cannot activate', async () => {
   const f = fixture(), entered = deferred(), gate = deferred()
   try {

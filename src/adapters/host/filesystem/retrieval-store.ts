@@ -276,6 +276,11 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
           || metaColumns.map(row => row.name).join(',') !== 'name,value' || Number(metaColumns[0]?.pk) !== 1) {
           throw failure('corrupt', 'The PDF index database schema is invalid.')
         }
+        db.exec('CREATE INDEX IF NOT EXISTS records_key ON records(key COLLATE BINARY)')
+        const keyIndex = db.prepare('PRAGMA index_xinfo(records_key)').all().filter(row => row.key === 1)
+        if (keyIndex.length !== 1 || keyIndex[0]!.name !== 'key' || keyIndex[0]!.coll !== 'BINARY') {
+          throw failure('corrupt', 'The PDF index database key index is invalid.')
+        }
         await checkedDatabaseFiles()
         database = db
         if (!skipImport) await importFiles(db, signal)
@@ -319,6 +324,52 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
   }
   return {
     directory,
+    /** Ordered, page-local snapshots for bounded derived-data migrations.
+     * Consumers own returned payloads; the hot cache never retains scan pages.
+     * One large record may exceed the page's memory target, but never its
+     * record limit, so low-memory callers can still make forward progress. */
+    async scan(prefix: string, afterKey?: string, limit = 16): Promise<{ entries: [string, unknown][]; nextKey?: string }> {
+      digest(prefix)
+      if (afterKey !== undefined) {
+        digest(afterKey)
+        if (!afterKey.startsWith(prefix)) throw failure('key', 'The PDF index scan cursor belongs to a different prefix.')
+      }
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw failure('limit', 'The PDF index scan page limit is invalid.')
+      return enqueue('read', 0, async () => {
+        const started = performance.now(), db = await ensureDatabase()
+        invalidateExternalWrites(db)
+        db.exec('BEGIN')
+        try {
+          // Only bounded metadata enters JS before the byte budget is known.
+          // All valid keys are ASCII; DEL is a strict upper prefix boundary.
+          const rows = db.prepare('SELECT id,key,bytes,length(CAST(envelope AS BLOB)) AS actualBytes FROM records WHERE key COLLATE BINARY >= ? AND key COLLATE BINARY < ? AND key COLLATE BINARY > ? ORDER BY key COLLATE BINARY LIMIT ?')
+            .all(prefix, `${prefix}\u007f`, afterKey ?? '', limit + 1)
+          const entries: [string, unknown][] = []
+          let bytes = 0, more = false
+          for (const row of rows) {
+            if (entries.length === limit) { more = true; break }
+            let id: string
+            try { id = digest(row.key as string) } catch { throw failure('corrupt', 'The PDF index record identity is invalid.') }
+            const size = Number(row.actualBytes)
+            if (row.id !== id || !(row.key as string).startsWith(prefix) || !Number.isSafeInteger(row.bytes)
+              || !Number.isSafeInteger(size) || size < 1 || row.bytes !== size) {
+              throw failure('corrupt', 'The PDF index record identity is invalid.')
+            }
+            if (size > maxRecordBytes) throw failure('record-too-large', 'The PDF index record exceeds its storage limit.')
+            if (entries.length && bytes + size > maxMemoryBytes) { more = true; break }
+            const record = readRow(db, id)
+            diskReads++
+            if (!record || record.key !== row.key || typeof record.envelope !== 'string'
+              || Buffer.byteLength(record.envelope) !== size) throw failure('corrupt', 'The PDF index record identity is invalid.')
+            entries.push([row.key as string, decode(record.envelope, row.key as string)])
+            bytes += size
+          }
+          db.exec('COMMIT')
+          metric({ stage: 'store-read', durationMs: performance.now() - started, bytes, records: entries.length, cacheHit: false })
+          return { entries, ...(more ? { nextKey: entries.at(-1)![0] } : {}) }
+        } catch (error) { try { db.exec('ROLLBACK') } catch { /* Preserve the original read error. */ } throw error }
+      })
+    },
     async has(key: string): Promise<boolean> {
       const id = digest(key)
       return enqueue('read', 0, async () => {

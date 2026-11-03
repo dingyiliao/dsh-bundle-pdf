@@ -82,6 +82,73 @@ test('a late pre-action status reply cannot overwrite a cancelled task', async (
   } finally { stop(); api.dispose(); lifetime.abort() }
 })
 
+test('resume is a distinct control request that retains the accepted plan instead of applying pending settings', async () => {
+  const lifetime = new AbortController(), requests: unknown[] = []
+  const activePolicy = { indexScanPages: true, indexImageDescriptions: false }
+  const desiredPolicy = { indexScanPages: false, indexImageDescriptions: true }
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, raw) {
+    requests.push(raw)
+    const action = (raw as { action: string }).action
+    return ok({ ...snapshot('running'), revision: action,
+      documents: [{ documentId: 'document', revision: 3, policy: desiredPolicy,
+        activePolicy: action === 'resume' ? activePolicy : desiredPolicy,
+        enabled: true, activeEnabled: true, pending: action === 'resume', impact: action === 'resume' ? 'content' : 'none' }] })
+  } } }, lifetime.signal)
+  try {
+    await api.resume('session', 'document', lifetime.signal)
+    assert.deepEqual(requests, [{ action: 'resume', sessionId: 'session', documentId: 'document' }])
+    assert.deepEqual(api.getSnapshot('session').documents?.[0]?.activePolicy, activePolicy)
+    assert.equal(api.getSnapshot('session').documents?.[0]?.pending, true)
+    await api.start('session', 'document', lifetime.signal)
+    await api.rebuild('session', 'document', lifetime.signal)
+    assert.deepEqual(requests, ['resume', 'start', 'rebuild'].map(action => ({ action, sessionId: 'session', documentId: 'document' })))
+    assert.equal(api.getSnapshot('session').documents?.[0]?.pending, false)
+    assert.deepEqual(api.getSnapshot('session').documents?.[0]?.activePolicy, desiredPolicy)
+  } finally { api.dispose(); lifetime.abort() }
+})
+
+test('late status and cancelled transport replies cannot replace the resumed task occurrence', async () => {
+  const lifetime = new AbortController()
+  let finishStatus!: (value: unknown) => void, finishResume!: (value: unknown) => void
+  let deferResume = false
+  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, raw) {
+    const { action } = raw as { action: string }
+    if (action === 'status') return new Promise(resolve => { finishStatus = resolve })
+    if (deferResume) return new Promise(resolve => { finishResume = resolve })
+    return ok({ ...snapshot('running'), revision: 'resumed', tasks: [{ ...snapshot('running').tasks[0]!, occurrence: 2 }] })
+  } } }, lifetime.signal)
+  const stop = api.subscribe('session', () => {})
+  try {
+    await api.resume('session', 'document', lifetime.signal)
+    finishStatus(ok(snapshot('cancelled'))); await turn()
+    assert.equal(api.getSnapshot('session').tasks[0]!.occurrence, 2)
+    assert.equal(api.getSnapshot('session').tasks[0]!.state, 'running')
+    deferResume = true
+    const cancelled = new AbortController()
+    const request = api.resume('session', 'document', cancelled.signal)
+    cancelled.abort(new Error('Reader changed document'))
+    await assert.rejects(request, /Reader changed document/)
+    finishResume(ok({ ...snapshot('running'), revision: 'late', tasks: [{ ...snapshot('running').tasks[0]!, occurrence: 99 }] }))
+    await turn()
+    assert.equal(api.getSnapshot('session').tasks[0]!.occurrence, 2, 'a non-cooperative late resume cannot publish obsolete state')
+  } finally { stop(); api.dispose(); lifetime.abort() }
+})
+
+test('resume reports an unavailable or changed saved plan without silently starting a new one', async () => {
+  for (const code of ['pdf/index-resume-unavailable', 'pdf/index-settings-changed']) {
+    const lifetime = new AbortController(), requests: unknown[] = []
+    const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input) {
+      requests.push(input); return { ok: false, error: { code, message: 'The accepted index plan cannot be resumed.' } }
+    } } }, lifetime.signal)
+    try {
+      const before = api.getSnapshot('session')
+      await assert.rejects(api.resume('session', 'document', lifetime.signal), { code })
+      assert.deepEqual(requests, [{ action: 'resume', sessionId: 'session', documentId: 'document' }])
+      assert.equal(api.getSnapshot('session'), before, 'failure does not fabricate Host progress or change its settings')
+    } finally { api.dispose(); lifetime.abort() }
+  }
+})
+
 test('reopening a view fetches an immediate snapshot before resuming change-only polling', async () => {
   const lifetime = new AbortController(), requests: unknown[] = []
   const api = createPdfIndexingApi({ rpc: { async call(_path, _method, input) {

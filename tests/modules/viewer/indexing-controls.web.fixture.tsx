@@ -82,10 +82,14 @@ const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal
     documentId: input.documentId, title: `${input.documentId}.pdf`,
     occurrence: input.action === 'cancel' ? previous?.occurrence ?? 1 : (previous?.occurrence ?? 0) + 1,
     state: input.action === 'cancel' ? 'cancelled' : 'running',
-    ...(input.action === 'cancel' ? previous?.progress ? { progress: previous.progress } : {}
+    ...(input.action === 'cancel' || input.action === 'resume' ? previous?.progress ? { progress: {
+      ...previous.progress, ...(input.action === 'resume' ? { phase: 'restoring' as const } : {}),
+    } } : {}
       : { progress: { indexedPages: 1, totalPages: 3, embeddedChunks: 0, totalChunks: 3, phase: 'extracting' as const } }),
   }
-  changed(input.sessionId, { enabled: current.enabled, tasks: [task] })
+  changed(input.sessionId, { enabled: current.enabled, tasks: [task], documents: current.documents?.map(settings =>
+    settings.documentId === input.documentId && (input.action === 'start' || input.action === 'rebuild')
+      ? { ...settings, activePolicy: settings.policy, activeEnabled: settings.enabled, pending: false, impact: 'none' } : settings) })
   return respond(host(input.sessionId))
 } } }
 const api = createPdfIndexingApi(connection, lifetime.signal)
@@ -149,8 +153,7 @@ Object.assign(window, { __pdfIndexingFixture: {
     changed(sessionId, { enabled: value.enabled, tasks: [{ documentId, title: `${documentId}.pdf`,
       occurrence: current?.occurrence ?? 1, state, ...(current?.progress ? { progress: current.progress } : {}),
       ...(state === 'failed' ? { failureCode: 'fixture/unavailable' } : {}) }],
-      documents: value.documents?.map(settings => state === 'ready' && settings.documentId === documentId
-        ? { ...settings, activePolicy: settings.policy, activeEnabled: settings.enabled, pending: false, impact: 'none' } : settings) })
+      documents: value.documents })
   },
   republish() { const value = host('session-a'); changed('session-a', value) },
   disable() {

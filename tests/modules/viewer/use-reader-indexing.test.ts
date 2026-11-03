@@ -59,6 +59,7 @@ async function withIndexing(run: (f: {
     getSnapshot: session => session === 'session-a' ? current : other,
     subscribe(_session, listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     async start(sessionId, id, signal) { calls.push({ action: 'start', sessionId, id, signal }) },
+    async resume(sessionId, id, signal) { calls.push({ action: 'resume', sessionId, id, signal }) },
     async rebuild(sessionId, id, signal) { calls.push({ action: 'rebuild', sessionId, id, signal }) },
     async cancel(sessionId, id, signal) { calls.push({ action: 'cancel', sessionId, id, signal }) },
     async configure(sessionId, id, revision, policy, signal) { calls.push({ action: 'configure', sessionId, id, revision, policy, signal }) },
@@ -116,7 +117,7 @@ test('each PDF uses the existing task entry with accessible page and passage pro
     assert.equal(f.state().statuses.find(status => status.id === 'indexing:a')?.activity, 'progress', 'an accepted command does not fabricate Host completion')
     await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }] })
     await act(async () => { popover.querySelector<HTMLButtonElement>('[aria-label="Resume indexing: alpha.pdf"]')!.click() })
-    assert.equal(f.calls.at(-1)?.action, 'start')
+    assert.equal(f.calls.at(-1)?.action, 'resume')
   })
 })
 
@@ -200,12 +201,12 @@ test('closing a notification dismisses completion without changing the search re
 test('failed tasks resume their checkpoints from the task panel and search while disabled engines stay unavailable', async () => {
   await withIndexing(async f => {
     await f.publish({ ...running(), revision: 'failed', tasks: [{ ...running().tasks[0]!, state: 'failed' }] })
-    assert.equal(f.state().control!.label, 'Resume indexing')
+    assert.equal(f.state().control!.label, 'Retry indexing')
     assert.equal(f.state().control!.statusLabel, 'Indexing failed')
-    const button = f.container.querySelector<HTMLButtonElement>('[aria-label="Resume indexing: alpha.pdf"]')!
+    const button = f.container.querySelector<HTMLButtonElement>('[aria-label="Retry indexing: alpha.pdf"]')!
     await act(async () => { button.click() })
     assert.deepEqual(f.calls.map(({ action, sessionId, id }) => ({ action, sessionId, id })),
-      [{ action: 'start', sessionId: 'session-a', id: 'a' }])
+      [{ action: 'resume', sessionId: 'session-a', id: 'a' }])
     await act(async () => { f.state().control!.onRebuild!() })
     assert.equal(f.calls.at(-1)!.action, 'rebuild', 'discarding progress remains an explicit separate action')
     await f.publish({ ...running(), revision: 'cancelled', tasks: [{ ...running().tasks[0]!, state: 'cancelled' }] })
@@ -232,6 +233,95 @@ test('switching PDFs in the same session aborts view commands and does not show 
     await act(async () => { reject(new Error('late previous-PDF failure')) })
     assert.deepEqual(f.failures, [])
   }, idle())
+})
+
+test('interrupted indexing resumes its accepted plan while pending choices require an explicit update', async () => {
+  for (const state of ['cancelled', 'failed'] as const) {
+    const desired = { indexScanPages: false, indexImageDescriptions: true }
+    await withIndexing(async f => {
+      assert.equal(f.state().control!.label, state === 'cancelled' ? 'Resume indexing' : 'Retry indexing')
+      assert.ok(f.state().control!.onUpdate, 'pending choices have a separate explicit update action')
+      const contextual = f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!
+      await act(async () => { contextual.onClick() })
+      await act(async () => { f.state().control!.onStart() })
+      assert.deepEqual(f.calls.map(call => call.action), ['resume', 'resume'], 'neither interruption entry point applies desired settings')
+      assert.deepEqual(f.state().control!.configuration!.value.activePolicy, policy)
+      assert.equal(f.state().control!.configuration!.value.pending, true)
+      await act(async () => { f.state().control!.onUpdate!() })
+      await act(async () => { f.state().control!.onRebuild!() })
+      assert.deepEqual(f.calls.map(call => call.action), ['resume', 'resume', 'start', 'rebuild'])
+      assert.deepEqual(f.state().control!.configuration!.value.policy, desired, 'the Host remains the settings owner')
+    }, { ...idle(), tasks: [{ ...running().tasks[0]!, state }], documents: [documentSettings({
+      policy: desired, pending: true, impact: 'content' })] })
+  }
+})
+
+test('resume allows either desired or accepted enablement while explicit update still requires desired enablement', async () => {
+  await withIndexing(async f => {
+    assert.equal(f.state().control!.enabled, true, 'disabling desired settings does not stop continuation of the accepted plan')
+    assert.equal(f.state().control!.disabled, false)
+    assert.equal(f.state().control!.onUpdate, undefined)
+    assert.equal(f.state().control!.onRebuild, undefined, 'forced rebuild must not silently reuse the old enabled plan')
+    await act(async () => { f.state().control!.onStart() })
+    assert.equal(f.calls.at(-1)?.action, 'resume')
+    await f.publish({ ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
+      documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
+    assert.equal(f.state().control!.disabled, false, 'an enabled candidate can resume before an accepted plan exists')
+    assert.equal(f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!.disabled, false)
+    assert.equal(f.state().control!.updateDisabled, false, 'a newly enabled plan can still be applied')
+    await act(async () => { f.state().control!.onStart() })
+    assert.equal(f.calls.at(-1)?.action, 'resume', 'the Host owns validation of the retained candidate plan')
+    await act(async () => { f.state().control!.onUpdate!() })
+    assert.equal(f.calls.at(-1)?.action, 'start')
+    await f.publish({ ...idle(), enabled: false, tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
+      documents: [documentSettings({ enabled: false, activeEnabled: false })] })
+    assert.equal(f.state().control!.disabled, true)
+    assert.equal(f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!.disabled, true)
+    const before = f.calls.length
+    await act(async () => { f.state().control!.onStart() })
+    assert.equal(f.calls.length, before)
+  }, { ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }], documents: [documentSettings({
+    enabled: false, activeEnabled: true, pending: true, impact: 'embedding' })] })
+})
+
+test('the first candidate started after enabling indexing remains resumable before any completed plan exists', async () => {
+  await withIndexing(async f => {
+    assert.equal(f.state().control!.disabled, true)
+    await f.publish({ ...idle(), documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
+    await act(async () => { f.state().control!.onStart() })
+    assert.equal(f.calls.at(-1)?.action, 'start')
+    await f.publish({ ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
+      documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
+    assert.equal(f.state().control!.disabled, false, 'activeEnabled describes the previous accepted plan, not this interrupted candidate')
+    const taskAction = f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!
+    assert.equal(taskAction.disabled, false)
+    await act(async () => { taskAction.onClick() })
+    await act(async () => { f.state().control!.onStart() })
+    assert.deepEqual(f.calls.map(call => call.action), ['start', 'resume', 'resume'])
+  }, { ...idle(), enabled: false, documents: [documentSettings({ enabled: false, activeEnabled: false })] })
+})
+
+test('resuming queues restoration without claiming the cancelled task is already running', async () => {
+  await withIndexing(async f => {
+    let reject!: (error: Error) => void
+    const gate = new Promise<void>((_resolve, fail) => { reject = fail })
+    f.api.resume = async (sessionId, id, signal) => {
+      f.calls.push({ action: 'resume', sessionId, id, signal }); await gate
+    }
+    await act(async () => { f.state().control!.onStart(); f.state().control!.onStart() })
+    assert.equal(f.calls.length, 1)
+    assert.equal(f.state().control!.disabled, true)
+    await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, state: 'queued', progress: {
+      indexedPages: 3, totalPages: 10, embeddedChunks: 2, totalChunks: 6, phase: 'restoring', reusedChunks: 2, computedChunks: 0,
+    } }] })
+    assert.equal(f.state().control!.statusLabel, 'Restoring saved index…')
+    assert.equal(f.state().statuses[0]!.tone, 'neutral', 'queued restoration retains its actual Host state')
+    assert.equal(f.state().statuses[0]!.activity, 'progress')
+    await f.render({ ...f.options, documentId: 'b' })
+    assert.equal(f.calls[0]!.signal.aborted, true)
+    await act(async () => { reject(new Error('late resumed task failure')) })
+    assert.deepEqual(f.failures, [])
+  }, { ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }] })
 })
 
 test('Host task removal clears a ready document without carrying readiness into another session', async context => {
@@ -435,7 +525,7 @@ test('task cards expose one contextual action while diagnostics stay in the more
       } else {
         assert.equal(status.dismiss, undefined)
         assert.equal(status.actions?.length, 1)
-        assert.equal(status.actions![0]!.label, state === 'running' ? 'Cancel' : 'Resume indexing')
+        assert.equal(status.actions![0]!.label, state === 'running' ? 'Cancel' : state === 'failed' ? 'Retry indexing' : 'Resume indexing')
       }
     }
     assert.deepEqual(f.calls, [], 'presenting actions does not start, stop or clear the Host index')

@@ -22,6 +22,7 @@ export function Reader(props: ReaderProps) {
   const { tab } = props.useTabInfo()
   const lifetime = readerLifetime(sessionId, tab.id, tab.signal, settings.historyCapacity)
   const [error, setError] = useState('')
+  const staleReaderError = useRef<string | null>(null)
   const [positionNotice, setPositionNotice] = useState('')
   const [size, setSize] = useState({ width: 600, height: 700 })
   const [zoom, setZoom] = useState(1)
@@ -39,6 +40,7 @@ export function Reader(props: ReaderProps) {
   const notifyError = useCallback((value: unknown) => {
     const needsPassword = value instanceof Error && (('code' in value && value.code === 'password-required') || value.name === 'PasswordException')
     const message = needsPassword ? callbacks.current.t('reader.passwordRequired') : value instanceof Error ? value.message : String(value)
+    staleReaderError.current = value && typeof value === 'object' && 'code' in value && value.code === 'pdf/stale-reader' ? message : null
     setError(message)
   }, [])
   const documentState = useReaderDocument({ api, sessionId, resourceAddress: props.resourceAddress,
@@ -51,9 +53,15 @@ export function Reader(props: ReaderProps) {
       setDraggingPage(null)
       setMode('text')
       annotations.resetResource()
+      staleReaderError.current = null
       setError('')
     },
     onNativeOpened: () => { search.invalidateDocument(); views.current.clear() },
+    onNativeReady: () => {
+      const recovered = staleReaderError.current
+      staleReaderError.current = null
+      if (recovered !== null) setError(current => current === recovered ? '' : current)
+    },
     releaseRegionCapture: () => {
       explanation.captureController.current?.abort()
       return explanation.captureTask.current

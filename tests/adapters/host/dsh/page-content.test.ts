@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfPageContent, projectPageContent } from '../../../../src/adapters/host/dsh/page-content.ts'
+import { createPdfPageContent, pageContentDigestBytes, projectPageContent } from '../../../../src/adapters/host/dsh/page-content.ts'
 import { pageContentDigest, parsePageContent, PageRepresentationSchema, createPageRepresentation } from '../../../../src/modules/document/index.ts'
 import { HostOcrService, type HostOcrBackend } from '../../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../../src/modules/image-understanding/index.ts'
@@ -29,13 +29,15 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
   const data = options.cache ?? new Map<string, unknown>()
   const state = { native: options.native ?? '', text: 'needle recognized', description: 'A needle labels the upward chart.',
     model: 'revision-one', bytes: new Uint8Array([1, 2, 3]), version: 'content-one', denied: false,
+    indexContentDigest: undefined as string | undefined,
     reads: 0, renders: 0, recognitions: 0, descriptions: 0, words: true, imageFailure: false, ocrAvailable: true, unmappedCharacters: 0,
     imageModel: undefined as string | undefined, imageInputs: [] as Uint8Array[], ocrInputs: [] as Uint8Array[],
     imageIdentityResolutions: 0, ocrIdentityResolutions: 0, cacheWriteFailure: false,
     imageBindings: [] as { id: string; variant: unknown }[], onImage: undefined as (() => Promise<void>) | undefined,
     onOcr: undefined as (() => Promise<void>) | undefined,
     onOcrIdentity: undefined as (() => Promise<void>) | undefined, onImageIdentity: undefined as (() => Promise<void>) | undefined,
-    onNative: undefined as (() => Promise<void>) | undefined, onRender: undefined as (() => Promise<void>) | undefined, onGet: undefined as (() => void) | undefined }
+    onNative: undefined as (() => Promise<void>) | undefined, onRender: undefined as (() => Promise<void>) | undefined,
+    onGet: undefined as (() => void) | undefined, onScan: undefined as (() => Promise<void>) | undefined }
   let settings: PdfSettings = { ...defaultSettings, ocrEngine: 'fixture', imageEngine: options.imageEngine ?? 'fixture-image',
     indexScanPages: options.scan ?? true,
     indexImageDescriptions: options.describe ?? false,
@@ -46,6 +48,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
     return { id, path: '/indexed.pdf', bytes: state.bytes, sourceVersion: 'disk-one', contentVersion: state.version,
       revision: session === 'b' ? 2 : 0, dirty: false, conflict: false, canUndo: false, canRedo: false,
       document: { pageCount: 1, pages: [{ ...geometry, mediaBox: [...geometry.mediaBox], cropBox: [...geometry.cropBox] }],
+        ...(state.indexContentDigest ? { indexContentDigest: state.indexContentDigest } : {}),
         annotations: [], signed: false, encrypted: false, readOnly: false } }
   }
   const pages: Parameters<typeof createPdfPageContent>[1] = {
@@ -104,7 +107,8 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
   const workspaces = { readSnapshot: snapshot }
   const create = () => createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image,
     onActivity: options.onActivity,
-    cache: { async get(key) { const value = structuredClone(data.get(key)); state.onGet?.(); return value }, async set(key, value) {
+    cache: { async scan() { await state.onScan?.(); return { entries: [] } },
+      async get(key) { const value = structuredClone(data.get(key)); state.onGet?.(); return value }, async set(key, value) {
       if (state.cacheWriteFailure) throw new Error('Cache storage is unavailable')
       data.set(key, structuredClone(value))
     } } })
@@ -120,6 +124,58 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
 
 const representations = (content: Awaited<ReturnType<ReturnType<typeof fixture>['content']['read']>>) =>
   content.blocks.flatMap(block => block.representations)
+
+test('annotation-only source changes reuse aggregates and independent layers while rebinding current file provenance', async () => {
+  const f = fixture({ describe: true })
+  f.state.indexContentDigest = pageContentDigest('stable printed page')
+  let reopened: ReturnType<typeof f.create> | undefined
+  try {
+    const initial = await f.content.read('a', 'doc-a', 1, signal)
+    const counts = [f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions]
+    f.state.bytes = new Uint8Array([4, 5, 6])
+    f.content.dispose(); reopened = f.create()
+    const restored = await reopened.read('b', 'doc-b', 1, signal)
+    assert.notEqual(restored.sourceDigest, initial.sourceDigest)
+    assert.equal(restored.indexContentDigest, initial.indexContentDigest)
+    assert.deepEqual(restored.blocks, initial.blocks)
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], counts)
+    for (const [key, value] of f.data) {
+      if (parsePageContent(value)?.extractionIdentity === reopened.identity('b')) f.data.delete(key)
+    }
+    f.state.bytes = new Uint8Array([7, 8, 9])
+    const layered = await reopened.read('b', 'doc-b', 1, signal)
+    assert.notEqual(layered.sourceDigest, restored.sourceDigest)
+    assert.deepEqual(layered.blocks, initial.blocks)
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], counts)
+    f.state.indexContentDigest = pageContentDigest('different printed page')
+    await reopened.read('b', 'doc-b', 1, signal)
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], counts.map(count => count + 1))
+  } finally { reopened?.dispose(); f.dispose() }
+})
+
+test('equal content identity never permits a file to change during an authorized extraction', async () => {
+  const f = fixture()
+  f.state.indexContentDigest = pageContentDigest('stable printed page')
+  f.state.onNative = async () => { f.state.bytes = new Uint8Array([9, 8, 7]) }
+  try { await assert.rejects(f.content.read('a', 'doc-a', 1, signal), { code: 'pdf/stale-reader' }) }
+  finally { f.dispose() }
+})
+
+test('a source replaced during legacy-cache discovery aborts before marker writes or model work', async () => {
+  const f = fixture()
+  f.state.indexContentDigest = pageContentDigest('stable printed page')
+  f.state.onScan = async () => { f.state.bytes = new Uint8Array([6, 7, 8]) }
+  try {
+    await assert.rejects(f.content.prepare('a', signal, 'doc-a'), { code: 'pdf/stale-reader' })
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [0, 0, 0, 0])
+    assert.equal(f.data.size, 0, 'neither migrated output nor a completion marker belongs to the changed source')
+    f.state.onScan = undefined
+    await f.content.prepare('a', signal, 'doc-a')
+    const recovered = await f.content.read('a', 'doc-a', 1, signal)
+    assert.equal(recovered.sourceDigest, pageContentDigestBytes(f.state.bytes))
+    assert.equal(f.state.recognitions, 1)
+  } finally { f.dispose() }
+})
 
 // Assert retained content rather than a storage record count: independent
 // native/producer layers and aggregate snapshots intentionally overlap.

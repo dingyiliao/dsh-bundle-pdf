@@ -4,6 +4,11 @@ import type { WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import type { ReaderAnnotation, ReaderDocument, ReaderOutlineItem, ReaderPage, ReaderRenderOptions } from '../ports/reader-document.ts'
 import { NativeViewport } from '../../../shared/geometry/native-viewport.ts'
 
+export interface NativeDocumentEvents {
+  onStale?(document: NativeDocument, error: unknown): Promise<void>
+  onReady?(document: NativeDocument): void
+}
+
 /** Native PDFium document exposed to the reader. */
 export class NativeDocument implements ReaderDocument {
   readonly numPages: number
@@ -11,8 +16,35 @@ export class NativeDocument implements ReaderDocument {
   private pageCache = new Map<number, NativePage>()
   private textCache = new ByteCache<NativeTextContent>(4 * 1024 * 1024)
   private bitmapCache = new ByteCache<ImageBitmap>(24 * 1024 * 1024, image => image.close())
-  constructor(readonly snapshot: WorkspaceSnapshot, readonly sessionId: string, readonly api: NativeReaderApi) {
+  private ready = false
+  constructor(readonly snapshot: WorkspaceSnapshot, readonly sessionId: string, readonly api: NativeReaderApi,
+    private readonly events: NativeDocumentEvents = {}) {
     this.numPages = snapshot.document.pageCount
+  }
+  /** All reads share one lifetime, including adapters which do not honor AbortSignal. */
+  private async read<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
+    combined.throwIfAborted()
+    let onAbort!: () => void
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(combined.reason)
+      combined.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      const value = await Promise.race([operation(combined), aborted])
+      combined.throwIfAborted()
+      if (!this.ready) { this.ready = true; this.events.onReady?.(this) }
+      return value
+    } catch (error) {
+      combined.throwIfAborted()
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'pdf/stale-reader' && this.events.onStale) {
+        await this.events.onStale(this, error)
+        throw new DOMException('PDF reader snapshot was replaced', 'AbortError')
+      }
+      throw error
+    } finally {
+      combined.removeEventListener('abort', onAbort)
+    }
   }
   async getPage(number: number): Promise<NativePage> {
     this.lifetime.signal.throwIfAborted()
@@ -24,38 +56,44 @@ export class NativeDocument implements ReaderDocument {
     return page
   }
   getOutline(): Promise<ReaderOutlineItem[] | null> {
-    return this.api.outline(this.sessionId, this.snapshot.id, this.snapshot.reader, this.lifetime.signal)
+    return this.read(signal => this.api.outline(this.sessionId, this.snapshot.id, this.snapshot.reader, signal))
   }
   getDestination(name: string): Promise<unknown> {
-    return this.api.destination(this.sessionId, this.snapshot.id, this.snapshot.reader, name, this.lifetime.signal)
+    return this.read(signal => this.api.destination(this.sessionId, this.snapshot.id, this.snapshot.reader, name, signal))
+  }
+  links(number: number, signal?: AbortSignal): Promise<ReaderAnnotation[]> {
+    return this.read(async combined => await this.api.links(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined) as ReaderAnnotation[], signal)
   }
   async getPageIndex(ref: unknown): Promise<number> {
     if (typeof ref === 'number' && ref >= 0 && ref < this.numPages) return ref
     throw new Error('Native destinations must carry a page index')
   }
   async text(number: number, signal?: AbortSignal): Promise<NativeTextContent> {
-    const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
-    combined.throwIfAborted()
-    const key = String(number), cached = this.textCache.get(key)
-    if (cached) return cached
-    const value = await this.api.text(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined)
-    combined.throwIfAborted()
-    this.textCache.set(key, value, JSON.stringify(value).length * 2)
-    return value
+    return this.read(async combined => {
+      const key = String(number), cached = this.textCache.get(key)
+      if (cached) return cached
+      const value = await this.api.text(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined)
+      combined.throwIfAborted()
+      this.textCache.set(key, value, JSON.stringify(value).length * 2)
+      return value
+    }, signal)
   }
   async bitmap(tile: NativeTileRequest, signal: AbortSignal): Promise<ImageBitmap> {
-    const combined = AbortSignal.any([signal, this.lifetime.signal])
-    combined.throwIfAborted()
-    const key = JSON.stringify(tile), cached = this.bitmapCache.get(key)
-    if (cached) return cached
-    const result = await this.api.tile(this.sessionId, this.snapshot.id, this.snapshot.reader, tile, combined)
-    const image = await createImageBitmap(new Blob([new Uint8Array(result.bytes)], { type: result.mime }))
-    if (combined.aborted) { image.close(); combined.throwIfAborted() }
-    this.bitmapCache.set(key, image, image.width * image.height * 4)
-    return image
+    return this.read(async combined => {
+      const key = JSON.stringify(tile), cached = this.bitmapCache.get(key)
+      if (cached) return cached
+      const result = await this.api.tile(this.sessionId, this.snapshot.id, this.snapshot.reader, tile, combined)
+      combined.throwIfAborted()
+      const image = await createImageBitmap(new Blob([new Uint8Array(result.bytes)], { type: result.mime }))
+      if (combined.aborted) { image.close(); combined.throwIfAborted() }
+      this.bitmapCache.set(key, image, image.width * image.height * 4)
+      return image
+    }, signal)
   }
   diagnostics() { return { bitmapCacheBytes: this.bitmapCache.bytes, textCacheBytes: this.textCache.bytes, pageProxies: this.pageCache.size } }
-  async dispose(): Promise<void> { this.lifetime.abort(); this.bitmapCache.clear(); this.textCache.clear(); this.pageCache.clear() }
+  /** Stop obsolete work while retaining the last painted bitmaps during handoff. */
+  retire(): void { this.lifetime.abort() }
+  async dispose(): Promise<void> { this.retire(); this.bitmapCache.clear(); this.textCache.clear(); this.pageCache.clear() }
 }
 
 export class NativePage implements ReaderPage {
@@ -72,7 +110,7 @@ export class NativePage implements ReaderPage {
   }
   getTextContent(): Promise<NativeTextContent> { return this.owner.text(this.pageNumber) }
   async getAnnotations(): Promise<ReaderAnnotation[]> {
-    const links = await this.owner.api.links(this.owner.sessionId, this.owner.snapshot.id, this.owner.snapshot.reader, this.pageNumber, this.owner.lifetime.signal) as ReaderAnnotation[]
+    const links = await this.owner.links(this.pageNumber)
     return [...links, ...this.owner.snapshot.document.annotations.filter(a => a.page === this.pageNumber && a.linkAction && a.rect)
       .map(a => ({ id: a.id, subtype: 'Link', rect: a.rect!, quadPoints: a.quadPoints, action: a.linkAction }))]
   }
@@ -103,7 +141,7 @@ export class NativePage implements ReaderPage {
   }
 }
 
-export async function openNativeDocument(snapshot: WorkspaceSnapshot, sessionId: string, api: NativeReaderApi) {
-  const owner = new NativeDocument(snapshot, sessionId, api)
+export async function openNativeDocument(snapshot: WorkspaceSnapshot, sessionId: string, api: NativeReaderApi, events?: NativeDocumentEvents) {
+  const owner = new NativeDocument(snapshot, sessionId, api, events)
   return { document: owner, dispose: () => owner.dispose() }
 }

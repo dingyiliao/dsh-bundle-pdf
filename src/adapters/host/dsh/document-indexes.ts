@@ -7,7 +7,7 @@ import type { RetrievalPrepareInput, RetrievalProgress } from '../../../modules/
 import type { PdfRetrieval } from './retrieval.js'
 
 type Policies = ReturnType<typeof createDocumentIndexPolicies>
-interface Plan { id: string; value: ResolvedIndexPlan; force?: boolean; started?: boolean; incomplete?: boolean; inFlight?: number }
+interface Plan { id: string; value: ResolvedIndexPlan; baseline?: ResolvedIndexPlan; force?: boolean; started?: boolean; incomplete?: boolean; inFlight?: number }
 interface Runtime { api: PdfRetrieval; users: number; used: number; plan: string; retired?: boolean }
 const identity = (value: ResolvedIndexPlan) => createHash('sha256').update(canonicalEngineJson(value as EngineJson)).digest('hex')
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }) }
@@ -26,6 +26,7 @@ export function createDocumentIndexes(options: {
   const candidates = new Map<string, Plan>()
   const activeIds = new Map<string, string>()
   const requests = new Set<AbortController>()
+  const planUpdates = new Map<string, Promise<void>>()
   const listeners = new Set<() => void>()
   let allocations = Promise.resolve(), reset: Promise<void> | undefined, disposal: Promise<void> | undefined
   let closed = false, resetFailed = false, clock = 0
@@ -40,6 +41,15 @@ export function createDocumentIndexes(options: {
     const found = options.documents().find(value => value.sessionId === sessionId && value.id === documentId)
     if (!found?.path) return fail('pdf/unknown-document', 'Open this PDF before accessing its index settings.')
     return found as OpenWorkingCopyDocument & { path: string }
+  }
+  // Preference writes can be pending while a build finishes. Serialize only
+  // plan admission/promotion, so an old completion cannot erase a newer stage.
+  function updatePlan<Result>(path: string, operation: () => Promise<Result>): Promise<Result> {
+    const next = (planUpdates.get(path) ?? Promise.resolve()).then(() => { check(); return operation() })
+    const settled = next.then(() => {}, () => {})
+    planUpdates.set(path, settled)
+    void settled.then(() => { if (planUpdates.get(path) === settled) planUpdates.delete(path) })
+    return next
   }
   function active(path: string): Plan {
     const value = options.policies.active(path)
@@ -101,8 +111,9 @@ export function createDocumentIndexes(options: {
     } finally { requests.delete(controller) }
   }
   async function stage(sessionId: string, documentId: string, force = false) {
-    return owned(sessionId, documentId, async owner => {
+    return owned(sessionId, documentId, owner => updatePlan(owner.path, async () => {
       await options.policies.settled(owner.path)
+      check()
       const value = options.policies.desired(owner.path), key = identity(value)
       if (value.policy.embeddingEngine === 'none') {
         candidates.delete(owner.path); changed()
@@ -114,9 +125,10 @@ export function createDocumentIndexes(options: {
       if (!force && identity(active(owner.path).value) === key) {
         candidates.delete(owner.path); changed(); return
       }
-      candidates.set(owner.path, { value, id: force ? `${key}:${randomUUID()}` : key, ...(force ? { force: true } : {}) })
+      candidates.set(owner.path, { value, baseline: options.policies.active(owner.path),
+        id: force ? `${key}:${randomUUID()}` : key, ...(force ? { force: true } : {}) })
       changed()
-    })
+    }))
   }
   async function prepare(sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
     onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean): Promise<boolean> {
@@ -152,11 +164,17 @@ export function createDocumentIndexes(options: {
           // A durable quantum is resumable work, not a completed replacement.
           // Existing queries keep their accepted plan until the final quantum.
           if (complete) {
-            await options.policies.activate(owner.path, plan.value)
-            if (plan.force) for (const [id, runtime] of runtimes) {
-              if (id !== plan.id && runtime.plan === identity(plan.value)) runtime.retired = true
-            }
-            activeIds.set(owner.path, plan.id); candidates.delete(owner.path); changed()
+            await updatePlan(owner.path, async () => {
+              signal.throwIfAborted()
+              if (candidates.get(owner.path) !== candidate) fail('pdf/stale-reader', 'The PDF index update was superseded.')
+              await options.policies.activate(owner.path, plan.value, plan.baseline)
+              check(); signal.throwIfAborted()
+              if (candidates.get(owner.path) !== candidate) fail('pdf/stale-reader', 'The PDF index update was superseded.')
+              if (plan.force) for (const [id, runtime] of runtimes) {
+                if (id !== plan.id && runtime.plan === identity(plan.value)) runtime.retired = true
+              }
+              activeIds.set(owner.path, plan.id); candidates.delete(owner.path); changed()
+            })
           }
         }
         return complete
@@ -218,6 +236,7 @@ export function createDocumentIndexes(options: {
       if (closed) return Promise.reject(new Error('PDF indexing is closed.'))
       reset = allocations.then(async () => {
         const results = await Promise.allSettled([...runtimes.values()].map(value => value.api.dispose()))
+        await Promise.allSettled([...planUpdates.values()])
         runtimes.clear(); candidates.clear(); activeIds.clear()
         const failure = results.find(result => result.status === 'rejected')
         if (failure?.status === 'rejected') throw failure.reason
@@ -233,6 +252,7 @@ export function createDocumentIndexes(options: {
         await allocations
         await reset?.catch(() => {})
         const results = await Promise.allSettled([...runtimes.values()].map(value => value.api.dispose()))
+        await Promise.allSettled([...planUpdates.values()])
         runtimes.clear(); candidates.clear(); activeIds.clear()
         await options.policies.dispose()
         const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])

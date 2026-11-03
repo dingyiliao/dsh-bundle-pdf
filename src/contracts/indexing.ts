@@ -35,6 +35,7 @@ export const indexingSnapshotSchema = z.object({
 export const indexingRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('status'), sessionId, revision: z.string().min(1).max(128).optional() }).strict(),
   z.object({ action: z.literal('start'), sessionId, documentId }).strict(),
+  z.object({ action: z.literal('resume'), sessionId, documentId }).strict(),
   z.object({ action: z.literal('rebuild'), sessionId, documentId }).strict(),
   z.object({ action: z.literal('cancel'), sessionId, documentId }).strict(),
   z.object({ action: z.literal('configure'), sessionId, documentId,

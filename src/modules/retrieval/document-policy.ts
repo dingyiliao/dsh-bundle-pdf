@@ -133,10 +133,14 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
     defaults(path: string, revision: number) {
       return this.configure(path, revision, indexPolicy(defaults()))
     },
-    activate(path: string, plan: ResolvedIndexPlan) {
+    /** A staged build may finish after preferences change. In that case the
+     * active plan captured at admission is its compare-and-swap boundary. */
+    activate(path: string, plan: ResolvedIndexPlan, expectedActive?: ResolvedIndexPlan) {
       const accepted = resolvedIndexPlanSchema.parse(plan)
+      const baseline = expectedActive === undefined ? undefined : resolvedIndexPlanSchema.parse(expectedActive)
       return write(path, record => {
-        if (!equal(resolveIndexPlan(record.desired, defaults()), accepted)) throw stale()
+        if (baseline && equal(record.active, accepted)) return record
+        if (baseline ? !equal(record.active, baseline) : !equal(resolveIndexPlan(record.desired, defaults()), accepted)) throw stale()
         if (equal(record.active, accepted)) return record
         return { ...record, revision: record.revision + 1, active: accepted }
       })

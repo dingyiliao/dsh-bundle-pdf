@@ -124,6 +124,20 @@ test('block identities include source, page and extraction while representations
   assert.notEqual(rep.id, derived('image-description', 'same').id)
 })
 
+test('stable page-content identities preserve blocks across file serialization while keeping raw provenance distinct', () => {
+  const printed = pageContentDigest('printed PDF content')
+  const initial = buildNativePageContent({ ...identity, indexContentDigest: printed,
+    pageRect: [0, 0, 200, 300], content: content([item('Printed text')]) })
+  const saved = buildNativePageContent({ ...identity, sourceDigest: pageContentDigest('PDF with annotations'),
+    indexContentDigest: printed, pageRect: [0, 0, 200, 300], content: content([item('Printed text')]) })
+  assert.notEqual(initial.sourceDigest, saved.sourceDigest)
+  assert.deepEqual(initial.blocks, saved.blocks)
+  assert.equal(saved.indexContentDigest, printed)
+  assert.notEqual(pageContentBlockId({ ...identity, indexContentDigest: printed }, 'native-text'),
+    pageContentBlockId({ ...identity, indexContentDigest: pageContentDigest('different printed content') }, 'native-text'))
+  assert.equal(parsePageContent({ ...saved, indexContentDigest: 'invalid' }), undefined)
+})
+
 test('persisted cache validation rejects corruption, foreign fields, null geometry and invalid Unicode offsets', () => {
   const valid = page()
   const invalid: unknown[] = [null, [], {}, { ...valid, version: 2 }, { ...valid, sourceDigest: 'sha256:broken' },

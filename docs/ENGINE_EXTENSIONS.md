@@ -4,7 +4,7 @@ Image processing has two typed Host services: OCR (image → recognized text, wi
 
 ## Independent plugin package
 
-A buildable example lives in [`examples/http-engines`](../examples/http-engines). Its actual backends are exercised by [`tests/examples/engine-extensions.test.ts`](../tests/examples/engine-extensions.test.ts), including HTTP mapping, cancellation, configuration and live catalog/unload behavior. This checkout changes the image SDK contract; use a package build containing `understand()` rather than an older release.
+A buildable example lives in [`examples/http-engines`](../examples/http-engines). Its actual backends are exercised by [`tests/examples/engine-extensions.test.ts`](../tests/examples/engine-extensions.test.ts), including HTTP mapping, cancellation, configuration and live catalog/unload behavior.
 
 Write an extension as its own package, for example `@example/dsh-pdf-engines`.
 The `@dylanl1/dsh-plugin-pdf/...` imports below refer to the PDF bundle's public
@@ -24,7 +24,7 @@ The extension's manifest declares the host-provided packages as peers:
   "files": ["dist"],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
-    "@dylanl1/dsh-plugin-pdf": "^0.1.2"
+    "@dylanl1/dsh-plugin-pdf": "^0.1.5"
   }
 }
 ```
@@ -33,7 +33,7 @@ For development, also install these peers as dev dependencies so TypeScript can
 resolve the SDK:
 
 ```sh
-npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.2 @deepseek-ai/cordis@4.0.5
+npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.5 @deepseek-ai/cordis@4.0.5
 ```
 
 The main PDF package obtains the matching prebuilt native dependency for its
@@ -213,6 +213,16 @@ caches stay isolated by session and registration lifetime. Stable identities
 permit reuse without bypassing source, rendered-input, configuration, availability
 or authorization checks. Registration generation fences late output independently.
 Forward `AbortSignal` and avoid unbounded identity probes.
+
+The default DSH model backends identify the configured provider/model, effective
+reasoning effort and actual request controls, independently of process or session
+IDs. DSH exposes no immutable server-side weights revision; the same route is
+treated as the same configured model. For persistently reusable backends, an
+accepted PDF index retains the original OCR/description output when another
+conversation chooses a different model. Its producer metadata is preserved;
+in-flight requests still use the current runtime identity. Private/scoped backend
+identities keep their existing isolation. Source-file freshness checks remain
+separate from the annotation-independent document-content identity.
 
 ## Embedding provider contract
 

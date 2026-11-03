@@ -87,6 +87,8 @@ export interface PdfOutlineItem {
 
 export interface PdfDocumentInfo {
   pageCount: number
+  /** Stable page-program identity for derived indexes; excludes annotations and file metadata. */
+  indexContentDigest?: string
   pages: PdfPageInfo[]
   annotations: PdfAnnotation[]
   title?: string

@@ -30,7 +30,7 @@ const cursorSchema = z.object({
 }).strict()
 type Query = z.infer<typeof inputSchema>
 interface Index {
-  key: string; sourceDigest: string; pageCount: number; fromPage: number; toPage: number
+  key: string; contentDigest: string; sourcePath?: string; pageCount: number; fromPage: number; toPage: number
   generation: string; provider?: Pick<RetrievalEmbedding, 'dimensions' | 'maxBatchSize' | 'maxInputCharacters'>; selectionIdentity: string; extractionIdentity: string
   persistentKey: string; head: StoredIndexHead; pages: Map<number, IndexPageSummary>; nextPage: number
   chunkCount: number; embeddedCount: number; dataRevision: number
@@ -50,6 +50,8 @@ const codeOf = (error: unknown): string => error && typeof error === 'object' &&
   && typeof error.code === 'string' ? error.code.slice(0, 100) : 'pdf/retrieval-extraction-failed'
 const sameDocument = (a: RetrievalDocument, b: RetrievalDocument) => a.id === b.id && a.path === b.path
   && a.sourceDigest === b.sourceDigest && a.contentVersion === b.contentVersion && a.pageCount === b.pageCount
+  && a.indexContentDigest === b.indexContentDigest
+const indexContentDigest = (document: RetrievalDocument) => document.indexContentDigest ?? document.sourceDigest
 const providerIdentity = (provider: RetrievalEmbedding | undefined) => provider
   ? JSON.stringify([provider.fingerprint, provider.generation ?? '', provider.configurationIdentity ?? '',
     provider.dimensions, provider.maxBatchSize, provider.maxInputCharacters ?? null,
@@ -102,6 +104,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   // revalidate after minting refs even if an idle index has since been evicted.
   const results = new WeakMap<RetrievalResult, {
     sessionId: string; lifetime: SessionLifetime; document: RetrievalDocument; selectionIdentity: string; extractionIdentity: string
+    indexExtractionIdentity?: string
   }>()
   let disposed = false
   let rebuilding: Promise<void> | undefined
@@ -146,6 +149,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   function checkOrigin(binding: RetrievalBinding): void {
     if (!sameDocument(binding.document, ports.documents.snapshot(binding.sessionId, binding.document.id))) throw stale()
     if ((ports.pages.identity?.(binding.sessionId) ?? '') !== binding.extractionIdentity) throw stale()
+    if ((ports.pages.indexIdentity?.(binding.sessionId) ?? binding.extractionIdentity) !== binding.indexExtractionIdentity) throw stale()
     if (binding.selectionIdentity !== 'lexical' && providerIdentity(ports.embedding?.select(binding.sessionId)) !== binding.selectionIdentity) throw stale()
   }
 
@@ -163,12 +167,19 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     selectionIdentity: string, signal: AbortSignal, lifetime: SessionLifetime): RetrievalBinding {
     const value = ports.documents.snapshot(sessionId, documentId)
     const document: RetrievalDocument = { id: value.id, path: value.path, sourceDigest: value.sourceDigest,
-      contentVersion: value.contentVersion, pageCount: value.pageCount }
+      contentVersion: value.contentVersion, pageCount: value.pageCount,
+      ...(value.indexContentDigest === undefined ? {} : { indexContentDigest: value.indexContentDigest }) }
+    if (document.indexContentDigest !== undefined && (typeof document.indexContentDigest !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(document.indexContentDigest))) {
+      throw fail('pdf/retrieval-extraction-failed', 'PDF content identity is invalid')
+    }
     const extractionIdentity = ports.pages.identity?.(sessionId) ?? ''
-    if (typeof extractionIdentity !== 'string' || extractionIdentity.length > 16_384) {
+    const indexExtractionIdentity = ports.pages.indexIdentity?.(sessionId) ?? extractionIdentity
+    if (typeof extractionIdentity !== 'string' || extractionIdentity.length > 16_384
+      || typeof indexExtractionIdentity !== 'string' || indexExtractionIdentity.length > 16_384) {
       throw fail('pdf/retrieval-extraction-failed', 'PDF extraction identity is invalid')
     }
-    const binding = { sessionId, document, provider, selectionIdentity, extractionIdentity, signal, lifetime }
+    const binding = { sessionId, document, provider, selectionIdentity, extractionIdentity, indexExtractionIdentity, signal, lifetime }
     checkBinding(binding)
     return binding
   }
@@ -269,7 +280,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       summarize(index, stored.record, stored.chunks, stored.vectors.size)
       return
     }
-    const key = pageCacheKey(source.current().document.path, index.sourceDigest, page, index.extractionIdentity)
+    const key = pageCacheKey(source.current().document.path, index.contentDigest, page, index.extractionIdentity)
     let cached = stored?.record.failure ? undefined : await readCachedPage(ports.cache, key)
     source.check()
     let pageFailure: z.infer<typeof pageFailureSchema> | undefined
@@ -509,12 +520,15 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   async function getIndex(binding: RetrievalBinding,
     query: Pick<Query, 'documentId' | 'fromPage' | 'maxPages' | 'cursor'>,
     preferReady = false, rebuildToken?: string, onProgress?: (progress: RetrievalProgress) => void): Promise<Index> {
-    const { document, provider, selectionIdentity, extractionIdentity } = binding
+    const { document, provider, selectionIdentity } = binding
+    const extractionIdentity = binding.indexExtractionIdentity ?? binding.extractionIdentity
     if (!Number.isSafeInteger(document.pageCount) || document.pageCount < query.fromPage) throw fail('pdf/invalid-page', 'Requested page is outside the PDF')
     const toPage = Math.min(document.pageCount, query.fromPage + (query.maxPages ?? document.pageCount) - 1)
     const modelKey = provider ? provider.documentFingerprint ?? digest(JSON.stringify([provider.fingerprint,
       provider.configurationIdentity ?? '', provider.dimensions, provider.maxInputCharacters ?? 1200])) : 'lexical'
-    const persistentKey = digest(JSON.stringify(['disk-index-v1', document.sourceDigest, document.pageCount,
+    const contentKey = document.indexContentDigest
+      ? ['disk-index-v2-content', document.path, document.indexContentDigest] : ['disk-index-v1', document.sourceDigest]
+    const persistentKey = digest(JSON.stringify([...contentKey, document.pageCount,
       query.fromPage, toPage, modelKey, RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, extractionIdentity]))
     let result!: Index
     let reservedPin: (() => void) | undefined
@@ -531,7 +545,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const key = digest(JSON.stringify([persistentKey, selected.id, selectionIdentity]))
       let index = indexes.get(key)
       if (!index) {
-        index = { key, persistentKey, head, sourceDigest: document.sourceDigest, pageCount: document.pageCount,
+        index = { key, persistentKey, head, contentDigest: indexContentDigest(document),
+          ...(document.indexContentDigest ? { sourcePath: document.path } : {}), pageCount: document.pageCount,
           fromPage: query.fromPage, toPage, generation: selected.id,
           provider: provider && { dimensions: provider.dimensions, maxBatchSize: provider.maxBatchSize,
             maxInputCharacters: provider.maxInputCharacters }, selectionIdentity, extractionIdentity,
@@ -568,8 +583,10 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   }
 
   function sameIndexSource(index: Index, binding: RetrievalBinding): boolean {
-    return index.sourceDigest === binding.document.sourceDigest && index.pageCount === binding.document.pageCount
-      && index.extractionIdentity === binding.extractionIdentity
+    return index.contentDigest === indexContentDigest(binding.document)
+      && (index.sourcePath === undefined || index.sourcePath === binding.document.path)
+      && index.pageCount === binding.document.pageCount
+      && index.extractionIdentity === (binding.indexExtractionIdentity ?? binding.extractionIdentity)
   }
   async function rebuildIndex(binding: RetrievalBinding, scope: z.infer<typeof prepareSchema>,
     onProgress?: (progress: RetrievalProgress) => void): Promise<Index> {
@@ -774,7 +791,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
             visual: [...index.pages.values()].some(page => page.descriptions) ? 'image-descriptions' : 'not-indexed' },
           chunks: [],
         }
-        results.set(result, { sessionId, lifetime, document: { ...binding.document }, selectionIdentity, extractionIdentity: binding.extractionIdentity })
+        results.set(result, { sessionId, lifetime, document: { ...binding.document }, selectionIdentity,
+          extractionIdentity: binding.extractionIdentity, indexExtractionIdentity: binding.indexExtractionIdentity })
         if (!available) {
           result.nextCursor = Buffer.from(JSON.stringify({ version: 2, key: index.key, generation: index.generation,
             binding: bindingHash, query: queryHash })).toString('base64url')
@@ -816,6 +834,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       if (!fence || !fence.lifetime.valid || fence.sessionId !== sessionId
         || !sameDocument(fence.document, ports.documents.snapshot(sessionId, fence.document.id))) throw stale()
       if ((ports.pages.identity?.(sessionId) ?? '') !== fence.extractionIdentity) throw stale()
+      if ((ports.pages.indexIdentity?.(sessionId) ?? fence.extractionIdentity) !== fence.indexExtractionIdentity) throw stale()
       if (fence.selectionIdentity !== 'lexical'
         && providerIdentity(ports.embedding?.select(sessionId)) !== fence.selectionIdentity) throw stale()
     },

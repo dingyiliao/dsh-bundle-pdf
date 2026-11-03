@@ -58,6 +58,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     const current = workspaces.readSnapshot(sessionId, id)
     if (current.conflict) throw Object.assign(new Error('PDF source has changed; resolve the conflict before retrieval.'), { code: 'pdf/stale-reader' })
     return { id: current.id, path: current.path, sourceDigest: hash(current.bytes),
+      ...(current.document.indexContentDigest ? { indexContentDigest: current.document.indexContentDigest } : {}),
       contentVersion: current.contentVersion, pageCount: current.document.pageCount }
   }
   function reportFailure(sessionId: string, documentId: string, error: unknown): void {
@@ -120,7 +121,8 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
   const imageEvidence = createImageEvidenceRegistry(workspaces, references)
   const service = createRetrievalService({ documents: { snapshot, retain: options.retain }, cache: options.cache, limits: options.limits,
     onFailure: options.onFailure,
-    embedding: { select }, pages: { ...(options.content ? { identity: options.content.identity } : {}), async read(sessionId, id, page, signal) {
+    embedding: { select }, pages: { ...(options.content ? { identity: options.content.identity,
+      ...(options.content.indexIdentity ? { indexIdentity: options.content.indexIdentity } : {}) } : {}), async read(sessionId, id, page, signal) {
       if (options.content) return projectPageContent(await options.content.read(sessionId, id, page, signal))
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
       const { content } = await pages.readPageText(sessionId, id, page, signal, { recover: false })

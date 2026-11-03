@@ -311,6 +311,168 @@ test('a queued cancellation is retained until its source changes', async () => {
   } finally { gate.resolve(); await prefetch.dispose() }
 })
 
+test('resume keeps the interrupted plan and progress while the old uncooperative request drains', async () => {
+  const gates = [deferred(), deferred()]
+  const calls: Array<{ input: { documentId: string; indexPlanId?: string }; signal: AbortSignal; report: (progress: RetrievalProgress) => void }> = []
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
+    selection: () => ({ identity: 'accepted-ocr', planId: 'accepted-ocr-plan' }),
+    async prepare(_session, input, signal, report) { calls.push({ input, signal, report: report! }); await gates[calls.length - 1]!.promise } })
+  try {
+    await turn()
+    calls[0]!.report({ indexedPages: 40, totalPages: 100, embeddedChunks: 20, totalChunks: 50,
+      phase: 'embedding', computedChunks: 15, reusedChunks: 5 })
+    const firstOccurrence = prefetch.status().documents[0]!.occurrence
+    prefetch.cancel('session', 'a')
+    prefetch.resumeTask('session', 'a')
+    const resumed = prefetch.status().documents[0]!
+    assert.ok(resumed.occurrence > firstOccurrence)
+    assert.equal(resumed.state, 'queued')
+    assert.deepEqual(resumed.progress, { indexedPages: 40, totalPages: 100, embeddedChunks: 20, totalChunks: 50,
+      phase: 'restoring', computedChunks: 0, reusedChunks: 20 })
+    prefetch.resumeTask('session', 'a')
+    assert.equal(prefetch.status().documents[0]!.occurrence, resumed.occurrence, 'repeated resume does not replace an admitted task')
+    calls[0]!.report({ indexedPages: 100, totalPages: 100, embeddedChunks: 100, totalChunks: 100 })
+    await turn()
+    assert.equal(calls.length, 1, 'the cancelled request retains its slot until it actually finishes')
+    assert.deepEqual(prefetch.status().documents[0]!.progress, resumed.progress, 'late old progress cannot rewrite the retained checkpoint')
+    gates[0]!.resolve(); await turn()
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls[1]!.input, { documentId: 'a', indexPlanId: 'accepted-ocr-plan' })
+    assert.equal(prefetch.status().documents[0]!.state, 'running')
+    assert.deepEqual(prefetch.status().documents[0]!.progress, resumed.progress, 'retained counters remain until Host reports actual restored work')
+    prefetch.resumeTask('session', 'a')
+    assert.equal(prefetch.status().documents[0]!.occurrence, resumed.occurrence)
+    calls[1]!.report({ indexedPages: 50, totalPages: 100, embeddedChunks: 30, totalChunks: 60,
+      phase: 'embedding', computedChunks: 10, reusedChunks: 20 })
+    assert.equal(prefetch.status().documents[0]!.progress!.computedChunks, 10)
+    assert.equal(prefetch.status().documents[0]!.progress!.reusedChunks, 20)
+    gates[1]!.resolve(); await turn()
+    assert.equal(prefetch.status().documents[0]!.state, 'ready')
+    assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/index-resume-unavailable' })
+  } finally { for (const gate of gates) gate.resolve(); await prefetch.dispose() }
+})
+
+test('resume resets computed work for its new occurrence and accumulates only new quanta', async () => {
+  const first = deferred(), resumed = deferred(), final = deferred()
+  let calls = 0
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')], selection: () => ({ identity: 'engine' }),
+    async prepare() { throw new Error('slices expected') },
+    async prepareSlice(_session, _input, _signal, report) {
+      calls++
+      if (calls === 1) {
+        report!({ indexedPages: 5, totalPages: 10, embeddedChunks: 12, totalChunks: 20, computedChunks: 10, reusedChunks: 2 })
+        await first.promise; return false
+      }
+      if (calls === 2) {
+        report!({ indexedPages: 7, totalPages: 10, embeddedChunks: 16, totalChunks: 20, computedChunks: 4, reusedChunks: 12 })
+        await resumed.promise; return false
+      }
+      report!({ indexedPages: 10, totalPages: 10, embeddedChunks: 20, totalChunks: 20, computedChunks: 4, reusedChunks: 16 })
+      await final.promise; return true
+    } })
+  try {
+    await turn()
+    prefetch.cancel('session', 'a'); prefetch.resumeTask('session', 'a')
+    assert.equal(prefetch.status().documents[0]!.progress!.computedChunks, 0)
+    first.resolve(); await turn()
+    assert.equal(prefetch.status().documents[0]!.progress!.computedChunks, 4)
+    resumed.resolve(); await turn(); await turn()
+    assert.equal(prefetch.status().documents[0]!.progress!.computedChunks, 8)
+    assert.equal(prefetch.status().documents[0]!.progress!.reusedChunks, 12)
+    final.resolve(); await turn()
+    assert.equal(prefetch.status().documents[0]!.state, 'ready')
+  } finally { first.resolve(); resumed.resolve(); final.resolve(); await prefetch.dispose() }
+})
+
+test('failed-task resume clears failure metadata and preserves source counters without a progress report', async () => {
+  const gate = deferred()
+  let calls = 0
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')], selection: () => ({ identity: 'engine' }),
+    async prepare(_session, _input, _signal, report) {
+      if (++calls === 1) {
+        report!({ indexedPages: 3, totalPages: 10, embeddedChunks: 2, totalChunks: 4 })
+        throw Object.assign(new Error('model unavailable'), { code: 'embedding/unavailable' })
+      }
+      await gate.promise
+    } })
+  try {
+    await turn()
+    assert.equal(prefetch.status().documents[0]!.state, 'failed')
+    assert.equal(prefetch.status().documents[0]!.failureCode, 'embedding/unavailable')
+    prefetch.resumeTask('session', 'a')
+    assert.equal(prefetch.status().documents[0]!.failureCode, undefined)
+    assert.deepEqual(prefetch.status().documents[0]!.progress,
+      { indexedPages: 3, totalPages: 10, embeddedChunks: 2, totalChunks: 4, phase: 'restoring' })
+    await turn(); assert.equal(calls, 2)
+    gate.resolve(); await turn()
+    assert.equal(prefetch.status().documents[0]!.state, 'ready')
+  } finally { gate.resolve(); await prefetch.dispose() }
+})
+
+for (const change of ['identity', 'plan', 'source', 'disabled', 'unavailable'] as const) {
+  test(`resume rejects ${change} changes instead of silently replacing the interrupted plan`, async () => {
+    const gate = deferred()
+    let current = document('a'), selection: { identity: string; planId?: string } | undefined = { identity: 'ocr', planId: 'ocr-plan' }
+    let unavailable = false, calls = 0
+    const prefetch = createRetrievalPrefetch({ documents: () => [current], selection() {
+      if (unavailable) throw new Error('private engine discovery error')
+      return selection
+    }, async prepare() { calls++; await gate.promise } })
+    try {
+      await turn(); prefetch.cancel('session', 'a')
+      const before = prefetch.status()
+      if (change === 'identity') selection = { identity: 'image', planId: 'ocr-plan' }
+      if (change === 'plan') selection = { identity: 'ocr', planId: 'new-plan' }
+      if (change === 'source') current = { ...current, sourceDigest: 'changed-source' }
+      if (change === 'disabled') selection = undefined
+      if (change === 'unavailable') unavailable = true
+      assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/index-settings-changed' })
+      assert.deepEqual(prefetch.status(), before, 'a rejected resume cannot enqueue a new plan or clear the interrupted task')
+      assert.equal(calls, 1)
+    } finally { gate.resolve(); await prefetch.dispose() }
+  })
+}
+
+test('resume of a forced rebuild preserves the prior plan identity and rebuild flag', async () => {
+  const gates = [deferred(), deferred()]
+  const inputs: Array<{ documentId: string; indexPlanId?: string; rebuild?: boolean }> = []
+  let rebuildCalls = 0
+  const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
+    selection: () => ({ identity: 'forced-attempt', planId: 'forced-attempt-token' }),
+    async prepare(_session, input) {
+      inputs.push(input)
+      if (input.rebuild) await gates[rebuildCalls++]!.promise
+    } })
+  try {
+    await turn()
+    prefetch.rebuild('session', 'a'); await turn()
+    prefetch.cancel('session', 'a'); prefetch.resumeTask('session', 'a')
+    gates[0]!.resolve(); await turn()
+    assert.deepEqual(inputs.slice(1), [
+      { documentId: 'a', indexPlanId: 'forced-attempt-token', rebuild: true },
+      { documentId: 'a', indexPlanId: 'forced-attempt-token', rebuild: true },
+    ])
+    gates[1]!.resolve(); await turn()
+    assert.equal(prefetch.status().documents[0]!.state, 'ready')
+  } finally { for (const gate of gates) gate.resolve(); await prefetch.dispose() }
+})
+
+test('resume rejects unknown tasks, foreign owners, conflicts, suspension and disposal without starting work', async () => {
+  let current = document('a')
+  const prefetch = createRetrievalPrefetch({ documents: () => [current], selection: () => undefined,
+    async prepare() { throw new Error('unexpected work') } })
+  try {
+    assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/index-resume-unavailable' })
+    assert.throws(() => prefetch.resumeTask('foreign-session', 'a'), { code: 'pdf/unknown-document' })
+    current = { ...current, conflict: true }
+    assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/stale-reader' })
+    current = { ...current, conflict: false }
+    await prefetch.suspend()
+    assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/retrieval-busy' })
+  } finally { await prefetch.dispose() }
+  assert.throws(() => prefetch.resumeTask('session', 'a'), { code: 'pdf/cancelled' })
+})
+
 test('manual start retries a failed occurrence and prioritizes skipped owned documents within the same budget', async () => {
   const calls: string[] = []
   let failA = true

@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderProps } from '../../../src/client/contracts.ts'
+import type { NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
 import { readerLifetime } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
 import type { VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
 
@@ -142,6 +143,7 @@ async function withReader(run: (fixture: {
     bookmarks: { async list() { return [] }, async add() { return [] }, async rename() { return [] }, async remove() { return [] } },
     positions: { async get() { return null }, async set() {} },
     async open() { return snapshot },
+    async refresh() { return snapshot },
     async change() { return snapshot }, async undo() { return snapshot }, async redo() { return snapshot },
     async reload() { return snapshot }, async discard() { return snapshot },
     async discardMany() {}, async discardAddresses() {},
@@ -1090,6 +1092,7 @@ function exposeReaderPageAndCards(dom: Window & typeof globalThis, api: PdfClien
   }
   Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', { configurable: true, value: () => ({
     fillRect() {}, drawImage() {}, save() {}, beginPath() {}, rect() {}, clip() {}, restore() {},
+    measureText(value: string) { return { width: value.length * 50 } },
   }) })
   Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true,
     value: async () => ({ width: 400, height: 600, close() {} }) })
@@ -1103,6 +1106,170 @@ function exposeReaderPageAndCards(dom: Window & typeof globalThis, api: PdfClien
     else Reflect.deleteProperty(globalThis, 'createImageBitmap')
   }
 }
+
+function pendingRead<Value>() {
+  let resolve!: (value: Value) => void, reject!: (error: unknown) => void
+  const promise = new Promise<Value>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
+function freshReaderSnapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
+  return fixtureSnapshot({ revision: 2, sourceVersion: 'source-2',
+    reader: { bytesHash: `sha256:${'b'.repeat(64)}`, generation: 2, protocolVersion: 1 }, ...overrides })
+}
+
+function nativeReaderText(text: string) {
+  return { items: [{ str: text, transform: [12, 0, 0, 12, 30, 500], width: 150, height: 12,
+    dir: 'ltr', fontName: 'sans', hasEOL: true }],
+  styles: { sans: { fontFamily: 'sans-serif', ascent: 0.8, descent: -0.2, vertical: false } }, lang: 'en' }
+}
+
+function nativeReaderTile(request: NativeTileRequest): NativeTile {
+  return { bytes: new Uint8Array([137, 80, 78, 71]), width: request.width, height: request.height, mime: 'image/png' }
+}
+
+test('Reader recovers real text and tile reads when Save advances the baseline before its response or watch', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    const restore = exposeReaderPageAndCards(dom, api)
+    const dirty = fixtureSnapshot({ dirty: true, canUndo: true })
+    const saved = freshReaderSnapshot()
+    const saveResponse = pendingRead<WorkspaceSnapshot>()
+    const staleText = pendingRead<NativeTextContent>()
+    const staleTiles: ReturnType<typeof pendingRead<NativeTile>>[] = []
+    const obsoleteSignals: AbortSignal[] = []
+    let opens = 0, refreshes = 0, saves = 0, reloads = 0
+    let hostSaved = false
+    api.open = async () => { opens++; return dirty }
+    api.reload = async () => { reloads++; return saved }
+    api.save = async () => { saves++; hostSaved = true; return saveResponse.promise }
+    api.refresh = async (sessionId, id) => {
+      assert.equal(hostSaved, true, 'the Host has committed Save before recovery starts')
+      assert.equal(sessionId, props.sessionId); assert.equal(id, saved.id)
+      refreshes++; return saved
+    }
+    api.native.text = async (_session, _id, reader, _page, signal) => {
+      if (reader.bytesHash === saved.reader.bytesHash) return nativeReaderText('Fresh saved PDF text')
+      assert.ok(signal); obsoleteSignals.push(signal)
+      return staleText.promise
+    }
+    api.native.tile = async (_session, _id, reader, request, signal) => {
+      if (reader.bytesHash === saved.reader.bytesHash) return nativeReaderTile(request)
+      assert.ok(signal); obsoleteSignals.push(signal)
+      const read = pendingRead<NativeTile>()
+      staleTiles.push(read); return read.promise
+    }
+    try {
+      await render(props)
+      await waitForReader(() => obsoleteSignals.length > 1 && staleTiles.length > 0, 'real Page text and TileSurface reads did not start')
+      await clickReaderCommand(container, 'reader.save')
+      assert.equal(saves, 1)
+      const stale = Object.assign(new Error('PDF baseline changed; use latest reader snapshot'), { code: 'pdf/stale-reader' })
+      await act(async () => {
+        staleText.reject(stale)
+        for (const read of staleTiles) read.reject(stale)
+        await Promise.resolve()
+      })
+      await waitForReader(() => container.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('Fresh saved PDF text') === true
+        && !!container.querySelector('canvas[data-pdf-raster-ready="true"]'), 'the recovered native baseline did not paint selectable text and tiles')
+      assert.equal(refreshes, 1, 'simultaneous stale reads share one readonly snapshot refresh')
+      assert.ok(obsoleteSignals.every(signal => signal.aborted), 'recovery cancels every obsolete native request')
+      assert.equal(container.querySelector('[role="alert"]'), null, 'obsolete reads never leave a stale-reader banner')
+      await act(async () => { saveResponse.resolve(saved); await Promise.resolve() })
+      assert.equal(container.querySelector('[role="alert"]'), null)
+      assert.equal(opens, 1, 'recovery retains the current document reference')
+      assert.equal(reloads, 0, 'recovery does not reload or discard its working copy')
+    } finally { restore() }
+  })
+})
+
+test('Reader clears a failed stale-baseline recovery only after a replacement native read succeeds', async () => {
+  await withReader(async ({ container, render, props, api, dom }) => {
+    const restore = exposeReaderPageAndCards(dom, api)
+    const staleText = pendingRead<NativeTextContent>()
+    const nextText = pendingRead<NativeTextContent>()
+    const nextTiles: { request: NativeTileRequest; read: ReturnType<typeof pendingRead<NativeTile>> }[] = []
+    const nextLinks = pendingRead<unknown[]>()
+    const nextOutline = pendingRead<null>()
+    const next = freshReaderSnapshot()
+    let publish: ((value: WorkspaceSnapshot) => void) | undefined
+    let textStarted = false, nextReadsReady = false, refreshes = 0
+    api.subscribe = (_id, listener) => { publish = listener; return () => { publish = undefined } }
+    api.refresh = async () => {
+      refreshes++
+      throw Object.assign(new Error('Could not refresh the changed PDF baseline'), { code: 'pdf/stale-reader' })
+    }
+    api.native.text = async (_session, _id, reader) => {
+      if (reader.bytesHash === next.reader.bytesHash) return nextText.promise
+      textStarted = true; return staleText.promise
+    }
+    api.native.links = async (_session, _id, reader) => reader.bytesHash === next.reader.bytesHash ? nextLinks.promise : []
+    api.native.outline = async (_session, _id, reader) => reader.bytesHash === next.reader.bytesHash ? nextOutline.promise : null
+    api.native.tile = async (_session, _id, reader, request) => {
+      if (reader.bytesHash !== next.reader.bytesHash || nextReadsReady) return nativeReaderTile(request)
+      const read = pendingRead<NativeTile>()
+      nextTiles.push({ request, read }); return read.promise
+    }
+    try {
+      await render(props)
+      await waitForReader(() => textStarted && !!container.querySelector('canvas[data-pdf-raster-ready="true"]'),
+        'initial native Page reads did not start or its tile did not paint')
+      const previousCanvas = container.querySelector<HTMLCanvasElement>('canvas[data-pdf-raster-ready="true"]')!
+      await act(async () => {
+        staleText.reject(Object.assign(new Error('PDF baseline changed'), { code: 'pdf/stale-reader' }))
+        await Promise.resolve()
+      })
+      await waitForReader(() => !!container.querySelector('[role="alert"]'), 'failed snapshot recovery did not report an error')
+      assert.equal(refreshes, 1)
+      assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /Could not refresh the changed PDF baseline/)
+      assert.ok(publish)
+      await act(async () => { publish!(next); await Promise.resolve() })
+      await waitForReader(() => nextTiles.length > 0, 'replacement Page/TileSurface did not request a native tile')
+      assert.ok(container.contains(previousCanvas), 'the last rendered frame remains visible during recovery')
+      assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /Could not refresh the changed PDF baseline/,
+        'accepting a local document handle does not prove the new native baseline is readable')
+      await act(async () => {
+        nextReadsReady = true
+        nextText.resolve(nativeReaderText('Recovered after watch'))
+        for (const { request, read } of nextTiles) read.resolve(nativeReaderTile(request))
+        await Promise.resolve()
+      })
+      await waitForReader(() => container.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('Recovered after watch') === true
+        && [...container.querySelectorAll('canvas[data-pdf-raster-ready="true"]')].some(canvas => canvas !== previousCanvas),
+      'replacement baseline did not finish real Page painting')
+      assert.equal(container.querySelector('[role="alert"]'), null, 'a successful current native read dismisses the obsolete recovery error')
+      assert.equal(container.contains(previousCanvas), false, 'new native tiles replace the retained frame only when ready')
+      assert.equal(refreshes, 1, 'a later watch publication does not start another automatic refresh')
+    } finally { restore() }
+  })
+})
+
+test('Reader preserves genuine Save and permission failures when a later native baseline becomes readable', async () => {
+  for (const failure of [new Error('Writing the PDF failed'), Object.assign(new Error('Permission to save was denied'), { code: 'pdf/access-denied' })]) {
+    await withReader(async ({ container, render, props, api, dom }) => {
+      const restore = exposeReaderPageAndCards(dom, api)
+      const next = freshReaderSnapshot({ dirty: true })
+      let publish: ((value: WorkspaceSnapshot) => void) | undefined
+      api.open = async () => fixtureSnapshot({ dirty: true })
+      api.save = async () => { throw failure }
+      api.subscribe = (_id, listener) => { publish = listener; return () => { publish = undefined } }
+      api.native.text = async (_session, _id, reader) => nativeReaderText(
+        reader.bytesHash === next.reader.bytesHash ? 'New current native text' : 'Original native text')
+      try {
+        await render(props)
+        await waitForReader(() => container.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('Original native text') === true,
+          'original native Page did not render')
+        await clickReaderCommand(container, 'reader.save')
+        assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', new RegExp(failure.message))
+        assert.ok(publish)
+        await act(async () => { publish!(next); await Promise.resolve() })
+        await waitForReader(() => container.querySelector('.dsh-pdf-text-layer')?.textContent?.includes('New current native text') === true,
+          'replacement native Page did not render')
+        assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', new RegExp(failure.message),
+          'successful background reads must not erase an unrelated failed write')
+      } finally { restore() }
+    })
+  }
+})
 
 test('Reader persists comment placement and independently moves the sticky-note card and its closed marker', async () => {
   await withReader(async ({ container, render, props, api, dom }) => {

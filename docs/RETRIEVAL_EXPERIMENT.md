@@ -81,7 +81,25 @@ Successful checkpoints survive failure, cancellation, cache eviction and Host
 restart. **Resume indexing** repairs unfinished work. **Rebuild index** creates a
 new structural generation while reusing valid source layers and vectors; clearing
 derived caches explicitly is the operation that discards these reusable results.
-Source or relevant engine identity changes select different records. Already
+The canonical path and annotation-independent page-content digest select the
+document's index. Adding, changing or deleting PDF annotations, notes, comments
+or outlines does not invalidate it; changing page programs, resources, order or
+geometry does. Raw file digests still fence authorization, evidence and cursors.
+Default model-backed OCR and image descriptions survive Host restarts and new
+conversation models: completed output remains an indexed document artifact with
+its original producer provenance. Runtime model changes still fence unfinished
+calls, and embedding vectors remain tied to their document encoder. Third-party
+backends that explicitly disallow persistent reuse retain that isolation.
+Unverifiable page graphs conservatively use the raw file digest.
+Canonicalization handles resource sharing, object renumbering, Flate encoding and
+the standard `q`/`Q` wrapper inserted by annotation editors. It does not claim to
+prove arbitrary PDF graphics-program equivalence or layout rewrites.
+Pre-stable-identity aggregate outputs can migrate through bounded SQLite key
+scans when the original file digest, path-bound key, page geometry and producer
+contract still verify. The migration preserves provenance, skips private output
+without a matching scoped identity, and writes aliases rather than deleting old
+records. It cannot recover an unverifiable old source or unknown model binding.
+Relevant saved-policy or document-encoding changes select different records. Already
 persisted model output is reused; interruption before an output is durably written
 can require recomputation.
 
@@ -596,3 +614,5 @@ acceptance; the development-corpus and environment limitations above still apply
 ## 2026-11-02 持久化与调度复测
 
 当前存储使用 SQLite 批量事务、V2 不可变内容引用与跨页 embedding 批处理，自动迁移旧 JSON；旧章节的文件写入和内存后端数字为历史结果。后台任务按有界步骤轮转，恢复只读取页头和向量，首次查询才加载位置数据。新 [固定合成基准及原始结果](./benchmarks/indexing-20261102/README.md) 单独测量本地索引成本，不代替 OCR、视觉模型或网络端到端耗时。
+
+取消后选择“继续索引”（失败时为“重试索引”）沿用原任务方案和已提交检查点，恢复期间保留已知进度。修改过的设置保持待应用；搜索面板中的“应用新设置并更新索引”才使用新方案，复用可匹配的原生文字、OCR 与向量并补齐缺少的内容。取消瞬间尚未完成或提交的模型调用可能需要重做。全局关闭语义检索仍会停止任务；原文档或保留的计划已变化时，继续会明确报错，不能静默改用另一套配置。

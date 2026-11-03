@@ -86,6 +86,8 @@ export interface PdfClientApi {
   native: NativeReaderApi
   positions: PdfReadingPositionApi
   open(sessionId: string, address: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
+  /** Read the current working-copy snapshot without reloading the source or acquiring a view reference. */
+  refresh(sessionId: string, id: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Omit id to permanently close this occurrence's reference, including opens whose reply was lost. */
   release(sessionId: string, id: string | undefined, referenceId: string, signal?: AbortSignal): Promise<void>
   change(sessionId: string, id: string, revision: number, operations: PdfWorkingCopyOperation[], signal?: AbortSignal): Promise<WorkspaceSnapshot>

@@ -34,6 +34,7 @@ export function DocumentIndexSettings({ control, t }: {
     }
   }
   const disabled = !configuration || configuration.disabled || configuration.saving
+  const pendingSettings = configuration?.value.pending && (configuration.value.enabled || configuration.value.activeEnabled)
   return <details className="dsh-pdf-search-indexing" aria-label={t('reader.indexing.title')} open>
     <summary><strong>{t('reader.indexing.title')}</strong><ToolbarIcon name="chevronDown" /></summary>
     <div className="dsh-pdf-index-settings-content">
@@ -69,9 +70,9 @@ export function DocumentIndexSettings({ control, t }: {
         </div>
         <p className="dsh-pdf-index-save-status" role="status" aria-live="polite">
           {t(configuration.saving ? 'reader.indexing.savingSettings' : failure ? 'reader.indexing.settingsNotSaved'
-            : control.enabled && configuration.value.pending ? 'reader.indexing.settingsPending' : 'reader.indexing.settingsSaved')}
+            : pendingSettings ? 'reader.indexing.settingsPending' : 'reader.indexing.settingsSaved')}
         </p>
-        {control.enabled && configuration.value.pending && <p className="dsh-pdf-index-impact">
+        {pendingSettings && <p className="dsh-pdf-index-impact">
           {t(`reader.indexing.impact.${configuration.value.impact}`)}
         </p>}
         {failure && <div className="dsh-pdf-index-settings-error" role="alert">
@@ -86,12 +87,14 @@ export function DocumentIndexSettings({ control, t }: {
       {configuration && value && <>
         <div className="dsh-pdf-index-secondary-actions">
           <button type="button" disabled={disabled} onClick={() => { void persist() }}>{t('reader.indexing.useDefaults')}</button>
-          {control.enabled && control.onRebuild && <button type="button" disabled={control.disabled || !!draft || !!failure}
+          {control.onRebuild && configuration.value.enabled && <button type="button" disabled={(control.updateDisabled ?? control.disabled) || !!draft || !!failure}
             onClick={control.onRebuild}>{t('reader.indexing.rebuild')}</button>}
         </div>
       </>}
       <details className="dsh-pdf-index-help">
         <summary>{t('reader.indexing.details')}<ToolbarIcon name="chevronDown" /></summary>
+        {control.onUpdate && <button type="button" disabled={(control.updateDisabled ?? control.disabled) || !!draft || !!failure}
+          onClick={control.onUpdate}>{t('reader.indexing.applyUpdate')}</button>}
         {configuration && <div className="dsh-pdf-index-compact-help">
           <p><strong>{t('reader.indexing.scanPages')}</strong> · {t('reader.indexing.scanHelp')}</p>
           <p><strong>{t('reader.indexing.imageDescriptions')}</strong> · {t('reader.indexing.imageHelp')}</p>

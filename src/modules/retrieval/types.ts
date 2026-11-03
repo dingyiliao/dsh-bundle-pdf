@@ -5,6 +5,9 @@ export interface RetrievalDocument {
   id: string
   path: string
   sourceDigest: string
+  /** Stable page-content identity; annotations and file serialization are excluded.
+   * Raw sourceDigest remains mandatory for caller freshness and evidence. */
+  indexContentDigest?: string
   contentVersion: string
   pageCount: number
 }
@@ -28,6 +31,8 @@ export interface RetrievalCache {
   get(key: string): Promise<unknown>
   /** Presence only; consumers still validate immutable data before querying it. */
   has?(key: string): Promise<boolean>
+  /** Bounded ordered reads for one-time derived-data migration, never an authority grant. */
+  scan?(prefix: string, afterKey?: string, limit?: number): Promise<{ entries: [string, unknown][]; nextKey?: string }>
   set(key: string, value: unknown): Promise<void>
   /** All records are durable before success; implementations may commit one transaction. */
   setMany?(entries: readonly (readonly [string, unknown])[]): Promise<void>
@@ -89,6 +94,9 @@ export interface RetrievalPorts {
   pages: {
     /** Synchronous extraction/pipeline identity, independent of embedding selection. */
     identity?(sessionId: string): string
+    /** Accepted content-artifact policy; independent of a follow-session model's
+     * runtime selection. A caller still fences in-flight work with identity(). */
+    indexIdentity?(sessionId: string): string
     read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<RetrievalPage>
   }
   cache?: RetrievalCache

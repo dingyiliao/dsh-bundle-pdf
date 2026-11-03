@@ -12,7 +12,10 @@ export type PdfIndexingClientSnapshot = Omit<PdfIndexingSnapshot, 'revision'> & 
 export interface PdfIndexingApi {
   getSnapshot(sessionId: string): PdfIndexingClientSnapshot
   subscribe(sessionId: string, listener: () => void): () => void
+  /** Apply desired settings and start work, preserving compatible caches. */
   start(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
+  /** Continue the interrupted task's accepted plan and checkpoint. */
+  resume(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
   rebuild(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
   cancel(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
   /** Stage document-local choices against the last observed settings revision. */

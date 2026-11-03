@@ -73,6 +73,7 @@ export function buildNativePageContent(input: BuildNativePageContentInput): Page
     ...(spans ? { spans } : {}), status: !content || recovered || (content.quality?.unmappedCharacters ?? 0) > 0
       ? 'partial' : 'complete', warnings: [...warnings] })
   return PageContentSchema.parse({ version: 1, sourceDigest: input.sourceDigest, page: input.page,
+    ...(input.indexContentDigest ? { indexContentDigest: input.indexContentDigest } : {}),
     extractionIdentity: input.extractionIdentity, pageRect: [...input.pageRect],
     nativeText: { ...nativeText, digest: pageContentDigest(nativeText.text) }, warnings,
     blocks: [{ id: textBlockId, kind: 'text', rectPdf: [...input.pageRect],

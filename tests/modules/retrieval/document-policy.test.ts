@@ -139,6 +139,42 @@ test('CAS prevents concurrent preference overwrites and a superseded build canno
   } finally { await f.api.dispose() }
 })
 
+test('a staged build can finish against its accepted active baseline while newer preferences stay pending', async () => {
+  const f = fixture(), path = '/staged.pdf'
+  try {
+    const baseline = f.api.active(path)
+    await f.api.settled(path)
+    f.updateDefaults({ embeddingEngine: 'embed-b' })
+    const accepted = f.api.desired(path)
+    const initial = f.api.snapshot(path, 'doc')
+    await f.api.configure(path, initial.revision, { ...initial.policy, indexImageDescriptions: true })
+    await f.api.activate(path, accepted, baseline)
+    assert.deepEqual(f.api.active(path), accepted, 'the completed original build becomes queryable')
+    const updated = f.api.snapshot(path, 'doc')
+    assert.equal(updated.policy.indexImageDescriptions, true)
+    assert.equal(updated.activePolicy.indexImageDescriptions, false)
+    assert.equal(updated.pending, true, 'finishing an old plan does not adopt or overwrite pending preferences')
+    const writes = f.state.writes.length
+    await f.api.activate(path, accepted, baseline)
+    assert.equal(f.state.writes.length, writes, 'two finishing slices of the same accepted plan are idempotent')
+  } finally { await f.api.dispose() }
+})
+
+test('a staged build cannot replace a different active plan committed since its admission', async () => {
+  const f = fixture(), path = '/staged.pdf'
+  try {
+    const baseline = f.api.active(path)
+    await f.api.settled(path)
+    f.updateDefaults({ embeddingEngine: 'embed-b' })
+    const first = f.api.desired(path)
+    f.updateDefaults({ embeddingEngine: 'embed-c' })
+    const newer = f.api.desired(path)
+    await f.api.activate(path, newer)
+    await assert.rejects(f.api.activate(path, first, baseline), { code: 'pdf/index-settings-stale' })
+    assert.deepEqual(f.api.active(path), newer)
+  } finally { await f.api.dispose() }
+})
+
 test('restoring current defaults is explicit and still leaves a changed index pending', async () => {
   const f = fixture(), path = '/a.pdf'
   try {

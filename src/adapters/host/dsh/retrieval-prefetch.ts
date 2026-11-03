@@ -218,15 +218,27 @@ export function createRetrievalPrefetch(ports: Ports) {
     if (!document) return fail('pdf/unknown-document', 'PDF indexing requires an open document in this session.')
     return document
   }
-  function enqueue(sessionId: string, id: string, rebuild: boolean): void {
+  function enqueue(sessionId: string, id: string, rebuild: boolean, resume = false): void {
     const document = ownedDocument(sessionId, id)
     if (suspended) fail('pdf/retrieval-busy', 'PDF indexes are being reset. Retry shortly.')
     if (document.conflict) fail('pdf/stale-reader', 'Resolve the PDF source conflict before indexing.')
-    let selection: { identity: string; planId?: string } | undefined
-    try { selection = ports.selection(document) } catch { fail('pdf/retrieval-engine-unavailable', 'Configure an available semantic search engine before indexing.') }
-    if (!selection) return fail('pdf/retrieval-engine-unavailable', 'Enable semantic search before indexing.')
     const key = documentKey(document), previous = entries.get(key)
+    if (resume && (!previous || previous.state === 'ready')) {
+      fail('pdf/index-resume-unavailable', 'There is no interrupted PDF indexing task to resume. Start an index update instead.')
+    }
+    let selection: { identity: string; planId?: string } | undefined
+    try { selection = ports.selection(document) } catch {
+      if (resume) fail('pdf/index-settings-changed', 'The interrupted PDF index configuration is no longer available. Start an explicit index update.')
+      fail('pdf/retrieval-engine-unavailable', 'Configure an available semantic search engine before indexing.')
+    }
+    if (!selection) {
+      if (resume) fail('pdf/index-settings-changed', 'The interrupted PDF index configuration is no longer available. Start an explicit index update.')
+      return fail('pdf/retrieval-engine-unavailable', 'Enable semantic search before indexing.')
+    }
     const signature = signatureFor(selection.identity, document)
+    if (resume && (previous!.signature !== signature || previous!.planId !== selection.planId)) {
+      fail('pdf/index-settings-changed', 'The PDF source or indexing configuration changed. Start an explicit index update instead of resuming the old task.')
+    }
     if (previous?.signature === signature && (rebuild
       ? previous.rebuild && ['queued', 'running'].includes(previous.state)
       : ['queued', 'running', 'ready'].includes(previous.state))) {
@@ -236,9 +248,13 @@ export function createRetrievalPrefetch(ports: Ports) {
     priority.delete(key); priority.add(key)
     if (priority.size > maximum) priority.delete(priority.values().next().value!)
     if (previous) cancelEntry(previous, 'replaced')
+    const interrupted = resume ? previous : undefined
+    const restoredProgress: RetrievalProgress | undefined = interrupted?.progress ? { ...interrupted.progress, phase: 'restoring',
+      ...(interrupted.progress.computedChunks !== undefined ? { computedChunks: 0, reusedChunks: interrupted.progress.embeddedChunks } : {}) } : undefined
     const entry: Entry = { document: { ...document }, signature, occurrence: ++occurrence, state: 'queued', boost: true,
       ...(selection.planId ? { planId: selection.planId } : {}),
-      ...(rebuild ? { rebuild: true } : {}) }
+      ...(rebuild || interrupted?.rebuild ? { rebuild: true } : {}),
+      ...(restoredProgress ? { progress: restoredProgress } : {}) }
     entries.set(key, entry); diagnostic(entry, 'queued')
     if (running && running.entry === previous) running.controller.abort()
     reconcile()
@@ -254,6 +270,10 @@ export function createRetrievalPrefetch(ports: Ports) {
     },
     start(sessionId: string, id: string): void {
       enqueue(sessionId, id, false)
+    },
+    /** Resume the exact interrupted plan; applying desired settings is a separate command. */
+    resumeTask(sessionId: string, id: string): void {
+      enqueue(sessionId, id, false, true)
     },
     rebuild(sessionId: string, id: string): void {
       enqueue(sessionId, id, true)

@@ -4,6 +4,7 @@ import {
 } from 'pdf-lib'
 import { readFile } from 'node:fs/promises'
 import { setAnnotationAppearance } from './pdf-appearance.js'
+import { pdfIndexContentDigest } from './content-identity.js'
 import { applyFormChanges, inspectFormFields } from './form-fields.js'
 import { applyOutlineOperations, inspectOutlines } from './outlines.js'
 import { isOutlineOperation } from '../../../modules/outlines/index.js'
@@ -262,6 +263,7 @@ function documentInfo(doc: PDFDocument, known?: { signed: boolean; annotations: 
   const readOnlyReason = signed ? 'signed-document' : formKind === 'xfa' ? 'xfa-document' : undefined
   return {
     pageCount: doc.getPageCount(),
+    indexContentDigest: pdfIndexContentDigest(doc),
     pages: doc.getPages().map((page, index) => {
       const box = (value: { x: number; y: number; width: number; height: number }): PdfRect =>
         [value.x, value.y, value.x + value.width, value.y + value.height]

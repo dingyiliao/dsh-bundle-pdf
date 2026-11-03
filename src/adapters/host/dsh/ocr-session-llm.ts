@@ -85,12 +85,11 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
     || !Number.isSafeInteger(maxOutputCharacters) || maxOutputCharacters <= 0) {
     throw new RangeError('OCR model output limits must be positive integers.')
   }
-  const capability = async (sessionId: string, signal: AbortSignal): Promise<{
-    route: OcrModelRoute; llm: SessionOcrLlm; attachments: SessionOcrAttachmentStore; info: SessionModelInfo
+  const resolveModel = async (sessionId: string, signal: AbortSignal): Promise<{
+    route: OcrModelRoute; llm: SessionOcrLlm; info: SessionModelInfo
   }> => {
     const llm = dependencies.getLlm()
-    const attachments = dependencies.getAttachments()
-    if (!llm || !attachments) throw new OcrError('engine-unavailable', 'Model or image attachment service is unavailable.')
+    if (!llm) throw new OcrError('engine-unavailable', 'Model or image attachment service is unavailable.')
     const route = await dependencies.resolveModel(sessionId, signal)
     signal.throwIfAborted()
     if (!route.provider?.trim() || !route.model?.trim()) {
@@ -102,10 +101,16 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
       if (signal.aborted) throw signal.reason
       throw new OcrError('engine-unavailable', 'The selected model route is unavailable.', { cause })
     }
-    if (!info.inputModalities?.includes('image')) {
+    return { route, llm, info }
+  }
+  const capability = async (sessionId: string, signal: AbortSignal) => {
+    const attachments = dependencies.getAttachments()
+    if (!attachments) throw new OcrError('engine-unavailable', 'Model or image attachment service is unavailable.')
+    const model = await resolveModel(sessionId, signal)
+    if (!model.info.inputModalities?.includes('image')) {
       throw new OcrError('engine-unavailable', 'The selected model has no declared image-input capability.')
     }
-    return { route, llm, attachments, info }
+    return { ...model, attachments }
   }
   return {
     descriptor: {
@@ -113,8 +118,8 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
       execution: 'remote', capabilities: ['ocr-text'], geometry: [], confidence: false,
     },
     async cacheIdentity(sessionId, signal) {
-      const { route, llm, info } = await capability(sessionId, signal)
-      return sessionModelCacheIdentity(llm, route, info, { system, maxOutputTokens, maxOutputCharacters })
+      const { route, info } = await resolveModel(sessionId, signal)
+      return sessionModelCacheIdentity(route, info, { system, maxOutputTokens, maxOutputCharacters })
     },
     async availability(sessionId, signal) {
       try { await capability(sessionId, signal); return { status: 'available' } }

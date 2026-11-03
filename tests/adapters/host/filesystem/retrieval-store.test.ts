@@ -512,3 +512,140 @@ test('an external SQLite reset committed during source serialization fences the 
   assert.equal(reset, true); assert.equal(closed, true)
   assert.equal(store.diagnostics().diskWrites, 0); assert.equal(await store.get('retired_after_read'), undefined)
 })
+
+test('bounded prefix scans page in binary key order, preserve payload isolation and use an indexed key range', async t => {
+  const f = await fixture(t), store = f.store()
+  const records: [string, unknown][] = [
+    ['pagecontent_b', { text: 'Second' }], ['pagecontent_A', ['First']], ['pagecontent_a', { text: 'Lower case' }],
+    ['pagecontent_', null], ['pagecontent.c', 'different prefix'], ['pagecontentZ', 'not an underscore wildcard match'],
+    ['vector_1', [1, 0]],
+  ]
+  await store.setMany(records)
+  await store.dispose()
+  const cold = f.store()
+  const first = await cold.scan('pagecontent_', undefined, 2)
+  assert.deepEqual(first, { entries: [['pagecontent_', null], ['pagecontent_A', ['First']]], nextKey: 'pagecontent_A' })
+  ;(first.entries[1]![1] as string[]).push('Changed by consumer')
+  const second = await cold.scan('pagecontent_', first.nextKey, 2)
+  assert.deepEqual(second, { entries: [['pagecontent_a', { text: 'Lower case' }], ['pagecontent_b', { text: 'Second' }]] })
+  assert.deepEqual(await cold.scan('pagecontent_A'), { entries: [['pagecontent_A', ['First']]] })
+  assert.deepEqual(await cold.scan('missing'), { entries: [] })
+  assert.deepEqual(await cold.scan('pagecontent_', 'pagecontent_z'), { entries: [] })
+  assert.equal(cold.diagnostics().entries, 0, 'enumeration does not load a corpus page into the hot cache')
+  f.sql(db => {
+    const plan = db.prepare('EXPLAIN QUERY PLAN SELECT key FROM records WHERE key COLLATE BINARY >= ? AND key COLLATE BINARY < ? AND key COLLATE BINARY > ? ORDER BY key COLLATE BINARY LIMIT ?')
+      .all('pagecontent_', 'pagecontent_\u007f', '', 3)
+    assert.ok(plan.some(row => String(row.detail).includes('records_key')), 'prefix pagination uses the ordered key index')
+  })
+})
+
+test('scan defaults and row/byte budgets guarantee progress without retaining unbounded output or hot entries', async t => {
+  const f = await fixture(t), writer = f.store()
+  for (let index = 0; index < 70; index++) await writer.set(`page_${String(index).padStart(2, '0')}`, { text: 'x'.repeat(100) })
+  await writer.dispose()
+  const defaults = f.store({ maxMemoryBytes: 100_000 })
+  const first = await defaults.scan('page_')
+  assert.equal(first.entries.length, 16); assert.equal(first.nextKey, 'page_15')
+  const maximum = await defaults.scan('page_', undefined, 64)
+  assert.equal(maximum.entries.length, 64); assert.equal(maximum.nextKey, 'page_63')
+  const exactEnvelopeBytes = Buffer.byteLength(envelope('page_00', { text: 'x'.repeat(100) }))
+  const bounded = f.store({ maxMemoryBytes: exactEnvelopeBytes * 2, maxRecordBytes: 1024 })
+  const two = await bounded.scan('page_', undefined, 64)
+  assert.equal(two.entries.length, 2); assert.equal(two.nextKey, 'page_01')
+  const tiny = f.store({ maxMemoryBytes: 0, maxRecordBytes: 1024 })
+  const seen: string[] = []
+  let cursor: string | undefined
+  do {
+    const page = await tiny.scan('page_', cursor, 64)
+    assert.equal(page.entries.length, 1, 'one legal large record remains readable with no hot-cache budget')
+    seen.push(page.entries[0]![0]); cursor = page.nextKey
+  } while (cursor)
+  assert.equal(seen.length, 70); assert.equal(new Set(seen).size, 70)
+  assert.equal(tiny.diagnostics().entries, 0); assert.equal(tiny.diagnostics().memoryBytes, 0)
+  assert.equal(bounded.diagnostics().entries, 0)
+})
+
+test('scan rejects unsafe prefixes, foreign cursors and invalid page limits before creating storage', async t => {
+  const f = await fixture(t), store = f.store()
+  for (const prefix of ['', '../private', 'x/y', 'x\\y', 'x%', '\0', 'a'.repeat(513), undefined, 12]) {
+    await assert.rejects(store.scan(prefix as string), { code: 'pdf/index-storage-key' })
+  }
+  for (const cursor of ['', '../private', 'other_prefix', '\0', 42]) {
+    await assert.rejects(store.scan('page_', cursor as string), { code: 'pdf/index-storage-key' })
+  }
+  for (const limit of [0, -1, 65, 1.5, NaN, Infinity, '2', null]) {
+    await assert.rejects(store.scan('page_', undefined, limit as number), { code: 'pdf/index-storage-limit' })
+  }
+  await assert.rejects(stat(f.directory), { code: 'ENOENT' })
+  await store.dispose()
+  await assert.rejects(store.scan('page_'), { code: 'pdf/index-storage-closed' })
+})
+
+test('scans revalidate all returned envelopes and row identities instead of trusting populated hot records', async t => {
+  const f = await fixture(t), store = f.store()
+  const key = 'pagecontent_1', original = envelope(key, { ready: true })
+  await store.set(key, { ready: true })
+  const variants: [string, string, string, number][] = [
+    [hash(key), key, 'broken JSON', 11],
+    [hash(key), key, '{}', 2],
+    [hash(key), key, original.replace('true', 'null'), Buffer.byteLength(original)],
+    [hash(key), key, envelope('different-key', { ready: true }), Buffer.byteLength(envelope('different-key', { ready: true }))],
+    [hash('wrong-id'), key, original, Buffer.byteLength(original)],
+    [hash(key), 'pagecontent_/unsafe', original, Buffer.byteLength(original)],
+    [hash(key), key, original, 0],
+    [hash(key), key, original, 1.5],
+  ]
+  for (const [id, rowKey, text, bytes] of variants) {
+    f.sql(db => { db.exec('DELETE FROM records'); db.prepare('INSERT INTO records(id,key,envelope,bytes) VALUES (?,?,?,?)').run(id, rowKey, text, bytes) })
+    await assert.rejects(store.scan('pagecontent_'), { code: 'pdf/index-storage-corrupt' })
+  }
+  f.sql(db => { db.exec('DELETE FROM records'); db.prepare('INSERT INTO records(id,key,envelope,bytes) VALUES (?,?,?,?)').run(hash(key), key, 'x'.repeat(1000), 1000) })
+  const limited = f.store({ maxRecordBytes: 200 })
+  await assert.rejects(limited.scan('pagecontent_'), { code: 'pdf/index-storage-record-too-large' })
+  f.sql(db => { db.exec('DELETE FROM records') })
+  await store.set(key, { repaired: true })
+  assert.deepEqual(await store.scan('pagecontent_'), { entries: [[key, { repaired: true }]] }, 'a failed read releases its snapshot and the operation queue')
+})
+
+test('scan pages are consistent snapshots while later pages observe external updates, deletion and clear', async t => {
+  const f = await fixture(t)
+  let change = false
+  const reader = f.store({ onMetric: event => {
+    if (!change || event.stage !== 'store-verify') return
+    change = false
+    f.sql(db => {
+      const changed = envelope('page_2', { value: 'new' })
+      db.prepare('UPDATE records SET envelope=?,bytes=? WHERE id=?').run(changed, Buffer.byteLength(changed), hash('page_2'))
+      db.prepare('DELETE FROM records WHERE id=?').run(hash('page_3'))
+    })
+  } })
+  await reader.setMany([['page_1', { value: 'one' }], ['page_2', { value: 'old' }], ['page_3', { value: 'three' }]])
+  change = true
+  const snapshot = await reader.scan('page_', undefined, 3)
+  assert.deepEqual(snapshot.entries, [['page_1', { value: 'one' }], ['page_2', { value: 'old' }], ['page_3', { value: 'three' }]],
+    'one returned page is from one SQLite read transaction')
+  assert.deepEqual(await reader.scan('page_', 'page_1'), { entries: [['page_2', { value: 'new' }]] })
+  assert.deepEqual(await reader.get('page_2'), { value: 'new' }, 'a scan does not preserve an obsolete hot value')
+  const resetting = f.store()
+  await resetting.clear()
+  assert.deepEqual(await reader.scan('page_'), { entries: [] })
+  await resetting.set('page_4', { value: 'after clear' })
+  assert.deepEqual(await reader.scan('page_', 'page_2'), { entries: [['page_4', { value: 'after clear' }]] })
+})
+
+test('scan observes admitted writes and deletes in queue order and disposal drains accepted pages', async t => {
+  const f = await fixture(t), store = f.store()
+  const write = store.set('page_1', { value: 1 }), first = store.scan('page_')
+  const remove = store.delete('page_1'), empty = store.scan('page_'), close = store.dispose()
+  await Promise.all([write, remove, close])
+  assert.deepEqual(await first, { entries: [['page_1', { value: 1 }]] })
+  assert.deepEqual(await empty, { entries: [] })
+  await assert.rejects(store.scan('page_'), { code: 'pdf/index-storage-closed' })
+})
+
+test('scan key-index schema cannot be substituted with an index over a different column', async t => {
+  const f = await fixture(t), initial = f.store()
+  await initial.set('page_1', true); await initial.dispose()
+  f.sql(db => { db.exec('DROP INDEX records_key; CREATE INDEX records_key ON records(bytes)') })
+  await assert.rejects(f.store().scan('page_'), { code: 'pdf/index-storage-corrupt' })
+})

@@ -11,6 +11,10 @@ export interface ReaderIndexingControl {
   label: string
   statusLabel: string
   onStart(): void
+  /** Explicitly apply staged settings instead of resuming the accepted task plan. */
+  onUpdate?(): void
+  /** Explicit updates and rebuilds use desired settings, independently of continuation. */
+  updateDisabled?: boolean
   onRebuild?(): void
   configuration?: {
     identity: string
@@ -31,7 +35,7 @@ export interface ReaderIndexingOptions {
 }
 
 function indexingLabel(task: PdfIndexingTask, t: ReaderIndexingOptions['t']): string {
-  if (task.state !== 'running' || !task.progress?.phase) return t(`reader.indexing.${task.state}`)
+  if ((task.state !== 'running' && task.state !== 'queued') || !task.progress?.phase) return t(`reader.indexing.${task.state}`)
   return t(`reader.indexing.${task.progress.phase === 'ready' ? 'finalizing' : task.progress.phase}`)
 }
 
@@ -118,9 +122,9 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
       }
     }
   }
-  async function command(action: 'start' | 'rebuild' | 'cancel', target: string): Promise<void> {
+  async function command(action: 'start' | 'resume' | 'rebuild' | 'cancel', target: string): Promise<void> {
     const settings = snapshot.documents?.find(value => value.documentId === target)
-    const enabled = settings ? action === 'cancel'
+    const enabled = settings ? action === 'cancel' || action === 'resume'
       ? settings.enabled || settings.activeEnabled
       : settings.enabled : snapshot.enabled
     if (!api || !connected || !enabled || signal.aborted || requests.current.has(target)) return
@@ -168,11 +172,11 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     const active = task.state === 'queued' || task.state === 'running'
     const completed = task.state === 'ready'
     const settings = snapshot.documents?.find(value => value.documentId === task.documentId)
-    const enabled = settings ? active
+    const enabled = settings ? active || !completed
       ? settings.enabled || settings.activeEnabled
       : settings.enabled : snapshot.enabled
-    const action = active ? 'cancel' : 'start'
-    const actionLabel = t(active ? 'reader.cancel' : 'reader.indexing.retry')
+    const action = active ? 'cancel' : 'resume'
+    const actionLabel = t(active ? 'reader.cancel' : task.state === 'cancelled' ? 'reader.indexing.resume' : 'reader.indexing.retry')
     const diagnosticKey = `diagnostics:${task.documentId}:${task.occurrence}`
     return { id: `indexing:${task.documentId}`, occurrence: task.occurrence,
       className: 'dsh-pdf-indexing-status', kind: task.state === 'failed' ? 'error' : 'indexing',
@@ -202,20 +206,25 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     activity: 'dot', content: t('reader.indexing.unavailable') })
   const current = snapshot.tasks.find(task => task.documentId === documentId)
   const settings = snapshot.documents?.find(value => value.documentId === documentId)
-  const enabled = settings ? settings.enabled : snapshot.enabled
+  const resumable = current?.state === 'failed' || current?.state === 'cancelled'
+  const desiredEnabled = settings ? settings.enabled : snapshot.enabled
+  const enabled = settings ? resumable ? settings.enabled || settings.activeEnabled : settings.enabled : snapshot.enabled
+  const workDisabled = !documentId || !connected || signal.aborted || pending.has(documentId)
+    || pending.has(`configuration:${documentId}`) || current?.state === 'queued' || current?.state === 'running'
   const statusLabel = t(!connected ? snapshot.status === 'loading' ? 'reader.indexing.checking' : 'reader.indexing.unavailable'
     : !enabled ? 'reader.indexing.disabled' : current?.state === 'ready' ? 'reader.indexing.ready'
       : current?.state === 'queued' || current?.state === 'running' ? 'reader.indexing.running' : 'reader.indexing.start')
   const control: ReaderIndexingControl | undefined = api ? {
     enabled,
-    label: t(current?.state === 'failed' || current?.state === 'cancelled' ? 'reader.indexing.retry'
+    label: t(current?.state === 'cancelled' ? 'reader.indexing.resume' : current?.state === 'failed' ? 'reader.indexing.retry'
       : settings?.pending || current?.state === 'ready' ? 'reader.indexing.update' : 'reader.indexing.start'),
     statusLabel: connected && enabled && current ? indexingLabel(current, t) : statusLabel,
-    disabled: !documentId || !connected || !enabled || signal.aborted || pending.has(documentId)
-      || pending.has(`configuration:${documentId}`)
-      || current?.state === 'queued' || current?.state === 'running',
-    onStart: () => { if (documentId) void command('start', documentId) },
-    onRebuild: () => { if (documentId) void command('rebuild', documentId) },
+    disabled: workDisabled || !enabled,
+    updateDisabled: workDisabled || !desiredEnabled,
+    onStart: () => { if (documentId) void command(resumable ? 'resume' : 'start', documentId) },
+    ...(resumable && settings?.pending && settings.enabled
+      ? { onUpdate: () => { if (documentId) void command('start', documentId) } } : {}),
+    ...(desiredEnabled ? { onRebuild: () => { if (documentId) void command('rebuild', documentId) } } : {}),
     ...(settings ? { configuration: {
       identity: JSON.stringify([sessionId, documentId]), value: settings,
       disabled: !connected || signal.aborted,

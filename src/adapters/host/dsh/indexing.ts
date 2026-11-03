@@ -80,6 +80,9 @@ export function createPdfIndexing(prefetch: Prefetch, ports: {
         await ports.indexes?.stage(sessionId, request.documentId)
         if (!ports.indexes || ports.indexes.settings(sessionId, request.documentId).enabled) prefetch.start(sessionId, request.documentId)
       }
+      // Resume the retained task plan. Pending preferences are applied only
+      // through an explicit start/update or rebuild, never through this path.
+      else if (request.action === 'resume') prefetch.resumeTask(sessionId, request.documentId)
       else if (request.action === 'rebuild') {
         await ports.indexes?.stage(sessionId, request.documentId, true)
         prefetch.rebuild(sessionId, request.documentId)

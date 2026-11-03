@@ -60,11 +60,38 @@ test('manual controls cannot cross resource sessions and cancellation remains st
     await f.indexing.dispatch('first', { action: 'cancel', sessionId: 'first', documentId: 'first-pdf' }, signal)
     await turn(); f.prefetch.refresh(); await turn()
     assert.equal(f.indexing.snapshot('first').tasks[0]!.state, 'cancelled')
-    const resumed = await f.indexing.dispatch('first', { action: 'start', sessionId: 'first', documentId: 'first-pdf' }, signal)
+    const resumed = await f.indexing.dispatch('first', { action: 'resume', sessionId: 'first', documentId: 'first-pdf' }, signal)
     assert.equal(resumed.tasks[0]!.state, 'queued')
     f.disable(); await turn()
     await assert.rejects(f.indexing.dispatch('first', { action: 'start', sessionId: 'first', documentId: 'first-pdf' }, signal), { code: 'pdf/retrieval-engine-unavailable' })
   } finally { await f.dispose() }
+})
+
+test('resuming a task preserves its checkpoint and never stages pending preferences', async () => {
+  const f = fixture(), signal = new AbortController().signal
+  let stages = 0
+  const settings = { documentId: 'first-pdf', revision: 1, enabled: true, activeEnabled: true,
+    policy: { indexScanPages: true, indexImageDescriptions: true },
+    activePolicy: { indexScanPages: true, indexImageDescriptions: false }, pending: true, impact: 'content' as const }
+  const indexing = createPdfIndexing(f.prefetch, { documents: () => f.documents, enabled: () => true,
+    indexes: { settings: (_session, id) => ({ ...settings, documentId: id }),
+      async stage() { stages++ }, async configure() {} } })
+  try {
+    await turn()
+    const original = indexing.snapshot('first').tasks[0]!
+    await indexing.dispatch('first', { action: 'cancel', sessionId: 'first', documentId: 'first-pdf' }, signal)
+    const next = await indexing.dispatch('first', { action: 'resume', sessionId: 'first', documentId: 'first-pdf' }, signal)
+    assert.equal(stages, 0)
+    assert.ok(next.tasks[0]!.occurrence > original.occurrence)
+    assert.equal(next.tasks[0]!.progress?.indexedPages, original.progress!.indexedPages)
+    assert.equal(next.tasks[0]!.progress?.phase, 'restoring')
+    assert.equal(next.documents![0]!.pending, true, 'resume leaves new preferences pending')
+    await indexing.dispatch('first', { action: 'cancel', sessionId: 'first', documentId: 'first-pdf' }, signal)
+    await indexing.dispatch('first', { action: 'start', sessionId: 'first', documentId: 'first-pdf' }, signal)
+    assert.equal(stages, 1, 'only an explicit update stages new preferences')
+    await assert.rejects(indexing.dispatch('first', { action: 'resume', sessionId: 'first', documentId: 'second-pdf' }, signal),
+      { code: 'pdf/unknown-document' })
+  } finally { indexing.dispose(); await f.dispose() }
 })
 
 test('rebuilding a ready PDF schedules fresh work through the same session-filtered task directory', async () => {

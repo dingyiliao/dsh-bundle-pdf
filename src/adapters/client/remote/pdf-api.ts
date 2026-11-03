@@ -215,6 +215,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       sourceAddresses.set(value.id, source)
       return value
     },
+    refresh: (sessionId, id, signal) => snapshot({ action: 'refresh', sessionId, id }, signal),
     async release(sessionId, id, referenceId, signal) {
       if (id === undefined) closedReferences.add(referenceKey(sessionId, referenceId))
       for (const [documentId, source] of sourceAddresses) {

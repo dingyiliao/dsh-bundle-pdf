@@ -102,6 +102,7 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       return () => { entry.listeners.delete(listener); if (!entry.listeners.size) { entry.watch?.abort(); entry.watch = undefined } }
     },
     start: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'start', sessionId, documentId }, signal),
+    resume: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'resume', sessionId, documentId }, signal),
     rebuild: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'rebuild', sessionId, documentId }, signal),
     cancel: (sessionId: string, documentId: string, signal: AbortSignal) => control({ action: 'cancel', sessionId, documentId }, signal),
     configure: (sessionId: string, documentId: string, revision: number, policy: PdfDocumentIndexPolicy, signal: AbortSignal) =>

@@ -13,7 +13,7 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 - **Translate and explain**: word meanings, pronunciation and examples; phrase and sentence translations; questions attached to multiple text passages or image regions, sent together to the current conversation.
 - **Agent control**: read, search, annotate, edit bookmarks and fill existing AcroForm fields in the same draft as the user.
 - **Save and recover**: undo/redo, draft recovery, save/save as, and source-file conflict detection.
-- **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts.
+- **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts and annotation-only saves.
 
 ![Agent highlights a passage and adds a comment](docs/screenshots/01-ai-edits-pdf.png)
 

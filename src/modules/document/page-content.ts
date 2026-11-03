@@ -60,6 +60,8 @@ export type PageContentBlock = z.infer<typeof PageContentBlockSchema>
 
 export const PageContentSchema = z.object({
   version: z.literal(PAGE_CONTENT_VERSION), sourceDigest: sha256,
+  /** Annotation-independent page graph identity, distinct from source-file freshness. */
+  indexContentDigest: sha256.optional(),
   page: z.number().int().min(1).max(100_000), extractionIdentity: identity,
   pageRect: pageContentRectSchema,
   nativeText: z.object({ text: z.string().max(MAX_PAGE_CONTENT_TEXT), digest: sha256,
@@ -104,7 +106,7 @@ export const PageContentSchema = z.object({
   }
 })
 export type PageContent = z.infer<typeof PageContentSchema>
-export type PageContentIdentity = Pick<PageContent, 'sourceDigest' | 'page' | 'extractionIdentity'>
+export type PageContentIdentity = Pick<PageContent, 'sourceDigest' | 'indexContentDigest' | 'page' | 'extractionIdentity'>
 
 function splitsScalar(text: string, offset: number): boolean {
   const before = text.charCodeAt(offset - 1), after = text.charCodeAt(offset)
@@ -121,7 +123,7 @@ export function pageContentDigest(text: string): string {
 
 /** A caller-owned structural key may name a future detected table/figure, without pretending it is evidence. */
 export function pageContentBlockId(page: PageContentIdentity, structuralKey: string): string {
-  return `pdfblock_${pageContentDigest(JSON.stringify([PAGE_CONTENT_VERSION, page.sourceDigest,
+  return `pdfblock_${pageContentDigest(JSON.stringify([PAGE_CONTENT_VERSION, page.indexContentDigest ?? page.sourceDigest,
     page.page, page.extractionIdentity, structuralKey])).slice(7)}`
 }
 

@@ -94,7 +94,7 @@ test('vision uses the current route or an explicitly configured model without ch
   } finally { service.dispose() }
 })
 
-test('OCR and image model identity tracks routes and metadata without claiming unverified persistent reuse', async () => {
+test('OCR and image model identities persist across sessions while separating actual routes', async () => {
   const f = services(), ocr = new HostOcrService(() => 'session-llm')
   const images = new HostImageUnderstandingService(() => 'dsh-vision')
   ocr.register(createSessionLlmOcrBackend({ getLlm: () => f.llm, getAttachments: () => f.attachments, resolveModel: f.route }))
@@ -102,13 +102,15 @@ test('OCR and image model identity tracks routes and metadata without claiming u
   try {
     for (const service of [ocr, images]) {
       const first = await service.cacheIdentity('session', signal)
-      assert.equal(first.reusable, false)
+      assert.equal(first.reusable, true)
       assert.equal(first.fingerprint, (await service.cacheIdentity('session', signal)).fingerprint)
+      assert.equal(first.fingerprint, (await service.cacheIdentity('another-session', signal)).fingerprint)
       f.setModel('vision-two')
       const second = await service.cacheIdentity('session', signal)
       assert.notEqual(first.fingerprint, second.fingerprint)
       f.setContext(20_000)
-      assert.notEqual(second.fingerprint, (await service.cacheIdentity('session', signal)).fingerprint)
+      assert.equal(second.fingerprint, (await service.cacheIdentity('session', signal)).fingerprint,
+        'context capacity metadata does not change the explicit image request')
       f.setModel('vision-one'); f.setContext(10_000)
     }
     assert.deepEqual(f.counts(), { uploads: 0, streams: 0 })

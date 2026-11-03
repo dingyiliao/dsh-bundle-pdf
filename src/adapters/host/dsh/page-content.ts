@@ -12,6 +12,7 @@ import type { createPdfService } from '../pdfium/pdf-service.js'
 import type { RetrievalCache } from '../../../modules/retrieval/index.js'
 import { defaultSettings, type PdfSettings } from '../../../shared/contracts.js'
 import type { IndexingDiagnosticActivity } from './indexing-diagnostics.js'
+import { adoptLegacyPageContents, pageContentAggregateKey } from './page-content-legacy.js'
 
 const PIPELINE_VERSION = 'page-content-v3-shared-vision-clean-1024-description-v1'
 const LAYER_VERSION = 'page-content-layers-v1-clean-1024'
@@ -42,6 +43,8 @@ interface Selection {
 export interface PdfPageContent {
   prepare(sessionId: string, signal: AbortSignal, documentId?: string): Promise<void>
   identity(sessionId: string): string
+  /** Persisted index artifacts follow the saved document policy, not a session's transient model. */
+  indexIdentity?(sessionId: string): string
   verify(sessionId: string, signal: AbortSignal): Promise<void>
   read(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<PageContent>
   cancelSession(sessionId: string): void
@@ -104,6 +107,27 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     selections.delete(sessionId)
     selections.set(sessionId, { config: config.config, fingerprint, scan: config.scan, describe: config.describe, ocr, image })
     while (selections.size > 256) selections.delete(selections.keys().next().value!)
+    if (documentId && options.cache?.scan) {
+      const before = workspaces.readSnapshot(sessionId, documentId), sourceDigest = pageContentDigestBytes(before.bytes)
+      if (before.document.indexContentDigest) {
+        const check = () => {
+          active.throwIfAborted()
+          const current = workspaces.readSnapshot(sessionId, documentId)
+          if (current.conflict || current.path !== before.path || current.contentVersion !== before.contentVersion
+            || pageContentDigestBytes(current.bytes) !== sourceDigest || identity(sessionId) !== fingerprint) {
+            throw fail('PDF source or content engine changed during legacy index migration.')
+          }
+        }
+        const engine = (value: SelectedEngine) => ({ id: value.binding.engineId,
+          fingerprint: value.identity?.fingerprint, reusable: value.identity?.reusable,
+          explicitModel: !!(value.binding.config?.provider || value.binding.config?.model) })
+        check()
+        await adoptLegacyPageContents(options.cache, { pipeline: PIPELINE_VERSION, path: before.path, sourceDigest,
+          indexContentDigest: before.document.indexContentDigest, pageRects: before.document.pages.map(page => page.cropBox),
+          extractionIdentity: fingerprint, indexIdentity: indexIdentity(sessionId), scan: config.scan, describe: config.describe,
+          ocr: engine(ocr), image: engine(image) }, check)
+      }
+    }
   }
   function identity(sessionId: string) {
     lifetime.signal.throwIfAborted()
@@ -114,6 +138,23 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       if ((selected.identity || selected.reason) && generation(kind, selected) !== selected.generation) return `changed:${kind}:${selection.fingerprint}`
     }
     return selection.fingerprint
+  }
+  function indexIdentity(sessionId: string): string {
+    const selection = selections.get(sessionId)
+    const current = identity(sessionId)
+    if (!selection || current !== selection.fingerprint) return current
+    // Once accepted, model-produced text is a document artifact. Keep its
+    // original producer metadata and reuse it when a different conversation
+    // chooses another model. Explicitly private/non-reusable backends retain
+    // their session-scoped identity rather than acquiring new sharing rights.
+    const producer = (kind: 'ocr' | 'image') => {
+      const engine = selection[kind]
+      return engine.identity?.reusable
+        ? [engine.identity.backendId, engine.identity.backendVersion, 'accepted-output']
+        : engine.identity?.fingerprint ?? engine.reason ?? 'disabled'
+    }
+    return hash(['accepted-page-index-v1', PAGE_CONTENT_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
+      PIPELINE_VERSION, selection.config, producer('ocr'), producer('image')])
   }
   async function verify(sessionId: string, signal: AbortSignal) {
     const active = AbortSignal.any([signal, lifetime.signal]), selected = selections.get(sessionId)
@@ -138,6 +179,8 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     if (selectedIdentity !== selection.fingerprint) throw fail('PDF content engine selection changed; restart indexing.')
     const before = workspaces.readSnapshot(sessionId, documentId)
     const sourceDigest = pageContentDigestBytes(before.bytes)
+    const indexContentDigest = before.document.indexContentDigest
+    const contentDigest = indexContentDigest ?? sourceDigest
     const geometry = before.document.pages[page - 1]
     if (!geometry || page < 1 || !Number.isSafeInteger(page)) throw new Error('PDF content page is outside the document.')
     const activity = (layer: IndexingDiagnosticActivity['layer'], event: IndexingDiagnosticActivity['event'], error?: unknown) => {
@@ -160,9 +203,10 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       }
     }
     check()
-    const key = `pagecontent_${hash([PIPELINE_VERSION, before.path, sourceDigest, page, selection.fingerprint])}`
+    const aggregateIdentity = indexContentDigest ? indexIdentity(sessionId) : selection.fingerprint
+    const key = pageContentAggregateKey(PIPELINE_VERSION, before.path, contentDigest, page, aggregateIdentity)
     const layerKey = (kind: 'native' | 'ocr' | 'image') => `pagecontent_${kind}_${hash([
-      LAYER_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, before.path, sourceDigest, page, geometry,
+      LAYER_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, before.path, contentDigest, page, geometry,
       ...(kind === 'native' ? [] : [selection[kind].identity?.fingerprint,
         kind === 'image' ? DESCRIPTION_PROMPT : 'ocr-auto-languages-v1']),
     ])}`
@@ -177,9 +221,18 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       check()
       return value
     }
+    // Stable content keys can survive a different serialization of the same
+    // pages. Rebind only source provenance; representation IDs and pixels stay
+    // owned by the verified content identity, never by the current draft ID.
+    const currentContent = (cached: PageContent | undefined, acceptedPolicy = false): PageContent | undefined => {
+      if (!cached || (cached.indexContentDigest ?? cached.sourceDigest) !== contentDigest) return undefined
+      const extractionIdentity = acceptedPolicy && indexContentDigest ? selection.fingerprint : cached.extractionIdentity
+      return cached.sourceDigest === sourceDigest && cached.extractionIdentity === extractionIdentity
+        ? cached : { ...cached, sourceDigest, extractionIdentity }
+    }
     {
       let cached: PageContent | undefined
-      try { cached = parsePageContent(await options.cache?.get(key)) } catch { /* Derived storage is optional. */ }
+      try { cached = currentContent(parsePageContent(await options.cache?.get(key)), true) } catch { /* Derived storage is optional. */ }
       check()
       if (cached?.sourceDigest === sourceDigest && cached.page === page && cached.extractionIdentity === selection.fingerprint && !cached.failure) {
         if (cached.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) await verify(sessionId, active)
@@ -200,7 +253,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
         return cached
       }
     }
-    let native = parsePageContent(await get(layerKey('native')))
+    let native = currentContent(parsePageContent(await get(layerKey('native'))))
     if (native?.sourceDigest !== sourceDigest || native.page !== page
       || native.extractionIdentity !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION || native.failure
       || native.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) native = undefined
@@ -209,6 +262,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
         const extracted = await pages.readPageText(sessionId, documentId, page, active, { recover: false })
         check()
         const value = buildNativePageContent({ sourceDigest, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
+          ...(indexContentDigest ? { indexContentDigest } : {}),
           pageRect: [...geometry.cropBox], content: extracted.content })
         await save(layerKey('native'), value)
         return value
@@ -338,7 +392,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     check()
     return content
   }
-  return { prepare, identity, verify, read,
+  return { prepare, identity, indexIdentity, verify, read,
     cancelSession(sessionId) { selections.delete(sessionId) },
     dispose() { lifetime.abort(new Error('PDF page content is unloading.')); selections.clear() },
   }

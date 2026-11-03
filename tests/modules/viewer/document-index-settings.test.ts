@@ -241,7 +241,7 @@ test('pending impact messages, disabled state, disclosure and legacy controls re
       const control = f.control(), configuration = control.configuration!
       await f.render({ ...control, configuration: { ...configuration, value: { ...configuration.value, pending: true, impact } } })
       assert.equal(f.container.querySelector('.dsh-pdf-index-impact')!.textContent, impacts[impact])
-      assert.match(f.container.textContent ?? '', /Settings saved · Update needed/)
+      assert.match(f.container.textContent ?? '', /Continuing uses the original plan; update the index to apply new settings/)
     }
     const control = f.control(), configuration = control.configuration!
     await f.render({ ...control, disabled: true, configuration: { ...configuration, saving: true } })
@@ -262,6 +262,29 @@ test('pending impact messages, disabled state, disclosure and legacy controls re
     assert.equal(f.container.querySelector('select,input'), null)
     await f.click(f.button('Update index'))
     assert.equal(f.work.starts, 1)
+  })
+})
+
+test('continuing an interrupted index and applying new settings are separate, clearly described actions', async () => {
+  await withSettings(async f => {
+    let updates = 0
+    const control = f.control(), configuration = control.configuration!
+    await f.render({ ...control, label: 'Resume indexing', statusLabel: 'Indexing cancelled',
+      onUpdate() { updates++ }, updateDisabled: false,
+      configuration: { ...configuration, value: { ...configuration.value,
+        policy: { ...defaults, indexScanPages: true }, pending: true, impact: 'content' } } })
+    assert.match(f.container.textContent ?? '', /Continuing uses the original plan; update the index to apply new settings/)
+    const update = f.button('Apply new settings and update index')
+    const more = update.closest<HTMLDetailsElement>('.dsh-pdf-index-help')!
+    assert.ok(more, 'the alternative plan action uses the existing details disclosure')
+    assert.equal(more.open, false, 'new plan controls do not crowd the ordinary continuation action')
+    await f.click(f.button('Resume indexing'))
+    assert.equal(f.work.starts, 1)
+    assert.equal(updates, 0, 'continuation does not apply staged choices')
+    await f.click(more.querySelector('summary')!)
+    await f.click(update)
+    assert.equal(updates, 1)
+    assert.equal(f.work.starts, 1, 'updating has its own callback rather than pretending to resume')
   })
 })
 

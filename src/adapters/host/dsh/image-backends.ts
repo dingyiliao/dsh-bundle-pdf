@@ -52,7 +52,7 @@ export function createDshVisionBackend(dependencies: DshVisionDependencies): Ima
     throw new RangeError('Vision maxOutputTokens must be an integer from 1 to 16384.')
   }
 
-  const resolve = async (sessionId: string, signal: AbortSignal, config?: EngineConfiguration) => {
+  const resolveModel = async (sessionId: string, signal: AbortSignal, config?: EngineConfiguration) => {
     const explicitProvider = typeof config?.provider === 'string' ? config.provider.trim() : ''
     const explicitModel = typeof config?.model === 'string' ? config.model.trim() : ''
     const explicitEffort = typeof config?.reasoningEffort === 'string' ? config.reasoningEffort.trim() : ''
@@ -69,23 +69,28 @@ export function createDshVisionBackend(dependencies: DshVisionDependencies): Ima
       throw fail('pdf/image-unconfigured', 'The vision model identifier is too long.')
     }
     const llm = dependencies.getLlm()
-    const attachments = dependencies.getAttachments()
-    if (!llm || !attachments) {
+    if (!llm) {
       throw fail('pdf/image-unavailable', 'The model or image attachment service is unavailable.')
     }
     let info: SessionModelInfo
     try {
       info = await waitFor(llm.resolveModelInfo(route.provider, route.model, signal), signal)
       signal.throwIfAborted()
-      if (!info?.inputModalities?.includes('image')) {
-        throw fail('pdf/image-unsupported-model', 'The selected vision model does not declare image input.')
-      }
     } catch (error) {
       if (signal.aborted) throw signal.reason
       if (error instanceof ImageUnderstandingError) throw error
       throw fail('pdf/image-unavailable', 'The selected vision model cannot be resolved.')
     }
-    return { route: { ...route }, llm, attachments, info }
+    return { route: { ...route }, llm, info }
+  }
+  const resolve = async (sessionId: string, signal: AbortSignal, config?: EngineConfiguration) => {
+    const model = await resolveModel(sessionId, signal, config)
+    const attachments = dependencies.getAttachments()
+    if (!attachments) throw fail('pdf/image-unavailable', 'The model or image attachment service is unavailable.')
+    if (!model.info?.inputModalities?.includes('image')) {
+      throw fail('pdf/image-unsupported-model', 'The selected vision model does not declare image input.')
+    }
+    return { ...model, attachments }
   }
 
   return {
@@ -96,8 +101,8 @@ export function createDshVisionBackend(dependencies: DshVisionDependencies): Ima
         { key: 'reasoningEffort', label: 'Reasoning effort', type: 'string' },
       ] },
     async cacheIdentity(sessionId, signal, config) {
-      const { route, llm, info } = await resolve(sessionId, signal, config)
-      return sessionModelCacheIdentity(llm, route, info, { system: SYSTEM, maxOutputTokens })
+      const { route, info } = await resolveModel(sessionId, signal, config)
+      return sessionModelCacheIdentity(route, info, { system: SYSTEM, maxOutputTokens })
     },
     async availability(sessionId, signal, config) {
       try {
