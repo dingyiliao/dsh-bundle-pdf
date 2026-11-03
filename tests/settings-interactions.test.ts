@@ -12,7 +12,8 @@ const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
 }
 type Operations = Parameters<ConfigForm['mutate']>[0]
 const catalog: EngineCatalogSnapshot = { revision: 'fixture', engines: {
-  ocr: [{ id: 'session-llm', name: 'OCR', version: '1', execution: 'local' },
+  ocr: [{ id: 'local-tesseract', name: 'Local Tesseract OCR', version: '1', execution: 'local' },
+    { id: 'session-llm', name: 'Session OCR', version: '1', execution: 'remote' },
     { id: 'fixture.ocr', name: 'Other OCR', version: '1', execution: 'local' }],
   image: [{ id: 'dsh-vision', name: 'Vision', version: '1', execution: 'remote',
     configurationFields: [{ key: 'endpoint', label: 'Image endpoint', type: 'string' }, { key: 'credential', label: 'Credential', type: 'string' }] },

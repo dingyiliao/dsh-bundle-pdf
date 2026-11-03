@@ -31,7 +31,7 @@ export function indexPolicy(settings: Pick<PdfSettings, 'indexScanPages' | 'inde
 /** Freeze only the selected bindings; edits to unrelated engines do not invalidate this document. */
 export function resolveIndexPlan(policy: PdfDocumentIndexPolicy, settings: PdfSettings): ResolvedIndexPlan {
   const resolved = { ...policy, embeddingEngine: settings.embeddingEngine ?? 'none',
-    ocrEngine: settings.ocrEngine ?? 'session-llm', imageEngine: settings.imageEngine ?? 'dsh-vision' }
+    ocrEngine: settings.ocrEngine ?? defaultSettings.ocrEngine!, imageEngine: settings.imageEngine ?? 'dsh-vision' }
   const configurations: ResolvedIndexPlan['configurations'] = {}
   for (const [kind, id] of [['embedding', resolved.embeddingEngine], ['ocr', resolved.ocrEngine], ['image', resolved.imageEngine]] as const) {
     if (kind === 'ocr' && !policy.indexScanPages || kind === 'image' && !policy.indexImageDescriptions || id === 'none') continue

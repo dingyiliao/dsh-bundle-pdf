@@ -80,6 +80,27 @@ test('one canonical resource retains defaults and policy across sessions, saves 
   } finally { await f.api.dispose() }
 })
 
+test('the local OCR default preserves a saved model-based index until an update is accepted', async () => {
+  const f = fixture(), path = '/books/existing-index.pdf'
+  f.updateDefaults({ ocrEngine: 'session-llm' })
+  try {
+    const accepted = f.api.active(path)
+    await f.api.settled(path)
+    f.updateDefaults({ ocrEngine: undefined })
+    assert.equal(f.api.desired(path).policy.ocrEngine, 'local-tesseract')
+    assert.deepEqual(f.api.active(path), accepted)
+    assert.equal(f.api.snapshot(path, 'current-session').pending, true)
+    assert.equal(f.api.snapshot(path, 'current-session').impact, 'content')
+    await f.api.dispose()
+    const reopened = f.create()
+    try {
+      assert.deepEqual(reopened.active(path), accepted)
+      assert.equal(reopened.desired(path).policy.ocrEngine, 'local-tesseract')
+      assert.equal(f.state.writes.length, 1, 'changing the default does not rewrite the accepted index plan')
+    } finally { await reopened.dispose() }
+  } finally { await f.api.dispose() }
+})
+
 test('desired and active plans stay separate until activation and changes have actionable impact', async () => {
   const f = fixture(), path = '/a.pdf'
   try {

@@ -6,7 +6,7 @@ import { engineConfigurationsSchema } from '../modules/engines/index.js'
 import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
 
 export const Config = z.object({
-  ocrEngine: z.string().pattern(/\S/).default('session-llm').volatile(),
+  ocrEngine: z.string().pattern(/\S/).default(defaultSettings.ocrEngine!).volatile(),
   imageEngine: z.string().pattern(/\S/).default('dsh-vision').volatile(),
   embeddingEngine: z.string().pattern(/\S/).default('none').volatile(),
   indexScanPages: z.boolean().default(true).volatile(),

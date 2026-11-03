@@ -46,7 +46,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
-  ocrEngine: 'session-llm', imageEngine: 'dsh-vision', embeddingEngine: 'none', engineConfigurations: {},
+  ocrEngine: 'local-tesseract', imageEngine: 'dsh-vision', embeddingEngine: 'none', engineConfigurations: {},
   indexScanPages: true, indexImageDescriptions: false,
   ocrTimeoutMs: 120000,
   translationEngine: 'dsh-model', translationTargetLanguage: 'zh', translationTimeoutMs: 30000,

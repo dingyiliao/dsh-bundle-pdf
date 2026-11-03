@@ -44,7 +44,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
   assert.equal(name, 'image-ocr')
   assert.equal(provide, 'ocr')
   assert.deepEqual(inject, ['tools'])
-  apply(ctx, Config.parse({}))
+  apply(ctx, Config.parse({ backend: 'session-llm' }))
   assert.ok(provided)
   const service = provided
   try {
@@ -79,7 +79,7 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
   assert.equal((await service.availability('session-ocr-plugin')).status, 'unavailable')
 })
 
-test('OCR service is visible only while its real Cordis Fiber is active', async () => {
+test('default local OCR is available without a model and lives only while its real Cordis Fiber is active', async () => {
   const root = new Context()
   const capabilities = new CapabilityRegistry()
   root.reflect.provide('tools', { register() { return () => undefined } })
@@ -90,11 +90,20 @@ test('OCR service is visible only while its real Cordis Fiber is active', async 
     const service = root.get('ocr')
     assert.ok(service)
     assert.deepEqual(service.list().map(backend => backend.id), ['session-llm', 'local-tesseract'])
+    assert.equal(service.selectedDescriptor()?.id, 'local-tesseract')
+    assert.equal(root.get('llm'), undefined)
+    assert.equal(root.get('attachments'), undefined)
+    assert.equal(root.get('sessionController'), undefined)
+    assert.deepEqual(await service.availability('session-1'), { status: 'available' })
     assert.deepEqual(capabilities.list().filter(item => item.capabilities.includes(pdfCapabilities.recognizeImage))
       .map(item => item.id), ['ocr.selected'])
     assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage)).reason ?? '', /requires a session/)
-    assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage, { sessionId: 'session-1' })).reason ?? '',
-      /Model or image attachment service is unavailable/)
+    assert.equal((await capabilities.resolve(pdfCapabilities.recognizeImage, { sessionId: 'session-1' })).provider?.implementation,
+      service)
+    const modelAvailability = await service.availability('session-1', new AbortController().signal,
+      { engineId: 'session-llm' })
+    assert.equal(modelAvailability.status, 'unavailable', 'an explicit model backend still requires model services')
+    assert.match(modelAvailability.reason ?? '', /Model or image attachment service is unavailable/)
 
     await fiber.dispose()
     assert.equal(root.get('ocr'), undefined)

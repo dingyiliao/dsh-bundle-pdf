@@ -114,7 +114,7 @@ it('updates engine settings live when a contributor plugin loads and unloads, re
     const ocr = settings.getByRole('combobox', { name: 'OCR engine', exact: true })
     const image = settings.getByRole('combobox', { name: 'Image understanding engine', exact: true })
     const translation = settings.getByRole('combobox', { name: 'Translation engine', exact: true })
-    await expect.poll(() => ocr.inputValue()).toBe('session-llm')
+    await expect.poll(() => ocr.inputValue()).toBe('local-tesseract')
     await expect.poll(() => image.inputValue()).toBe('dsh-vision')
     contributor = scaffold.ctx.plugin({ inject: ['ocr', 'imageUnderstanding', 'pdfTranslation'], apply(ctx: Context) {
       ctx.effect(() => ctx.ocr.register({ descriptor: { id: 'fixture.ocr', name: 'Fixture local OCR', version: '1',
@@ -3196,6 +3196,15 @@ it('recognizes the current PDF page through Host OCR and searches its page-level
     onTestFailed(() => saveFailureShot(page, 'pdf-ocr-transcript-browser'))
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    // This scenario exercises the model backend, rather than the bundled local default.
+    await openSettings(page, 'en')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    await settings.getByRole('combobox', { name: 'OCR engine', exact: true }).selectOption('session-llm')
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value)
+      .toMatchObject({ ocrEngine: 'session-llm' })
+    await page.keyboard.press('Escape')
+    await settings.waitFor({ state: 'hidden' })
     await page.getByRole('treeitem').filter({ hasText: 'PDF OCR transcript test' }).click()
     const column = page.locator('[data-rightbar-col]')
     if (await page.locator('[data-sidebar-right-expand]').isVisible()) await page.locator('[data-sidebar-right-expand]').click()

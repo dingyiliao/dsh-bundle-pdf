@@ -44,6 +44,7 @@ import { CapabilityRegistry } from '../modules/capabilities/index.js'
 import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
 import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../modules/engines/index.js'
 import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildRequestSchema } from '../contracts/retrieval-index.js'
+import { defaultSettings } from '../shared/contracts.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -335,7 +336,7 @@ export async function apply(
       disposers.push(registerPdfTransport(ctx, retain(createPdfOcrDispatch(ctx, workspaces, pdfService,
         () => config.ocrTimeoutMs.get(), () => {
           const settings = readConfig(config)
-          return engineBinding('ocr', settings.ocrEngine ?? 'session-llm', settings.engineConfigurations)
+          return engineBinding('ocr', settings.ocrEngine ?? defaultSettings.ocrEngine!, settings.engineConfigurations)
         })), { endpoint: 'pdf.ocr', maxRequestBytes: 4096 }))
       disposers.push(registerPdfTransport(ctx, retain(createPdfRegionDispatch(ctx, workspaces, pdfService, referenceStore)),
         { endpoint: 'pdf.region', maxRequestBytes: 4096 }))

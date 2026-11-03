@@ -15,7 +15,7 @@ test('retrieval preprocessing settings default OCR on and descriptions off and r
   assert.equal(defaults.indexScanPages, true)
   assert.equal(defaults.indexImageDescriptions, false)
   assert.equal(defaults.embeddingEngine, 'none', 'preprocessing options do not enable semantic search')
-  assert.equal(defaults.ocrEngine, 'session-llm')
+  assert.equal(defaults.ocrEngine, 'local-tesseract')
   assert.equal(defaults.imageEngine, 'dsh-vision')
   assert.equal('indexDescriptionEngine' in defaults, false)
   const settings = readConfig(validate({ indexScanPages: false, indexImageDescriptions: true }) as unknown as HostConfig)
@@ -27,6 +27,15 @@ test('retrieval preprocessing settings default OCR on and descriptions off and r
   for (const field of ['indexScanPages', 'indexImageDescriptions']) {
     assert.throws(() => validate({ [field]: 'false' }))
     assert.throws(() => validate({ [field]: 'true' }))
+  }
+})
+
+test('saved OCR choices survive the new local default and schema transport', () => {
+  const clientSchema = new z(JSON.parse(JSON.stringify(Config.toJSON())))
+  for (const ocrEngine of ['local-tesseract', 'session-llm', 'third-party.ocr']) {
+    const settings = readConfig(validate({ ocrEngine }) as unknown as HostConfig)
+    assert.equal(settings.ocrEngine, ocrEngine)
+    assert.equal(clientSchema(settings).ocrEngine.get(), ocrEngine)
   }
 })
 

@@ -804,7 +804,7 @@ test('engine catalog metadata needs no resource session and rejects malformed re
   } finally { await runtime.disposeEffects() }
 })
 
-test('Reader OCR route binds its configured engine rather than borrowing the generic service default', async t => {
+test('Reader OCR route defaults to local and preserves explicit engines rather than borrowing the generic service default', async t => {
   const assets = await assetFixture(t), runtime = host({ agentSessionId: 'engine-session' })
   await apply(runtime.ctx, runtime.config, assets)
   let observed: unknown
@@ -816,10 +816,16 @@ test('Reader OCR route binds its configured engine rather than borrowing the gen
   })
   try {
     const route = runtime.routes.get('/api/pdf.ocr')!
-    const response = await route.fetch(infoRequest({ type: 'client-request', method: 'pdf.ocr', rpcId: 'engine-ocr',
-      payload: { action: 'availability', sessionId: 'engine-session' } }))
-    assert.equal((await response.json() as { result: { ok: boolean } }).result.ok, true)
-    assert.deepEqual(observed, { engineId: 'session-llm', config: {} })
+    for (const engineId of ['local-tesseract', 'session-llm', 'third-party.ocr']) {
+      if (engineId !== 'local-tesseract') {
+        const next = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ ocrEngine: engineId })
+        updateVolatile(runtime.config.ocrEngine, next.ocrEngine)
+      }
+      const response = await route.fetch(infoRequest({ type: 'client-request', method: 'pdf.ocr', rpcId: 'engine-ocr',
+        payload: { action: 'availability', sessionId: 'engine-session' } }))
+      assert.equal((await response.json() as { result: { ok: boolean } }).result.ok, true)
+      assert.deepEqual(observed, { engineId, config: {} })
+    }
   } finally { await runtime.disposeEffects() }
 })
 

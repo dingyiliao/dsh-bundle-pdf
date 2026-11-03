@@ -12,7 +12,8 @@ test('PDF Settings omits the AI engine heading and explains each setting only on
   }
   const form: ConfigForm = { getSnapshot: () => snapshot, subscribe: () => () => {}, mutate: async () => true }
   const engineCatalog: EngineCatalogSnapshot = { revision: 'fixture', engines: {
-    ocr: [{ id: 'session-llm', name: 'Session OCR', version: '1', execution: 'local' }],
+    ocr: [{ id: 'local-tesseract', name: 'Local Tesseract OCR', version: '1', execution: 'local' },
+      { id: 'session-llm', name: 'Session OCR', version: '1', execution: 'remote' }],
     image: [{ id: 'dsh-vision', name: 'Session vision', version: '1', execution: 'remote', capabilities: ['image-description'] }],
     translation: [{ id: 'dsh-model', name: 'Session translator', version: '1', execution: 'remote' }],
   } }
@@ -29,6 +30,7 @@ test('PDF Settings omits the AI engine heading and explains each setting only on
       assert.equal(html.split(locale[key]).length - 1, 1, `${key} is not repeated`)
     }
     assert.match(html, /dsh-pdf-settings-engine-kind/)
+    assert.match(html, /value="local-tesseract" selected=""/)
     assert.ok(html.includes(locale['settings.engineLocal']))
     assert.ok(html.includes(locale['settings.engineRemote']))
     assert.doesNotMatch(html, /<h3[^>]*>(?:OCR|图像理解|Image understanding|翻译|Translation)<\/h3>/)

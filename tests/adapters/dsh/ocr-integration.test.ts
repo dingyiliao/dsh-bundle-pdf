@@ -16,7 +16,9 @@ const output = (): OcrOutput => ({ text: 'hello', blocks: [], lines: [], words: 
 const hasCode = (code: string) => (error: unknown) => error instanceof OcrError && error.code === code
 
 test('OCR plugin can load with no explicit configuration', () => {
-  assert.deepEqual(OcrConfig.parse(undefined), { backend: 'session-llm' })
+  assert.deepEqual(OcrConfig.parse(undefined), { backend: 'local-tesseract' })
+  assert.deepEqual(OcrConfig.parse({}), { backend: 'local-tesseract' })
+  assert.deepEqual(OcrConfig.parse({ backend: 'session-llm' }), { backend: 'session-llm' })
 })
 
 test('session OCR sends one durable image reference to the current vision model without writing Session', async () => {

@@ -7,6 +7,7 @@ import { HostOcrService } from '../modules/ocr/index.js'
 import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
 import { createLocalTesseractOcrBackend } from '../adapters/host/ocr/local-backend.js'
 import { pdfCapabilities } from '../modules/capabilities/index.js'
+import { defaultSettings } from '../shared/contracts.js'
 
 export type { HostOcrBackend, HostOcrRequest, HostOcrResult, HostOcrService } from '../modules/ocr/index.js'
 
@@ -20,7 +21,8 @@ declare module '@deepseek-ai/cordis' {
 export const name = 'image-ocr'
 export const provide = 'ocr'
 export const inject = ['tools']
-export const Config = z.object({ backend: z.string().min(1).default('session-llm') }).default({ backend: 'session-llm' })
+export const Config = z.object({ backend: z.string().min(1).default(defaultSettings.ocrEngine!) })
+  .default({ backend: defaultSettings.ocrEngine! })
 export type Config = z.infer<typeof Config>
 
 export function apply(ctx: Context, config: Config): void {

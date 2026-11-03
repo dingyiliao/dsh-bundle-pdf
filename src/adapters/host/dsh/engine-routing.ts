@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { engineBinding } from '../../../modules/engines/index.js'
 import type { AgentImageUnderstandingPort, AgentOcrPort } from '../../../modules/evidence/index.js'
+import { defaultSettings } from '../../../shared/contracts.js'
 
 /** PDF UI and tools bind the same Host-owned settings; other consumers keep their own defaults. */
 export function createPdfEngineRouting(ctx: Pick<Context, 'get'>) {
@@ -8,7 +9,7 @@ export function createPdfEngineRouting(ctx: Pick<Context, 'get'>) {
     const settings = ctx.get('pdfAiSettings')?.()
     return settings ? {
       binding: engineBinding('image', settings.imageEngine ?? 'dsh-vision', settings.engineConfigurations),
-      ocrBinding: engineBinding('ocr', settings.ocrEngine ?? 'session-llm', settings.engineConfigurations),
+      ocrBinding: engineBinding('ocr', settings.ocrEngine ?? defaultSettings.ocrEngine!, settings.engineConfigurations),
     } : undefined
   }
   return {
