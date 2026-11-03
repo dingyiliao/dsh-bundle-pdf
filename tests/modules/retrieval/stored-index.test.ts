@@ -151,6 +151,33 @@ test('V2 checkpoints split immutable page geometry and vectors from the small fi
     'mutating a decoded record cannot modify an immutable vector in storage')
 })
 
+test('V2 headers written with the old failure-attempt checksum remain readable and normalize their data version', async () => {
+  const f = fixture()
+  f.record.failure = { code: 'pdf/index-image-unavailable', attempts: 2 }
+  const built = buildIndexPageEntries(key, generation, f.record, f.chunks)
+  for (const [recordKey, value] of built.entries) await f.cache.set(recordKey, value)
+  const header = structuredClone(f.values.get(f.page)) as {
+    chunkIds: string[]
+    vectorRefs: Record<string, { sha256: string }>
+    summary: { dataVersion: string; warnings: string[]; failure: { page: number; code: string; attempts: number } }
+  }
+  const orderedVectors = Object.entries(header.vectorRefs).sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, vector]) => [id, vector.sha256])
+  header.summary.dataVersion = digest(JSON.stringify([header.chunkIds, orderedVectors,
+    { code: header.summary.failure.code, attempts: header.summary.failure.attempts }, header.summary.warnings]))
+  assert.notEqual(header.summary.dataVersion, summarizeIndexPage(f.record, f.chunks, 1).dataVersion,
+    'the legacy checksum included diagnostic retry count')
+  f.values.set(f.page, header)
+  const light = await readIndexSummary(f.cache, key, generation, 1, 2, 1200)
+  const full = await readIndexPage(f.cache, key, generation, 1, 2, 1200)
+  assert.equal(light?.dataVersion, summarizeIndexPage(f.record, f.chunks, 1).dataVersion)
+  assert.equal(full?.record.failure?.attempts, 2)
+  assert.equal(summarizeIndexPage(full!.record, full!.chunks, full!.vectors.size).dataVersion, light?.dataVersion)
+  header.summary.failure.attempts = 3
+  await assert.rejects(readIndexSummary(f.cache, key, generation, 1, 2, 1200), corrupt,
+    'a forged retry counter still invalidates an old checksum')
+})
+
 test('V2 embedding commits reuse loaded geometry and model-text vector keys instead of rewriting either payload', async () => {
   const f = fixture()
   const firstId = f.chunks[0]!.id, secondId = f.chunks[1]!.id

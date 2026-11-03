@@ -65,7 +65,7 @@ function splitHeader(value: unknown, generation: string, page: number) {
     || Object.keys(header.vectorRefs).some(id => !ids.has(id))
     || header.summary.embedded !== Object.keys(header.vectorRefs).length
     || header.summary.failure && header.summary.failure.page !== page
-    || header.summary.dataVersion !== indexDataVersion(header.chunkIds, header.vectorRefs,
+    || !validDataVersion(header.summary.dataVersion, header.chunkIds, header.vectorRefs,
       header.summary.failure ? { code: header.summary.failure.code, attempts: header.summary.failure.attempts } : undefined,
       header.summary.warnings)) throw corrupt()
   return header
@@ -199,6 +199,26 @@ function pageDataVersion(record: StoredIndexPage, chunks: readonly RetrievalChun
 }
 function indexDataVersion(chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
   failure: StoredIndexPage['failure'], warnings: readonly string[]): string {
+  // A retry of the same partially extracted page changes only attempts. That
+  // diagnostic counter cannot invalidate an in-flight search over identical
+  // chunks and vectors. Failure code and quality warnings still affect the
+  // result's coverage, so a meaningful change retains the stale-data fence.
+  return hashIndexData(chunkIds, vectors, failure ? { code: failure.code } : null, warnings)
+}
+function legacyIndexDataVersion(chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
+  failure: StoredIndexPage['failure'], warnings: readonly string[]): string {
+  return hashIndexData(chunkIds, vectors, failure ?? null, warnings)
+}
+function validDataVersion(value: string, chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
+  failure: StoredIndexPage['failure'], warnings: readonly string[]): boolean {
+  // Previously written V2 headers included the retry count. Accept that exact
+  // on-disk checksum, then normalize the in-memory version on read; the next
+  // checkpoint write publishes the current format without a cache rebuild.
+  return value === indexDataVersion(chunkIds, vectors, failure, warnings)
+    || value === legacyIndexDataVersion(chunkIds, vectors, failure, warnings)
+}
+function hashIndexData(chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
+  failure: unknown, warnings: readonly string[]): string {
   return digest(JSON.stringify([chunkIds, Object.entries(vectors).sort(([left], [right]) => left.localeCompare(right))
     .map(([id, vector]) => [id, vector.sha256]), failure ?? null, warnings]))
 }

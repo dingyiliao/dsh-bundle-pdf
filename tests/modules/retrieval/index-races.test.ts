@@ -17,6 +17,7 @@ function fixture(overrides: {
   get?(key: string, value: unknown): Promise<unknown>
   set?(key: string, value: unknown): Promise<void>
   embed?: RetrievalEmbedding['embed']
+  read?: RetrievalPorts['pages']['read']
 } = {}) {
   const records = new Map<string, unknown>()
   let reads = 0
@@ -36,7 +37,11 @@ function fixture(overrides: {
   const ports: RetrievalPorts = { cache,
     documents: { snapshot() { return { id: 'document', path: '/synthetic/index-races.pdf',
       sourceDigest: 'same-source-bytes', contentVersion: 'same-content', pageCount: 1 } } },
-    pages: { async read() { reads++; return { text: 'One durable searchable evidence paragraph.', source: 'pdf-text' } } },
+    pages: { async read(sessionId, documentId, page, signal) {
+      reads++
+      return overrides.read?.(sessionId, documentId, page, signal)
+        ?? { text: 'One durable searchable evidence paragraph.', source: 'pdf-text' }
+    } },
     embedding: { select: () => provider },
   }
   return { records, cache, provider, ports, reads: () => reads,
@@ -186,6 +191,76 @@ test('an external same-generation page replacement rejects stale coverage before
     assert.equal(recovered.coverage.embeddedChunks, 2)
     assert.deepEqual(new Set(recovered.chunks.map(chunk => chunk.text)), new Set(chunks.map(chunk => chunk.text)))
     assert.equal(f.reads(), 1, 'refreshing a summary must not re-extract the original document')
+  } finally {
+    releaseQuery.release()
+    if (query) await Promise.allSettled([query])
+    await service.dispose()
+  }
+})
+
+test('unrelated cache and Session metadata writes do not invalidate an immutable search index', { timeout: 5000 }, async () => {
+  const queryStarted = gate(), releaseQuery = gate()
+  let holdQuery = false
+  const f = fixture({ async embed(texts, purpose) {
+    if (purpose === 'query' && holdQuery) {
+      holdQuery = false; queryStarted.release(); await releaseQuery.promise
+    }
+    return texts.map(() => [1, 0])
+  } })
+  const service = createRetrievalService(f.ports)
+  let query: ReturnType<typeof service.search> | undefined
+  try {
+    await service.prepare('reader', { documentId: 'document' })
+    holdQuery = true
+    query = service.search('reader', { documentId: 'document', query: 'evidence', mode: 'semantic' })
+    void query.catch(() => {})
+    await queryStarted.promise
+    await f.cache.set('other-document-page-cache', { text: 'Independent cached page' })
+    await f.cache.set('other-session-reader-state', { selectedPage: 10 })
+    releaseQuery.release()
+    const result = await query
+    assert.equal(result.status, 'complete')
+    assert.equal(result.chunks.length, 1)
+    assert.match(result.chunks[0]!.text, /durable searchable evidence/)
+  } finally {
+    releaseQuery.release()
+    if (query) await Promise.allSettled([query])
+    await service.dispose()
+  }
+})
+
+test('retrying only failure metadata during a semantic query preserves unchanged indexed evidence', { timeout: 5000 }, async () => {
+  const queryStarted = gate(), releaseQuery = gate()
+  let holdQuery = false
+  const f = fixture({
+    async read() { return { text: 'One durable searchable evidence paragraph.', source: 'pdf-text',
+      failure: { code: 'pdf/index-image-unavailable' } } },
+    async embed(texts, purpose) {
+      if (purpose === 'query' && holdQuery) {
+        holdQuery = false; queryStarted.release(); await releaseQuery.promise
+      }
+      return texts.map(() => [1, 0])
+    },
+  })
+  const service = createRetrievalService(f.ports)
+  let query: ReturnType<typeof service.search> | undefined
+  try {
+    const initial = await service.search('reader', { documentId: 'document', query: 'evidence', mode: 'semantic' })
+    assert.equal(initial.status, 'incomplete')
+    assert.equal(initial.coverage.failedPages[0]?.attempts, 1)
+    assert.equal(initial.chunks.length, 1, 'partial visual enrichment must retain searchable native evidence')
+    const generation = initial.indexGeneration
+    holdQuery = true
+    query = service.search('reader', { documentId: 'document', query: 'evidence', mode: 'semantic' })
+    void query.catch(() => {})
+    await queryStarted.promise
+    await assert.rejects(service.prepare('reader', { documentId: 'document' }), { code: 'pdf/retrieval-incomplete' })
+    assert.equal(f.reads(), 2, 'background preparation retries the page while query embedding is suspended')
+    releaseQuery.release()
+    const result = await query
+    assert.equal(result.status, 'incomplete')
+    assert.equal(result.indexGeneration, generation)
+    assert.deepEqual(result.chunks.map(chunk => chunk.text), initial.chunks.map(chunk => chunk.text))
   } finally {
     releaseQuery.release()
     if (query) await Promise.allSettled([query])
