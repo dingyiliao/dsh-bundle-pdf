@@ -21,8 +21,9 @@ async function fixture(parent = tmpdir()) {
     exports: { '.': './dist/index.js', './native': './dist/native-provider.js',
       './embedding': { types: './dist/types/embedding/index.d.ts', import: './dist/embedding.js' },
       './package.json': './package.json', './locale/*.json': './locale/*.json' },
-    files: ['dist', 'locale', 'docs/ENGINE_EXTENSIONS.md', 'README.md', 'README.zh.md', 'LICENSE',
-      'cordis.patch.yml', 'icon.svg', 'scripts/local-embedding-server.py'],
+    files: ['dist', 'locale', 'docs/engine-extensions.md', 'README.md', 'README.zh.md',
+      'spec.md', 'performance.md', 'native-pdf.md', 'LICENSE', 'cordis.patch.yml', 'icon.svg',
+      'scripts/local-embedding-server.py'],
     optionalDependencies: Object.fromEntries(targets.map(platform => [`@fixture/dsh-pdf-native-${platform}`, '9.8.7'])),
     devDependencies: { typescript: '^5.9.0' },
     scripts: { prepack: 'node -e "throw new Error(\'must not run\')"' },
@@ -43,8 +44,9 @@ async function fixture(parent = tmpdir()) {
   await write('dist/types/embedding/index.d.ts', 'export interface Engine { id: string }\n')
   await write('dist/THIRD_PARTY_NOTICES.md', 'Third-party notices\n')
   await write('locale/en.json', '{}')
-  await write('docs/ENGINE_EXTENSIONS.md', '# Engine extensions\n')
-  for (const path of ['README.md', 'README.zh.md', 'LICENSE', 'cordis.patch.yml', 'icon.svg', 'scripts/local-embedding-server.py']) {
+  await write('docs/engine-extensions.md', '# Engine extensions\n')
+  for (const path of ['README.md', 'README.zh.md', 'spec.md', 'performance.md', 'native-pdf.md',
+    'LICENSE', 'cordis.patch.yml', 'icon.svg', 'scripts/local-embedding-server.py']) {
     await write(path, `fixture ${path}\n`)
   }
   await write(`dist/native/${executable}`, 'worker bytes')
@@ -93,7 +95,9 @@ test('main npm package retains its SDK and exact platform dependencies without s
     const paths = entries(archive)
     assert.ok(paths.includes('package/dist/types/embedding/index.d.ts'))
     assert.ok(paths.includes('package/dist/client.js'))
-    assert.ok(paths.includes('package/docs/ENGINE_EXTENSIONS.md'))
+    for (const path of ['docs/engine-extensions.md', 'spec.md', 'performance.md', 'native-pdf.md']) {
+      assert.ok(paths.includes(`package/${path}`))
+    }
     assert.equal(paths.some(path => /(?:\/native\/|\/src\/|node_modules|\.npmrc|\.env|notes\.txt)/.test(path)), false)
     const metadata = JSON.parse(member(archive, 'package.json').toString('utf8')) as Record<string, unknown>
     assert.deepEqual(metadata.exports, data.manifest.exports)

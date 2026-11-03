@@ -17,7 +17,7 @@ Installation runs no build or download hooks.
    project coverage checks.
 3. Use the six package archives from the same successful workflow run:
    `dsh-pdf-main` and the five `dsh-pdf-native-<target>` artifacts. Do not mix
-   runs or publish the old platform-specific complete plugin archives.
+   runs.
 
 On a source checkout, `npm run native:build`, `npm run build`,
 `npm run package:native -- <target>` and `npm run package:main` create the
@@ -25,7 +25,7 @@ current platform's packages. `npm run package:smoke -- --main <main.tgz>
 --native <native.tgz>` checks a clean install, a real PDFium handshake and
 independent compilation of the four engine SDKs. `--offline` reuses npm's cache.
 
-## First publication
+## Manual publication
 
 Log in with `npm login` and confirm the publishing account with `npm whoami`.
 Keep credentials out of the repository and chat. Download the six verified
@@ -47,8 +47,7 @@ After publication, verify automatic native selection from the registry alone:
 npm run package:smoke -- --package @dylanl1/dsh-plugin-pdf@0.1.5
 ```
 
-Use the version being released in that command. Ordinary users install only
-the main package through DSH's plugin manager.
+Use the version being released in that command.
 
 ## CI publications
 
@@ -78,8 +77,3 @@ the six archives from that same run, publishing native packages first and the
 plugin last through OIDC. Releases run serially; immediately before publishing,
 the job checks that its package version still matches remote `main` and skips
 superseded runs so an older build cannot move `latest` backwards.
-
-The existing publisher skips byte-identical published archives and rejects
-different content under the same version. Retry the failed run when possible;
-if a new build produces conflicting bytes, increase the version rather than
-overwriting a published release.

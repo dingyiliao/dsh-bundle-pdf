@@ -9,8 +9,8 @@ if (pkg.private === true) throw new Error('The main package is private; configur
 if (!Array.isArray(pkg.files) || pkg.files.length === 0) throw new Error('The main package requires an explicit files allowlist')
 const safePath = path => typeof path === 'string' && path !== '' && !path.includes('\\')
   && !path.split('/').some(segment => !segment || segment === '..' || segment.startsWith('.') || segment === 'node_modules')
-const allowedRoots = new Set(['dist', 'locale', 'docs', 'scripts', 'README.md', 'README.zh.md', 'SPEC.md',
-  'PERFORMANCE.md', 'NATIVE_V1.md', 'LICENSE', 'cordis.patch.yml', 'icon.svg'])
+const allowedRoots = new Set(['dist', 'locale', 'docs', 'scripts', 'README.md', 'README.zh.md', 'spec.md',
+  'performance.md', 'native-pdf.md', 'LICENSE', 'cordis.patch.yml', 'icon.svg'])
 for (const path of pkg.files) {
   if (!safePath(path) || !allowedRoots.has(path.split('/')[0]) || /[*?\[\]{}]/.test(path)
       || path.startsWith('scripts/') && path !== 'scripts/local-embedding-server.py') {

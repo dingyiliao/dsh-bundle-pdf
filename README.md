@@ -23,21 +23,19 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 
 Validated with DSH `0.2.1-rc.5`; other supported versions are declared in [package.json](package.json).
 
-**GUI**: open **Plugins → Add plugin**, enter `@dylanl1/dsh-plugin-pdf`, install, then click **Enable now**.
+Use the npm package name below, not a GitHub URL. The source repository does not include `dist/`; installing it directly leaves the entry files missing and prevents the plugin from loading.
 
-**CLI**: replace `<profile>` with your profile:
+- **GUI**: open **Plugins → Add plugin**, enter `@dylanl1/dsh-plugin-pdf`, install, then click **Enable now**.
 
-```sh
-dsh plugin --profile <profile> add @dylanl1/dsh-plugin-pdf
-```
+- **CLI**: replace `<profile>` with your profile:
 
-For Desktop, install its bundled CLI through **Manage dsh Command…** in the app menu. Launch Desktop once, fully quit it, install with `--profile desktop`, then reopen it. A separately npm-installed CLI cannot manage Desktop's plugins.
+  ```sh
+  dsh plugin --profile <profile> add @dylanl1/dsh-plugin-pdf
+  ```
 
-Native components install automatically; no local compilation is needed. Supported platforms: macOS (Apple Silicon/Intel), Windows x64, and glibc Linux (x64/arm64).
+  For Desktop, install its bundled CLI through **Manage dsh Command…** in the app menu. Launch Desktop once, fully quit it, install with `--profile desktop`, then reopen it. A separately npm-installed CLI cannot manage Desktop's plugins.
 
-Open a local PDF from DSH's file sidebar. AI features use your configured models or extension engines. Semantic retrieval requires a separately configured embedding service and is off by default. PDFs with an enabled active policy prepare their index in the background on open; OCR and image descriptions can be enabled independently and may call remote services and incur charges. See [SPEC](SPEC.md) for limits.
-
-Settings save automatically. Select engines in **PDF settings**; each PDF independently enables OCR and image-description indexing under **Search → Current PDF index**. Update indexes when needed to reuse cached results; disabling semantic search takes effect immediately.
+The plugin includes a small OCR model supporting Chinese and English. Select **Local Tesseract OCR** in PDF settings to use it (the default option).
 
 ## Agent tools
 
@@ -50,13 +48,13 @@ Settings save automatically. Select engines in **PDF settings**; each PDF indepe
 - Navigation and saving: `pdf_page_jump`, `pdf_save`.
 - Images: `ocr_recognize`, `image_understand`.
 
-`pdf_open` opens documents in the background; navigation requires a visible Reader. Agent edits go straight into the draft; overwriting the source still requires user approval. See the [tool documentation](docs/AI_READER_TOOLS.md) for parameters and examples.
+`pdf_open` opens documents in the background; navigation requires a visible Reader. Agent edits go straight into the draft; overwriting the source still requires user approval. See the [tool documentation](docs/agent-tools.md) for parameters and examples.
 
 ## Extend engines
 
 OCR, image understanding, translation and embedding support third-party implementations. Build an independent DSH Host plugin, declare this package as a peer dependency, register your backend with the corresponding service through the public SDK, and install it in the same Host profile. It then appears in PDF settings.
 
-Start with [`http-engines`](examples/http-engines) in [`examples/`](examples/README.md), an independent plugin providing HTTP OCR and image-understanding backends. See [engine extensions](docs/ENGINE_EXTENSIONS.md) for API and lifecycle contracts.
+Start with [`http-engines`](examples/http-engines) in [`examples/`](examples/README.md), an independent plugin providing HTTP OCR and image-understanding backends. See [engine extensions](docs/engine-extensions.md) for API and lifecycle contracts.
 
 ## Architecture
 
@@ -77,7 +75,7 @@ flowchart TB
   end
 ```
 
-The Reader and agent tools share Host business logic and a working copy within the same resource session; edits synchronize both ways. A native PDFium worker handles rendering and text extraction. See the [architecture](docs/ARCHITECTURE_V2.md).
+The Reader and agent tools share Host business logic and a working copy within the same resource session; edits synchronize both ways. A native PDFium worker handles rendering and text extraction. See the [architecture](docs/architecture.md).
 
 ## Development
 
@@ -87,7 +85,7 @@ npm run native:build
 npm run build
 ```
 
-Checks and tests: `npm run check`, `npm run test:web`, `npm run test:coverage:project`. See also [retrieval configuration and benchmarks](docs/RETRIEVAL_EXPERIMENT.md) and [packaging and releases](docs/RELEASING.md).
+Checks and tests: `npm run check`, `npm run test:web`, `npm run test:coverage:project`. See also [retrieval configuration and benchmarks](docs/retrieval.md) and [packaging and releases](docs/releasing.md).
 
 ## License
 

@@ -11,11 +11,7 @@ the same directory retains Node, browser and native LCOV inputs and native HTML.
 The runner restores the ordinary Client build when collection ends, including
 when a test or the 100% coverage gate fails.
 
-Prerequisites: Node 26.7+, an adjacent `deepseek-harness` checkout for Web E2E,
-the pinned native dependencies (`npm run native:build`), and Chromium. If
-Playwright's Chromium is not installed in its default location, set
-`DSH_PDF_BROWSER_EXECUTABLE` to an absolute Chromium executable path. Browser
-coverage runs the full Web interaction suite and requires local HTTP listeners.
+Runtime prerequisites and test commands are in the [testing guide](docs/testing.md).
 
 The TypeScript/TSX denominator is every source line that TypeScript maps to
 emitted JavaScript under `src/`, excluding standalone closing braces with no

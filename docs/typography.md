@@ -4,7 +4,7 @@ This is the typography contract for the PDF reader UI. PDF page content is rende
 
 ## Typeface and language
 
-- Use the shared `--pdf-font-ui` system sans-serif stack, matching Codex's default UI font stack. On macOS the system supplies San Francisco and native Chinese fallback; other platforms use their native UI fonts. Do not inherit the host's chat or code font for plugin UI.
+- Use the shared `--pdf-font-ui` system sans-serif stack. On macOS the system supplies San Francisco and native Chinese fallback; other platforms use their native UI fonts. Do not inherit the host's chat or code font for plugin UI.
 - Chinese and English use the same semantic size and weight. Do not add locale-specific size overrides or tracking: mixed-language controls should remain aligned.
 - Keep tracking at the platform default for body text and Chinese. Only introduce display tracking after checking both scripts together.
 - Use a monospace face only for code or machine-readable data whose character alignment matters. Page numbers, dates, and counts stay in the UI font with tabular numerals.

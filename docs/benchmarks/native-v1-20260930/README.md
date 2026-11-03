@@ -51,4 +51,4 @@
 
 浏览器总 RSS 未测得，数据中为 null/unavailable；helper 输入字节和 PNG 缓存为独立记账，不能补足该指标。发布前仍需至少 20 次重复、真实扫描/CJK/复杂字体/透明图形语料、OS/浏览器/helper 全进程资源测量与图像复核。
 
-当前原生 Reader 的重新测量命令与指标定义见 [NATIVE_V1.md](../../../NATIVE_V1.md)；历史自动对照见 [comparison.md](comparison.md)。
+当前原生 Reader 的重新测量命令与指标定义见 [native-pdf.md](../../../native-pdf.md)；历史自动对照见 [comparison.md](comparison.md)。

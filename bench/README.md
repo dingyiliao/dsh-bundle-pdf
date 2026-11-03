@@ -1,10 +1,10 @@
-# PDF M0：可重跑的组件基线
+# PDF 组件基准：运行协议
 
-本目录实现 **M0 组件测量层**。直接调用 Host 解析/投影/保存物化，并在 Chromium 中运行原生 PDFium Reader 和 Page。没有执行完整 DSH 桌面 E2E 或与 Acrobat 的对比。数据可用于后续相同协议的组件回归，不能单独证明整个设计已实现提速。
+本目录直接测量 Host 解析、投影和保存物化，以及 Chromium 中的原生 PDFium Reader；另有检索排名、集成和索引持久化基准。它们不运行完整 DSH Desktop，也不与其他 PDF 软件比较。结果适合同协议回归，不单独证明端到端提速。已冻结的结果与解释边界见 [性能证据](../performance.md)。
 
 ## 运行
 
-要求 Node 22+；依赖版本由 `package-lock.json` 固定。首次安装：
+要求 Node `^22.19.0` 或 `>=24.0.0`；依赖版本由 `package-lock.json` 固定。首次安装：
 
 ```sh
 npm ci --ignore-scripts
@@ -38,7 +38,28 @@ npm run bench:compare -- --before bench-results/host-before/runs.jsonl --after b
 npm run bench:compare -- --before bench-results/reader-before/runs.jsonl --after bench-results/reader-after/runs.jsonl --out bench-results/reader-comparison.md
 ```
 
-前后必须采用同一个 suite、次数、语料、浏览器版本、环境和协议；前面的 smoke 结果不能与这里的 release 结果混合比较。**release 参数只扩大重复次数，不等同于发布验收通过**；仍需完成计划中的真实 PDF、平台矩阵、端到端持久化与独立画质验收。相同源树默认拒绝比较；`--allow-identical` 仅用于验证报告工具。
+前后必须采用同一个 suite、次数、语料、浏览器版本、环境和协议；前面的 smoke 结果不能与这里的 release 结果混合比较。**release 参数只扩大重复次数，不等同于发布验收**。相同源树默认拒绝比较；`--allow-identical` 仅用于验证报告工具。
+
+## 检索与持久化基准
+
+无需 embedding 服务即可运行词法排名；提供模型端点时才测语义和混合检索：
+
+```sh
+mkdir -p bench-results
+npm run bench:retrieval -- --repeats 3 --out bench-results/retrieval-lexical.json
+npm run bench:retrieval -- --embedding-endpoint http://127.0.0.1:8001/v1/embeddings --repeats 3 --out bench-results/retrieval-model.json
+npm run bench:retrieval:integration -- --endpoint http://127.0.0.1:8001/v1/embeddings --sdk dist --out bench-results/retrieval-integration.json
+```
+
+后两条要求兼容的模型服务已运行；显式请求的服务不可用时，runner 会失败，不会把词法结果冒充语义结果。集成 runner 还需要已构建的插件和原生 helper。固定语料是小规模、人工编写的开发用样本，不是独立保留的检索质量评测；见[检索行为与边界](../docs/retrieval.md)。输出 JSON 文件须使用新的文件名，避免覆盖原始证据。
+
+索引持久化基准使用真实临时 SQLite 目录和确定性假向量，不调用 PDFium、OCR 或网络：
+
+```sh
+npm run bench:indexing -- bench-results/indexing.json
+```
+
+它每组运行 3 次，记录冷建、同进程热命中和重启恢复。OS 文件缓存不会清空；CPU 数字属于运行进程，不能换算成整机功耗。固定前后结果和源码标识见[索引性能归档](../docs/benchmarks/indexing-20261102/README.md)。
 
 ## 固定语料
 
@@ -50,7 +71,7 @@ npm run bench:compare -- --before bench-results/reader-before/runs.jsonl --after
 | text-1000 | 1000 | 0 | 长文档元数据成本、页面占位 DOM |
 | annotations-1000 | 12 | 1000 | 原生 Text 便笺与元数据压力 |
 
-这些文件仅包含拉丁文字、混合页尺寸和 Text 便笺，不涵盖 CJK、扫描图、复杂矢量、表单、签名、加密、CropBox 偏移、旋转或损坏 PDF。原仓库功能测试继续覆盖其中若干正确性场景；发布性能语料须另外补齐。
+这些文件仅包含拉丁文字、混合页尺寸和 Text 便笺，不涵盖 CJK、扫描图、复杂矢量、表单、签名、加密、CropBox 偏移、旋转或损坏 PDF。
 
 ## 场景与计时口径
 
@@ -95,10 +116,10 @@ Host 每次使用新 Node 子进程；输入读取/预解析不计入操作计�
 - `summary.md`：每组 p50、nearest-rank p95、成功/全部样本数、测量边界和失败列表。3 次的 p95 实际是最大值，仅供 smoke 描述。
 - 浏览器首轮每个场景保存 PNG 供人工复核；截图在计时完成后生成。
 - 对比工具拒绝不同语料/缓存/清晰度/seed/环境/suite/基准协议源码、重复或不配对 iteration，以及同一结果内部混合源码。任一失败/质量不通过/缺测会阻止对应“降幅”输出；计数、文件字节数不会自动包装成性能改善。
-- 工具当前没有配对 bootstrap 置信区间、随机 AB/BA 版本调度或独立真实用户会话重复。这些需在计划的正式发布基准层实现。
+- 工具当前没有配对 bootstrap 置信区间、随机 AB/BA 版本调度或独立真实用户会话重复。
 
 ## 埋点
 
 `src/shared/performance.ts` 提供显式 observer。没有订阅时不生成事件；插件不会自动上传数据。仅记录数值/布尔属性，不记录 PDF 正文、文件路径、文档 ID、凭据。collector 由调用者管理，退订后不接收迟到完成；observer 抛错不会改变 PDF 操作结果。测试 adapter/global hook 不进入正式构建。
 
-已覆盖 Host inspect、project、materialize、dispatch，以及 Client RPC、worker-open、raster、search。Host dispatch 包含同 session 队列等待；阶段耗时可能嵌套，不能相加作为端到端耗时。正式质量/内存/取消测试仍按升级计划追加。
+已覆盖 Host inspect、project、materialize、dispatch，以及 Client RPC、worker-open、raster、search。Host dispatch 包含同 session 队列等待；阶段耗时可能嵌套，不能相加作为端到端耗时。
