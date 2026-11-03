@@ -6,11 +6,116 @@ import { createRoot } from 'react-dom/client'
 import type { PdfReadingContextUpdate } from '../../../src/client/contracts.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderContextLease, type ReaderContextLeaseOptions } from '../../../src/modules/viewer/index.ts'
+import { createReaderContexts } from '../../../src/modules/navigation/reader-contexts.ts'
 
 const testRequire = createRequire(import.meta.url)
 const { JSDOM } = testRequire('jsdom') as {
   JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
 }
+
+async function withReadingLease(run: (fixture: {
+  options: ReaderContextLeaseOptions
+  window: Window & typeof globalThis
+  render(update?: Partial<ReaderContextLeaseOptions>): Promise<void>
+  contexts: ReturnType<typeof createReaderContexts>
+}) => Promise<void>) {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const saved = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const root = createRoot(dom.document.getElementById('root')!)
+  const snapshot = { id: 'visible-pdf', contentVersion: 'content', reader: { bytesHash: 'bytes', generation: 1 },
+    document: { pageCount: 20 } } as WorkspaceSnapshot
+  const contexts = createReaderContexts({ readSnapshot: () => ({ ...snapshot, bytes: new Uint8Array() }) })
+  let sequence = 0
+  const options: ReaderContextLeaseOptions = { sessionId: 'chat', tabId: 'tab', visible: true,
+    tabSignal: new AbortController().signal, snapshot, currentPage: 3, documentReady: true, enabled: true,
+    report: async update => { contexts.update('chat', { ...update, sequence: ++sequence }) } }
+  let current = options
+  const Harness = (props: ReaderContextLeaseOptions) => { useReaderContextLease(props); return null }
+  const render = async (update: Partial<ReaderContextLeaseOptions> = {}) => {
+    current = { ...current, ...update }
+    await act(async () => root.render(React.createElement(Harness, current)))
+  }
+  try { await run({ options, window: dom, render, contexts }) }
+  finally {
+    await act(async () => root.unmount())
+    contexts.dispose(); dom.close()
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+  }
+}
+
+test('a visible PDF recovers a failed presence update without scrolling or waiting for its next heartbeat', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] })
+  t.mock.method(console, 'warn', () => {})
+  await withReadingLease(async ({ options, render, contexts }) => {
+    const send = options.report!
+    let calls = 0
+    options.report = async update => {
+      if (++calls === 1) throw new Error('temporary connection failure')
+      await send(update)
+    }
+    await render()
+    assert.deepEqual(contexts.current('chat'), [], 'the initial presence request was lost')
+    await act(async () => t.mock.timers.tick(1000))
+    assert.equal(calls, 2)
+    assert.deepEqual(contexts.current('chat'), [{ tabId: 'tab', documentId: 'visible-pdf', contentVersion: 'content', page: 3 }])
+    await render({ visible: false })
+    await act(async () => t.mock.timers.tick(90_001))
+    assert.deepEqual(contexts.current('chat'), [], 'a hidden PDF is not revived by a retry')
+  })
+})
+
+test('visible Reader heartbeats and focus restore Host presence without a new document or page change', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] })
+  await withReadingLease(async ({ render, contexts, window }) => {
+    await render()
+    const expected = contexts.current('chat')
+    await act(async () => t.mock.timers.tick(90_001))
+    assert.deepEqual(contexts.current('chat'), expected, 'an unchanged visible page renews its TTL')
+    contexts.dispose()
+    assert.deepEqual(contexts.current('chat'), [])
+    await act(async () => { window.dispatchEvent(new window.Event('focus')) })
+    assert.deepEqual(contexts.current('chat'), expected, 'foregrounding immediately restores an erased Host hint')
+    contexts.dispose()
+    await act(async () => { window.dispatchEvent(new window.Event('online')) })
+    assert.deepEqual(contexts.current('chat'), expected, 'reconnecting does not require a scroll')
+    await render({ visible: false })
+    await act(async () => { window.dispatchEvent(new window.Event('focus')) })
+    assert.deepEqual(contexts.current('chat'), [])
+  })
+})
+
+test('replacing the reporter reannounces an unchanged visible page and failed old updates cannot resurrect a closed lease', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  t.mock.method(console, 'warn', () => {})
+  await withReadingLease(async ({ options, render, contexts }) => {
+    await render()
+    const expected = contexts.current('chat')
+    contexts.dispose()
+    await render({ report: async update => options.report!(update) })
+    assert.deepEqual(contexts.current('chat'), expected)
+    let reject!: (error: Error) => void
+    const lost = new Promise<void>((_resolve, no) => { reject = no })
+    const send = options.report!
+    let calls = 0
+    await render({ report: async update => {
+      calls++
+      if (update.action === 'set') return lost
+      return send(update)
+    } })
+    await render({ visible: false })
+    await act(async () => { reject(new Error('late connection failure')) })
+    await act(async () => t.mock.timers.tick(60_000))
+    assert.equal(calls, 2, 'only the pending set and its clear were sent')
+    assert.deepEqual(contexts.current('chat'), [])
+  })
+})
 
 test('a visible reader renews one page lease and clears it when hidden', async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window

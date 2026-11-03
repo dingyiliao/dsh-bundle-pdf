@@ -26,14 +26,30 @@ export function useReaderContextLease(options: ReaderContextLeaseOptions): void 
   reporter.current = options.report
   const latest = useRef(options)
   latest.current = options
+  const reportSequence = useRef(0)
+  const failures = useRef(0)
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const report = useCallback((update: PdfReadingContextUpdate) => {
+  const report = useCallback(function publish(update: PdfReadingContextUpdate) {
+    const sequence = ++reportSequence.current
+    if (retry.current !== null) { clearTimeout(retry.current); retry.current = null }
     const send = reporter.current
     if (!send) return
-    void send(update).catch((failure) => {
-      if (!(failure instanceof Error && failure.name === 'AbortError')) {
-        console.warn('[pdf] Could not synchronize the active reading page', failure)
-      }
+    if (update.action === 'clear') failures.current = 0
+    void Promise.resolve().then(() => send(update)).then(() => {
+      if (sequence === reportSequence.current) failures.current = 0
+    }).catch((failure) => {
+      if (sequence !== reportSequence.current || failure instanceof Error && failure.name === 'AbortError') return
+      console.warn('[pdf] Could not synchronize the active reading page', failure)
+      const current = published.current, state = latest.current
+      if (update.action !== 'set' || !current || current.leaseId !== update.leaseId
+        || state.sessionId !== update.sessionId || !state.enabled || !state.visible || state.tabSignal.aborted) return
+      const delay = Math.min(30_000, 1000 * 2 ** Math.min(failures.current++, 5))
+      retry.current = setTimeout(() => {
+        retry.current = null
+        if (sequence !== reportSequence.current || !published.current) return
+        publish({ action: 'set', sessionId: latest.current.sessionId, ...published.current })
+      }, delay)
     })
   }, [])
   const clear = useCallback(() => {
@@ -50,11 +66,9 @@ export function useReaderContextLease(options: ReaderContextLeaseOptions): void 
     const previous = published.current
     if (previous && previous.tabId === tabId && previous.documentId === snapshot.id
       && previous.contentVersion === snapshot.contentVersion) {
-      if (previous.page !== currentPage) {
-        previous.page = currentPage
-        report({ action: 'set', sessionId, tabId, leaseId: previous.leaseId,
-          documentId: snapshot.id, contentVersion: snapshot.contentVersion, page: currentPage })
-      }
+      previous.page = currentPage
+      report({ action: 'set', sessionId, tabId, leaseId: previous.leaseId,
+        documentId: snapshot.id, contentVersion: snapshot.contentVersion, page: currentPage })
       return
     }
     clear()
@@ -69,11 +83,21 @@ export function useReaderContextLease(options: ReaderContextLeaseOptions): void 
   useEffect(() => {
     if (!visible) return
     // An unchanged page still has to refresh the Host's deliberately short TTL.
-    const timer = setInterval(() => {
+    const renew = () => {
       const current = published.current
       if (current) report({ action: 'set', sessionId, ...current })
-    }, 30_000)
-    return () => clearInterval(timer)
+    }
+    const visibleAgain = () => { if (document.visibilityState === 'visible') renew() }
+    const timer = setInterval(renew, 30_000)
+    window.addEventListener('focus', renew)
+    window.addEventListener('online', renew)
+    document.addEventListener('visibilitychange', visibleAgain)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('focus', renew)
+      window.removeEventListener('online', renew)
+      document.removeEventListener('visibilitychange', visibleAgain)
+    }
   }, [visible, report, sessionId])
 
   useEffect(() => {

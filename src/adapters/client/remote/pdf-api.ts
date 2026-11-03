@@ -55,15 +55,32 @@ export function createPdfAgentNavigationApi(connection: PdfConnection, lifetime:
 const readingPositionStale = z.enum(['none', 'content-changed', 'page-missing'])
 
 export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): PdfClientApi {
-  const listeners = new Map<string, Set<(snapshot: WorkspaceSnapshot) => void>>()
+  type Listener = { id: string; callback(snapshot: WorkspaceSnapshot): void }
+  const listeners = new Map<string, Set<Listener>>()
   const latest = new Map<string, WorkspaceSnapshot>()
   const sourceAddresses = new Map<string, { sessionId: string; address: string; references: Set<string> }>()
+  // A Host restart can give the same visible tab a new working-copy ID.
+  // Refresh/release resolve aliases; writes still require the new snapshot ID.
+  const replacedIds = new Map<string, string>()
+  const recoveries = new Map<string, { controller: AbortController; promise: Promise<WorkspaceSnapshot> }>()
+  const failedWatchRecoveries = new Set<string>()
   const closedReferences = new Set<string>()
   const referenceKey = (sessionId: string, referenceId: string) => JSON.stringify([sessionId, referenceId])
+  const currentId = (id: string): string => {
+    let current = id
+    for (let count = 0; count < 32; count++) {
+      const next = replacedIds.get(current)
+      if (!next || next === current) break
+      current = next
+    }
+    return current
+  }
   const watches = new Map<string, AbortController>()
   lifetime.addEventListener('abort', () => {
     for (const watch of watches.values()) watch.abort()
-    watches.clear(); sourceAddresses.clear(); listeners.clear(); latest.clear()
+    for (const recovery of recoveries.values()) recovery.controller.abort()
+    watches.clear(); recoveries.clear(); failedWatchRecoveries.clear(); replacedIds.clear()
+    sourceAddresses.clear(); listeners.clear(); latest.clear()
   }, { once: true })
   const call = async (payload: object, signal?: AbortSignal, endpoint = PDF_ENDPOINT) => {
     const result = responseSchema.parse(await measurePdfAsync('client.rpc', {}, () => connection.rpc.call('/api', endpoint, payload,
@@ -130,14 +147,103 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     if (!wire.baselineOutline && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineOutline = previous.baselineOutline
     if (!wire.baselineFormFields && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineFormFields = previous.baselineFormFields
     latest.set(value.id, value)
-    for (const listener of listeners.get(value.id) ?? []) listener(value)
+    for (const listener of listeners.get(value.id) ?? []) listener.callback(value)
     return value
+  }
+  const unknownDocument = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'pdf/unknown-document'
+  const transportFailure = (error: unknown) => error instanceof Error && !('code' in error)
+    && !['AbortError', 'TimeoutError', 'ZodError'].includes(error.name)
+  const viewEnded = () => new DOMException('PDF view reference has closed', 'AbortError')
+  const invalidRecovery = (message: string) => Object.assign(new Error(message), { code: 'pdf/recovery-integrity' })
+  const pause = (ms: number, signal: AbortSignal): Promise<void> => new Promise(resolve => {
+    if (signal.aborted) return resolve()
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+    const timer = setTimeout(finish, ms)
+    signal.addEventListener('abort', finish, { once: true })
+  })
+  const recoveryEligible = (id: string, source: { sessionId: string; address: string; references: Set<string> },
+    references: readonly string[]): boolean => !lifetime.aborted && sourceAddresses.get(id) === source
+      && !!listeners.get(id)?.size && references.length > 0
+      && references.length === source.references.size && references.every(referenceId =>
+        source.references.has(referenceId) && !closedReferences.has(referenceKey(source.sessionId, referenceId)))
+
+  /** A lost Host ID is explicit evidence to reacquire, not permission to retry arbitrary errors. */
+  const reacquire = (id: string): Promise<WorkspaceSnapshot> => {
+    const existing = recoveries.get(id)
+    if (existing) return existing.promise
+    const source = sourceAddresses.get(id)
+    const references = [...source?.references ?? []]
+    if (!source || !recoveryEligible(id, source, references)) return Promise.reject(viewEnded())
+    const controller = new AbortController()
+    const acquired: Array<{ id: string; referenceId: string }> = []
+    const promise = (async () => {
+      try {
+        let value: WorkspaceSnapshot | undefined
+        const previous = latest.get(id)
+        for (const referenceId of references) {
+          if (controller.signal.aborted || !recoveryEligible(id, source, references)) throw viewEnded()
+          // An open response is intentionally private until every surviving
+          // reference has been reacquired. In particular, do not compare its
+          // revision to the stale, possibly higher revision from the old Host.
+          const wire = wireSnapshotSchema.parse(await call({ action: 'open', sessionId: source.sessionId,
+            address: source.address, referenceId }, controller.signal))
+          acquired.push({ id: wire.id, referenceId })
+          if (!wire.document || wire.annotationDelta || previous && wire.path !== previous.path
+            || value && (wire.id !== value.id || wire.path !== value.path)) {
+            throw invalidRecovery('PDF recovery returned a different source or incomplete snapshot')
+          }
+          value = { ...wire, document: wire.document }
+        }
+        if (!value || controller.signal.aborted || !recoveryEligible(id, source, references)) throw viewEnded()
+        const replacementId = value.id
+        const otherSource = replacementId === id ? undefined : sourceAddresses.get(replacementId)
+        if (otherSource && (otherSource.sessionId !== source.sessionId || otherSource.address !== source.address)) {
+          throw invalidRecovery('PDF recovery crossed source ownership')
+        }
+        const fresher = replacementId === id ? undefined : latest.get(replacementId)
+        if (fresher && fresher.revision > value.revision) value = fresher
+        const oldListeners = listeners.get(id)
+        if (!oldListeners?.size) throw viewEnded()
+        if (replacementId !== id) {
+          const nextListeners = listeners.get(replacementId) ?? new Set<Listener>()
+          for (const listener of oldListeners) { listener.id = replacementId; nextListeners.add(listener) }
+          listeners.delete(id); listeners.set(replacementId, nextListeners)
+          sourceAddresses.delete(id)
+          const nextSource = otherSource ?? { sessionId: source.sessionId, address: source.address, references: new Set<string>() }
+          for (const referenceId of references) nextSource.references.add(referenceId)
+          sourceAddresses.set(replacementId, nextSource)
+          latest.delete(id)
+          for (const [old, current] of replacedIds) if (current === id) replacedIds.set(old, replacementId)
+          replacedIds.set(id, replacementId)
+        }
+        latest.set(replacementId, value)
+        failedWatchRecoveries.delete(id)
+        watches.get(id)?.abort()
+        // The new Host may restart its revision counter even when its ID is
+        // reused. Replace the old long poll before publishing the snapshot.
+        watch(replacementId)
+        acquired.length = 0
+        for (const listener of listeners.get(replacementId) ?? []) listener.callback(value)
+        return value
+      } catch (error) {
+        // Hiding a Reader or releasing a view while RPC is in flight must not
+        // leave the newly acquired Host reference attached to an old tab.
+        await Promise.allSettled(acquired.map(entry => releaseCall({ action: 'release', sessionId: source.sessionId,
+          id: entry.id, referenceId: entry.referenceId })))
+        throw error
+      } finally {
+        if (recoveries.get(id)?.controller === controller) recoveries.delete(id)
+      }
+    })()
+    recoveries.set(id, { controller, promise })
+    return promise
   }
   const watch = (id: string) => {
     if (watches.get(id)?.signal.aborted === false || !sourceAddresses.has(id) || lifetime.aborted) return
     const controller = new AbortController()
     watches.set(id, controller)
     void (async () => {
+      let retryDelay = 250
       while (!controller.signal.aborted && !lifetime.aborted && listeners.has(id)) {
         const address = sourceAddresses.get(id)
         const knownRevision = latest.get(id)?.revision
@@ -148,19 +254,37 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
             sessionId: address.sessionId, id, knownRevision,
           }, controller.signal, 'pdf.watch'))
           if (controller.signal.aborted || lifetime.aborted) break
+          retryDelay = 250
           if (update.revision !== latest.get(id)?.revision) {
             // A watch refresh reads the existing draft. It must not acquire a
             // new UI reference after the last tab has begun releasing its view.
             await snapshot({ action: 'refresh', sessionId: address.sessionId, id }, controller.signal)
           } else if (Date.now() - started < 250) {
             // Protect against a misconfigured endpoint returning immediately.
-            await new Promise<void>(resolve => setTimeout(resolve, 250))
+            await pause(250, controller.signal)
           }
         } catch (error) {
           if (controller.signal.aborted || lifetime.aborted) break
-          // Connection can restart independently of a mounted Reader. Retry
-          // quietly; the next successful watch compares with the Host revision.
-          await new Promise<void>(resolve => setTimeout(resolve, 1000))
+          if (unknownDocument(error)) {
+            if (failedWatchRecoveries.has(id)) break
+            try { await reacquire(id) } catch (recoveryError) {
+              if (controller.signal.aborted || lifetime.aborted) break
+              if (recoveryError instanceof Error && recoveryError.name === 'AbortError') break
+              if (transportFailure(recoveryError)) {
+                // Recheck the old ID after reconnection. Only another explicit
+                // unknown-document reply may authorize a subsequent open.
+                await pause(retryDelay, controller.signal)
+                retryDelay = Math.min(retryDelay * 2, 8000)
+                continue
+              }
+              failedWatchRecoveries.add(id)
+              break
+            }
+            break
+          }
+          // Ordinary transport failures do not authorize an implicit open.
+          await pause(retryDelay, controller.signal)
+          retryDelay = Math.min(retryDelay * 2, 8000)
         }
       }
       if (watches.get(id) === controller) watches.delete(id)
@@ -215,18 +339,44 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       sourceAddresses.set(value.id, source)
       return value
     },
-    refresh: (sessionId, id, signal) => snapshot({ action: 'refresh', sessionId, id }, signal),
+    async refresh(sessionId, id, signal) {
+      const activeId = currentId(id)
+      try { return await snapshot({ action: 'refresh', sessionId, id: activeId }, signal) } catch (error) {
+        if (!unknownDocument(error) || signal?.aborted || lifetime.aborted
+          || sourceAddresses.get(activeId)?.sessionId !== sessionId) throw error
+        const recovered = await reacquire(activeId)
+        signal?.throwIfAborted()
+        return recovered
+      }
+    },
     async release(sessionId, id, referenceId, signal) {
       if (id === undefined) closedReferences.add(referenceKey(sessionId, referenceId))
+      const requestedId = id === undefined ? undefined : currentId(id)
       for (const [documentId, source] of sourceAddresses) {
-        if (source.sessionId !== sessionId || id !== undefined && documentId !== id) continue
-        source.references.delete(referenceId)
+        if (source.sessionId !== sessionId || requestedId !== undefined && documentId !== requestedId) continue
+        if (source.references.delete(referenceId)) {
+          const recovery = recoveries.get(documentId)
+          if (recovery) {
+            recovery.controller.abort()
+            watches.get(documentId)?.abort()
+            // A surviving view still needs a watch. Wait for the old attempt
+            // to clean any late Host references before reacquiring its subset.
+            if (source.references.size && listeners.get(documentId)?.size) {
+              void recovery.promise.catch(() => {}).finally(() => {
+                if (sourceAddresses.get(documentId) === source && source.references.size
+                  && listeners.get(documentId)?.size && !lifetime.aborted) watch(documentId)
+              })
+            }
+          }
+        }
         if (!source.references.size) {
           watches.get(documentId)?.abort()
           sourceAddresses.delete(documentId); latest.delete(documentId); listeners.delete(documentId)
+          for (const alias of [...replacedIds.keys()]) if (currentId(alias) === documentId) replacedIds.delete(alias)
         }
       }
-      await releaseCall({ action: 'release', sessionId, ...(id === undefined ? {} : { id }), referenceId }, signal)
+      await releaseCall({ action: 'release', sessionId,
+        ...(requestedId === undefined ? {} : { id: requestedId }), referenceId }, signal)
     },
     change: (sessionId, id, revision, operations, signal) => snapshot({ action: 'change', sessionId, id, revision, operations }, signal),
     undo: (sessionId, id, revision, signal) => snapshot({ action: 'undo', sessionId, id, revision }, signal),
@@ -245,15 +395,22 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     inspectTarget: async (sessionId, path, signal) => z.object({ version: z.string().nullable() }).parse(await call({ action: 'inspectTarget', sessionId, path }, signal)),
     subscribe(id, callback) {
       let set = listeners.get(id)
-      if (!set) { set = new Set(); listeners.set(id, set) }
-      set.add(callback)
+      if (!set) { set = new Set(); listeners.set(id, set); failedWatchRecoveries.delete(id) }
+      const listener: Listener = { id, callback }
+      set.add(listener)
       watch(id)
       return () => {
-        set.delete(callback)
-        if (!set.size && listeners.get(id) === set) {
-          watches.get(id)?.abort(); listeners.delete(id); latest.delete(id)
-          // A hidden React body is not a closed tab occurrence. Keep the
-          // reference inventory until lifecycle.release() ends that view.
+        const current = listener.id
+        const currentSet = listeners.get(current)
+        currentSet?.delete(listener)
+        if (!currentSet?.size && listeners.get(current) === currentSet) {
+          watches.get(current)?.abort(); recoveries.get(current)?.controller.abort()
+          listeners.delete(current)
+          // React replaces the old-ID subscription after receiving a recovered
+          // snapshot. Its new subscription still needs this revision baseline
+          // to start a watch. Keep it for the live UI reference, and let the
+          // final release clear it with the source inventory.
+          if (!sourceAddresses.get(current)?.references.size) latest.delete(current)
         }
       }
     },

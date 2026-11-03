@@ -73,6 +73,38 @@ test('document owner publishes a native handle and reports its source version', 
   })
 })
 
+test('a restarted Host can replace the document ID while preserving the current resource owner', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    options.api.native.text = async (_sessionId, id) => {
+      if (id === 'doc-1') throw Object.assign(new Error('old Host baseline'), { code: 'pdf/stale-reader' })
+      return { items: [], styles: {}, lang: null }
+    }
+    options.api.refresh = async () => ({ ...makeSnapshot('new-host-document'), revision: 0,
+      contentVersion: 'restored-content', reader: { bytesHash: 'restored-bytes', generation: 1, protocolVersion: 1 } })
+    await render(options)
+    const original = state().pdf!
+    await act(async () => { await assert.rejects(original.text(1), { name: 'AbortError' }) })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    assert.equal(state().snapshot?.id, 'new-host-document')
+    assert.equal(state().snapshot?.revision, 0, 'the prior Host revision does not override a fresh Host identity')
+    assert.notEqual(state().pdf, original)
+    assert.equal(state().documentReady(), true)
+    assert.deepEqual(failed, [])
+  })
+})
+
+test('document ID recovery rejects a snapshot for a different file', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    options.api.native.text = async () => { throw Object.assign(new Error('old baseline'), { code: 'pdf/stale-reader' }) }
+    options.api.refresh = async () => ({ ...makeSnapshot('foreign-document'), path: '/tmp/another.pdf' })
+    await render(options)
+    await act(async () => { await assert.rejects(state().pdf!.text(1), { name: 'AbortError' }) })
+    assert.equal(state().snapshot?.id, 'doc-1')
+    assert.equal(state().documentReady(), false)
+    assert.ok(failed.some(message => message.includes('different document')))
+  })
+})
+
 test('a superseded open cannot claim the new display owner', async () => {
   await withDocument(async ({ options, state, render, loaded }) => {
     let resolveOld!: (snapshot: WorkspaceSnapshot) => void

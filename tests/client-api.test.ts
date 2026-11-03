@@ -160,6 +160,349 @@ function testWire(id: string) {
   } }
 }
 
+function recoveryWire(id: string, revision: number) {
+  return { ok: true, value: { ...testWire(id).value, path: '/document.pdf', revision } }
+}
+
+async function within<T>(promise: Promise<T>, milliseconds = 4000): Promise<T> {
+  let timer!: ReturnType<typeof setTimeout>
+  try {
+    return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Timed out waiting for PDF recovery')), milliseconds)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
+test('a mounted Reader reacquires a new Host ID from an unknown watch and migrates its UI references', async () => {
+  const lifetime = new AbortController()
+  const calls: Array<{ method: string; request: Record<string, unknown> }> = []
+  let opens = 0
+  let watchingNew!: () => void
+  const newWatch = new Promise<void>(resolve => { watchingNew = resolve })
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push({ method, request })
+    if (method === 'pdf.watch') {
+      if (request.id === 'old') return { ok: false, error: { code: 'pdf/unknown-document', message: 'old ID lost' } }
+      watchingNew()
+      return new Promise(() => {})
+    }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    if (request.action === 'open') return recoveryWire(++opens <= 2 ? 'old' : 'new', opens <= 2 ? 7 : 0)
+    throw new Error(`Unexpected ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    const address = 'dsh-resource://file/session/session/document.pdf'
+    await api.open('session', address, undefined, 'view-a')
+    await api.open('session', address, undefined, 'view-b')
+    let resolve!: (value: import('../src/shared/contracts.ts').WorkspaceSnapshot) => void
+    const received = new Promise<import('../src/shared/contracts.ts').WorkspaceSnapshot>(accept => { resolve = accept })
+    const stop = api.subscribe('old', value => { if (value.id === 'new') resolve(value) })
+    const value = await received
+    await newWatch
+    assert.equal(value.id, 'new')
+    assert.equal(value.revision, 0, 'a fresh Host can legitimately reset the revision')
+    assert.deepEqual(calls.filter(call => call.request.action === 'open').slice(2).map(call => call.request.referenceId), ['view-a', 'view-b'])
+    assert.equal(calls.filter(call => call.method === 'pdf.watch' && call.request.id === 'new').length, 1)
+    await api.release('session', 'old', 'view-a')
+    assert.deepEqual(calls.at(-1)?.request, { action: 'release', sessionId: 'session', id: 'new', referenceId: 'view-a' })
+    stop() // the original unsubscribe must remove the migrated listener
+    await api.release('session', 'old', 'view-b')
+    assert.deepEqual(calls.at(-1)?.request, { action: 'release', sessionId: 'session', id: 'new', referenceId: 'view-b' })
+  } finally { lifetime.abort() }
+})
+
+test('React subscription handoff after Host ID recovery keeps the new watch baseline', { timeout: 6000 }, async () => {
+  const lifetime = new AbortController()
+  let opens = 0, newWatchCount = 0, revision = 0
+  let secondWatchStarted!: () => void
+  const watchingAgain = new Promise<void>(resolve => { secondWatchStarted = resolve })
+  let wakeSecondWatch!: (value: unknown) => void
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    if (method === 'pdf.watch') {
+      if (request.id === 'old') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+      assert.equal(request.id, 'new')
+      assert.equal(request.knownRevision, 0, 'the replacement snapshot remains the watch baseline')
+      if (++newWatchCount === 2) {
+        secondWatchStarted()
+        return new Promise(resolve => { wakeSecondWatch = resolve })
+      }
+      return new Promise(() => {})
+    }
+    if (request.action === 'open') return recoveryWire(++opens === 1 ? 'old' : 'new', opens === 1 ? 5 : 0)
+    if (request.action === 'refresh') {
+      assert.equal(request.id, 'new')
+      return recoveryWire('new', revision)
+    }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error(`Unexpected ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    let onRecovered!: () => void
+    const recovered = new Promise<void>(resolve => { onRecovered = resolve })
+    const stopOld = api.subscribe('old', value => { if (value.id === 'new') onRecovered() })
+    await within(recovered)
+    stopOld() // React's old-ID effect cleans up before its new-ID effect subscribes.
+    let onEdit!: (value: number) => void
+    const edited = new Promise<number>(resolve => { onEdit = resolve })
+    const stopNew = api.subscribe('new', value => { if (value.revision > 0) onEdit(value.revision) })
+    await within(watchingAgain)
+    revision = 1
+    wakeSecondWatch({ ok: true, value: { revision } })
+    assert.equal(await within(edited), 1)
+    stopNew()
+    await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
+test('releasing one view during held reacquisition still recovers the surviving visible view', { timeout: 6000 }, async () => {
+  const lifetime = new AbortController()
+  const calls: Array<{ method: string; request: Record<string, unknown> }> = []
+  let opens = 0
+  let recoveryStarted!: () => void
+  const started = new Promise<void>(resolve => { recoveryStarted = resolve })
+  let deliverHeldOpen!: (value: unknown) => void
+  let newWatchStarted!: () => void
+  const newWatch = new Promise<void>(resolve => { newWatchStarted = resolve })
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push({ method, request })
+    if (method === 'pdf.watch') {
+      if (request.id === 'old') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+      newWatchStarted()
+      return new Promise(() => {})
+    }
+    if (request.action === 'open') {
+      opens++
+      if (opens <= 2) return recoveryWire('old', 5)
+      if (opens === 3) {
+        recoveryStarted()
+        return new Promise(resolve => { deliverHeldOpen = resolve })
+      }
+      return recoveryWire('new', 0)
+    }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error(`Unexpected ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    const address = 'dsh-resource://file/session/session/document.pdf'
+    await api.open('session', address, undefined, 'view-a')
+    await api.open('session', address, undefined, 'view-b')
+    let publish!: (value: import('../src/shared/contracts.ts').WorkspaceSnapshot) => void
+    const published = new Promise<import('../src/shared/contracts.ts').WorkspaceSnapshot>(resolve => { publish = resolve })
+    const stop = api.subscribe('old', value => { if (value.id === 'new') publish(value) })
+    await within(started)
+    await api.release('session', 'old', 'view-a')
+    deliverHeldOpen(recoveryWire('new', 0))
+    assert.equal((await within(published)).id, 'new')
+    await within(newWatch)
+    assert.deepEqual(calls.filter(call => call.request.action === 'open').slice(2).map(call => call.request.referenceId),
+      ['view-a', 'view-b'], 'late response for the closed view must not reacquire it again')
+    assert.ok(calls.some(call => call.request.action === 'release'
+      && call.request.id === 'new' && call.request.referenceId === 'view-a'),
+    'the late Host lease of the closed view must be released')
+    stop()
+    await api.release('session', 'old', 'view-b')
+    assert.equal(calls.at(-1)?.request.id, 'new', 'the surviving view releases its recovered Host ID')
+  } finally { lifetime.abort() }
+})
+
+test('unknown Host ID followed by one transport failure retries only while the view remains visible', { timeout: 6000 }, async () => {
+  const lifetime = new AbortController()
+  let opens = 0, unknownWatches = 0
+  let watchingNew!: () => void
+  const newWatch = new Promise<void>(resolve => { watchingNew = resolve })
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    if (method === 'pdf.watch') {
+      if (request.id === 'old') {
+        unknownWatches++
+        return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+      }
+      watchingNew()
+      return new Promise(() => {})
+    }
+    if (request.action === 'open') {
+      opens++
+      if (opens === 1) return recoveryWire('old', 5)
+      if (opens === 2) throw new Error('temporary transport failure')
+      return recoveryWire('new', 0)
+    }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error(`Unexpected ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    let publish!: (value: import('../src/shared/contracts.ts').WorkspaceSnapshot) => void
+    const published = new Promise<import('../src/shared/contracts.ts').WorkspaceSnapshot>(resolve => { publish = resolve })
+    const stop = api.subscribe('old', value => { if (value.id === 'new') publish(value) })
+    assert.equal((await within(published)).id, 'new')
+    await within(newWatch)
+    assert.equal(opens, 3, 'recovery retries once after the transient carrier failure')
+    assert.equal(unknownWatches, 2, 'a fresh coded unknown-document watch, not the transport failure, authorizes another open')
+    stop()
+    await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
+test('permission denial during unknown-ID reacquisition does not retry or acquire another view', { timeout: 4000 }, async () => {
+  const lifetime = new AbortController()
+  let opens = 0, watches = 0
+  let denied!: () => void
+  const denial = new Promise<void>(resolve => { denied = resolve })
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    if (method === 'pdf.watch') {
+      watches++
+      return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    }
+    if (request.action === 'open') {
+      if (++opens === 1) return recoveryWire('old', 0)
+      denied()
+      return { ok: false, error: { code: 'pdf/forbidden', message: 'Permission denied' } }
+    }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error(`Unexpected ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    const stop = api.subscribe('old', () => {})
+    await within(denial)
+    await new Promise<void>(resolve => setTimeout(resolve, 700))
+    assert.equal(opens, 2, 'permission denial must not be treated as a retryable carrier failure')
+    assert.equal(watches, 1, 'a forbidden recovery must stop automatic unknown-ID polling')
+    stop()
+    await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
+test('an explicit refresh shares reacquisition and does not reuse an old Host revision', async () => {
+  const lifetime = new AbortController()
+  const calls: Record<string, unknown>[] = []
+  let opens = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push(request)
+    if (method === 'pdf.watch') return new Promise(() => {})
+    if (request.action === 'open') return recoveryWire(++opens === 1 ? 'old' : 'new', opens === 1 ? 9 : 0)
+    if (request.action === 'refresh') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error('Unexpected action')
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    const stop = api.subscribe('old', () => {})
+    const [first, second] = await Promise.all([api.refresh('session', 'old'), api.refresh('session', 'old')])
+    assert.equal(first.id, 'new')
+    assert.equal(first.revision, 0)
+    assert.equal(second.id, 'new')
+    assert.equal(opens, 2, 'concurrent refreshes must share one open')
+    assert.deepEqual(calls.filter(call => call.action === 'open')[1], {
+      action: 'open', sessionId: 'session', address: 'dsh-resource://file/session/session/document.pdf', referenceId: 'view-a',
+    })
+    stop()
+    await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
+test('closing a view during reacquisition releases its late Host reference without publishing it', async () => {
+  const lifetime = new AbortController()
+  let deliverOpen!: (value: unknown) => void
+  let recoveryStarted!: () => void
+  const started = new Promise<void>(resolve => { recoveryStarted = resolve })
+  let cleanupDone!: () => void
+  const cleaned = new Promise<void>(resolve => { cleanupDone = resolve })
+  const calls: Record<string, unknown>[] = []
+  let opens = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push(request)
+    if (method === 'pdf.watch') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    if (request.action === 'open') {
+      if (++opens === 1) return recoveryWire('old', 5)
+      recoveryStarted()
+      return new Promise(resolve => { deliverOpen = resolve })
+    }
+    if (request.action === 'release') {
+      if (request.id === 'new') cleanupDone()
+      return { ok: true, value: { status: 'released' } }
+    }
+    throw new Error('Unexpected action')
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    const received: string[] = []
+    const stop = api.subscribe('old', value => { received.push(value.id) })
+    await started
+    await api.release('session', undefined, 'view-a')
+    stop()
+    deliverOpen(recoveryWire('new', 0))
+    await cleaned
+    assert.deepEqual(received, [])
+    assert.deepEqual(calls.filter(call => call.action === 'release').map(call => call.id), [undefined, 'new'])
+  } finally { lifetime.abort() }
+})
+
+test('permission and transport errors never trigger an implicit reopen', async () => {
+  for (const problem of [{ ok: false, error: { code: 'pdf/forbidden', message: 'Forbidden' } }, new Error('offline')]) {
+    const lifetime = new AbortController()
+    const calls: Record<string, unknown>[] = []
+    let opened = false
+    const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+      const request = payload as Record<string, unknown>
+      calls.push(request)
+      if (method === 'pdf.watch') return new Promise(() => {})
+      if (request.action === 'open') { opened = true; return recoveryWire('old', 0) }
+      if (request.action === 'refresh') {
+        if (problem instanceof Error) throw problem
+        return problem
+      }
+      if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+      throw new Error('Unexpected action')
+    } } }, lifetime.signal)
+    try {
+      await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+      const stop = api.subscribe('old', () => {})
+      await assert.rejects(api.refresh('session', 'old'))
+      assert.equal(opened, true)
+      assert.equal(calls.filter(call => call.action === 'open').length, 1)
+      stop()
+      await api.release('session', 'old', 'view-a')
+    } finally { lifetime.abort() }
+  }
+})
+
+test('reacquisition rejects a changed source path and releases the new reference', async () => {
+  const lifetime = new AbortController()
+  const calls: Record<string, unknown>[] = []
+  let opens = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push(request)
+    if (method === 'pdf.watch') return new Promise(() => {})
+    if (request.action === 'open') {
+      const wire = recoveryWire(++opens === 1 ? 'old' : 'foreign', 0)
+      if (opens > 1) wire.value.path = '/other.pdf'
+      return wire
+    }
+    if (request.action === 'refresh') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    if (request.action === 'release') return { ok: true, value: { status: 'released' } }
+    throw new Error('Unexpected action')
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    const stop = api.subscribe('old', () => {})
+    await assert.rejects(api.refresh('session', 'old'), /different source/)
+    assert.deepEqual(calls.filter(call => call.action === 'release')[0], {
+      action: 'release', sessionId: 'session', id: 'foreign', referenceId: 'view-a',
+    })
+    stop()
+    await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
 test('reference cleanup uses a fresh bounded transport after Client lifetime aborts', async () => {
   const lifetime = new AbortController()
   const calls: Array<{ payload: object; signal: AbortSignal | undefined }> = []

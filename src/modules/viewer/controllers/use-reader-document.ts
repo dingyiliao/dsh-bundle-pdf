@@ -164,7 +164,9 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
       try {
         const next = await Promise.race([Promise.resolve().then(() => api.refresh(sessionId, document.snapshot.id, signal)), cancelled])
         if (!owns() || signal.aborted) return
-        if (next.id !== document.snapshot.id) throw new Error('PDF refresh returned a different document')
+        if (next.id !== document.snapshot.id && (!next.path || next.path !== document.snapshot.path)) {
+          throw new Error('PDF refresh returned a different document')
+        }
         setSnapshot(previous => previous?.id === next.id && previous.revision > next.revision ? previous : next)
         setRecoveryEpoch(value => value + 1)
       } catch (failure) {
