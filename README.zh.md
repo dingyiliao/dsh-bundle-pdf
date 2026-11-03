@@ -19,6 +19,21 @@
 
 ![多级跳转与回退](docs/screenshots/04-multilevel-back-history.png)
 
+<details>
+<summary>更多截图与演示</summary>
+
+![书签与目录](docs/screenshots/02-bookmarks-and-outline.png)
+
+![便签与标注](docs/screenshots/03-notes-and-annotations.png)
+
+![模型工具工作流](docs/screenshots/05-model-tool-workflow.png)
+
+- [阅读与 AI 理解演示](docs/demos/01-reading-and-ai-understanding.mp4)
+- [模型工具协作演示](docs/demos/02-agent-tool-collaboration.mp4)
+- [复现步骤与引擎要求](docs/DEMOS.md)
+
+</details>
+
 ## 安装
 
 已验证 DSH `0.2.1-rc.5`，其他支持版本见 [package.json](package.json)。
