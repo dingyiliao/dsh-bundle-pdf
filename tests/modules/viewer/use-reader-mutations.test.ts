@@ -1,15 +1,10 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act as reactAct } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderMutations, type ReaderMutationsOptions } from '../../../src/modules/viewer/controllers/use-reader-mutations.ts'
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 async function withMutations(run: (fixture: {
   state(): ReturnType<typeof useReaderMutations>
@@ -21,12 +16,9 @@ async function withMutations(run: (fixture: {
   clearCount(): number
   changeCalls: unknown[][]
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   let current = { id: 'doc-1', revision: 1, conflict: false } as WorkspaceSnapshot
   const owner = { current: 1 }
@@ -47,11 +39,8 @@ async function withMutations(run: (fixture: {
     clearCount: () => cleared, changeCalls }) }
   finally {
     await reactAct(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

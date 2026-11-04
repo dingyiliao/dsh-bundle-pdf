@@ -1,15 +1,11 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/modules/viewer/controllers/use-reader-document.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const makeSnapshot = (id: string, sourceVersion = 'source-1') => ({
   id, path: '/tmp/sample.pdf', sourceVersion, contentVersion: 'content-1', revision: 1,
   dirty: false, canUndo: false, canRedo: false, conflict: false,
@@ -27,14 +23,11 @@ async function withDocument(run: (fixture: {
   failed: string[]
   switches: string[]
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const prior = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
-    IS_REACT_ACT_ENVIRONMENT: true })) {
-    prior.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+    IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const loaded: string[] = [], failed: string[] = [], switches: string[] = []
   let latest: ReturnType<typeof useReaderDocument> | undefined
@@ -52,11 +45,8 @@ async function withDocument(run: (fixture: {
   try { await run({ state: () => latest!, options, render, unmount, loaded, failed, switches }) }
   finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

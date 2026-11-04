@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { Page, type PageProps } from '../../../src/modules/viewer/rendering/Page.tsx'
@@ -7,11 +7,6 @@ import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import type { NativeDocument, NativePage } from '../../../src/modules/viewer/rendering/document.ts'
 import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { PdfOcrTextPart } from '../../../src/ocr/mapping.ts'
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 const geometry: PdfPageInfo = { page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }
 
@@ -36,9 +31,8 @@ async function withPage(run: (env: {
   pageLoads(): number
   calls: { annotations: string[]; annotationIntents: string[]; destinations: unknown[]; actions: string[]; errors: string[]; opened: string[]; tileAnnotations: boolean[] }
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="scroll"><div id="mount"></div></div></body></html>',
-    { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="scroll"><div id="mount"></div></div></body></html>', { globals: [] })
+
   let pageVisible = true
   const rect = (width: number, height: number, top = 0) => ({ x: 0, y: top, left: 0, top, right: width, bottom: top + height,
     width, height, toJSON() {} })
@@ -52,10 +46,7 @@ async function withPage(run: (env: {
     cancelAnimationFrame: (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [name, value] of Object.entries(globals)) {
-    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
-    Object.defineProperty(globalThis, name, { configurable: true, value })
-  }
+  installDom(globals)
   const oldBounds = dom.HTMLElement.prototype.getBoundingClientRect
   dom.HTMLElement.prototype.getBoundingClientRect = function () {
     if (this.id === 'scroll') return rect(500, 600) as DOMRect
@@ -128,11 +119,8 @@ async function withPage(run: (env: {
     await act(async () => { view.unmount() })
     dom.HTMLElement.prototype.getBoundingClientRect = oldBounds
     dom.HTMLCanvasElement.prototype.getContext = oldContext
-    dom.close()
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
-      else Reflect.deleteProperty(globalThis, name)
-    }
+    restoreDom()
+
   }
 }
 

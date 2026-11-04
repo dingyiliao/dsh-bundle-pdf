@@ -125,6 +125,11 @@ test('presentation of supplied lexical data identifies the interpretation and es
   assert.match(html, /role="note"/)
   assert.match(html, /data-certainty="tentative"/)
   assert.match(html, /推测补全/)
+  assert.match(html, /<details\b/)
+  assert.doesNotMatch(html, /<details[^>]*\bopen(?:=|\s|>)/,
+    'the full reconstructed source must not be expanded ahead of the translation')
+  assert.match(html, /<summary\b[^>]*>[\s\S]*?推测补全[\s\S]*?<\/summary>/,
+    'the qualification remains visible while its full source is collapsed')
   assert.match(html, /class="dsh-pdf-translation-interpreted-text" dir="auto">subtract</)
   assert.equal((html.match(/>subtract</g) ?? []).length, 1, 'the completed text belongs only to its qualified notice')
   assert.doesNotMatch(html, /dsh-pdf-translation-term/)
@@ -153,6 +158,8 @@ test('confident correction and completion have distinct localized labels', () =>
       },
     }))
     assert.match(html, new RegExp(expected))
+    assert.match(html, new RegExp(`<summary\\b[^>]*>[\\s\\S]*?${expected}[\\s\\S]*?<\\/summary>`))
+    assert.doesNotMatch(html, /<details[^>]*\bopen(?:=|\s|>)/)
     assert.match(html, /reconstructed source/)
     assert.doesNotMatch(html, /Possible correction|Possible completion/)
   }

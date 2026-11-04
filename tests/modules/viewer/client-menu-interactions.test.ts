@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
@@ -11,15 +11,10 @@ import { ZoomMenu } from '../../../src/modules/viewer/components/ZoomMenu.tsx'
 import { ToolbarDisclosure } from '../../../src/modules/viewer/components/ToolbarDisclosure.tsx'
 import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { globals: [] })
+
   const values = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node,
     MutationObserver: dom.MutationObserver, getComputedStyle: dom.getComputedStyle.bind(dom),
     Event: dom.Event, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent,
@@ -28,10 +23,7 @@ async function withDom(run: (dom: Window & typeof globalThis, container: HTMLEle
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
   const rootView = createRoot(container)
@@ -41,11 +33,8 @@ async function withDom(run: (dom: Window & typeof globalThis, container: HTMLEle
   try { await run(dom, container, render) }
   finally {
     await act(async () => { rootView.unmount() })
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 
@@ -274,6 +263,19 @@ test('embedded toolbar disclosures preserve internal interaction and close on ou
     assert.equal(triggerRef.current?.getAttribute('aria-expanded'), 'false')
     assert.equal(openings, 2)
     assert.deepEqual(transitions, [true, false, true, false])
+    await toggle(true)
+    await act(async () => {
+      save!.focus()
+      save!.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }))
+    })
+    assert.equal(details.open, true, 'ordinary action keys do not dismiss the menu')
+    await act(async () => {
+      const committed = toggled()
+      save!.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
+      await committed
+    })
+    assert.equal(details.open, false, 'inline tools share the language menu Escape behavior')
+    assert.equal(dom.document.activeElement, triggerRef.current, 'Escape restores the menu trigger focus')
   })
 })
 

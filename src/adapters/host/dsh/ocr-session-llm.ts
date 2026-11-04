@@ -1,6 +1,6 @@
 import { OcrError, type OcrOutput } from '../../../ocr/types.js'
 import type { HostOcrBackend, HostOcrRequest } from '../../../modules/ocr/index.js'
-import type { OcrModelRoute } from './ocr-model-route.js'
+import type { SessionModelRoute } from './session-model-route.js'
 import { sessionModelCacheIdentity, type SessionModelInfo } from './model-cache-identity.js'
 
 interface ImageReference {
@@ -39,7 +39,7 @@ export interface SessionOcrLlm {
 export interface SessionLlmOcrDependencies {
   getLlm(): SessionOcrLlm | undefined
   getAttachments(): SessionOcrAttachmentStore | undefined
-  resolveModel(sessionId: string, signal: AbortSignal): Promise<OcrModelRoute>
+  resolveModel(sessionId: string, signal: AbortSignal): Promise<SessionModelRoute>
   maxOutputTokens?: number
   maxOutputCharacters?: number
 }
@@ -86,7 +86,7 @@ export function createSessionLlmOcrBackend(dependencies: SessionLlmOcrDependenci
     throw new RangeError('OCR model output limits must be positive integers.')
   }
   const resolveModel = async (sessionId: string, signal: AbortSignal): Promise<{
-    route: OcrModelRoute; llm: SessionOcrLlm; info: SessionModelInfo
+    route: SessionModelRoute; llm: SessionOcrLlm; info: SessionModelInfo
   }> => {
     const llm = dependencies.getLlm()
     if (!llm) throw new OcrError('engine-unavailable', 'Model or image attachment service is unavailable.')

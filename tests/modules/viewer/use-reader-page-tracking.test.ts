@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -8,27 +8,19 @@ import type { PageView } from '../../../src/modules/viewer/model/reader-selectio
 import { setWindowLayout } from '../../../src/modules/viewer/rendering/window-layout.ts'
 import { useReaderPageTracking } from '../../../src/modules/viewer/controllers/use-reader-page-tracking.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('page tracking follows the visible page but preserves a user-edited page number', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
   // React's legacy input-event fallback probes these methods in jsdom on focus.
   Object.defineProperty(dom.HTMLElement.prototype, 'attachEvent', { configurable: true, value() {} })
   Object.defineProperty(dom.HTMLElement.prototype, 'detachEvent', { configurable: true, value() {} })
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
   const values = {
     window: dom, document: dom.document, Event: dom.Event,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const root = createRoot(dom.document.getElementById('root')!)
   const snapshot = { id: 'doc-1' } as WorkspaceSnapshot
   let tracked: ReturnType<typeof useReaderPageTracking> | undefined
@@ -87,23 +79,17 @@ test('page tracking follows the visible page but preserves a user-edited page nu
     assert.equal(current().pageInput, '3', 'an abandoned draft cannot remain after focus leaves the field')
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })
 
 test('a clamped explicit jump survives queued scroll events while real movement and document replacement resume tracking', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, Event: dom.Event,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, Event: dom.Event,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   let snapshot = { id: 'doc-1', contentVersion: 'v1' } as WorkspaceSnapshot
   let tracking!: ReturnType<typeof useReaderPageTracking>
@@ -168,10 +154,7 @@ test('a clamped explicit jump survives queued scroll events while real movement 
     assert.equal(tracking.currentPage, 1, 'a fully visible document starts at page 1 rather than selecting its last page')
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

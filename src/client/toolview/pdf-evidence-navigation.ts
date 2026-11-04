@@ -1,3 +1,4 @@
+import { browserSha256 } from '../../shared/browser-sha256.js'
 import type { WorkspaceSnapshot } from '../../shared/contracts.js'
 import type { PdfEvidenceEntry } from './pdf-evidence-model.js'
 import type { TextNavigationTarget } from '../../contracts/navigation.js'
@@ -7,7 +8,7 @@ export interface VisiblePdfReader {
   snapshot: WorkspaceSnapshot
   /** Must return null when the tab or this exact snapshot is no longer visible. */
   current(): WorkspaceSnapshot | null
-  readPageText(page: number, signal: AbortSignal): Promise<string>
+  readPageText(page: number, signal: AbortSignal, options?: { recover?: boolean }): Promise<string>
   jump(page: number): Promise<boolean>
   navigateTarget?(page: number, target: TextNavigationTarget, signal: AbortSignal): Promise<EvidenceNavigationResult>
 }
@@ -26,6 +27,8 @@ export interface EvidenceRevalidationRequest {
   sessionId: string
   documentId: string
   sourcePathDigest: string
+  sourceDigest?: string
+  extraction?: 'local-ocr'
   page: number
   pageTextDigest: string
   startUtf16: number
@@ -63,17 +66,11 @@ async function pageStillMatches(evidence: PdfEvidenceEntry, pageText: string,
     && await hashText(pageText) === evidence.pageTextDigest
 }
 
-async function browserSha256(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
-  return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`
-}
-
 /** A historical card navigates only after the Host reauthorizes the current
  * document and verifies the full page text; the Client then checks its own
  * visible Reader lease and page text before jumping. */
 export function createPdfEvidenceNavigation(revalidate: RevalidateEvidence,
-  hashText = browserSha256): PdfEvidenceNavigation {
+  hashText: (text: string) => Promise<string> = browserSha256): PdfEvidenceNavigation {
   const readers = new Map<symbol, { reader: VisiblePdfReader; pathDigest?: string }>()
   const listeners = new Set<() => void>()
   let revision = 0
@@ -124,13 +121,14 @@ export function createPdfEvidenceNavigation(revalidate: RevalidateEvidence,
           || await hashText(current.path) !== evidence.sourcePathDigest) return 'stale'
         signal.throwIfAborted()
         const validated = await revalidate({ action: 'revalidate', sessionId, documentId: current.id,
-          sourcePathDigest: evidence.sourcePathDigest, page: evidence.page,
+          sourcePathDigest: evidence.sourcePathDigest, sourceDigest: evidence.sourceDigest, page: evidence.page,
+          ...(evidence.extraction === 'local-ocr' ? { extraction: evidence.extraction } : {}),
           pageTextDigest: evidence.pageTextDigest, startUtf16, endUtf16: boundedEnd,
           excerpt, excerptSha256: evidence.snapshot.sha256 }, signal)
         signal.throwIfAborted()
         if (!stillVisible(entry, sessionId, evidence)
           || !isCurrentResult(current, evidence.page, validated)) return 'stale'
-        const pageText = await reader.readPageText(evidence.page, signal)
+        const pageText = await reader.readPageText(evidence.page, signal, { recover: evidence.extraction === 'local-ocr' })
         signal.throwIfAborted()
         if (!stillVisible(entry, sessionId, evidence)
           || !await pageStillMatches(evidence, pageText, hashText)) return 'stale'

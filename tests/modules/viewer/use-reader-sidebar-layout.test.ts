@@ -1,17 +1,12 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useReaderSidebarLayout } from '../../../src/modules/viewer/controllers/use-reader-sidebar-layout.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('each PDF keeps its own sidebar section and expansion across file switches', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
   const firstFile = 'dsh-resource://file/session/shared-session/first.pdf'
   const secondFile = 'dsh-resource://file/session/shared-session/second.pdf'
   let width = 800
@@ -25,11 +20,8 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
   const globals = { window: dom, document: dom.document, ResizeObserver: Observer,
     IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer) }
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+
+  installDom(globals)
   Object.defineProperty(dom.HTMLElement.prototype, 'clientWidth', { configurable: true, get() { return width } })
   const root = createRoot(dom.document.getElementById('root')!)
   let state: ReturnType<typeof useReaderSidebarLayout> | undefined
@@ -130,10 +122,7 @@ test('each PDF keeps its own sidebar section and expansion across file switches'
     assert.equal(state?.expanded, false, 'changing the measured rail width recalculates the available reading area')
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

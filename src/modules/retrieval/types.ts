@@ -34,6 +34,9 @@ export interface RetrievalCache {
   /** Bounded ordered reads for one-time derived-data migration, never an authority grant. */
   scan?(prefix: string, afterKey?: string, limit?: number): Promise<{ entries: [string, unknown][]; nextKey?: string }>
   set(key: string, value: unknown): Promise<void>
+  /** Atomically replace an unchanged JSON record; undefined expects absence.
+   * A failed comparison must leave the current record untouched. */
+  compareAndSet?(key: string, expected: unknown, value: unknown): Promise<boolean>
   /** All records are durable before success; implementations may commit one transaction. */
   setMany?(entries: readonly (readonly [string, unknown])[]): Promise<void>
   /** Remove all derived records for an explicit global cache reset. */

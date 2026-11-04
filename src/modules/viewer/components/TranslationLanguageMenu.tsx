@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
+import { useInlineDisclosure } from './ToolbarDisclosure.js'
 import { translationTargetLanguages } from '../../../shared/contracts.js'
 import { ToolbarIcon } from './ToolbarIcon.js'
 
@@ -11,13 +12,7 @@ export function TranslationLanguageMenu({ value, label, languageName, onChange }
   const details = useRef<HTMLDetailsElement>(null)
   const trigger = useRef<HTMLElement>(null)
 
-  useEffect(() => {
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && details.current && !details.current.contains(event.target)) details.current.open = false
-    }
-    document.addEventListener('pointerdown', close)
-    return () => document.removeEventListener('pointerdown', close)
-  }, [])
+  const dismissal = useInlineDisclosure(details, trigger)
 
   return <details ref={details} className="dsh-pdf-translation-language" onToggle={event => {
     if (!event.currentTarget.open) return
@@ -40,23 +35,14 @@ export function TranslationLanguageMenu({ value, label, languageName, onChange }
       menu.style.bottom = 'auto'
       menu.style.maxHeight = `${Math.max(0, below)}px`
     }
-  }} onBlur={event => {
-    if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false
-  }} onKeyDown={event => {
-    if (event.key !== 'Escape' || !event.currentTarget.open) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.currentTarget.open = false
-    trigger.current?.focus()
-  }}>
+  }} onBlur={dismissal.onBlur} onKeyDown={dismissal.onKeyDown}>
     <summary ref={trigger} className="dsh-pdf-translation-language-trigger" aria-label={`${label}: ${languageName(value)}`} title={languageName(value)}>
       <span>{languageName(value)}</span><ToolbarIcon name="chevronDown" />
     </summary>
     <div className="dsh-pdf-tools-menu dsh-pdf-translation-language-menu dsh-pdf-glass" role="group" aria-label={label}>
       {translationTargetLanguages.map(language => <button key={language} type="button" aria-label={languageName(language)} aria-pressed={language === value}
         onClick={() => {
-          if (details.current) details.current.open = false
-          trigger.current?.focus()
+          dismissal.close(true)
           if (language !== value) onChange(language)
         }}>{languageName(language)}</button>)}
     </div>

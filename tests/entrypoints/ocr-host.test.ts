@@ -58,6 +58,13 @@ test('OCR plugin wires its session-model backend, agent tool and Fiber disposal'
     assert.equal(missingController.status, 'unavailable')
     assert.match(missingController.reason ?? '', /session controller is unavailable/)
 
+    services.set('sessionController', { async resolveAgent() { return { error: new Error('private session failure') } } })
+    assert.deepEqual(await service.availability('session-ocr-plugin'),
+      { status: 'not-configured', reason: 'The OCR session is unavailable.' })
+    services.set('sessionController', { async resolveAgent() { return { agent: { session: {} } } } })
+    assert.deepEqual(await service.availability('session-ocr-plugin'),
+      { status: 'not-configured', reason: 'Choose a model for this session before using OCR.' })
+
     services.set('sessionController', { async resolveAgent(sessionId: string) {
       assert.equal(sessionId, 'session-ocr-plugin')
       return { agent: { session: { requestHeader() {

@@ -1,4 +1,4 @@
-import type { EngineConfiguration, EngineDescriptor, EngineJson } from '../modules/engines/index.js'
+import type { EngineConfiguration, EngineDescriptor, EngineJson } from '../../modules/engines/index.js'
 
 /** Only contributor-declared scalar fields are rendered; secrets stay in Host credential providers. */
 export function EngineConfigurationFields({ descriptor, config, disabled, prefix, change, referenceHint }:

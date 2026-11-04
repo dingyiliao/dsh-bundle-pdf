@@ -1,5 +1,5 @@
 import type { PdfPageInfo } from '../../../core/pdf-types.js'
-import type { NavigationPosition } from '../../../navigation/index.js'
+import type { NavigationPosition } from '../../../shared/navigation-history.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { NativeDocument } from '../rendering/document.js'
 import { pageIndexAtOffset, pageWindowLeft, windowLayout } from '../rendering/window-layout.js'

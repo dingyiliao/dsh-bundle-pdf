@@ -1,5 +1,6 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire, registerHooks } from 'node:module'
+import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
@@ -10,11 +11,6 @@ registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
   return next(url, context)
 } })
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 function snapshot(): WorkspaceSnapshot {
   const first = { page: 1, cropBox: [0, 0, 400, 600] as [number, number, number, number], rotation: 0, userUnit: 1 }
@@ -28,10 +24,10 @@ function snapshot(): WorkspaceSnapshot {
 }
 
 test('Reader restores the origin and reports a non-timeout layout read failure during navigation', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
   const canvasContext = Object.getOwnPropertyDescriptor(dom.HTMLCanvasElement.prototype, 'getContext')
   Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', { configurable: true, value: () => null })
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
   const values = {
     window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLInputElement: dom.HTMLInputElement, Element: dom.Element,
@@ -44,10 +40,7 @@ test('Reader restores the origin and reports a non-timeout layout read failure d
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
 
   const { Reader } = await import('../../../src/client/Reader.tsx')
   const { createRoot } = await import('react-dom/client')
@@ -109,10 +102,7 @@ test('Reader restores the origin and reports a non-timeout layout read failure d
     tab.abort()
     await act(async () => { root.unmount() })
     if (canvasContext) Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', canvasContext)
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

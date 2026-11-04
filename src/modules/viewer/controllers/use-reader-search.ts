@@ -39,8 +39,6 @@ export function useReaderSearch(options: ReaderSearchOptions) {
     setSearched(false)
   }
 
-  const resetContent = () => invalidateDocument()
-
   const run = async (): Promise<void> => {
     const { document, pages, ocrPages, tabSignal, onError } = latest.current
     if (!document || !query.trim() || tabSignal.aborted) return
@@ -54,5 +52,5 @@ export function useReaderSearch(options: ReaderSearchOptions) {
       onSettled: () => setSearching(false) })
   }
 
-  return { query, setQuery, searching, hits, searched, run, cancel, invalidateDocument, resetContent }
+  return { query, setQuery, searching, hits, searched, run, cancel, invalidateDocument }
 }

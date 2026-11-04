@@ -38,7 +38,6 @@ function Fixture() {
     <div className="dsh-pdf-sidebar"><div className="dsh-pdf-sidebar-shell"><div className="dsh-pdf-sidebar-main"><AnnotationList
       annotations={mode === 'notes' ? notes : mode === 'multi-page-notes' ? multiPageNotes : highlights}
       selectedId={selectedId} pdf={mode === 'highlights' ? pdf as unknown as NativeDocument : null}
-      details={<div id="annotation-test-editor"><textarea aria-label="Annotation editor" defaultValue="Comment" /></div>}
       onSelect={item => setSelectedId(item.id)} onDeselect={() => setSelectedId(undefined)} t={key => labels[key] ?? key} />
   </div></div></div></div></div>
 }

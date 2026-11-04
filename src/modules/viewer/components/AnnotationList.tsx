@@ -27,7 +27,6 @@ interface Props {
   annotations: readonly PdfAnnotation[]
   selectedId?: string
   pdf: NativeDocument | null
-  details?: React.ReactNode
   onSelect: (annotation: PdfAnnotation) => void
   onDeselect: () => void
   t: (key: string) => string
@@ -157,7 +156,7 @@ function AnnotationPageGroup({ group, first, end, pinned, totalRows, selectedId,
   </div>
 }
 
-export function AnnotationList({ annotations, selectedId, pdf, details, onSelect, onDeselect, t }: Props) {
+export function AnnotationList({ annotations, selectedId, pdf, onSelect, onDeselect, t }: Props) {
   const [filter, setFilter] = useState<AnnotationFilter>('all')
   const layout = useMemo(() => annotationLayout(annotations, filter), [annotations, filter])
   const list = useRef<HTMLDivElement>(null)
@@ -215,31 +214,15 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
     let frame = 0
     const schedule = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; measure() }) }
     const observer = new ResizeObserver(schedule)
-    const watched = new Set<Element>()
-    const observeLayout = () => {
-      const next = new Set<Element>([scroll, element])
-      // The selected annotation editor precedes this list. Resizing its textarea
-      // moves the list without changing the list's own dimensions.
-      for (let node: Element | null = element; node && node !== scroll; node = node.parentElement) {
-        for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) next.add(sibling)
-      }
-      for (const old of watched) if (!next.has(old)) observer.unobserve(old)
-      for (const item of next) if (!watched.has(item)) observer.observe(item)
-      watched.clear()
-      for (const item of next) watched.add(item)
-    }
-    observeLayout()
-    const mutation = new MutationObserver(() => { observeLayout(); schedule() })
-    mutation.observe(scroll, { childList: true })
+    observer.observe(scroll)
+    observer.observe(element)
     scroll.addEventListener('scroll', schedule, { passive: true })
     measure()
     return () => {
       scroll.removeEventListener('scroll', schedule)
-      mutation.disconnect(); observer.disconnect(); cancelAnimationFrame(frame)
+      observer.disconnect(); cancelAnimationFrame(frame)
     }
   }, [layout.height, measure])
-  // The editor above the list can change height without resizing the list itself.
-  useEffect(() => { measure() })
 
   useEffect(() => {
     const index = focusPending.current
@@ -289,7 +272,6 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
     title={<>{t('reader.comments')} <span className="dsh-pdf-annotation-count">{annotations.length}</span></>}
     actions={actions}
     verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}>
-    {details}
     {!!layout.groups.length && <div ref={list} className="dsh-pdf-annotation-virtual" role="list" tabIndex={0}
       aria-label={t('reader.comments')} onKeyDown={onKeyDown}
       onFocusCapture={event => {
@@ -308,7 +290,7 @@ export function AnnotationList({ annotations, selectedId, pdf, details, onSelect
           selectedId={selectedId} pdf={pdf} getText={getText} cachedExcerpts={cachedExcerpts} onSelect={onSelect} t={t} />
       })}
     </div>}
-    {!layout.groups.length && (annotations.length > 0 || !details) && <p className="dsh-pdf-sidebar-empty">
+    {!layout.groups.length && <p className="dsh-pdf-sidebar-empty">
       {t(annotations.length ? 'reader.noMatchingAnnotations' : 'reader.noAnnotations')}
     </p>}
   </ScrollablePanel>

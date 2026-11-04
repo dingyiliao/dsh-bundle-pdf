@@ -3,7 +3,7 @@ import type { AgentPageReadPort } from '../evidence/index.js'
 import { evidenceSha256, type FreshSourceRead, type TextReferenceResolverPort } from '../evidence/index.js'
 import type { PdfAnnotationOperation, PdfColor, PdfRect } from '../../core/pdf-types.js'
 import type { HostWorkspaceSnapshot } from '../working-copy/index.js'
-import type { ModelAnnotationInput } from './index.js'
+import type { ModelAnnotationItem } from './service.js'
 import { locateTextRange } from '../../shared/geometry/text-target.js'
 
 type AddOperation = Extract<PdfAnnotationOperation, { type: 'add' }>
@@ -27,7 +27,7 @@ function textGeometryPages(pages: AgentPageReadPort | undefined): AgentPageReadP
   return pages
 }
 
-async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationItem,
   sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<AnnotationPlan> {
   if (input.subtype === 'Text' && !input.comment?.trim()) fail('pdf/invalid-comment', 'A text note requires a non-empty comment')
   if (input.target.kind === 'reference') fail('pdf/invalid-target', 'A reference must use the reference annotation path')
@@ -63,7 +63,7 @@ async function singleAnnotation(snapshot: HostWorkspaceSnapshot, input: ModelAnn
 }
 
 /** The complete range is reverified before producing any draft operation. */
-async function referenceAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+async function referenceAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationItem,
   sessionId: string, signal: AbortSignal, references?: TextReferenceResolverPort,
   readSource?: FreshSourceRead): Promise<AnnotationPlan[]> {
   if (input.target.kind !== 'reference') fail('pdf/invalid-target', 'A text reference target is required')
@@ -96,7 +96,7 @@ async function referenceAnnotations(snapshot: HostWorkspaceSnapshot, input: Mode
   })
 }
 
-async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationItem,
   sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal): Promise<AnnotationPlan[]> {
   if (input.target.kind !== 'pdf-text-range') fail('pdf/invalid-target', 'A text range target is required')
   if (input.subtype === 'Text') fail('pdf/invalid-target', 'A text range can only be highlighted, underlined or struck out')
@@ -132,7 +132,7 @@ async function rangeAnnotations(snapshot: HostWorkspaceSnapshot, input: ModelAnn
 }
 
 /** Turn a model target into verified page operations before the working-copy transaction. */
-export async function buildAnnotationPlans(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationInput,
+export async function buildAnnotationPlans(snapshot: HostWorkspaceSnapshot, input: ModelAnnotationItem,
   sessionId: string, pages: AgentPageReadPort | undefined, signal: AbortSignal,
   references?: TextReferenceResolverPort, readSource?: FreshSourceRead): Promise<AnnotationPlan[]> {
   if (input.target.kind === 'reference') return referenceAnnotations(snapshot, input, sessionId, signal, references, readSource)

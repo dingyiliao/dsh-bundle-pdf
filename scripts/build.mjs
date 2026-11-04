@@ -20,15 +20,13 @@ await rm(join(dist, 'types'), { recursive: true, force: true })
 
 // The extension entries ship a public type surface without pulling Host/UI
 // development-only declarations into an external engine plugin.
-for (const config of ['tsconfig.ocr.json', 'tsconfig.image-host.json', 'tsconfig.capabilities.json']) {
-  await new Promise((resolveBuild, rejectBuild) => {
-    const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', config], {
-      cwd: project, stdio: 'inherit', windowsHide: true,
-    })
-    child.once('error', rejectBuild)
-    child.once('close', code => code === 0 ? resolveBuild() : rejectBuild(new Error(`${config} declaration build exited with status ${code}`)))
+await new Promise((resolveBuild, rejectBuild) => {
+  const child = spawn(process.execPath, [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.sdk.json'], {
+    cwd: project, stdio: 'inherit', windowsHide: true,
   })
-}
+  child.once('error', rejectBuild)
+  child.once('close', code => code === 0 ? resolveBuild() : rejectBuild(new Error(`SDK declaration build exited with status ${code}`)))
+})
 
 const common = {
   absWorkingDir: project,

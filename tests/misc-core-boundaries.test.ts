@@ -5,7 +5,7 @@ import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 import { projectPdfOperations } from '../src/modules/annotations/index.ts'
 import type { NewPdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../src/core/pdf-types.ts'
-import { NavigationHistory, type NavigationPosition } from '../src/navigation/index.ts'
+import { NavigationHistory, type NavigationPosition } from '../src/shared/navigation-history.ts'
 
 const timestamp = '2026-10-18T00:00:00.000Z'
 const document = (): PdfDocumentInfo => ({ pageCount: 1, pages: [{ page: 1, cropBox: [0, 0, 100, 100],

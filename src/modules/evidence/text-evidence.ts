@@ -10,15 +10,17 @@ export function createTextEvidence(snapshot: HostWorkspaceSnapshot, page: number
   startUtf16: number, endUtf16: number, content?: NativeTextContent,
   sourceDigest = evidenceSha256(snapshot.bytes)): PdfTextEvidence {
   const excerpt = text.slice(startUtf16, endUtf16)
-  const rects = content && approximateTextRects(content, snapshot.document.pages?.[page - 1], startUtf16, endUtf16)
+  const rects = content && !content.extraction
+    && approximateTextRects(content, snapshot.document.pages?.[page - 1], startUtf16, endUtf16)
   return { refId: `pdfref_${randomUUID()}`, documentId: snapshot.id,
     sourcePath: snapshot.path, sourceDigest, sourceVersion: snapshot.sourceVersion,
     contentVersion: snapshot.contentVersion, revision: snapshot.revision, page, source: 'pdf-text',
     ...(content?.extraction ? { extraction: content.extraction } : {}),
+    ...(content?.quality?.unmappedCharacters ? { quality: { unmappedCharacters: content.quality.unmappedCharacters } } : {}),
     pageTextDigest: evidenceSha256(text), snapshot: { text: excerpt, sha256: evidenceSha256(excerpt) },
     locator: { kind: 'text-window', startUtf16, endUtf16, ...(rects ? { rectsPdf: rects } : {}) },
-    precision: rects ? 'approximate-geometry' : 'exact-text',
-    limitations: [...(content?.warnings ?? []), ...(rects
+    precision: content?.extraction ? 'page-only' : rects ? 'approximate-geometry' : 'exact-text',
+    limitations: [...(content?.extraction ? ['Local OCR is derived text: only verified source-page navigation is supported; OCR coordinates cannot authorize native PDF text markup.'] : []), ...(content?.warnings ?? []), ...(rects
       ? ['PDF-space boxes approximate selection bounds from glyph origins; they are not exact painted outlines.']
       : ['Text offsets refer to joined page text; visual PDF coordinates are not verified.'])].slice(0, 8) }
 }

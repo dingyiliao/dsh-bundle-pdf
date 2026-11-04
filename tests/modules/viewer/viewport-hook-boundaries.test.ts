@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act, useState } from 'react'
 import { usePdfViewportSize, type PdfViewportSize } from '../../../src/modules/viewer/controllers/use-pdf-viewport-size.ts'
@@ -11,16 +11,10 @@ import { clearWheelZoomReflow, pageIndexAtOffset, setWheelZoomReflow, setWindowL
 import { readerPageScale } from '../../../src/modules/viewer/controllers/navigation-position.ts'
 import { readingViewportBounds } from '../../../src/modules/viewer/rendering/pdf-viewport-geometry.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 async function withDom(run: (dom: Window & typeof globalThis, viewport: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>, frames: Map<number, FrameRequestCallback>) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><div id="mount"></div><div id="viewport"><div data-page-number="1"><div data-pdf-page="1"></div></div></div>',
-    { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div id="mount"></div><div id="viewport"><div data-page-number="1"><div data-pdf-page="1"></div></div></div>', { globals: [] })
+
   const frames = new Map<number, FrameRequestCallback>()
   let nextFrame = 1
   const globals = { window: dom, document: dom.document, Element: dom.Element, HTMLElement: dom.HTMLElement,
@@ -32,10 +26,7 @@ async function withDom(run: (dom: Window & typeof globalThis, viewport: HTMLElem
     },
     cancelAnimationFrame: (id: number) => { frames.delete(id) },
     IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(globals)
   const { createRoot } = await import('react-dom/client')
   const mount = dom.document.getElementById('mount')!
   const viewport = dom.document.getElementById('viewport')!
@@ -44,11 +35,8 @@ async function withDom(run: (dom: Window & typeof globalThis, viewport: HTMLElem
     await run(dom, viewport, async element => { await act(async () => { view.render(element) }) }, frames)
   } finally {
     await act(async () => { view.unmount() })
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

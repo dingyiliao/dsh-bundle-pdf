@@ -1,14 +1,11 @@
+import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const ready = (): ConfigFormSnapshot => ({ status: 'ready', value: { ...defaultSettings },
   base: {}, user: {}, writable: true, revision: 1 })
 const formFor = (snapshot: ConfigFormSnapshot): ConfigForm => ({ getSnapshot: () => snapshot,
@@ -20,16 +17,7 @@ test('a settings connection without index management does not advertise an unusa
 })
 
 test('index rebuild settings show progress and recovery, fence duplicates, and cancel when their owner changes', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' }).window
-  const globals = new Map<string, PropertyDescriptor | undefined>()
-  for (const key of ['window', 'document', 'HTMLElement', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']) {
-    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-  }
-  Object.defineProperties(globalThis, {
-    window: { configurable: true, value: dom }, document: { configurable: true, value: dom.document },
-    HTMLElement: { configurable: true, value: dom.HTMLElement }, Event: { configurable: true, value: dom.Event },
-    MouseEvent: { configurable: true, value: dom.MouseEvent }, IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
-  })
+  const { dom, restore: restoreDom } = createDom()
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const legacySnapshot: ConfigFormSnapshot = { ...ready(), value: { ...defaultSettings,
@@ -125,10 +113,7 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
     finish()
   } finally {
     if (!unmounted) await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of globals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

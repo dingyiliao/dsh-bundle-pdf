@@ -6,7 +6,7 @@ import { PDF_INTENT_PROMPT, READER_PROMPT_SECTION, registerPdfSystemPrompt } fro
 import { FORM_CONTEXT_GUIDANCE, FORM_CONTROL_AVAILABILITY_GUIDANCE, FORM_FILLING_GUIDANCE, FORM_VERIFICATION_CHECKS } from '../src/adapters/host/dsh/form-guidance.ts'
 
 test('printed-only options are reported as unavailable, not fabricated, substituted or declared completed', () => {
-  assert.ok(PDF_INTENT_PROMPT.includes(FORM_CONTROL_AVAILABILITY_GUIDANCE))
+  assert.ok(FORM_FILLING_GUIDANCE.includes(FORM_CONTROL_AVAILABILITY_GUIDANCE))
   for (const fragment of ['Only controls with writable F labels', 'continue other independent fillable items',
     'physical page and printed label', 'do not classify it as not applicable', 'Never invent a label',
     'reuse a nearby control', 'choose a different answer as a substitute', 'Leave the intended choice unresolved',
@@ -17,19 +17,21 @@ test('printed-only options are reported as unavailable, not fabricated, substitu
 })
 
 test('form guidance requires full contextual understanding, a coverage inventory and read-back before claiming completion', () => {
-  for (const instruction of FORM_FILLING_GUIDANCE) assert.ok(PDF_INTENT_PROMPT.includes(instruction))
+  const guidance = FORM_FILLING_GUIDANCE.join(' ')
+  for (const instruction of FORM_FILLING_GUIDANCE) assert.ok(!PDF_INTENT_PROMPT.includes(instruction))
   for (const fragment of ['section headings', 'units, date formats', 'Never match by proximity alone',
     'every requested field', 'not applicable', 'missing/ambiguous', 'not evidence of applicability',
     'do not invent personal data', 'includeValues:true', 'reconcile all requested fields',
     'Report remaining missing information', 'single inspectionId', 'original inspected', 'NOT semantic labels',
     'independent checkbox fields', 'choiceGroups', 'onInactive:"preserve"', 'TWO phases',
-    'selected AND unselected', 'NOT semantic verification']) assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+    'selected AND unselected', 'NOT semantic verification']) assert.ok(guidance.includes(fragment), fragment)
+  assert.match(PDF_INTENT_PROMPT, /follow pdf_form_fill for page bindings, field rules and read-back verification/)
   assert.doesNotMatch(PDF_INTENT_PROMPT, /pdf_form_fill with exact field IDs/)
 })
 
 test('form understanding crosses page boundaries before filling while allowing relevant context reuse', () => {
   assert.equal(FORM_FILLING_GUIDANCE[0], FORM_CONTEXT_GUIDANCE)
-  assert.ok(PDF_INTENT_PROMPT.includes(FORM_CONTEXT_GUIDANCE))
+  assert.ok(!PDF_INTENT_PROMPT.includes(FORM_CONTEXT_GUIDANCE))
   for (const [pattern, purpose] of [
     [/Before writing any field.*form-level instructions.*complete section context/, 'Understand form and section scope before writing'],
     [/subject.*column header.*applicability rule.*preceding pages/, 'Recognize headings and rules inherited from earlier pages'],
@@ -43,9 +45,8 @@ test('form understanding crosses page boundaries before filling while allowing r
     [/all target pages before generating independent page fill calls/, 'Understand the batch before issuing independent writes'],
     [/missing, ambiguous or contradictory.*read further or ask.*before writing.*never guess/, 'Resolve uncertainty before editing'],
   ] as const) assert.match(FORM_CONTEXT_GUIDANCE, pattern, purpose)
-  const contextPosition = PDF_INTENT_PROMPT.indexOf(FORM_CONTEXT_GUIDANCE)
-  const fillPosition = PDF_INTENT_PROMPT.indexOf('Fill ONE inspected page per call')
-  assert.ok(contextPosition >= 0 && contextPosition < fillPosition, 'Understand context before constructing a fill call')
+  assert.match(PDF_INTENT_PROMPT, /Before filling.*form-level instructions and complete section context across all target pages/)
+  assert.match(PDF_INTENT_PROMPT, /Read preceding or referenced pages and page images.*reuse established context.*resolve missing or ambiguous context before writing/)
 })
 
 test('form workflow uses numbered controls, explicit caller rules and direct draft writes', () => {
@@ -160,7 +161,8 @@ test('atomic evidence guidance composes reading, editing and navigation around t
   for (const fragment of ['Compose independent tools', 'search, read evidence, annotate and jump are separate actions',
     'pdf_evidence_read', 'read nearby context and assess meaning',
     'Only create or change annotations when the user asks', 'current working-copy revision',
-    'ENTIRE snapshot.text', 'do not include headings, footers or other context unless requested',
+    'ENTIRE returned text range', 'candidate quote', 'narrow it with pdf_evidence_read before writing',
+    'do not include headings, footers or other context unless requested',
     'continuous range reference', 'every intervening page', 'never omit middle pages or guess text coordinates',
     'exact same resolved reference for annotation and navigation', 'exact stored range even when the same words repeat',
     'pdf_annotation_list', 'pdf_annotation_update', 'pdf_annotation_delete',
@@ -173,6 +175,16 @@ test('atomic evidence guidance composes reading, editing and navigation around t
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
   }
   assert.doesNotMatch(PDF_INTENT_PROMPT, /\b(?:pdf_locate|pdf_context|pdf_image_context|pdf_ocr_page|pdf_annotate|pdf_navigate)\b/)
+  assert.doesNotMatch(PDF_INTENT_PROMPT, /snapshot\.text/)
+})
+
+test('annotation batches and sequential revision chaining remain distinct from form inspection credentials', () => {
+  for (const fragment of ['one atomic annotations[] batch', 'each resolved reference may span pages',
+    'Other writes to the SAME document must run sequentially', 'previous successful result.revision as expectedRevision',
+    'never launch separate writes at the same revision', 'pdf_form_fill retains its original inspection revision contract',
+    'independent inspected pages', 'directly visible and undoable', 'requires separate human approval']) {
+    assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
+  }
 })
 
 test('search tools have distinct matching intent, opaque continuations and truthful semantic coverage', () => {
@@ -187,7 +199,7 @@ test('search tools have distinct matching intent, opaque continuations and truth
     'only complete ranks the entire requested scope; building/incomplete reports progress and coverage',
     'Similarity scores are leads, not confidence or proof',
     'enabled scanned-page OCR', 'optional generated image descriptions',
-    'image-description is a generated interpretation rather than a PDF quotation',
+    'auxiliary-vision is a generated interpretation rather than a PDF quotation',
     'Never describe keyword fallback as semantic search']) {
     assert.ok(PDF_INTENT_PROMPT.includes(fragment), fragment)
   }

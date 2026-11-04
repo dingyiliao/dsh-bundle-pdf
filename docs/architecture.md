@@ -47,11 +47,13 @@ RPC 和模型工具共享领域能力与工作副本，不各自实现写入事�
 | `src/modules/ocr/`、`image-understanding/` | 与 PDF 解耦的图像处理服务和任务生命周期 |
 | `src/modules/viewer/` | `components` 视图、`controllers` 交互状态、`rendering` 窗口化绘制、`model` 纯展示逻辑、`ports` 外部依赖 |
 | `src/adapters/host/dsh/` | DSH RPC、工具、会话、模型、授权和后台任务装配 |
+| `src/adapters/host/dsh/indexing/` | 索引迁移读写屏障，以及文档检索、预建和任务状态的组合 |
 | `src/adapters/host/{filesystem,storage,pdf-lib,pdfium,ocr,embedding}/` | 文件/存储及具体 PDF、OCR、embedding 实现 |
 | `src/adapters/client/{remote,dsh}/` | RPC 客户端、订阅、快照同步和会话发送 |
-| `src/client/` | Reader/Settings 组合、DSH 工具卡、会话生命周期与样式 |
+| `src/client/`、`src/client/settings/` | Reader 组合、DSH 工具卡、会话生命周期；设置组件、确认和合并逻辑及样式集中于 `settings/` |
 | `src/shared/` | 共享契约、纯坐标换算、有界缓存和订阅辅助 |
-| `src/core/pdf-types.ts`、`src/navigation/`、`src/engine/framing.ts` | PDF 数据类型、纯视口历史、原生帧协议 |
+| `src/core/pdf-types.ts`、`src/shared/navigation-history.ts` | PDF 数据类型、跨运行环境的纯视口历史 |
+| `src/adapters/host/pdfium/framing.ts` | 原生 worker 的帧协议 |
 | `src/{ocr,translation,embedding}/`、`src/host/` | 已发布 SDK、注册接口及 Host 类型入口 |
 | `native/` | PDFium worker、构建依赖锁与原生回调测试 |
 
@@ -100,6 +102,10 @@ Host 从连接或工具执行上下文取得可信身份，再按文件资源会
 `PageContent` 保留页几何、原生文字、UTF-16 范围及带来源的内容表示。`native-text`、`ocr-text` 和 `image-description` 分别记录生产者、配置身份、输入摘要、状态、警告与可选位置。当前视觉后备块是整页区域，不推断独立插图、公式或表格结构。OCR 和视觉描述可同时参与索引；它们是派生内容，不能冒充精确原生文字。
 
 `adapters/host/dsh/page-content.ts` 从已授权工作副本组合原生提取和图像引擎；`modules/retrieval` 只拥有可重建索引，不拥有第二份 PDF 或草稿。原生文字、OCR、描述按各自身份独立缓存，向量按文字及文档编码指纹复用。正文身份排除标注等编辑，使同路径、正文未变的保存和重开可复用；所有读取仍重新授权，缓存键不能授予访问权。
+
+读页的本地字符映射修复与新索引的内置 Tesseract OCR 共用 `page-ocr-artifacts` 原始产物链：相同源字节、路径、页、PDFium 构建、页几何、栅格参数和生产者身份才可复用。内置引擎统一使用不含标注和表单外观的 2048px 长边输入，保持读页修复密度；第三方 OCR 保留自己的引擎、配置、语言和 1024px 输入身份。产物只保存识别文字、图像坐标和来源，不保存图像或会话权限；每个订阅者独立复核授权与源，取消最后一个订阅者才取消共享生产。本地冷任务仍限制为一个 worker。历史 1024px 索引表示继续可读，不被强制重建，也不冒充新的原始产物。
+
+证据引用固定其文字表示：Host 复读和解析沿用签发时的原生／OCR 来源，Reader 的文字 RPC、缓存及精确跳转也保持同一选择。自动修复只影响默认阅读，不改写已有原生引用的全文摘要或偏移；质量报告不授予标注权限。
 
 SQLite 保存完整内容、向量和逐页检查点，内存只保留有界热缓存和当前页/候选工作集。向量先提交，再发布引用它的页检查点。`index-head` 和 `index-transaction` 管理已接受代次、候选代次与回收；查询绑定代次和数据修订，旧分片在没有使用者后回收。取消、失败或重启保留成功检查点，不重复有效 OCR 或向量计算；缺失可继续构建，损坏记录明确失败。旧缓存迁移验证来源与生产者，不以静默重算掩盖存储错误。
 

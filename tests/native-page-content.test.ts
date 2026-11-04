@@ -8,6 +8,8 @@ import { createPdfRetrieval } from '../src/adapters/host/dsh/retrieval.ts'
 import { createLocalTesseractOcrBackend } from '../src/adapters/host/ocr/local-backend.ts'
 import { createLocalTextRecovery } from '../src/adapters/host/ocr/local-text-recovery.ts'
 import { createPdfService } from '../src/adapters/host/pdfium/pdf-service.ts'
+import { encodePng } from '../src/adapters/host/pdfium/png.ts'
+import { createPageOcrArtifacts } from '../src/adapters/host/ocr/page-ocr-artifacts.ts'
 import { EmbeddingRegistry } from '../src/embedding/index.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../src/modules/evidence/index.ts'
 import { HostOcrService } from '../src/modules/ocr/index.ts'
@@ -51,21 +53,26 @@ test('real image-only PDF becomes local OCR page content, searchable evidence an
     let recognitions = 0
     async function openAndSearch(reopened: boolean) {
       const state = memoryWorkspace(bytes), local = createLocalTextRecovery()
-      const pdf = createPdfService(state.workspaces, { executable, subprocess: new NativeTestSubprocess() })
+      let encodedInputs = 0
+      const recovery = { ...local, async recognize(...args: Parameters<typeof local.recognize>) {
+        recognitions++
+        assert.equal(reopened, false, 'a stable local producer must reuse persisted content after service restart')
+        return local.recognize(...args)
+      } }
+      const pdf = createPdfService(state.workspaces, { executable, subprocess: new NativeTestSubprocess(),
+        textRecovery: recovery, ocrArtifacts: createPageOcrArtifacts({ cache }),
+        async encodeOcrPng(rgba, width, height, maxEdge) {
+          encodedInputs++
+          assert.equal(Math.max(width, height), 2048, 'bundled indexing uses the same canonical image as read repair')
+          return encodePng(rgba, width, height, maxEdge)
+        } })
       const sessionId = reopened ? 'scanned-page-reopened' : 'scanned-page-first-open'
       const agent = { session: { id: sessionId, header: {} } }
       const settings = { ...defaultSettings, ocrEngine: 'local-tesseract', embeddingEngine: 'fixture-embedding',
         indexScanPages: true, indexImageDescriptions: false }
-      const ocr = new HostOcrService(() => settings.ocrEngine), backend = createLocalTesseractOcrBackend(local)
-      const unregister = ocr.register({ ...backend, async recognize(request, config) {
-        recognitions++
-        assert.equal(reopened, false, 'a stable local producer must reuse persisted content after service restart')
-        return backend.recognize(request, config)
-      } })
-      let renders = 0
-      const pages = { ...pdf, async renderOcrImage(...args: Parameters<typeof pdf.renderOcrImage>) {
-        renders++; return pdf.renderOcrImage(...args)
-      } }
+      const ocr = new HostOcrService(() => settings.ocrEngine), backend = createLocalTesseractOcrBackend(recovery)
+      const unregister = ocr.register(backend)
+      const pages = pdf
       const content = createPdfPageContent(state.workspaces, pages, { cache, settings: () => settings,
         ocr: () => ocr, image: () => undefined })
       const references = createMemoryEvidenceReferenceStore(), embeddings = new EmbeddingRegistry()
@@ -118,7 +125,7 @@ test('real image-only PDF becomes local OCR page content, searchable evidence an
           assert.equal(references.get(hit.evidence.refId)?.sessionId, sessionId)
         }
         assert.ok(queryVectors > 0, 'semantic search really traverses the fake embedding registry')
-        assert.equal(renders, reopened ? 0 : 1)
+        assert.equal(encodedInputs, reopened ? 0 : 1, 'cache hits do not render or encode another OCR input')
         assert.equal(state.writes(), 0)
         assert.deepEqual(state.current(), bytes)
         return recognized

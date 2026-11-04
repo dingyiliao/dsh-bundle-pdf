@@ -11,7 +11,7 @@ import { apply } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
 import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
 import type { EmbeddingRegistry } from '../../src/embedding/index.ts'
-import { FrameDecoder, encodeFrame } from '../../src/engine/framing.ts'
+import { FrameDecoder, encodeFrame } from '../../src/adapters/host/pdfium/framing.ts'
 import type { NativeProcessRuntime } from '../../src/adapters/host/pdfium/native-worker.ts'
 
 type Tool = { name: string; execute(input: unknown, execution: unknown): Promise<unknown> }

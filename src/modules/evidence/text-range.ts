@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { locateTextRange } from '../../shared/geometry/text-target.js'
 import { joinPageText } from '../../shared/page-text.js'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
-import type { AgentPageReadPort } from './agent-page-read.js'
+import { readEvidencePageText, type AgentPageReadPort } from './agent-page-read.js'
 import { evidenceSha256 } from './provenance.js'
 import { savedTextReferenceSchema, savedTextRangeReferenceSchema,
   type EvidenceReferenceStore, type PdfTextEvidence } from './reference-store.js'
 import { createTextEvidence } from './text-evidence.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
+import { matchEvidenceQuote, type QuoteMatchMode } from './quote-match.js'
 
 export interface TextRangeInput { start: { page: number; quote: string }; end: { page: number; quote: string } }
 export interface ReadTextEvidence { refId: string; documentId: string; revision: number; contentVersion: string;
@@ -111,11 +112,15 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
     const saved = savedPages(sessionId, refId)
     const initial = workspaces.readSnapshot(sessionId, documentId)
     if (saved.identity.sourcePath !== initial.path) fail('pdf/reference-unavailable', 'Text evidence belongs to another source path')
+    if (saved.pages.some(page => page.evidence.extraction)
+      && saved.identity.sourceDigest !== evidenceSha256(initial.bytes)) {
+      fail('pdf/stale-reader', 'The OCR reference source bytes changed; read OCR from the current PDF again')
+    }
     await check(sessionId, initial, signal, readSource)
     const rebound: PdfTextEvidence[] = []
     for (const { evidence, pageTextDigest } of saved.pages) {
       if (evidence.page > initial.document.pageCount) fail('pdf/stale-reader', 'Referenced page no longer exists')
-      const read = await pages.readPageText(sessionId, documentId, evidence.page, signal)
+      const read = await readEvidencePageText(pages, sessionId, documentId, evidence.page, signal, evidence.extraction)
       await check(sessionId, initial, signal)
       if (!same(identity(initial), identity(read.snapshot))) fail('pdf/stale-reader', 'Page text came from another PDF version')
       const text = joinPageText(read.content.items)
@@ -134,7 +139,10 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
     await check(sessionId, initial, signal, readSource)
     if (same(identity(initial), saved.identity)) {
       return { refId, documentId, revision: initial.revision, contentVersion: initial.contentVersion,
-        pages: saved.pages.map(entry => entry.evidence), revalidated: false }
+        // The attested text/range remains identical, while decoding quality
+        // and read-only geometry hints reflect this Host read, including for
+        // legacy native references that did not persist quality observations.
+        pages: saved.pages.map((entry, index) => ({ ...rebound[index]!, refId: entry.evidence.refId })), revalidated: false }
     }
     return { ...await publish(sessionId, initial, rebound, signal, readSource), revalidated: true }
   }
@@ -150,7 +158,7 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
     const evidence: PdfTextEvidence[] = []
     let totalChars = 0
     for (let page = start.page; page <= end.page; page++) {
-      const read = await pages.readPageText(sessionId, documentId, page, signal)
+      const read = await readEvidencePageText(pages, sessionId, documentId, page, signal)
       await check(sessionId, initial, signal)
       if (!same(identity(initial), identity(read.snapshot))) fail('pdf/stale-reader', 'PDF changed while resolving a continuous range')
       const geometry = locateTextRange(read.content, page === start.page ? start.quote : undefined,
@@ -164,22 +172,19 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
   }
 
   async function derive(sessionId: string, documentId: string, refId: string, quote: string, signal: AbortSignal,
-    readSource?: FreshSourceRead): Promise<ReadTextEvidence> {
-    if (!quote.trim()) fail('pdf/invalid-text-range', 'A subquote must contain text')
+    readSource?: FreshSourceRead, quoteMatch: QuoteMatchMode = 'exact'): Promise<ReadTextEvidence> {
     const parent = await readEvidence(sessionId, documentId, refId, signal, readSource)
     const text = parent.pages.map(page => page.snapshot.text).join('\n')
-    const offset = text.indexOf(quote)
-    if (offset < 0) fail('pdf/text-not-found', 'The exact subquote is outside this reference')
-    if (text.indexOf(quote, offset + 1) >= 0) fail('pdf/ambiguous-text-target', 'The subquote is not unique inside this reference')
+    const { startUtf16: offset, endUtf16: matchedEnd } = matchEvidenceQuote(text, quote, quoteMatch, refId)
     const initial = workspaces.readSnapshot(sessionId, documentId)
     if (!same(identity(initial), parent.pages[0]!)) fail('pdf/stale-reader', 'PDF changed after reading the parent reference')
     let cursor = 0
     const children: PdfTextEvidence[] = []
     for (const page of parent.pages) {
       const start = Math.max(0, offset - cursor)
-      const end = Math.min(page.snapshot.text.length, offset + quote.length - cursor)
+      const end = Math.min(page.snapshot.text.length, matchedEnd - cursor)
       if (start < end) {
-        const read = await pages.readPageText(sessionId, documentId, page.page, signal)
+        const read = await readEvidencePageText(pages, sessionId, documentId, page.page, signal, page.extraction)
         if (!same(identity(initial), identity(read.snapshot))) fail('pdf/stale-reader', 'PDF changed while narrowing evidence')
         const fullText = joinPageText(read.content.items)
         if (evidenceSha256(fullText) !== page.pageTextDigest) fail('pdf/stale-reader', 'Page text changed while narrowing evidence')

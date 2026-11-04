@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -8,9 +8,6 @@ import { readerLocales } from '../../../src/modules/viewer/locales.ts'
 import type { PdfDocumentIndexPolicy } from '../../../src/contracts/indexing.ts'
 import type { ReaderIndexingControl } from '../../../src/modules/viewer/controllers/use-reader-indexing.tsx'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const defaults: PdfDocumentIndexPolicy = { indexScanPages: false, indexImageDescriptions: false }
 const scanLabel = 'Text recognition (OCR)', imageLabel = 'Image descriptions'
 const t = (key: string) => readerLocales.en[key] ?? key
@@ -34,13 +31,10 @@ async function withSettings(run: (fixture: {
   accept(policy: PdfDocumentIndexPolicy): Promise<void>
   work: { starts: number; rebuilds: number }
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
-    Element: dom.Element, Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
+    Element: dom.Element, Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true })
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const pending: Pending[] = [], calls: Array<{ kind: Pending['kind']; policy?: PdfDocumentIndexPolicy }> = []
   const work = { starts: 0, rebuilds: 0 }
@@ -96,11 +90,8 @@ async function withSettings(run: (fixture: {
     })
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, value] of saved) {
-      if (value) Object.defineProperty(globalThis, key, value)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

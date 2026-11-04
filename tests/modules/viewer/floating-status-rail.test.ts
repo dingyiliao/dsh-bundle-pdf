@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -62,17 +62,12 @@ test('the task badge counts active work, including saves, without counting retai
 })
 
 test('a standalone activity popover retains inside actions and closes on an outside pointer', async () => {
-  const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-    JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } }
-  }
-  const dom = new JSDOM('<!doctype html><div id="root"></div><button id="outside">Outside</button>').window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div id="root"></div><button id="outside">Outside</button>', { url: 'about:blank', globals: [] })
+
   const globals = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element,
     Node: dom.Node, IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(globals)
   const { createRoot } = await import('react-dom/client')
   const mount = dom.document.getElementById('root')!, root = createRoot(mount)
   let cancelled = 0
@@ -99,11 +94,8 @@ test('a standalone activity popover retains inside actions and closes on an outs
     assert.equal(popover.hidden, true)
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })
 
@@ -122,20 +114,15 @@ async function withReaderStatusRail(run: (fixture: {
   click(element: HTMLElement): Promise<void>
   escape(element: HTMLElement): Promise<void>
 }) => Promise<void>, rail = true, readerOwned = true) {
-  const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-    JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-  }
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div><button id="outside">Outside</button></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div><button id="outside">Outside</button></body></html>', { globals: [] })
+
   const globals = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element,
     Node: dom.Node, CustomEvent: dom.CustomEvent,
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(globals)
   const { createRoot } = await import('react-dom/client')
   const mount = dom.document.getElementById('root')!, root = createRoot(mount)
   const render = async (statuses: readonly FloatingStatus[]) => {
@@ -165,11 +152,8 @@ async function withReaderStatusRail(run: (fixture: {
     })
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

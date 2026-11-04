@@ -29,9 +29,14 @@ export interface NativeOutlineItem {
   url?: string
   items: NativeOutlineItem[]
 }
+export interface NativeTextReadOptions {
+  /** Defaults to true for the Reader. Exact native validation must opt out of OCR repair. */
+  recover?: boolean
+}
 export interface NativeReaderApi {
   tile(sessionId: string, id: string, reader: ReaderDescriptor, tile: NativeTileRequest, signal?: AbortSignal): Promise<NativeTile>
-  text(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal): Promise<NativeTextContent>
+  text(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal,
+    options?: NativeTextReadOptions): Promise<NativeTextContent>
   links(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal): Promise<unknown[]>
   outline(sessionId: string, id: string, reader: ReaderDescriptor, signal?: AbortSignal): Promise<NativeOutlineItem[] | null>
   destination(sessionId: string, id: string, reader: ReaderDescriptor, name: string, signal?: AbortSignal): Promise<unknown>

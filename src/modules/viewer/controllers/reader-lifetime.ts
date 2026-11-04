@@ -1,4 +1,4 @@
-import { NavigationHistory, type NavigationPosition } from '../../../navigation/index.js'
+import { NavigationHistory, type NavigationPosition } from '../../../shared/navigation-history.js'
 import type { PdfOcrTextPart } from '../../../ocr/mapping.js'
 import type { PdfRect } from '../../../core/pdf-types.js'
 import type { HostOcrRecognition } from '../ports/ocr.js'

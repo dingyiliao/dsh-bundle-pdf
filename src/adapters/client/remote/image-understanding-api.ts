@@ -1,3 +1,5 @@
+import { browserSha256 } from '../../../shared/browser-sha256.js'
+import { createRemoteCall } from './request.js'
 import { z } from 'zod'
 import { MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
 import { inspectPng } from '../../../shared/png.js'
@@ -8,10 +10,6 @@ import type { PdfConnection } from './pdf-api.js'
 export type { ImageUnderstandingApi, ImageUnderstandingAvailability,
   PreparedImageReference } from '../../../modules/viewer/index.js'
 
-const reply = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: z.unknown() }),
-  z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
-])
 const availability = z.discriminatedUnion('status', [
   z.object({ status: z.literal('available'), kind: z.enum(['direct-image', 'derived-text']),
     backendId: z.string(), limitation: z.string().optional() }),
@@ -49,13 +47,6 @@ function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
     maxWidth: 8192, maxHeight: 8192, maxPixels: 24_000_000 })
 }
 
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const buffer = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(buffer).set(bytes)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer)
-  return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`
-}
-
 async function checkedReference(value: z.infer<typeof referencePreparation>,
   request: { sessionId: string; documentId: string; refId: string }): Promise<PreparedImageReference> {
   // The Host may reissue the opaque ref after reopening byte-identical source.
@@ -68,7 +59,7 @@ async function checkedReference(value: z.infer<typeof referencePreparation>,
       ...(value.limitations ? { limitations: value.limitations } : {}), evidence: value.evidence }
   }
   const { width, height } = pngDimensions(value.bytes)
-  if (await sha256(value.bytes) !== value.evidence.renderedImageSha256) {
+  if (await browserSha256(value.bytes) !== value.evidence.renderedImageSha256) {
     throw new Error('PDF image reference bytes do not match their Host digest')
   }
   return { kind: 'direct-image', backendId: value.backendId, requestedRefId: value.requestedRefId,
@@ -78,12 +69,7 @@ async function checkedReference(value: z.infer<typeof referencePreparation>,
 
 /** A separate route decides whether image bytes go to this Session or a configured backend. */
 export function createImageUnderstandingApi(connection: PdfConnection, lifetime: AbortSignal): ImageUnderstandingApi {
-  const call = async (request: object, signal?: AbortSignal): Promise<unknown> => {
-    const result = reply.parse(await connection.rpc.call('/api', 'pdf.image', request,
-      signal ? AbortSignal.any([signal, lifetime]) : lifetime))
-    if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
-    return result.value
-  }
+  const call = createRemoteCall(connection, lifetime, 'pdf.image')
   return {
     availability: async (sessionId, signal) => availability.parse(await call({ action: 'availability', sessionId }, signal)),
     prepareReference: async (request, signal) => {

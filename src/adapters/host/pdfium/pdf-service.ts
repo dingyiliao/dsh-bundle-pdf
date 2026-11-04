@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { NativeWorker, type NativeProcessRuntime } from './native-worker.js'
 import { encodePng } from './png.js'
@@ -9,6 +9,8 @@ import { projectedReaderOutline } from '../../../modules/outlines/index.js'
 import { inspectFormPage } from '../../../modules/forms/index.js'
 import { paintFormLabels } from './form-labels.js'
 import type { TextRecovery } from '../ocr/local-text-recovery.js'
+import { createPageOcrArtifacts, type OcrProducerIdentity, type PageOcrArtifacts } from '../ocr/page-ocr-artifacts.js'
+import type { OcrOutput } from '../../../ocr/types.js'
 import { NativeViewport } from '../../../shared/geometry/native-viewport.js'
 import type { NativeOutlineItem, NativeTextContent, ReaderDescriptor } from '../../../shared/native.js'
 import { binaryResult, type PdfDispatch } from '../dsh/index.js'
@@ -25,7 +27,7 @@ const nativeRequest = z.discriminatedUnion('action', [
     rasterWidth: integer.min(1).max(1048576), rasterHeight: integer.min(1).max(1048576),
     x: integer.min(-2), y: integer.min(-2), width: integer.min(1).max(1026), height: integer.min(1).max(1026), annotations: z.boolean(),
   }).strict().refine(t => t.x + t.width <= t.rasterWidth + 2 && t.y + t.height <= t.rasterHeight + 2) }).strict(),
-  z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000) }).strict(),
+  z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000), recover: z.boolean().optional() }).strict(),
   z.object({ ...common, action: z.literal('links'), page: integer.min(1).max(100000) }).strict(),
   z.object({ ...common, action: z.literal('outline') }).strict(),
   z.object({ ...common, action: z.literal('destination'), name: z.string().min(1).max(32768) }).strict(),
@@ -34,12 +36,23 @@ const nativeRequest = z.discriminatedUnion('action', [
 const hints = z.object({ knownRevision: integer.min(0).optional(), mutationId: z.string().uuid().optional() })
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 interface Handle { hash: string; generation: number; bytes: number }
+export interface PageOcrRecognition {
+  producer: OcrProducerIdentity
+  maxEdge: 1024 | 2048
+  recognize(image: { png: Buffer; width: number; height: number }, signal: AbortSignal): Promise<OcrOutput>
+  /** A trusted Host consumer may already own the identical clean 1024px raster. */
+  image?: { snapshot: HostWorkspaceSnapshot; png: Buffer; width: number; height: number }
+  /** Each subscriber retains its own producer/source fences, including cache hits. */
+  check?(): void
+}
 
 /** Host authority is shared by UI dispatch, native reads and future Agent callers. */
 export function createPdfService(workspaces: ReturnType<typeof createWorkingCopyService>, options: {
   executable: string; subprocess: NativeProcessRuntime; cacheBytes?: number; timeoutMs?: number
   capabilities?: CapabilityRegistry
   textRecovery?: TextRecovery
+  /** The PDF service owns this derivative coordinator and drains it on disposal. */
+  ocrArtifacts?: PageOcrArtifacts
   /** Internal encoder port for controlled compression and native-lease tests. */
   encodeOcrPng?: typeof encodePng
 }) {
@@ -51,14 +64,17 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   const openings = new Map<string, Promise<void>>()
   const tiles = new ByteCache<Buffer>(options.cacheBytes ?? 32 * 1024 * 1024)
   const histories = new Map<string, HostWorkspaceSnapshot>()
-  const recoveredText = new ByteCache<NativeTextContent>(8 * 1024 * 1024)
+  const ocrArtifacts = options.ocrArtifacts ?? createPageOcrArtifacts()
+  const localProducer: OcrProducerIdentity = options.textRecovery?.producer ?? {
+    id: 'local-text-recovery', version: 'unattested', fingerprint: randomUUID(), reusable: false,
+  }
   const recoveryLifetime = new AbortController()
   // An idempotency entry never retains PDF bytes or a full metadata reply.
   const mutations = new Map<string, { digest: string; task: Promise<string | undefined> }>()
   let handlesBytes = 0, closed = false
   let admission: Promise<unknown> = Promise.resolve()
   let handleLease: Promise<unknown> = Promise.resolve()
-  let textRepairs: Promise<void> = Promise.resolve()
+  let localRecognition: Promise<unknown> = Promise.resolve()
 
   // The native worker addresses a mutable document ID. Keep an ensure/read
   // pair atomic with respect to other opens, closes and cache evictions.
@@ -205,7 +221,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
       const snapshot = workspaces.readSnapshot(sessionId, input.id)
       if (workspaces.bytesHash(snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF baseline changed; use the latest reader snapshot')
-      const read = await readPageText(sessionId, input.id, input.page, signal)
+      const read = await readPageText(sessionId, input.id, input.page, signal, { recover: input.recover })
       if (workspaces.bytesHash(read.snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF changed while the text request waited; use the latest reader snapshot')
       return read.content
     }
@@ -269,44 +285,91 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     return { snapshot, content }
     })
     if (readOptions?.recover === false || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
-    const key = `${documentId}:${workspaces.bytesHash(read.snapshot.bytes)}:${page}`
-    const repair = textRepairs.then(async () => {
-      const abort = AbortSignal.any([signal, recoveryLifetime.signal])
-      abort.throwIfAborted()
-      if (workspaces.bytesHash(workspaces.readSnapshot(sessionId, documentId).bytes) !== workspaces.bytesHash(read.snapshot.bytes)) {
-        fail('pdf/stale-reader', 'PDF changed before text recovery')
-      }
-      const cached = recoveredText.get(key)
-      if (cached) return { ...read, content: cached }
-      const geometry = read.snapshot.document.pages[page - 1]
-      const viewport = new NativeViewport(geometry, 1)
-      const factor = 2048 / Math.max(viewport.width, viewport.height)
-      const width = Math.max(1, Math.round(viewport.width * factor)), height = Math.max(1, Math.round(viewport.height * factor))
-      // Render at useful small-print density, in bounded native tiles. No
-      // annotations or form appearances (including personal values) enter OCR.
-      const rgba = Buffer.alloc(width * height * 4)
-      for (let y = 0; y < height; y += 1024) for (let x = 0; x < width; x += 1024) {
-        const w = Math.min(1024, width - x), h = Math.min(1024, height - y)
-        const tile = await withHandleLease(async () => {
-          abort.throwIfAborted()
-          await descriptor(read.snapshot, abort)
-          return worker.request({ command: 'render', documentId, pageIndex: page - 1, rotation: 0,
-            rasterWidth: width, rasterHeight: height, x, y, width: w, height: h, annotations: false, forms: false }, undefined, abort)
-        })
-        const shape = z.object({ width: integer, height: integer }).parse(tile.value)
-        if (shape.width !== w || shape.height !== h || tile.bytes.length !== w * h * 4) fail('pdf/native-protocol', 'Invalid text-recovery tile')
-        for (let row = 0; row < h; row++) rgba.set(tile.bytes.subarray(row * w * 4, (row + 1) * w * 4), ((y + row) * width + x) * 4)
-      }
-      const output = await options.textRecovery!.recognize(await encodePng(rgba, width, height, 2048), width, height, abort)
-      abort.throwIfAborted()
-      const latest = workspaces.readSnapshot(sessionId, documentId)
-      if (workspaces.bytesHash(latest.bytes) !== workspaces.bytesHash(read.snapshot.bytes)) fail('pdf/stale-reader', 'PDF changed during text recovery')
-      const content = recoveredPageText(output, geometry, width, height)
-      recoveredText.set(key, content, Buffer.byteLength(JSON.stringify(content)))
-      return { ...read, content }
+    const { snapshot, artifact } = await readOcrArtifact(sessionId, documentId, page, signal, undefined, read.snapshot)
+    return { snapshot, content: recoveredPageText(artifact.output, read.snapshot.document.pages[page - 1],
+      artifact.input.render.width, artifact.input.render.height) }
+  }
+  /** Both text repair and indexing consume the same raw, provenance-bearing OCR derivative. */
+  async function readOcrArtifact(sessionId: string, documentId: string, page: number, signal: AbortSignal,
+    recognition?: PageOcrRecognition, expectedSnapshot?: HostWorkspaceSnapshot) {
+    const active = AbortSignal.any([signal, recoveryLifetime.signal])
+    active.throwIfAborted()
+    if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+    const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    const bytesHash = workspaces.bytesHash(snapshot.bytes)
+    if (expectedSnapshot && workspaces.bytesHash(expectedSnapshot.bytes) !== bytesHash) fail('pdf/stale-reader', 'PDF changed before text recovery')
+    const geometry = snapshot.document.pages[page - 1]
+    if (!Number.isSafeInteger(page) || page < 1 || !geometry) fail('pdf/invalid-page', 'Page is outside the document')
+    if (!recognition && !options.textRecovery) fail('pdf/text-recovery-unavailable', 'Local PDF text recovery is unavailable')
+    const maxEdge = recognition?.maxEdge ?? 2048
+    const viewport = new NativeViewport(geometry, 1), factor = maxEdge / Math.max(viewport.width, viewport.height)
+    const plan = maxEdge === 1024 ? ocrRegionRenderPlan(geometry, undefined, maxEdge) : {
+      rasterWidth: Math.max(1, Math.round(viewport.width * factor)), rasterHeight: Math.max(1, Math.round(viewport.height * factor)),
+      x: 0, y: 0, width: Math.max(1, Math.round(viewport.width * factor)), height: Math.max(1, Math.round(viewport.height * factor)),
+    }
+    const { width, height } = plan
+    const image = recognition?.image
+    if (image && (image.width !== width || image.height !== height || image.snapshot.path !== snapshot.path
+      || workspaces.bytesHash(image.snapshot.bytes) !== bytesHash)) fail('pdf/stale-reader', 'OCR image does not match its canonical source')
+    const check = () => {
+      active.throwIfAborted()
+      if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+      const current = workspaces.readSnapshot(sessionId, documentId)
+      if (current.conflict || current.path !== snapshot.path || current.contentVersion !== snapshot.contentVersion
+        || workspaces.bytesHash(current.bytes) !== bytesHash) fail('pdf/stale-reader', 'PDF changed during page recognition')
+      recognition?.check?.()
+    }
+    check()
+    const artifact = await ocrArtifacts.read({
+      input: { path: snapshot.path, sourceDigest: bytesHash, page, render: {
+        renderer: 'pdfium/156.0.8076.0;native-protocol/1',
+        profile: `clean-page-${maxEdge}-rgba8-png-filter0-zlib1-v1`, geometry,
+        width, height, annotations: false, forms: false,
+      } }, producer: recognition?.producer ?? localProducer, signal: active, check,
+      async produce(producerSignal) {
+        const produce = async () => {
+          producerSignal.throwIfAborted()
+          let png = image?.png
+          if (!png) {
+            const rgba = Buffer.alloc(width * height * 4)
+            // The immutable admitted snapshot is derivative input, not a session
+            // lease. Surviving subscribers validate their own source and access.
+            for (let y = 0; y < height; y += 1024) for (let x = 0; x < width; x += 1024) {
+              const w = Math.min(1024, width - x), h = Math.min(1024, height - y)
+              const tile = await withHandleLease(async () => {
+                producerSignal.throwIfAborted()
+                await descriptor(snapshot, producerSignal)
+                const started = performance.now()
+                try { return await worker.request({ command: 'render', documentId: snapshot.id, pageIndex: page - 1, rotation: 0,
+                  rasterWidth: plan.rasterWidth, rasterHeight: plan.rasterHeight, x: plan.x + x, y: plan.y + y,
+                  width: w, height: h, annotations: false, forms: false }, undefined, producerSignal) }
+                finally { recordIndexPerformance({ stage: 'native-render', durationMs: performance.now() - started, records: 1 }) }
+              })
+              const shape = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(tile.value)
+              if (shape.width !== w || shape.height !== h || tile.bytes.length !== w * h * 4) fail('pdf/native-protocol', 'Invalid OCR artifact tile')
+              for (let row = 0; row < h; row++) rgba.set(tile.bytes.subarray(row * w * 4, (row + 1) * w * 4), ((y + row) * width + x) * 4)
+            }
+            producerSignal.throwIfAborted()
+            const started = performance.now()
+            try { png = await (options.encodeOcrPng ?? encodePng)(rgba, width, height, maxEdge === 2048 ? 2048 : 1026) }
+            finally { recordIndexPerformance({ stage: 'png-encode', durationMs: performance.now() - started, records: 1, bytes: rgba.byteLength }) }
+          }
+          producerSignal.throwIfAborted()
+          const output = recognition ? await recognition.recognize({ png, width, height }, producerSignal)
+            : await options.textRecovery!.recognize(png, width, height, producerSignal)
+          producerSignal.throwIfAborted()
+          return { inputDigest: `sha256:${createHash('sha256').update(png).digest('hex')}`, output }
+        }
+        if (recognition) return produce()
+        // Cache hits bypass admission. Cold local jobs remain bounded to one
+        // owned Tesseract worker; cancellation never blocks another subscriber.
+        const task = localRecognition.catch(() => undefined).then(produce)
+        localRecognition = task.then(() => undefined, () => undefined)
+        return task
+      },
     })
-    textRepairs = repair.then(() => undefined, () => undefined)
-    return repair
+    check()
+    return { snapshot, artifact }
   }
   async function readOutline(sessionId: string, documentId: string, signal: AbortSignal): Promise<{
     snapshot: HostWorkspaceSnapshot; items: NativeOutlineItem[] | null
@@ -440,11 +503,17 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       }
     })
   }
-  return { dispatch, native, readPageText, readOutline, renderPage, renderFormPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
+  return { dispatch, native, readPageText, readOutline, readOcrArtifact,
+    localOcrIdentity: () => options.textRecovery?.producer,
+    renderPage, renderFormPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
-    async dispose() { closed = true; recoveryLifetime.abort(); recoveredText.clear(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0
+    async dispose() { closed = true; recoveryLifetime.abort(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0
       unregisterNative()
       if (!options.capabilities) capabilities.dispose()
-      await options.textRecovery?.dispose()
-      await worker.dispose() } }
+      // Stop producers while draining subscribers: an adapter may need its
+      // dispose hook to release recognition that has not observed abort yet.
+      const disposed = await Promise.allSettled([ocrArtifacts.dispose(), options.textRecovery?.dispose(), worker.dispose()])
+      const rejected = disposed.find(result => result.status === 'rejected')
+      if (rejected?.status === 'rejected') throw rejected.reason
+    } }
 }

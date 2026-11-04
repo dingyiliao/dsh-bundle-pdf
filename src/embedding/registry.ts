@@ -8,7 +8,6 @@ const defaults: EmbeddingLimits = { timeoutMs: 120_000, maxBatchSize: 16, maxInp
 export class EmbeddingRegistry {
   private readonly engines = new EngineDirectory<EmbeddingEngine>(engine => engine.descriptor)
   private readonly tasks = new Map<AbortController, EmbeddingEngine>()
-  private readonly registrations = new Map<string, string>()
   private readonly limits: EmbeddingLimits
   private disposed = false
 
@@ -21,23 +20,19 @@ export class EmbeddingRegistry {
   register(engine: EmbeddingEngine): () => void {
     this.assertLive()
     const id = engine.descriptor.id
-    if (this.registrations.has(id)) throw new EmbeddingError('invalid-request', 'The embedding engine is already registered.')
-    this.registrations.set(id, crypto.randomUUID())
-    try {
-      return this.engines.register(engine, () => {
-        this.registrations.delete(id)
-        for (const [controller, current] of this.tasks) {
-          if (current === engine) controller.abort(new EmbeddingError('engine-unavailable', 'The embedding engine was removed.'))
-        }
-      })
-    } catch (error) { this.registrations.delete(id); throw error }
+    if (this.engines.has(id)) throw new EmbeddingError('invalid-request', 'The embedding engine is already registered.')
+    return this.engines.register(engine, () => {
+      for (const [controller, current] of this.tasks) {
+        if (current === engine) controller.abort(new EmbeddingError('engine-unavailable', 'The embedding engine was removed.'))
+      }
+    })
   }
   list() { return this.engines.list() }
   subscribe(listener: () => void): () => void { return this.engines.subscribe(listener) }
   /** Ephemeral registration lease; deliberately separate from persistent model identity. */
   generation(binding: EngineBinding): string {
     this.provider(binding)
-    return this.registrations.get(binding.engineId)!
+    return this.engines.generation(binding.engineId)!
   }
 
   describe(binding: EngineBinding): EmbeddingModel {
@@ -110,7 +105,6 @@ export class EmbeddingRegistry {
     if (this.disposed) return
     this.disposed = true
     for (const controller of this.tasks.keys()) controller.abort(new EmbeddingError('cancelled', 'Embedding was disposed.'))
-    this.registrations.clear()
     this.engines.dispose()
   }
 

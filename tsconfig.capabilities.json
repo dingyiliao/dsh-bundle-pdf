@@ -1,4 +1,0 @@
-{
-  "extends": "./tsconfig.ocr.json",
-  "include": ["src/modules/capabilities/**/*.ts"]
-}

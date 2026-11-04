@@ -10,6 +10,7 @@ import { joinPositionedText } from '../../shared/page-text.js'
  */
 export function approximateTextRects(content: NativeTextContent, page: PdfPageInfo | undefined,
   startUtf16: number, endUtf16: number): PdfRect[] | null {
+  if (content.extraction) return null
   if (!page || page.rotation % 360 !== 0 || !Number.isFinite(page.userUnit) || page.userUnit <= 0
     || !Number.isSafeInteger(startUtf16) || !Number.isSafeInteger(endUtf16)
     || endUtf16 <= startUtf16 || endUtf16 - startUtf16 > 512) return null

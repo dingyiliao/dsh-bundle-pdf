@@ -91,6 +91,33 @@ test('subquotes resolve only inside their reference and retain the original occu
     { code: 'pdf/invalid-text-range' })
 })
 
+test('normalized native subquotes retain original UTF-16, source checks and glyph validation', async () => {
+  const f = await fixture()
+  const text = 'outside A😀\r\n\tB end'
+  f.setContent({ ...f.content(), items: [line(text, 200, false)] })
+  const start = text.indexOf('A😀')
+  const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, start, 7, signal, f.references)
+  const refId = read.evidence!.refId
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, f.readSource, 'A😀 B'),
+    { code: 'pdf/quote-whitespace-mismatch' })
+  const resolved = await f.resolver.resolve('alice', 'doc-1', refId, signal, f.readSource, 'A😀 B', 'whitespace-normalized')
+  assert.equal(resolved.startUtf16, start)
+  assert.equal(resolved.endUtf16, start + 'A😀\r\n\tB'.length)
+  assert.equal(resolved.text, 'A😀\r\n\tB')
+  assert.equal(resolved.textSha256, evidenceSha256('A😀\r\n\tB'))
+  assert.ok(resolved.quadPoints.length)
+  await assert.rejects(f.resolver.resolve('bob', 'doc-1', refId, signal, f.readSource, 'A😀 B', 'whitespace-normalized'),
+    { code: 'pdf/reference-unavailable' })
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, f.readSource, 'outside A😀 B', 'whitespace-normalized'),
+    { code: 'pdf/text-not-found' })
+  f.content().items[0]!.glyphs![text.indexOf('A')]![2] = 0
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, f.readSource, 'A😀 B', 'whitespace-normalized'),
+    { code: 'pdf/text-geometry-unavailable' })
+  f.source(Buffer.from('external overwrite'))
+  await assert.rejects(f.resolver.resolve('alice', 'doc-1', refId, signal, f.readSource, 'A😀 B', 'whitespace-normalized'),
+    { code: 'pdf/stale-reader' })
+})
+
 test('reference subquotes reject ambiguous occurrences and still validate the full original page', async () => {
   const f = await fixture()
   const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 0, 8000, signal, f.references)
@@ -156,7 +183,8 @@ test('text targeting rejects missing, invalid and OCR-derived glyph geometry, in
     else if (mode === 'missing') content.items[0]!.glyphs = undefined
     else if (mode === 'invalid-middle') content.items[0]!.glyphs![5]![2] = 0
     else f.update({ document: { ...f.current().document, pages: [{ ...f.current().document.pages[0]!, cropBox: [0, 0, 10, 10] }] } })
-    await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal), { code: 'pdf/text-geometry-unavailable' })
+    await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal),
+      { code: mode === 'native-ocr' ? 'pdf/text-representation-unavailable' : 'pdf/text-geometry-unavailable' })
   }
 })
 

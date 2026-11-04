@@ -2,10 +2,13 @@ import type { PdfRect } from '../../core/pdf-types.js'
 import { locateTextOffsetRange } from '../../shared/geometry/text-target.js'
 import { joinPageText } from '../../shared/page-text.js'
 import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../working-copy/index.js'
-import type { AgentPageReadPort } from './agent-page-read.js'
+import { readEvidencePageText, type AgentPageReadPort } from './agent-page-read.js'
 import { evidenceSha256 } from './provenance.js'
 import { savedTextReferenceSchema, savedTextRangeReferenceSchema, type EvidenceReferenceStore } from './reference-store.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
+import { matchEvidenceQuote, type QuoteMatchMode } from './quote-match.js'
+import { createTextRangeReferences } from './text-range.js'
+import { describeEvidenceCapabilities, type EvidenceCapabilities } from './capabilities.js'
 
 /** Reusable, current native geometry; stored approximate boxes never authorize a mark or jump. */
 export interface ResolvedTextReference {
@@ -27,9 +30,28 @@ export interface ResolvedTextReference {
 
 export interface TextReferenceResolverPort {
   resolve(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
-    readSource?: FreshSourceRead, quote?: string): Promise<ResolvedTextReference>
+    readSource?: FreshSourceRead, quote?: string, quoteMatch?: QuoteMatchMode): Promise<ResolvedTextReference>
   resolveRange(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
     readSource?: FreshSourceRead): Promise<{ refId: string; pages: ResolvedTextReference[] }>
+}
+
+export interface ResolvedEvidencePage {
+  documentId: string
+  contentVersion: string
+  revision: number
+  sourceVersion: string
+  sourceDigest: string
+  page: number
+  refId: string
+  precision: 'page-only'
+  locator: { kind: 'page-only' }
+  capabilities: EvidenceCapabilities
+  limitations: string[]
+}
+
+export interface EvidencePageResolverPort {
+  resolvePage(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
+    readSource: FreshSourceRead): Promise<ResolvedEvidencePage>
 }
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
@@ -46,25 +68,42 @@ function splitsScalar(text: string, offset: number): boolean {
 }
 
 /** A subquote is scoped to the attested occurrence, never searched across the page. */
-function quotedRange(text: string, start: number, end: number, quote?: string): [number, number] {
+function quotedRange(text: string, start: number, end: number, quote?: string,
+  mode: QuoteMatchMode = 'exact', refId?: string): [number, number] {
   if (quote === undefined) return [start, end]
-  if (!quote.trim()) fail('pdf/invalid-text-range', 'A reference subquote must contain text')
-  const excerpt = text.slice(start, end), offset = excerpt.indexOf(quote)
-  if (offset < 0) {
-    fail('pdf/text-not-found', 'The exact quote is outside this reference; copy a passage from its snapshot or locate another reference')
-  }
-  if (excerpt.indexOf(quote, offset + 1) >= 0) {
-    fail('pdf/ambiguous-text-target', 'The quote occurs more than once inside this reference; provide a longer unique quote')
-  }
-  return [start + offset, start + offset + quote.length]
+  const match = matchEvidenceQuote(text.slice(start, end), quote, mode, refId)
+  return [start + match.startUtf16, start + match.endUtf16]
 }
 
 /** A ref is evidence, not a file-access grant. Reauthorize the live document and all text before use. */
 export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
-  references: EvidenceReferenceStore): TextReferenceResolverPort & {
-    resolveRange: NonNullable<TextReferenceResolverPort['resolveRange']>
-  } {
-  const resolver: TextReferenceResolverPort & { resolveRange: NonNullable<TextReferenceResolverPort['resolveRange']> } = {
+  references: EvidenceReferenceStore): TextReferenceResolverPort & EvidencePageResolverPort {
+  const resolver: TextReferenceResolverPort & EvidencePageResolverPort = {
+    async resolvePage(sessionId, documentId, refId, signal, readSource) {
+      if (!readSource) fail('pdf/source-unavailable', 'OCR page navigation requires a fresh-source adapter')
+      // The read primitive reauthorizes the session and verifies every stored
+      // page. OCR requires the attested source bytes, not just similar wording.
+      const read = await createTextRangeReferences(workspaces, pages, references)
+        .readEvidence(sessionId, documentId, refId, signal, readSource)
+      const capabilities = read.pages.some(page => page.extraction)
+        ? { ...describeEvidenceCapabilities(read.pages.find(page => page.extraction)!),
+          source: read.pages.every(page => page.extraction) ? 'local-ocr' as const : 'mixed-text' as const }
+        : describeEvidenceCapabilities(read.pages[0]!)
+      if (capabilities.navigation !== 'page') {
+        fail('pdf/invalid-evidence', 'Page-only text navigation requires derived OCR evidence')
+      }
+      signal.throwIfAborted()
+      const current = workspaces.readSnapshot(sessionId, documentId), first = read.pages[0]!
+      if (current.conflict || current.path !== first.sourcePath || current.contentVersion !== read.contentVersion
+        || current.revision !== read.revision || current.sourceVersion !== first.sourceVersion
+        || evidenceSha256(current.bytes) !== first.sourceDigest) {
+        fail('pdf/stale-reader', 'PDF changed after checking the OCR reference; locate it again')
+      }
+      return { documentId, contentVersion: current.contentVersion, revision: current.revision,
+        sourceVersion: current.sourceVersion, sourceDigest: first.sourceDigest,
+        page: first.page, refId: read.refId, precision: 'page-only', locator: { kind: 'page-only' },
+        capabilities, limitations: [capabilities.reason] }
+    },
     async resolveRange(sessionId, documentId, refId, signal, readSource) {
       const raw = references.get(refId)
       const range = savedTextRangeReferenceSchema.safeParse(raw)
@@ -98,7 +137,7 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
       }
       return { refId, pages: resolved }
     },
-    async resolve(sessionId, documentId, refId, signal, readSource, quote) {
+    async resolve(sessionId, documentId, refId, signal, readSource, quote, quoteMatch) {
       signal.throwIfAborted()
       const parsed = savedTextReferenceSchema.safeParse(references.get(refId))
       if (!parsed.success || parsed.data.sessionId !== sessionId || parsed.data.evidence.refId !== refId) {
@@ -130,7 +169,7 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
       if (readSource) await assertFreshSource(sessionId, before, readSource, signal)
       signal.throwIfAborted()
       assertCurrent(workspaces.readSnapshot(sessionId, documentId))
-      const read = await pages.readPageText(sessionId, documentId, evidence.page, signal)
+      const read = await readEvidencePageText(pages, sessionId, documentId, evidence.page, signal)
       signal.throwIfAborted()
       assertCurrent(read.snapshot)
       assertCurrent(workspaces.readSnapshot(sessionId, documentId))
@@ -142,7 +181,7 @@ export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pag
       if (endUtf16 > text.length || splitsScalar(text, startUtf16) || splitsScalar(text, endUtf16)) {
         fail('pdf/invalid-text-range', 'The stored reference range must span whole Unicode characters inside the page')
       }
-      const [start, end] = quotedRange(text, startUtf16, endUtf16, quote)
+      const [start, end] = quotedRange(text, startUtf16, endUtf16, quote, quoteMatch, refId)
       // Validate geometry only for the requested passage. A broad context window
       // can cross columns even when its selected subquote is unambiguous.
       const geometry = locateTextOffsetRange(read.content, start, end)

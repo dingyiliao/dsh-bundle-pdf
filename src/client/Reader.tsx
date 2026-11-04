@@ -142,7 +142,7 @@ export function Reader(props: ReaderProps) {
     if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !evidenceReady) return
     return props.evidenceNavigation.register({ sessionId, snapshot,
       current: () => !tab.signal.aborted && state.current.snapshot === snapshot ? snapshot : null,
-      readPageText: async (page, signal) => joinPageText((await pdf.text(page, signal)).items),
+      readPageText: async (page, signal, options) => joinPageText((await pdf.text(page, signal, options)).items),
       jump: page => jump(page),
       navigateTarget: (page, target, signal) => navigateEvidence({ requestId: crypto.randomUUID(),
         page, documentId: snapshot.id, contentVersion: snapshot.contentVersion, target }, signal),
@@ -176,7 +176,7 @@ export function Reader(props: ReaderProps) {
       annotations.resetContent()
       translation.reset()
       ocr.resetContent()
-      search.resetContent()
+      search.invalidateDocument()
       lifetime.position = undefined
     }
     lifetime.contentVersion = snapshot.contentVersion
@@ -406,6 +406,7 @@ export function Reader(props: ReaderProps) {
     jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
     translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control,
+    onReturnToOcr: () => showSidebar('ocr'),
     t })
   const goBack = () => navigateHistory()
 

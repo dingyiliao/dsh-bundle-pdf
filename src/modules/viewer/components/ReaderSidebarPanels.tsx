@@ -31,6 +31,7 @@ export interface ReaderSidebarPanelsOptions {
   rememberTargetLanguage?: (language: string) => Promise<boolean>
   translationEngine: string
   translationRegistry: TranslationRegistry
+  onReturnToOcr?(): void
   t: (key: string) => string
 }
 
@@ -50,7 +51,9 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
           jump(annotation.page, annotation.rect ? { x: annotation.rect[0], y: annotation.rect[3] } : {}) }} />,
     ocr: <ScrollablePanel className="dsh-pdf-ocr-scroll" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
       title={t('reader.sidebar.ocr')}>
-      <OcrTranscriptPanel result={activeTranscript?.result ?? null} region={!!activeTranscript?.region} t={t} />
+      <OcrTranscriptPanel result={activeTranscript?.result ?? null} region={!!activeTranscript?.region} t={t}
+        onTranslate={activeTranscript && activeTranscript.result.revision === snapshot?.revision
+          ? range => { translation.beginOcr(activeTranscript.result, range) } : undefined} />
     </ScrollablePanel>,
     search: <ScrollablePanel className="dsh-pdf-search-panel" verticalLabel={t('reader.verticalScroll')} horizontalLabel={t('reader.horizontalScroll')}
       title={t('reader.search')}>
@@ -73,6 +76,7 @@ export function readerSidebarPanels(options: ReaderSidebarPanelsOptions) {
     </ScrollablePanel>,
     translation: translation.selection ? <TranslationPanel selection={translation.selection} translate={translation.translate}
       rememberTargetLanguage={rememberTargetLanguage} onClose={translation.close} t={t}
+      onReturnToSource={translation.selection.sourceKind === 'ocr' ? options.onReturnToOcr : undefined}
       engineName={translationEngine === 'dsh-model' ? t('reader.translationDshModel')
         : translationRegistry.list().find(engine => engine.id === translationEngine)?.name ?? translationEngine} />
       : <ScrollablePanel className="dsh-pdf-translation-panel" title={t('reader.sidebar.translation')}

@@ -76,10 +76,10 @@ function Fixture() {
       status: 'complete', warnings: [], source: { backendId: 'layout-ocr', backendVersion: '1' }, geometry: { status: 'none' } } },
     search: { query, setQuery, searching: false, searched: true,
       hits: Array.from({ length: 80 }, (_, index) => ({ page: index + 1, source: 'native', text: `Context result ${index + 1}: surrounding document evidence.`, x: 10, y: 20 })),
-      async run() { actions.push('search') }, cancel() {}, invalidateDocument() {}, resetContent() {} },
+      async run() { actions.push('search') }, cancel() {}, invalidateDocument() {} },
     translation: { selection: translationVisible ? { text: original, pages: [1], targetLanguage: 'zh', owner: 1,
       documentId: snapshot.id, contentVersion: snapshot.contentVersion } : null,
-      translate, begin() {}, close() { actions.push('close'); setTranslationVisible(false) }, reset() {} },
+      translate, begin() {}, beginOcr() { return false }, close() { actions.push('close'); setTranslationVisible(false) }, reset() {} },
     async rememberTargetLanguage() { return true }, translationEngine: 'layout-fixture',
     translationRegistry: { list: () => [] } as unknown as ReaderSidebarPanelsOptions['translationRegistry'], t,
   })

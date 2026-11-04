@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -8,23 +8,15 @@ import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderContextLease, type ReaderContextLeaseOptions } from '../../../src/modules/viewer/index.ts'
 import { createReaderContexts } from '../../../src/modules/navigation/reader-contexts.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 async function withReadingLease(run: (fixture: {
   options: ReaderContextLeaseOptions
   window: Window & typeof globalThis
   render(update?: Partial<ReaderContextLeaseOptions>): Promise<void>
   contexts: ReturnType<typeof createReaderContexts>
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const snapshot = { id: 'visible-pdf', contentVersion: 'content', reader: { bytesHash: 'bytes', generation: 1 },
     document: { pageCount: 20 } } as WorkspaceSnapshot
@@ -42,11 +34,8 @@ async function withReadingLease(run: (fixture: {
   try { await run({ options, window: dom, render, contexts }) }
   finally {
     await act(async () => root.unmount())
-    contexts.dispose(); dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    contexts.dispose(); restoreDom()
+
   }
 }
 
@@ -118,12 +107,9 @@ test('replacing the reporter reannounces an unchanged visible page and failed ol
 })
 
 test('a visible reader renews one page lease and clears it when hidden', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const tab = new AbortController()
   const reports: PdfReadingContextUpdate[] = []
@@ -152,21 +138,15 @@ test('a visible reader renews one page lease and clears it when hidden', async (
   } finally {
     await act(async () => root.unmount())
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })
 
 test('a visible Reader executes an agent jump through its history-aware callback and acknowledges it', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const tab = new AbortController()
   const snapshot = { id: 'doc-1', contentVersion: 'content-1', reader: { bytesHash: 'bytes', generation: 1 },
@@ -213,21 +193,15 @@ test('a visible Reader executes an agent jump through its history-aware callback
   } finally {
     await act(async () => root.unmount())
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })
 
 test('Host cancellation after delivery aborts an executing Client navigation and never acknowledges opened', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!), tab = new AbortController()
   let cancelHost!: (value: { active: boolean }) => void, completed!: () => void
   const completion = new Promise<void>(resolve => { completed = resolve })
@@ -260,10 +234,7 @@ test('Host cancellation after delivery aborts an executing Client navigation and
     assert.equal(result, 'unavailable')
     assert.equal(opened, 0)
   } finally {
-    await act(async () => root.unmount()); tab.abort(); dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    await act(async () => root.unmount()); tab.abort(); restoreDom()
+
   }
 })

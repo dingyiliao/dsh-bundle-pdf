@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { resolveOcrSessionModel, type OcrModelRouteContext } from './ocr-model-route.js'
+import { resolveSessionModel, SessionModelRouteError, type SessionModelRoute, type SessionModelRouteContext } from './session-model-route.js'
 import {
   ImageUnderstandingError, MAX_DERIVED_TEXT_CHARACTERS,
   type ImageUnderstandingBackend,
@@ -8,15 +8,9 @@ import type { SessionOcrAttachmentStore, SessionOcrLlm } from './ocr-session-llm
 import { sessionModelCacheIdentity, type SessionModelInfo } from './model-cache-identity.js'
 import type { EngineConfiguration } from '../../../modules/engines/index.js'
 
-export interface DshVisionModel {
-  provider: string
-  model: string
-  reasoningEffort?: string
-}
-
 export interface DshVisionDependencies {
   /** Resolves the current conversation model when Provider and Model are left blank. */
-  selectedModel(sessionId: string, signal: AbortSignal): DshVisionModel | undefined | Promise<DshVisionModel | undefined>
+  selectedModel(sessionId: string, signal: AbortSignal): SessionModelRoute | undefined | Promise<SessionModelRoute | undefined>
   getLlm(): Pick<SessionOcrLlm, 'resolveModelInfo' | 'stream'> | undefined
   getAttachments(): Pick<SessionOcrAttachmentStore, 'saveImage'> | undefined
   maxOutputTokens?: number
@@ -205,11 +199,16 @@ export function createDshVisionBackend(dependencies: DshVisionDependencies): Ima
 }
 
 /** Resolve the active conversation route without invoking any model inference. */
-export async function resolveSessionVisionModel(ctx: Pick<Context, 'get'>, sessionId: string, signal: AbortSignal): Promise<DshVisionModel> {
-  const sessionController = ctx.get('sessionController') as OcrModelRouteContext['sessionController'] | undefined
+export async function resolveSessionVisionModel(ctx: Pick<Context, 'get'>, sessionId: string, signal: AbortSignal): Promise<SessionModelRoute> {
+  const sessionController = ctx.get('sessionController') as SessionModelRouteContext['sessionController'] | undefined
   if (!sessionController) throw fail('pdf/image-unavailable', 'The session model is unavailable.')
-  return resolveOcrSessionModel({ sessionController,
-    get: ctx.get.bind(ctx) as OcrModelRouteContext['get'] }, sessionId, signal)
+  try {
+    return await resolveSessionModel({ sessionController,
+      get: ctx.get.bind(ctx) as SessionModelRouteContext['get'] }, sessionId, signal)
+  } catch (error) {
+    if (!(error instanceof SessionModelRouteError)) throw error
+    throw new ImageUnderstandingError('pdf/image-unavailable', 'The vision model is unavailable.', { cause: error.cause })
+  }
 }
 
 /** Delivery policy belongs to the conversation, independent of the selected image engine. */

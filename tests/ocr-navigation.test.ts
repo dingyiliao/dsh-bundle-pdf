@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { NavigationHistory, type NavigationPosition } from '../src/navigation/index.js'
+import { NavigationHistory, type NavigationPosition } from '../src/shared/navigation-history.js'
 import {
   createLocalOcrEngine, createNoneOcrEngine, mapImageBoxToPdf, normalizeTesseractOutput,
   OcrError, OcrRegistry, type LocalOcrDependencies, type OcrEngine, type OcrOutput, type OcrRequest,

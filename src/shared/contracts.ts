@@ -1,6 +1,6 @@
 import type { PdfAnnotation, PdfDocumentInfo, PdfFormField, PdfOutlineItem, PdfWorkingCopyOperation } from '../core/pdf-types.js'
 import type { NativeReaderApi, ReaderDescriptor } from './native.js'
-import type { NavigationPosition } from '../navigation/index.js'
+import type { NavigationPosition } from './navigation-history.js'
 import { defaultExplanationPromptTemplate } from './explanation-template.js'
 
 /** Durable location used to resume reading a PDF. */

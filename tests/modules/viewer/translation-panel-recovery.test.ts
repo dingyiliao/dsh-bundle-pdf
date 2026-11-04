@@ -1,14 +1,11 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TranslationPanel, type TranslationPanelProps } from '../../../src/modules/viewer/components/TranslationPanel.tsx'
 import { TranslationError, translationEn, type TranslationRequest, type TranslationResult } from '../../../src/translation/index.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const t = (key: string) => translationEn[key.replace(/^reader\./, '') as keyof typeof translationEn] ?? key
 const result = (text = 'Translated'): TranslationResult => ({ text, status: 'complete', warnings: [],
   source: { engineId: 'fixture', engineVersion: '1', instanceId: 'test', configurationRevision: '1' } })
@@ -23,37 +20,44 @@ function assertOriginal(container: HTMLElement, text: string) {
 
 async function withPanel(translate: TranslationPanelProps['translate'], run: (fixture: {
   container: HTMLElement; dom: Window & typeof globalThis; props: TranslationPanelProps;
-  render(props: TranslationPanelProps): Promise<void>; button(text: string): HTMLButtonElement
-}) => Promise<void>, sourceText = 'subtrac') {
-  const dom = new JSDOM('<html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const previous = new Map<string, PropertyDescriptor | undefined>()
+  render(props: TranslationPanelProps): Promise<void>; button(text: string): HTMLButtonElement;
+  resize(): Promise<void>
+}) => Promise<void>, sourceText = 'subtrac', sourceLayout?: { clientHeight: number; scrollHeight: number }) {
+  const { dom, restore: restoreDom, install: installDom } = createDom('<html><body><div id="root"></div></body></html>', { globals: [] })
+
+  const resizeObservers = new Set<ResizeObserverCallback>()
+  if (sourceLayout) for (const property of ['clientHeight', 'scrollHeight'] as const) {
+    Object.defineProperty(dom.HTMLElement.prototype, property, { configurable: true, get(this: HTMLElement) {
+      return this.classList.contains('dsh-pdf-translation-source-text') ? sourceLayout[property] : 0
+    } })
+  }
   const values = { window: dom, document: dom.document, navigator: dom.navigator, Node: dom.Node, Element: dom.Element,
     HTMLElement: dom.HTMLElement, MutationObserver: dom.MutationObserver, getComputedStyle: dom.getComputedStyle.bind(dom),
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    ResizeObserver: class {
+      constructor(private callback: ResizeObserverCallback) { resizeObservers.add(callback) }
+      observe() {} unobserve() {}
+      disconnect() { resizeObservers.delete(this.callback) }
+    },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(values)) {
-    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const props: TranslationPanelProps = { selection: { text: sourceText, pages: [1], targetLanguage: 'zh' },
     engineName: 'Fixture', translate, rememberTargetLanguage: async () => true, onClose() {}, t }
   const render = async (value: TranslationPanelProps) => { await act(async () => { root.render(React.createElement(TranslationPanel, value)) }) }
   try {
     await render(props)
-    await run({ container, dom, props, render, button(text) {
+    await run({ container, dom, props, render,
+      async resize() { await act(async () => { for (const callback of resizeObservers) callback([], {} as ResizeObserver) }) },
+      button(text) {
       const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find(element => element.textContent === text)
       assert.ok(button, `Missing button ${text}`)
       return button
     } })
   } finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, value] of previous) {
-      if (value) Object.defineProperty(globalThis, key, value)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 
@@ -65,6 +69,18 @@ test('component presentation of supplied reconstruction preserves the original a
     assertOriginal(f.container, 'subtrac')
     assert.equal(f.container.querySelector('.dsh-pdf-translation-interpreted-text')!.textContent, 'subtract')
     assert.match(f.container.querySelector('[role="note"]')!.textContent ?? '', /Possible completion.*subtract.*final letter/)
+    const details = f.container.querySelector<HTMLDetailsElement>('.dsh-pdf-translation-interpretation details')!
+    assert.ok(details, 'the reconstruction is available without crowding out the translation')
+    assert.equal(details.open, false, 'reconstruction details start collapsed')
+    assert.match(details.querySelector('summary')!.textContent ?? '', /Possible completion/)
+    const translated = f.container.querySelector('.dsh-pdf-translation-details')!
+    assert.ok(translated)
+    assert.equal(details.contains(translated), false, 'the translation is visible independently of reconstruction details')
+    await act(async () => { details.querySelector('summary')!.click() })
+    assert.equal(details.open, true)
+    assert.equal(details.closest<HTMLElement>('[role="note"]')!.dataset.certainty, 'tentative')
+    await act(async () => { details.querySelector('summary')!.click() })
+    assert.equal(details.open, false)
     let copied = ''
     Object.defineProperty(f.dom.navigator, 'clipboard', { configurable: true,
       value: { async writeText(text: string) { copied = text } } })
@@ -72,6 +88,65 @@ test('component presentation of supplied reconstruction preserves the original a
     assert.equal(copied, 'Original: subtrac\nPossible completion: subtract\nThe final letter may have been omitted.\n\n减去')
     assert.equal(f.container.querySelector('.dsh-pdf-translation-source-text')!.textContent, 'subtrac')
   })
+})
+
+test('overflowing originals expand on demand while requests and copied qualifications retain the entire source', async () => {
+  const source = '  An intentionally long selected passage.\n'.repeat(30) + 'FINAL ORIGINAL TEXT'
+  const requests: TranslationRequest[] = []
+  const interpreted: TranslationResult = { ...result('完整译文'), interpretation: {
+    kind: 'correction', certainty: 'confident', text: `${source} — corrected`, explanation: 'Spacing was restored.',
+  } }
+  const layout = { clientHeight: 80, scrollHeight: 400 }
+  await withPanel(async request => { requests.push(request); return interpreted }, async f => {
+    assertOriginal(f.container, source)
+    const paragraph = f.container.querySelector<HTMLElement>('.dsh-pdf-translation-source-text')!
+    const show = f.button('Show full original')
+    assert.equal(show.getAttribute('aria-expanded'), 'false')
+    assert.equal(show.getAttribute('aria-controls'), paragraph.id)
+    assert.equal(paragraph.dataset.expanded, 'false')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0]!.text, source)
+    assert.equal(f.container.querySelector('.dsh-pdf-translation-text')!.textContent, '完整译文')
+
+    await act(async () => { show.click() })
+    assert.equal(f.button('Collapse original').getAttribute('aria-expanded'), 'true')
+    assert.equal(paragraph.dataset.expanded, 'true')
+    assertOriginal(f.container, source)
+    await act(async () => { f.button('Collapse original').click() })
+    assert.equal(f.button('Show full original').getAttribute('aria-expanded'), 'false')
+    assert.equal(paragraph.dataset.expanded, 'false')
+
+    let copied = ''
+    Object.defineProperty(f.dom.navigator, 'clipboard', { configurable: true,
+      value: { async writeText(text: string) { copied = text } } })
+    await act(async () => { f.button('Copy translation').click() })
+    assert.equal(copied, `Original: ${source}\nCorrected text: ${source} — corrected\nSpacing was restored.\n\n完整译文`)
+    assert.equal(requests.length, 1, 'expanding, collapsing and copying do not submit another model request')
+  }, source, layout)
+})
+
+test('original disclosure follows measured overflow after resizing and resets for a new selection', async () => {
+  const source = 'A selected source spanning many lines. '.repeat(12)
+  const layout = { clientHeight: 80, scrollHeight: 240 }
+  await withPanel(async () => result(), async f => {
+    assert.ok(f.button('Show full original'))
+    layout.scrollHeight = 80
+    await f.resize()
+    assert.equal(f.container.querySelector('.dsh-pdf-translation-source button'), null,
+      'a wide panel does not offer expansion when the source already fits')
+    assertOriginal(f.container, source)
+
+    layout.scrollHeight = 240
+    await f.resize()
+    await act(async () => { f.button('Show full original').click() })
+    assert.equal(f.button('Collapse original').getAttribute('aria-expanded'), 'true')
+    const next = `${source} This is a different selection.`
+    await f.render({ ...f.props, selection: { ...f.props.selection, text: next } })
+    assertOriginal(f.container, next)
+    assert.equal(f.button('Show full original').getAttribute('aria-expanded'), 'false',
+      'a previous expansion does not make the next long selection fill the panel')
+    assert.equal(f.container.querySelector<HTMLElement>('.dsh-pdf-translation-source-text')!.dataset.expanded, 'false')
+  }, source, layout)
 })
 
 for (const kind of ['word', 'phrase', 'sentence'] as const) {

@@ -1,14 +1,11 @@
+import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
 import type { EngineCatalogSnapshot, EngineDescriptor } from '../src/modules/engines/index.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const imageEngines: EngineDescriptor[] = [
   { id: 'fixture.vision', name: 'Visual descriptions', version: '1', execution: 'local',
     configurationFields: [{ key: 'model', label: 'Vision model', type: 'string', required: true }] },
@@ -16,16 +13,7 @@ const imageEngines: EngineDescriptor[] = [
 ]
 
 test('global OCR and vision selectors save their bindings without editing per-document indexing switches', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' }).window
-  const globals = new Map<string, PropertyDescriptor | undefined>()
-  for (const key of ['window', 'document', 'HTMLElement', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']) {
-    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-  }
-  Object.defineProperties(globalThis, {
-    window: { configurable: true, value: dom }, document: { configurable: true, value: dom.document },
-    HTMLElement: { configurable: true, value: dom.HTMLElement }, Event: { configurable: true, value: dom.Event },
-    MouseEvent: { configurable: true, value: dom.MouseEvent }, IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
-  })
+  const { dom, restore: restoreDom } = createDom()
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const listeners = new Set<() => void>()
@@ -140,10 +128,7 @@ test('global OCR and vision selectors save their bindings without editing per-do
     assert.equal(container.querySelector('select[id$="-indexDescriptionEngine"]'), null)
   } finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of globals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

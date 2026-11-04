@@ -115,6 +115,49 @@ test('registry captures inputs, normalizes vectors, and separates registration l
   registry.dispose()
 })
 
+test('one directory generation is visible during catalog notifications and stale disposers cannot revoke a successor', async () => {
+  const registry = new EmbeddingRegistry(), observed: Array<string | undefined> = []
+  registry.subscribe(() => observed.push(registry.list().length ? registry.generation(binding) : undefined))
+  const remove = registry.register(engine())
+  const firstGeneration = registry.generation(binding)
+  assert.throws(() => registry.register(engine()), code('invalid-request'))
+  assert.equal(registry.generation(binding), firstGeneration, 'failed duplicate registration cannot replace the lease')
+  remove()
+  assert.throws(() => registry.generation(binding), code('engine-unavailable'))
+  let active!: AbortSignal
+  const removeSuccessor = registry.register(engine(request => {
+    active = request.signal
+    return new Promise(() => {})
+  }))
+  try {
+    const successorGeneration = registry.generation(binding)
+    assert.notEqual(successorGeneration, firstGeneration)
+    const pending = registry.embed({ texts: ['document'], purpose: 'document' }, binding)
+    remove()
+    assert.equal(active.aborted, false)
+    assert.equal(registry.generation(binding), successorGeneration)
+    assert.deepEqual(observed, [firstGeneration, undefined, successorGeneration])
+    removeSuccessor()
+    await assert.rejects(pending, code('engine-unavailable'))
+    assert.equal(active.aborted, true)
+    assert.deepEqual(observed, [firstGeneration, undefined, successorGeneration, undefined])
+  } finally { registry.dispose() }
+})
+
+test('a rejected descriptor leaves no registration or generation behind', () => {
+  const registry = new EmbeddingRegistry(), base = engine()
+  try {
+    assert.throws(() => registry.register({ ...base, descriptor: { ...base.descriptor, version: '' } }))
+    assert.deepEqual(registry.list(), [])
+    assert.throws(() => registry.generation(binding), code('engine-unavailable'))
+    const remove = registry.register(base)
+    assert.equal(typeof registry.generation(binding), 'string')
+    remove()
+    registry.dispose()
+    assert.throws(() => registry.generation(binding), code('engine-unavailable'))
+  } finally { registry.dispose() }
+})
+
 test('invalid batch, dimensions, nonfinite/zero vectors fail without returning usable embeddings', async () => {
   for (const vectors of [[], [[1]], [[0, 0]], [[NaN, 2]], [[Infinity, 1]], [[1e308, 1e308]]]) {
     const registry = new EmbeddingRegistry()

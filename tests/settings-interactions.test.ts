@@ -1,15 +1,12 @@
+import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
 import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
-import { SETTINGS_ACK_TIMEOUT_MS } from '../src/client/settings-ack.ts'
+import { SETTINGS_ACK_TIMEOUT_MS } from '../src/client/settings/settings-ack.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 type Operations = Parameters<ConfigForm['mutate']>[0]
 const catalog: EngineCatalogSnapshot = { revision: 'fixture', engines: {
   ocr: [{ id: 'local-tesseract', name: 'Local Tesseract OCR', version: '1', execution: 'local' },
@@ -27,13 +24,10 @@ function ready(value: PdfSettings = { ...defaultSettings }): ConfigFormSnapshot 
   return { status: 'ready', value, base: {}, user: {}, writable: true, revision: 1 }
 }
 async function setup(initial = ready()) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' }).window
-  const globals = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
-    Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true })) {
-    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div id="root"></div>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
+    Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true })
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   let snapshot = initial
@@ -127,11 +121,8 @@ async function setup(initial = ready()) {
         value: Object.hasOwn(status, 'value') ? status.value : { ...snapshot.value!, ...value },
         revision: Number(snapshot.revision) + 1 }; notify() })
     },
-    async close() { await act(async () => { root.unmount() }); dom.close()
-      for (const [key, descriptor] of globals) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-        else Reflect.deleteProperty(globalThis, key)
-      }
+    async close() { await act(async () => { root.unmount() }); restoreDom()
+
     },
   }
 }

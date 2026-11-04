@@ -124,7 +124,7 @@ function View({ name, sessionId, documentId }: { name: string; sessionId: string
   const panels = readerSidebarPanels({ snapshot, pdf: pdf.current, annotations: [], clearAnnotation() {}, selectAnnotation() {},
     jump() {}, ocrTranscript: null, search, indexing: indexing.control,
     translation: { selection: null, async translate() { throw new Error('Translation is outside this fixture') },
-      begin() {}, close() {}, reset() {} }, translationRegistry, translationEngine: 'none', t })
+      begin() {}, beginOcr() { return false }, close() {}, reset() {} }, translationRegistry, translationEngine: 'none', t })
   return <div className="dsh-pdf-reader" data-reader-view={name} style={{ height: '100%', width: '100%' }}>
     <div className="dsh-pdf-body">
       <ReaderToolbar menuRef={menu} state={state} actions={actions} statuses={indexing.statuses} t={t} />

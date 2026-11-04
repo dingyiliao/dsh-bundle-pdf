@@ -188,3 +188,32 @@ export function hybridCandidates(lexical: readonly RankedChunk[], semantic: read
   }
   return fused.filter(hit => selected.has(hit.chunkId))
 }
+
+/** Alternative representations of one block compete as one result. Choose a
+ * representation using its best rank in each branch, retaining that unit's
+ * distinct subranges so long native paragraphs still produce separate hits. */
+export function collapseRepresentations(rankings: RankedChunk[][], chunks: readonly RetrievalChunk[]): RankedChunk[][] {
+  const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))
+  const blocks = new Map<string, Map<string, { score: number; priority: number }>>()
+  for (const ranking of rankings) {
+    const seen = new Set<string>()
+    for (const [rank, hit] of ranking.entries()) {
+      const chunk = byId.get(hit.chunkId), representation = chunk?.representation
+      if (!representation) continue
+      const block = JSON.stringify([chunk.page, representation.blockId]), key = JSON.stringify([block, representation.id])
+      if (seen.has(key)) continue
+      seen.add(key)
+      const units = blocks.get(block) ?? new Map<string, { score: number; priority: number }>()
+      const value = units.get(representation.id) ?? { score: 0,
+        priority: representation.kind === 'native-text' ? 0 : representation.kind === 'ocr-text' ? 1 : 2 }
+      value.score += 1 / (60 + rank + 1)
+      units.set(representation.id, value); blocks.set(block, units)
+    }
+  }
+  const selected = new Map([...blocks].map(([block, units]) => [block, [...units].sort((a, b) =>
+    b[1].score - a[1].score || a[1].priority - b[1].priority || a[0].localeCompare(b[0]))[0]![0]]))
+  return rankings.map(ranking => ranking.filter(hit => {
+    const chunk = byId.get(hit.chunkId), representation = chunk?.representation
+    return !representation || selected.get(JSON.stringify([chunk.page, representation.blockId])) === representation.id
+  }))
+}

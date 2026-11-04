@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
-import { createRetrievalService, retrievalPageText, type RetrievalCache, type RetrievalInput, type RetrievalPrepareInput, type RetrievalProgress,
+import { createRetrievalService, type RetrievalCache, type RetrievalInput, type RetrievalPrepareInput, type RetrievalProgress,
   type RetrievalEmbedding, type RetrievalResult } from '../../../modules/retrieval/index.js'
-import { evidenceSha256, rememberTextEvidence, createImageEvidenceRegistry, type AgentPageReadPort,
+import { evidenceSha256, rememberTextEvidence, describeEvidenceCapabilities, createImageEvidenceRegistry, type AgentPageReadPort,
   type EvidenceReferenceStore } from '../../../modules/evidence/index.js'
 import type { WorkingCopyReadPort } from '../../../modules/working-copy/index.js'
 import { engineBinding } from '../../../modules/engines/index.js'
 import { EmbeddingError, type EmbeddingRegistry } from '../../../embedding/index.js'
+import { nativePageContentText } from '../../../modules/document/index.js'
 import { joinPageText } from '../../../shared/page-text.js'
 import { defaultSettings, type PdfSettings } from '../../../shared/contracts.js'
 import { projectPageContent, type PdfPageContent } from './page-content.js'
@@ -126,7 +127,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       if (options.content) return projectPageContent(await options.content.read(sessionId, id, page, signal))
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
       const { content } = await pages.readPageText(sessionId, id, page, signal, { recover: false })
-      return { ...retrievalPageText(content.items), source: content.extraction === 'local-ocr' ? 'ocr' : 'pdf-text',
+      return { ...nativePageContentText(content.items), source: content.extraction === 'local-ocr' ? 'ocr' : 'pdf-text',
         warnings: [...(content.warnings ?? []), ...(content.quality?.unmappedCharacters
           ? ['Some native characters could not be decoded; OCR or visual inspection is needed.'] : [])] }
     } } })
@@ -265,9 +266,10 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
           const evidence = await rememberTextEvidence(references, sessionId, read.snapshot, chunk.page,
             text, chunk.startUtf16, chunk.endUtf16, read.content, result.document.sourceDigest)
           check()
+          const capabilities = describeEvidenceCapabilities(evidence)
           candidates.push({ page: chunk.page, quote: chunk.text, score: chunk.score,
-            source: 'native-text', ...(chunk.representation ? { blockId: chunk.representation.blockId } : {}),
-            annotationStatus: chunk.source === 'pdf-text' && !read.content.quality?.unmappedCharacters
+            source: capabilities.source, ...(chunk.representation ? { blockId: chunk.representation.blockId } : {}),
+            annotationStatus: capabilities.exactAnnotate && chunk.source === 'pdf-text'
               ? 'requires-geometry-check' : 'unavailable', evidence })
         }
         const { chunks: _chunks, document, ...progress } = result

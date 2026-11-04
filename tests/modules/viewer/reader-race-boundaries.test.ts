@@ -1,5 +1,6 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire, registerHooks } from 'node:module'
+import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
@@ -9,11 +10,6 @@ registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
   return next(url, context)
 } })
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
@@ -27,8 +23,8 @@ function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot
 }
 
 test('Reader preserves explanation UI across native replacement and pending resource switches', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
   const values = {
     window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLInputElement: dom.HTMLInputElement, Element: dom.Element,
@@ -41,10 +37,7 @@ test('Reader preserves explanation UI across native replacement and pending reso
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const oldBounds = dom.HTMLElement.prototype.getBoundingClientRect
   dom.HTMLElement.prototype.getBoundingClientRect = function () {
     if (this.classList.contains('dsh-pdf-scroll')) return new dom.DOMRect(0, 0, 800, 700)
@@ -167,10 +160,7 @@ test('Reader preserves explanation UI across native replacement and pending reso
     tab.abort()
     dom.HTMLElement.prototype.getBoundingClientRect = oldBounds
     dom.HTMLCanvasElement.prototype.getContext = oldContext
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

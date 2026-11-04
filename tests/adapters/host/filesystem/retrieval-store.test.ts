@@ -85,6 +85,50 @@ test('a batch commits once, freezes admitted values and resolves duplicate keys 
   assert.equal(store.diagnostics().commits, before + 1, 'an empty batch has no transaction')
 })
 
+test('conditional repair writes preserve newer checkpoints across independent stores and reopening', async t => {
+  const f = await fixture(t), first = f.store(), second = f.store()
+  const initial = { generation: 'same', reference: 'old' }, repaired = { generation: 'same', reference: 'fixed' }
+  assert.equal(await first.compareAndSet('checkpoint', undefined, initial), true)
+  assert.equal(await second.compareAndSet('checkpoint', undefined, repaired), false)
+  assert.deepEqual(await second.get('checkpoint'), initial)
+  const before = first.diagnostics().diskWrites
+  await second.set('checkpoint', { generation: 'newer', reference: 'current' })
+  assert.equal(await first.compareAndSet('checkpoint', initial, repaired), false)
+  assert.equal(first.diagnostics().diskWrites, before, 'a stale comparison writes no records')
+  assert.deepEqual(await first.get('checkpoint'), { generation: 'newer', reference: 'current' })
+  assert.equal(await first.compareAndSet('missing', initial, repaired), false)
+  await first.dispose(); await second.dispose()
+  assert.deepEqual(await f.store().get('checkpoint'), { generation: 'newer', reference: 'current' })
+})
+
+test('competing repairs have one winner and cannot change completed OCR or vector records', async t => {
+  const f = await fixture(t), first = f.store(), second = f.store()
+  const original = { reference: 'old' }, ocr = { text: 'completed OCR', spans: [[1, 2, 3, 4]] }, vector = { data: 'completed vector' }
+  await first.setMany([['checkpoint', original], ['ocr', ocr], ['vector', vector]])
+  const changed = { reference: 'one' }
+  const one = first.compareAndSet('checkpoint', original, changed)
+  changed.reference = 'mutated after admission'
+  const winners = await Promise.all([one, second.compareAndSet('checkpoint', original, { reference: 'two' })])
+  assert.equal(winners.filter(Boolean).length, 1)
+  assert.deepEqual(await first.get('checkpoint'), { reference: winners[0] ? 'one' : 'two' })
+  assert.deepEqual(await second.get('ocr'), ocr); assert.deepEqual(await second.get('vector'), vector)
+})
+
+test('a rejected conditional repair rolls back and a corrupt checkpoint is never silently overwritten', async t => {
+  const f = await fixture(t), store = f.store(), original = { reference: 'old' }
+  await store.set('checkpoint', original)
+  f.sql(db => { db.exec("CREATE TRIGGER refuse_repair BEFORE INSERT ON records WHEN NEW.key='checkpoint' BEGIN SELECT RAISE(ABORT,'repair refused'); END") })
+  await assert.rejects(store.compareAndSet('checkpoint', original, { reference: 'fixed' }), { code: 'pdf/index-storage-write-failed' })
+  assert.deepEqual(await store.get('checkpoint'), original)
+  f.sql(db => {
+    db.exec('DROP TRIGGER refuse_repair')
+    const bad = JSON.stringify({ version: 1, key: 'checkpoint', payload: original, checksum: 'invalid' })
+    db.prepare('UPDATE records SET envelope=?,bytes=? WHERE id=?').run(bad, Buffer.byteLength(bad), hash('checkpoint'))
+  })
+  await assert.rejects(store.compareAndSet('checkpoint', original, { reference: 'fixed' }), { code: 'pdf/index-storage-corrupt' })
+  await assert.rejects(store.get('checkpoint'), { code: 'pdf/index-storage-corrupt' })
+})
+
 test('failed SQLite batch transactions roll back all records and never publish partial hot entries', async t => {
   const f = await fixture(t), store = f.store()
   await store.setMany([['first', 'previous'], ['second', 'previous']])

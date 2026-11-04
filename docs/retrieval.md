@@ -83,6 +83,17 @@ fence evidence, authorization and active searches. Unverifiable page structure
 uses the raw file digest conservatively; the identity check does not prove
 arbitrary PDF graphics-program equivalence.
 
+New built-in Tesseract extraction shares its raw OCR artifact with automatic
+read-page character-mapping repair. Both use the same clean page image with a
+2048-pixel long edge, excluding annotations and form appearances. This preserves
+repair quality and avoids both rendering and recognition on a matching artifact
+hit, including after Host restart. Cold indexing uses about four times the
+pixels of the earlier 1024-pixel input; local recognition remains limited to one
+worker. Other OCR engines keep their own producer, language and 1024-pixel input
+identity. Existing 1024-pixel index representations remain readable and do not
+trigger a rebuild; they cannot substitute for a differently rendered raw OCR
+artifact. Cache reuse always rechecks the current caller's source and access.
+
 Successful page checkpoints survive cache eviction, cancellation, failure and
 Host restart. **Resume indexing** / **Retry indexing** continues the interrupted
 task's *original* source and plan, repairing missing work. If the source or plan

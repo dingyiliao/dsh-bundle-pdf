@@ -4,19 +4,14 @@ import {
   TranslationError, type TranslationEngine, type TranslationEngineRequest, type TranslationOutput,
 } from '../../../translation/types.js'
 import { interpretationSchema } from '../../../translation/schema.js'
-
-export interface DshTranslationModelRoute {
-  provider: string
-  model: string
-  reasoningEffort?: string
-}
+import type { SessionModelRoute } from './session-model-route.js'
 
 /** Structural view of the public DSH LlmRuntime; no runtime adapter dependency. */
 export interface DshTranslationLlm {
   stream(options: DshTranslationGenerateOptions): AsyncIterable<DshTranslationChunk>
 }
 
-export interface DshTranslationGenerateOptions extends Omit<DshTranslationModelRoute, 'reasoningEffort'> {
+export interface DshTranslationGenerateOptions extends Omit<SessionModelRoute, 'reasoningEffort'> {
   reasoningEffort?: ReasoningEffortId
   system: string
   messages: { role: 'user'; content: { type: 'text'; text: string }[] }[]
@@ -36,7 +31,7 @@ export interface DshTranslationChunk {
 export interface DshModelTranslationOptions {
   llm: DshTranslationLlm | undefined
   /** Resolve the authenticated session's selected route, without reading its messages. */
-  resolveContext(sessionId: string, signal?: AbortSignal): DshTranslationModelRoute | Promise<DshTranslationModelRoute>
+  resolveContext(sessionId: string, signal?: AbortSignal): SessionModelRoute | Promise<SessionModelRoute>
   maxOutputTokens: number
 }
 

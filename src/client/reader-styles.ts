@@ -1,5 +1,5 @@
 import reader from './reader.css'
-import settings from './settings.css'
+import settings from './settings/settings.css'
 import sidebar from './reading-sidebar.css'
 import pages from './windowed-pages.css'
 import comments from './annotation-comment-card.css'

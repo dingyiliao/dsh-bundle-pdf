@@ -1,21 +1,12 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import { captureTextSelection, type PageView } from '../../../src/modules/viewer/model/reader-selection.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('a selection inside one text node includes surrounding context and its actual page box', () => {
-  const dom = new JSDOM('<!doctype html><div id="root"><div id="page"><div data-pdf-text="active"><span>hello world again</span></div></div></div>',
-    { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, Node: dom.Node, NodeFilter: dom.NodeFilter })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div id="root"><div id="page"><div data-pdf-text="active"><span>hello world again</span></div></div></div>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, Node: dom.Node, NodeFilter: dom.NodeFilter })
   try {
     const container = dom.document.getElementById('root')!
     const page = dom.document.getElementById('page')!
@@ -63,10 +54,7 @@ test('a selection inside one text node includes surrounding context and its actu
         10, 56, 35, 56, 10, 46, 35, 46],
     })
   } finally {
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

@@ -1,6 +1,7 @@
 import type { PdfRect } from '../../../core/pdf-types.js'
 import { mergeSelectionRects } from './selection-highlight.js'
 import type { ReaderPage } from '../ports/reader-document.js'
+import { translationContextLimit } from '../../../translation/types.js'
 
 export type PageViewport = ReturnType<ReaderPage['getViewport']>
 export interface PageView {
@@ -87,12 +88,12 @@ function selectionBoundaryContext(range: Range): Pick<ReaderSelection, 'selectio
     const layer = boundary.parentElement?.closest<HTMLElement>('[data-pdf-text="active"]')
     if (!layer) return undefined
     const text = (boundary as Text).data
-    let result = before ? text.slice(Math.max(0, offset - 80), offset) : text.slice(offset, offset + 80)
+    let result = before ? text.slice(Math.max(0, offset - translationContextLimit), offset) : text.slice(offset, offset + translationContextLimit)
     const walker = boundary.ownerDocument!.createTreeWalker(layer, NodeFilter.SHOW_TEXT)
     walker.currentNode = boundary
     let node: Node | null
-    while (result.length < 80 && (node = before ? walker.previousNode() : walker.nextNode())) {
-      const value = (node as Text).data, remaining = 80 - result.length
+    while (result.length < translationContextLimit && (node = before ? walker.previousNode() : walker.nextNode())) {
+      const value = (node as Text).data, remaining = translationContextLimit - result.length
       result = before ? value.slice(-remaining) + result : result + value.slice(0, remaining)
     }
     return result

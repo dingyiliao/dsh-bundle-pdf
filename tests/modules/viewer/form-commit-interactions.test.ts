@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import type { PdfFormField } from '../../../src/core/pdf-types.ts'
@@ -7,19 +7,12 @@ import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import { createReaderFormCommits } from '../../../src/modules/viewer/controllers/reader-form-commits.ts'
 import { ReaderFormCommitProvider } from '../../../src/modules/viewer/rendering/FormCommitContext.tsx'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('focused widget drafts defer only to commands in their own Reader and otherwise commit on blur', async () => {
-  const dom = new JSDOM('<div id="root"></div>').window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [name, value] of Object.entries({ window: dom, document: dom.document, navigator: dom.navigator,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<div id="root"></div>', { url: 'about:blank', globals: [] })
+
+  installDom({ window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, Event: dom.Event,
-    IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
-    Object.defineProperty(globalThis, name, { configurable: true, value })
-  }
+    IS_REACT_ACT_ENVIRONMENT: true })
   const { FormWidgets } = await import('../../../src/modules/viewer/rendering/FormWidgets.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
@@ -95,10 +88,7 @@ test('focused widget drafts defer only to commands in their own Reader and other
     await act(async () => root.unmount())
     owner.dispose()
     otherOwner?.dispose()
-    dom.close()
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
-      else Reflect.deleteProperty(globalThis, name)
-    }
+    restoreDom()
+
   }
 })

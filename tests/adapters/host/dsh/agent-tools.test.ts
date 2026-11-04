@@ -8,7 +8,7 @@ import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.
 import { questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { summarizeOutline } from '../../../../src/modules/navigation/index.ts'
 import { createMemoryEvidenceReferenceStore, createImageEvidenceRegistry, evidenceSha256, windowPageText,
-  type EvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
+  type EvidenceReferenceStore, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { nativeTestSubprocess } from '../../../native-test-subprocess.ts'
 import { createReaderContexts } from '../../../../src/modules/navigation/index.ts'
@@ -18,7 +18,7 @@ import { defaultSettings } from '../../../../src/shared/contracts.ts'
 
 interface CapturedTool {
   execute(args: unknown, exec: unknown): Promise<unknown>
-  output: { render(args: unknown, value: unknown): Array<{ type: string; attachment?: { attachmentId: string } }>
+  output: { render(args: unknown, value: unknown): Array<{ type: string; text?: string; attachment?: { attachmentId: string } }>
     presentationMeta?(args: unknown, value: unknown): unknown }
 }
 
@@ -61,6 +61,74 @@ function readTool(definitions: Map<string, CapturedTool>, name: string, args: un
   })
 }
 
+function renderedValue(tool: CapturedTool, value: unknown): Record<string, unknown> {
+  const block = tool.output.render({}, value).find(block => block.type === 'text')
+  assert.ok(block?.text)
+  return JSON.parse(block.text.slice(block.text.indexOf('\n') + 1)) as Record<string, unknown>
+}
+
+function plainToolValue(tool: CapturedTool, value: unknown): Record<string, unknown> {
+  const block = tool.output.render({}, value).find(block => block.type === 'text')
+  assert.ok(block?.text)
+  return JSON.parse(block.text) as Record<string, unknown>
+}
+
+function documentToolValue(tool: CapturedTool, value: unknown): Record<string, unknown> {
+  const block = tool.output.render({}, value).find(block => block.type === 'text')
+  assert.ok(block?.text)
+  const separator = block.text.indexOf('\n')
+  assert.ok(separator > 0, 'document content keeps an explicit label before its JSON payload')
+  assert.match(block.text.slice(0, separator), /untrusted.*not instructions/i)
+  return JSON.parse(block.text.slice(separator + 1)) as Record<string, unknown>
+}
+
+/** One shared wire fixture for native text and Host-labelled local OCR. */
+async function textEvidenceToolFixture(extraction?: 'local-ocr') {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = `text-wire-${extraction ?? 'native'}`
+  const { ctx, definitions } = captureTools()
+  const references = createMemoryEvidenceReferenceStore(), reads: number[] = []
+  const forwarded: Array<Record<string, unknown>> = []
+  let altered = false, sourceReads = 0
+  let beforeSourceRead: ((count: number) => Promise<void>) | undefined
+  type Snapshot = ReturnType<typeof state.workspaces.readSnapshot>
+  let snapshotView: ((snapshot: Snapshot) => Snapshot) | undefined
+  const workspaces = { ...state.workspaces, readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+    const snapshot = state.workspaces.readSnapshot(...args)
+    return snapshotView?.(snapshot) ?? snapshot
+  } }
+  const pages = { async readPageText(owner: string, id: string, page: number) {
+    reads.push(page)
+    const lines = altered ? ['Changed source wording'] : page === 1
+      ? ['First paragraph: alpha', 'beta   gamma and tail'] : ['Second distinct passage']
+    return { snapshot: state.workspaces.readSnapshot(owner, id), content: {
+      items: lines.map((str, index) => ({ str, transform: [12, 0, 0, 12, 60, 260 - index * 30],
+        width: str.length * 6, height: 12, dir: 'ltr', fontName: 'test', hasEOL: index < lines.length - 1,
+        glyphs: Array.from(str, (_, glyph) => [60 + glyph * 6, 260 - index * 30, 6]) })),
+      styles: { test: { fontFamily: 'sans-serif', ascent: .8, descent: -.2, vertical: false } },
+      lang: null, ...(extraction ? { extraction } : {}),
+    } }
+  }, async releaseDocument() {} }
+  const sourceFiles = { async read(...args: Parameters<typeof state.files.read>) {
+    await beforeSourceRead?.(++sourceReads)
+    return state.files.read(...args)
+  } }
+  const navigation = { async navigate(owner: string, input: Record<string, unknown>) {
+    forwarded.push({ sessionId: owner, ...input })
+    return { status: 'opened', requestId: 'wire-request', page: input.page, reason: null, tabIds: [] }
+  } }
+  const dispose = registerPdfAgentTools(ctx, workspaces, pages as never, { current: () => [] },
+    references, sourceFiles, navigation as never)
+  const run = (name: string, input: unknown, owner = sessionId) => readTool(definitions, name, input, owner)
+  const opened = await run('pdf_open', { path: '/fixtures/native.pdf' }) as {
+    documentId: string; revision: number; contentVersion: string
+  }
+  return { state, definitions, references, reads, forwarded, run, opened, sessionId,
+    changeText() { altered = true },
+    snapshotView(callback: (snapshot: Snapshot) => Snapshot) { snapshotView = callback },
+    beforeSourceRead(callback: (count: number) => Promise<void>) { sourceReads = 0; beforeSourceRead = callback },
+    async dispose() { await dispose(); await state.workspaces.dispose() } }
+}
+
 async function searchToolFixture(texts: string[], embeddings?: EmbeddingRegistry) {
   const document = await PDFDocument.create()
   for (const _text of texts) document.addPage([300, 400])
@@ -98,7 +166,7 @@ async function searchToolFixture(texts: string[], embeddings?: EmbeddingRegistry
   const run = (name: string, input: unknown, owner = sessionId) => readTool(definitions, name, input, owner)
   const opened = await run('pdf_open', { path: '/fixtures/native.pdf' }) as { documentId: string }
   let disposed = false
-  return { state, sessionId, opened, reads, nativeClosed, retrievalInputs, run,
+  return { state, sessionId, opened, reads, nativeClosed, retrievalInputs, definitions, run,
     beforeRead(callback: (page: number) => Promise<void>) { beforeRead = callback },
     detach() { assert.ok(onDisposed); onDisposed({ id: sessionId }) },
     async dispose() {
@@ -193,6 +261,115 @@ test('image-context replay requires a fresh-source adapter', async () => {
       documentId: 'doc', refId: 'pdfref_00000000-0000-4000-8000-000000000000',
     }, 'session-a'), { code: 'pdf/source-unavailable' })
   } finally { await dispose() }
+})
+
+test('registered document lifecycle and navigation tools render plain JSON metadata', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    const values: Array<[string, unknown]> = [
+      ['pdf_open', f.opened],
+      ['pdf_current', await f.run('pdf_current', {})],
+      ['pdf_status', await f.run('pdf_status', { documentId: f.opened.documentId })],
+      ['pdf_page_jump', await f.run('pdf_page_jump', { documentId: f.opened.documentId, page: 1,
+        contentVersion: f.opened.contentVersion })],
+      ['pdf_close', await f.run('pdf_close', { documentId: f.opened.documentId })],
+    ]
+    for (const [name, value] of values) {
+      assert.deepEqual(plainToolValue(f.definitions.get(name)!, value), JSON.parse(JSON.stringify(value)), name)
+    }
+    assert.equal(f.state.writes(), 0)
+  } finally { await f.dispose() }
+})
+
+test('registered text tools keep document labels, projected handles and independent replay snapshots', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as {
+      text: string; evidence: PdfTextEvidence
+    }
+    const keyword = await f.run('pdf_keyword_search', { documentId: f.opened.documentId, query: 'alpha' }) as {
+      matches: Array<{ excerpt: string; evidence: PdfTextEvidence }>
+    }
+    const narrowed = await f.run('pdf_evidence_read', { documentId: f.opened.documentId,
+      refId: page.evidence.refId, quote: 'alpha' }) as { pages: PdfTextEvidence[] }
+    for (const [name, value] of [['pdf_page_read', page], ['pdf_keyword_search', keyword],
+      ['pdf_evidence_read', narrowed]] as const) {
+      const tool = f.definitions.get(name)!, before = structuredClone(value)
+      const metaBefore = tool.output.presentationMeta?.({}, value)
+      const projected = documentToolValue(tool, value)
+      assert.deepEqual(value, before, `${name} must not mutate the Host result`)
+      assert.deepEqual(tool.output.presentationMeta?.({}, value), metaBefore,
+        `${name} rendering must not change tool-card replay data`)
+      if (name === 'pdf_page_read') {
+        assert.equal(projected.text, page.text)
+        const evidence = projected.evidence as Record<string, unknown>
+        assert.equal(evidence.refId, page.evidence.refId)
+        assert.equal('snapshot' in evidence, false)
+        assert.equal('rectsPdf' in (evidence.locator as object), false)
+        assert.equal((metaBefore as { snapshot: { text: string } }).snapshot.text, page.text)
+      } else if (name === 'pdf_keyword_search') {
+        const match = (projected.matches as Array<Record<string, unknown>>)[0]!
+        assert.equal(match.quote, 'alpha')
+        assert.equal('snapshot' in (match.evidence as object), false)
+        assert.equal((metaBefore as { matches: Array<{ snapshot: { text: string } }> }).matches[0]!.snapshot.text, 'alpha')
+      } else {
+        const evidence = (projected.pages as Array<Record<string, unknown>>)[0]!
+        assert.equal(evidence.text, 'alpha')
+        assert.equal('snapshot' in evidence, false)
+        assert.equal((metaBefore as { chunks: Array<{ snapshot: { text: string } }> }).chunks[0]!.snapshot.text, 'alpha')
+      }
+    }
+  } finally { await f.dispose() }
+})
+
+test('empty text/search responses render plain JSON while nonempty annotation and bookmark strings keep labels', async () => {
+  const f = await textEvidenceToolFixture(), blank = await searchToolFixture([''])
+  try {
+    const noText = await blank.run('pdf_page_read', { documentId: blank.opened.documentId, page: 1 })
+    const noMatches = await blank.run('pdf_keyword_search', { documentId: blank.opened.documentId, query: 'absent' })
+    assert.deepEqual(plainToolValue(blank.definitions.get('pdf_page_read')!, noText), JSON.parse(JSON.stringify(noText)))
+    assert.deepEqual(plainToolValue(blank.definitions.get('pdf_keyword_search')!, noMatches), JSON.parse(JSON.stringify(noMatches)))
+    const noCandidates = { status: 'complete', documentId: f.opened.documentId, candidates: [],
+      coverage: { indexedPages: 4, totalPages: 4 }, limitations: ['A completed search has no matching passages.'] }
+    assert.deepEqual(plainToolValue(f.definitions.get('pdf_semantic_search')!, noCandidates), noCandidates)
+    for (const [name, values] of [
+      ['pdf_annotation_list', [{ annotations: [] }, { annotations: [{ id: 'ann', subtype: 'Text', contents: '', author: '' }] }]],
+      ['pdf_bookmark_list', [{ entries: [] }, { entries: [{ key: '0', title: '', page: 1 }] }]],
+    ] as const) {
+      for (const value of values) assert.deepEqual(plainToolValue(f.definitions.get(name)!, value), value)
+    }
+    for (const field of ['contents', 'excerpt', 'author', 'createdAt', 'modifiedAt']) {
+      const value = { documentId: f.opened.documentId, page: 1,
+        annotations: [{ id: 'ann', subtype: 'Text', [field]: 'Embedded PDF annotation text' }] }
+      assert.deepEqual(documentToolValue(f.definitions.get('pdf_annotation_list')!, value), value)
+    }
+    const bookmarks = { documentId: f.opened.documentId,
+      entries: [{ key: '0', title: 'Embedded chapter heading', page: 1 }] }
+    assert.deepEqual(documentToolValue(f.definitions.get('pdf_bookmark_list')!, bookmarks), bookmarks)
+  } finally { await blank.dispose(); await f.dispose() }
+})
+
+test('registered annotation writes label echoed passage text and keep status-only writes as plain JSON', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as { evidence: PdfTextEvidence }
+    const narrowed = await f.run('pdf_evidence_read', { documentId: f.opened.documentId,
+      refId: page.evidence.refId, quote: 'alpha' }) as { refId: string }
+    const created = await f.run('pdf_annotation_create', { documentId: f.opened.documentId,
+      expectedRevision: 0, subtype: 'Highlight', target: { kind: 'reference', refId: narrowed.refId } }) as {
+      revision: number; coverage: { pages: Array<{ text: string }> }
+    }
+    assert.equal(created.coverage.pages[0]!.text, 'alpha')
+    assert.deepEqual(documentToolValue(f.definitions.get('pdf_annotation_create')!, created), created)
+    const batch = { documentId: f.opened.documentId, status: 'updated', revision: created.revision,
+      annotations: [{ ...created, index: 0 }] }
+    assert.deepEqual(documentToolValue(f.definitions.get('pdf_annotation_create')!, batch), batch)
+    for (const name of ['pdf_annotation_create', 'pdf_annotation_update', 'pdf_annotation_delete', 'pdf_bookmark_edit', 'pdf_save']) {
+      const statusOnly = { documentId: f.opened.documentId, status: 'updated', revision: created.revision,
+        dirty: true, savedToFile: false }
+      assert.deepEqual(plainToolValue(f.definitions.get(name)!, statusOnly), statusOnly, name)
+    }
+  } finally { await f.dispose() }
 })
 
 test('pdf_page_jump forwards only a validated same-session target to the visible-Reader handoff', async () => {
@@ -672,6 +849,7 @@ test('pdf_page_render gates on exact model image capability and stores a bounded
     const textOnly = await invoke(1)
     assert.equal(textOnly.deliverImage, false)
     assert.deepEqual(definitions.get('pdf_page_render')!.output.render({}, textOnly).map(b => b.type), ['text'])
+    assert.equal(plainToolValue(definitions.get('pdf_page_render')!, textOnly).deliverImage, false)
     assert.equal(saved, 1, 'text-only models can produce handles without receiving image content')
     capable = true
     const result = await invoke(1)
@@ -685,6 +863,7 @@ test('pdf_page_render gates on exact model image capability and stores a bounded
     assert.ok(image.width <= 512 && image.height <= 512)
     assert.match(image.attachmentId, /^sha256:/)
     const blocks = definitions.get('pdf_page_render')!.output.render({ documentId: opened.id, page: 1 }, result)
+    assert.equal(documentToolValue(definitions.get('pdf_page_render')!, result).deliverImage, true)
     assert.equal(blocks[1]?.type, 'image')
     assert.equal(blocks[1]?.attachment?.attachmentId, image.attachmentId)
     assert.ok(!JSON.stringify(result).includes('iVBOR'), 'canonical output must not embed Base64 image bytes')
@@ -711,7 +890,7 @@ test('pdf_page_render gates on exact model image capability and stores a bounded
   } finally { await pdfService.dispose(); await state.workspaces.dispose() }
 })
 
-test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed across sessions, source changes, attachment loss, and cancellation', async () => {
+test('stored image/OCR reads and direct-image page jumps fail closed across sessions, source changes, attachment loss, and cancellation', async () => {
   const state = memoryWorkspace(await nativeFixture())
   let sourceOnDisk = state.current()
   const alice = 'pdf-image-ref-alice', bob = 'pdf-image-ref-bob'
@@ -770,6 +949,7 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
       fsVersion: 'fixture-source', size: sourceOnDisk.byteLength }
   } }
   const references = createMemoryEvidenceReferenceStore()
+  const pageJumps: Array<Record<string, unknown>> = []
   const imageReferences = createImageEvidenceRegistry(fencedWorkspaces, references)
   async function derivedFixture(source: 'ocr-text' | 'auxiliary-vision', text: string, backendId: string) {
     const snapshot = fencedWorkspaces.readSnapshot(alice, aliceDocument)
@@ -784,7 +964,10 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
       return { snapshot: fencedWorkspaces.readSnapshot(sessionId, documentId), png, width: 1, height: 1 }
     },
     async releaseDocument() {},
-  } as never, { current: () => [] }, references, sourceFiles)
+  } as never, { current: () => [] }, references, sourceFiles, { async navigate(owner: string, input: Record<string, unknown>) {
+    pageJumps.push({ sessionId: owner, ...input })
+    return { status: 'opened', requestId: 'image-jump', page: input.page, reason: null, tabIds: [] }
+  } } as never)
   const run = (name: string, args: unknown, sessionId: string, callSignal: AbortSignal = signal) => {
     const tool = definitions.get(name)
     assert.ok(tool)
@@ -804,6 +987,7 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
     assert.equal(replay.refId, direct.refId)
     assert.equal((replay.image as { attachmentId: string }).attachmentId, attachmentId)
     assert.deepEqual(tool.output.render({}, replay).map(block => block.type), ['text', 'image'])
+    assert.equal(documentToolValue(tool, replay).status, 'direct-image')
     const meta = tool.output.presentationMeta?.({}, replay) as { tool: string; status: string;
       refId: string; attachment: { attachmentId: string }; sourcePathDigest: string }
     assert.equal(meta.tool, 'pdf_evidence_read')
@@ -824,6 +1008,12 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
     visual = false
     await assert.rejects(run('pdf_evidence_read', { documentId: aliceDocument, refId: direct.refId }, alice),
       { code: 'pdf/image-input-unsupported' })
+    const jumped = await run('pdf_page_jump', { documentId: aliceDocument, refId: direct.refId }, alice)
+    assert.equal(jumped.status, 'opened')
+    assert.equal(jumped.precision, 'page-only')
+    assert.deepEqual(pageJumps, [{ sessionId: alice, documentId: aliceDocument, page: 1,
+      contentVersion: fencedWorkspaces.readSnapshot(alice, aliceDocument).contentVersion }],
+    'direct-image refs navigate by verified page without requiring visual model input or native text geometry')
     const derived = await derivedFixture('auxiliary-vision', 'A scanned figure with two axes.', 'test-vision')
     const textReplay = await run('pdf_evidence_read', { documentId: aliceDocument, refId: derived.refId }, alice)
     assert.equal(textReplay.status, 'derived-text')
@@ -831,6 +1021,7 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
     assert.equal(textReplay.text, 'A scanned figure with two axes.')
     assert.equal(textReplay.backendId, 'test-vision')
     assert.deepEqual(tool.output.render({}, textReplay).map(block => block.type), ['text'])
+    assert.equal(documentToolValue(tool, textReplay).text, textReplay.text)
     const textMeta = tool.output.presentationMeta?.({}, textReplay) as {
       snapshot: { text: string }; backend: { model: string } }
     assert.equal(textMeta.snapshot.text, textReplay.text)
@@ -841,13 +1032,18 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
     assert.equal(ocrReplay.text, 'Labels found by OCR')
     assert.equal(ocrReplay.backendId, 'test-ocr')
     assert.deepEqual(tool.output.render({}, ocrReplay).map(block => block.type), ['text'])
+    assert.equal(documentToolValue(tool, ocrReplay).text, ocrReplay.text)
 
     await assert.rejects(run('pdf_evidence_read', { documentId: bobDocument, refId: direct.refId }, bob),
+      { code: 'pdf/reference-unavailable' })
+    await assert.rejects(run('pdf_page_jump', { documentId: bobDocument, refId: direct.refId }, bob),
       { code: 'pdf/reference-unavailable' })
     await assert.rejects(run('pdf_evidence_read', { documentId: bobDocument, refId: derived.refId }, bob),
       { code: 'pdf/reference-unavailable' })
     sourceChanged = true
     await assert.rejects(run('pdf_evidence_read', { documentId: aliceDocument, refId: direct.refId }, alice),
+      { code: 'pdf/stale-reader' })
+    await assert.rejects(run('pdf_page_jump', { documentId: aliceDocument, refId: direct.refId }, alice),
       { code: 'pdf/stale-reader' })
     await assert.rejects(run('pdf_evidence_read', { documentId: aliceDocument, refId: derived.refId }, alice),
       { code: 'pdf/stale-reader' })
@@ -855,6 +1051,9 @@ test('pdf_evidence_read reauthorizes stored image/OCR refs and fails closed acro
     attachmentPresent = false
     await assert.rejects(run('pdf_evidence_read', { documentId: aliceDocument, refId: direct.refId }, alice),
       { code: 'pdf/attachment-unavailable' })
+    await assert.rejects(run('pdf_page_jump', { documentId: aliceDocument, refId: direct.refId }, alice),
+      { code: 'pdf/attachment-unavailable' })
+    assert.equal(pageJumps.length, 1, 'invalid image evidence must not reach the Reader')
     attachmentPresent = true
     const cancelled = new AbortController()
     cancelled.abort()
@@ -959,6 +1158,188 @@ test('atomic search, page reads and evidence reads share authorization and sourc
   } finally { await dispose(); await state.workspaces.dispose() }
 })
 
+test('evidence tool reports recoverable exact whitespace errors and preserves original text in narrowed native and OCR refs', async () => {
+  for (const extraction of [undefined, 'local-ocr'] as const) {
+    const f = await textEvidenceToolFixture(extraction)
+    try {
+      const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as {
+        text: string; sourceDigest: string; evidence: PdfTextEvidence
+      }
+      const tool = f.definitions.get('pdf_evidence_read')!
+      const args = { documentId: f.opened.documentId, refId: page.evidence.refId, quote: 'alpha beta gamma' }
+      await assert.rejects(f.run('pdf_evidence_read', { ...args, quoteMatch: 'exact' }), error => {
+        assert.ok(error instanceof Error && 'code' in error && error.code === 'pdf/quote-whitespace-mismatch')
+        const recoverable = JSON.parse(error.message) as { code: string; retryHint: { quoteMatch: string; refId: string } }
+        assert.equal(recoverable.code, 'pdf/quote-whitespace-mismatch')
+        assert.equal(recoverable.retryHint.quoteMatch, 'whitespace-normalized')
+        assert.equal(recoverable.retryHint.refId, page.evidence.refId)
+        return true
+      })
+      const narrowed = await f.run('pdf_evidence_read', { ...args, quoteMatch: 'whitespace-normalized' }) as {
+        refId: string; pages: PdfTextEvidence[]
+      }
+      assert.notEqual(narrowed.refId, page.evidence.refId)
+      assert.equal(narrowed.pages[0]!.snapshot.text, 'alpha\nbeta   gamma')
+      assert.equal(narrowed.pages[0]!.locator.startUtf16, page.text.indexOf('alpha'))
+      assert.equal(narrowed.pages[0]!.locator.endUtf16, page.text.indexOf('gamma') + 'gamma'.length)
+      assert.equal(f.references.get(page.evidence.refId)!.evidence.source, 'pdf-text')
+      assert.equal((f.references.get(page.evidence.refId)!.evidence as PdfTextEvidence).snapshot.text, page.text,
+        'deriving a subref must not mutate its parent snapshot')
+      const modelPage = (renderedValue(f.definitions.get('pdf_page_read')!, page).evidence as Record<string, unknown>)
+      assert.equal(modelPage.source, extraction ? 'local-ocr' : 'native-text')
+      assert.equal('snapshot' in modelPage, false)
+      assert.equal('sourceDigest' in modelPage, false)
+      const model = renderedValue(tool, narrowed) as { pages: Array<Record<string, unknown>> }
+      assert.equal(model.pages[0]!.text, 'alpha\nbeta   gamma')
+      assert.equal('snapshot' in model.pages[0]!, false)
+      assert.equal('rectsPdf' in (model.pages[0]!.locator as Record<string, unknown>), false)
+      const capabilities = model.pages[0]!.capabilities as { source: string; navigation: string; exactAnnotate: boolean }
+      assert.equal(capabilities.source, extraction ? 'local-ocr' : 'native-text')
+      assert.equal(capabilities.navigation, extraction ? 'page' : 'range')
+      assert.equal(capabilities.exactAnnotate, !extraction)
+      const meta = tool.output.presentationMeta?.({}, narrowed) as {
+        chunks: Array<{ snapshot: { text: string; sha256: string }; sourceDigest: string; extraction?: string }>
+      }
+      assert.equal(meta.chunks[0]!.snapshot.text, 'alpha\nbeta   gamma')
+      assert.equal(meta.chunks[0]!.snapshot.sha256, evidenceSha256('alpha\nbeta   gamma'))
+      assert.equal(meta.chunks[0]!.sourceDigest, page.sourceDigest)
+      assert.equal(meta.chunks[0]!.extraction, extraction)
+      assert.equal(narrowed.pages[0]!.snapshot.text, 'alpha\nbeta   gamma', 'render projection must leave canonical data intact')
+      await assert.rejects(f.run('pdf_evidence_read', { documentId: f.opened.documentId,
+        refId: page.evidence.refId, quoteMatch: 'whitespace-normalized' }))
+      await assert.rejects(f.run('pdf_evidence_read', { ...args, quote: 'Alpha beta gamma', quoteMatch: 'whitespace-normalized' }),
+        { code: 'pdf/text-not-found' })
+      assert.equal(f.state.writes(), 0)
+    } finally { await f.dispose() }
+  }
+})
+
+test('local OCR refs navigate only to a source-verified page and never authorize native highlights', async () => {
+  const f = await textEvidenceToolFixture('local-ocr')
+  try {
+    const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as {
+      sourceDigest: string; evidence: PdfTextEvidence
+    }
+    assert.equal(page.evidence.precision, 'page-only')
+    assert.equal(page.evidence.locator.rectsPdf, undefined)
+    const meta = f.definitions.get('pdf_page_read')!.output.presentationMeta?.({}, page) as {
+      sourceDigest: string; extraction: string; snapshot: { text: string }
+    }
+    assert.equal(meta.sourceDigest, evidenceSha256(f.state.current()))
+    assert.equal(meta.extraction, 'local-ocr')
+    assert.equal(meta.snapshot.text, page.evidence.snapshot.text)
+    const narrowed = await f.run('pdf_evidence_read', { documentId: f.opened.documentId,
+      refId: page.evidence.refId, quote: 'alpha beta gamma', quoteMatch: 'whitespace-normalized' }) as { refId: string }
+    const result = await f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: narrowed.refId }) as {
+      status: string; precision: string; locator: { kind: string }; capabilities: { exactAnnotate: boolean }
+    }
+    assert.equal(result.status, 'opened')
+    assert.equal(result.precision, 'page-only')
+    assert.deepEqual(result.locator, { kind: 'page-only' })
+    assert.equal(result.capabilities.exactAnnotate, false)
+    assert.deepEqual(f.forwarded, [{ sessionId: f.sessionId, documentId: f.opened.documentId,
+      page: 1, contentVersion: f.opened.contentVersion }])
+    await assert.rejects(f.run('pdf_annotation_create', { documentId: f.opened.documentId,
+      expectedRevision: f.opened.revision, subtype: 'Highlight', target: { kind: 'reference', refId: narrowed.refId } }),
+    { code: 'pdf/text-geometry-unavailable' })
+    assert.equal(f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId).revision, f.opened.revision)
+    assert.equal(f.state.writes(), 0)
+    const readCount = f.reads.length
+    await assert.rejects(f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: narrowed.refId }, 'foreign-session'),
+      /session|belong|access|unavailable/i)
+    assert.equal(f.reads.length, readCount, 'foreign sessions cannot reach the page reader')
+    assert.equal(f.forwarded.length, 1)
+  } finally { await f.dispose() }
+})
+
+test('local OCR page navigation rebinds unchanged revisions but rejects edits during validation and source replacements', async () => {
+  for (const change of ['revision-race', 'source', 'text'] as const) {
+    const f = await textEvidenceToolFixture('local-ocr')
+    try {
+      const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as { evidence: PdfTextEvidence }
+      const args = { documentId: f.opened.documentId, refId: page.evidence.refId }
+      const note = async (id: string) => {
+        const current = f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId)
+        await f.state.workspaces.execute(f.sessionId, { action: 'change', sessionId: f.sessionId,
+          id: current.id, revision: current.revision, operations: [{ type: 'add', annotation: {
+            id, page: 1, subtype: 'Text', rect: [40, 50, 60, 70], contents: 'User edit',
+          } }] }, agent(f.sessionId), signal)
+      }
+      if (change === 'revision-race') {
+        await note('before-navigation')
+        const rebound = await f.run('pdf_page_jump', args) as { status: string; refId: string; precision: string }
+        assert.equal(rebound.status, 'opened')
+        assert.notEqual(rebound.refId, args.refId)
+        assert.equal(rebound.precision, 'page-only')
+        assert.equal(f.forwarded.length, 1)
+        f.beforeSourceRead(async count => { if (count === 2) await note('during-validation') })
+      } else if (change === 'source') await f.state.files.save(agent(f.sessionId), '/fixtures/native.pdf',
+        Buffer.from('Externally replaced PDF'), evidenceSha256(f.state.current()), { signal })
+      else f.changeText()
+      const forwarded = f.forwarded.length
+      await assert.rejects(f.run('pdf_page_jump', args), { code: 'pdf/stale-reader' })
+      assert.equal(f.forwarded.length, forwarded, 'invalid evidence must not reach the Reader handoff')
+      assert.equal(f.state.writes(), change === 'source' ? 1 : 0)
+    } finally { await f.dispose() }
+  }
+})
+
+test('OCR navigation checks revision and source again after the page resolver await before Reader handoff', async () => {
+  for (const change of ['revision', 'source-version', 'bytes', 'path'] as const) {
+    const f = await textEvidenceToolFixture('local-ocr')
+    try {
+      const page = await f.run('pdf_page_read', { documentId: f.opened.documentId, page: 1 }) as { evidence: PdfTextEvidence }
+      let afterFinalSource = false, snapshots = 0, changed = false
+      f.beforeSourceRead(async count => { if (count === 2) afterFinalSource = true })
+      f.snapshotView(snapshot => {
+        // readEvidence checks once after its final source await. resolvePage
+        // checks next, then yields to its caller: change the observed state in
+        // that microtask gap, after both domain checks have seen the old state.
+        if (afterFinalSource && ++snapshots === 2) queueMicrotask(() => { changed = true })
+        if (!changed) return snapshot
+        return { ...snapshot,
+          ...(change === 'revision' ? { revision: snapshot.revision + 1 } : {}),
+          ...(change === 'source-version' ? { sourceVersion: 'replacement-source-version' } : {}),
+          ...(change === 'bytes' ? { bytes: Buffer.from('replaced source bytes') } : {}),
+          ...(change === 'path' ? { path: '/fixtures/replaced.pdf' } : {}) }
+      })
+      await assert.rejects(f.run('pdf_page_jump', { documentId: f.opened.documentId, refId: page.evidence.refId }),
+        { code: 'pdf/stale-reader', message: 'PDF changed after checking the OCR reference; locate it again' })
+      assert.ok(changed)
+      assert.deepEqual(f.forwarded, [])
+      assert.equal(f.state.writes(), 0)
+    } finally { await f.dispose() }
+  }
+})
+
+test('registered annotation tool consumes two independent refs from one revision as one batch result', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    const refs = []
+    for (const page of [1, 2]) refs.push(await f.run('pdf_page_read', { documentId: f.opened.documentId, page }) as {
+      evidence: PdfTextEvidence
+    })
+    const args = { documentId: f.opened.documentId, expectedRevision: f.opened.revision,
+      annotations: refs.map(read => ({ subtype: 'Highlight', target: { kind: 'reference', refId: read.evidence.refId } })) }
+    const result = await f.run('pdf_annotation_create', args) as { revision: number; annotationIds: string[];
+      annotations: Array<{ index: number; coverage: { complete: boolean; pages: Array<{ refId: string }> } }> }
+    assert.equal(result.revision, f.opened.revision + 1)
+    assert.equal(result.annotationIds.length, 2)
+    assert.deepEqual(result.annotations.map(entry => [entry.index, entry.coverage.complete, entry.coverage.pages[0]!.refId]),
+      [[0, true, refs[0]!.evidence.refId], [1, true, refs[1]!.evidence.refId]])
+    const model = renderedValue(f.definitions.get('pdf_annotation_create')!, result) as typeof result
+    assert.equal(model.revision, result.revision)
+    assert.equal(model.annotations.length, 2)
+    await assert.rejects(f.run('pdf_annotation_create', args), { code: 'pdf/stale-revision' })
+    const undone = await f.state.workspaces.execute(f.sessionId, { action: 'undo', sessionId: f.sessionId,
+      id: f.opened.documentId, revision: result.revision }, agent(f.sessionId), signal)
+    assert.ok('bytes' in undone)
+    assert.equal(undone.canUndo, false)
+    assert.ok(result.annotationIds.every(id => !undone.document.annotations.some(mark => mark.id === id)))
+    assert.equal(f.state.writes(), 0)
+  } finally { await f.dispose() }
+})
+
 test('pdf_page_read rejects a snapshot invalidated during native extraction', async () => {
   const state = memoryWorkspace(await nativeFixture())
   const sessionId = 'pdf-read-stale'
@@ -1008,6 +1389,7 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
     })
     const active = await readTool(definitions, 'pdf_current', {}, sessionId) as Record<string, unknown>
     assert.equal(active.status, 'active')
+    assert.deepEqual(plainToolValue(definitions.get('pdf_current')!, active), active)
     assert.deepEqual(active.documents, [{
       documentId: opened.id, tabId: 'reader-a', path: opened.path, page: 3, pageCount: 4,
       revision: opened.revision, contentVersion: opened.contentVersion,
@@ -1197,6 +1579,9 @@ test('pdf_semantic_search completes a scoped semantic index beyond twenty pages 
     assert.equal(result.hasMore, true)
     assert.equal(result.coverage.indexedPages, 20)
     assert.deepEqual(result.candidates, [], 'partial indexing must not claim a global ranking')
+    const building = plainToolValue(f.definitions.get('pdf_semantic_search')!, result)
+    assert.equal(building.status, 'building')
+    assert.deepEqual(building.candidates, [])
     const searchId = result.searchId, generation = result.indexGeneration
     for (let count = 0; count < 10; count++) {
       assert.equal(result.searchId, searchId)
@@ -1215,6 +1600,13 @@ test('pdf_semantic_search completes a scoped semantic index beyond twenty pages 
     assert.equal(result.coverage.indexedPages, 24)
     assert.equal(result.coverage.embeddedChunks, result.coverage.totalChunks)
     assert.equal(result.candidates.length, 3, 'topK survives ID-only continuation')
+    const beforeRender = structuredClone(result)
+    const projected = documentToolValue(f.definitions.get('pdf_semantic_search')!, result) as {
+      candidates: Array<{ quote: string; evidence: Record<string, unknown> }>
+    }
+    assert.deepEqual(projected.candidates.map(candidate => candidate.quote), result.candidates.map(candidate => candidate.quote))
+    assert.ok(projected.candidates.every(candidate => !('snapshot' in candidate.evidence)))
+    assert.deepEqual(result, beforeRender, 'the content label must not change semantic Host provenance')
     assert.ok(result.candidates.every(candidate => candidate.page >= 2 && candidate.page <= 25 && candidate.evidence.refId))
     assert.deepEqual([...new Set(f.reads)].sort((a, b) => a - b), Array.from({ length: 24 }, (_, index) => index + 2))
     assert.ok(f.retrievalInputs.length > 1)

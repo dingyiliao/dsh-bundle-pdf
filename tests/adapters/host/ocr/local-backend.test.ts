@@ -3,6 +3,7 @@ import test from 'node:test'
 import { resolve } from 'node:path'
 import { createLocalTesseractOcrBackend } from '../../../../src/adapters/host/ocr/local-backend.js'
 import { createLocalTextRecovery } from '../../../../src/adapters/host/ocr/local-text-recovery.js'
+import { BUNDLED_LOCAL_OCR_PRODUCER } from '../../../../src/adapters/host/ocr/local-identity.js'
 import { HostOcrService } from '../../../../src/modules/ocr/index.js'
 import type { OcrOutput } from '../../../../src/ocr/types.js'
 
@@ -14,7 +15,7 @@ test('bundled local backend accepts text-only OCR results through the normal reg
   const output: OcrOutput = { text: 'Visible words', blocks: [], lines: [], words: [], confidence: null,
     status: 'complete', coverage: [], warnings: ['geometry-unavailable'] }
   let calls = 0, disposed = 0
-  const local = { async recognize(bytes: Uint8Array, width: number, height: number, active: AbortSignal) {
+  const local = { producer: BUNDLED_LOCAL_OCR_PRODUCER, async recognize(bytes: Uint8Array, width: number, height: number, active: AbortSignal) {
     calls++; assert.deepEqual(bytes, request.image); assert.deepEqual([width, height], [1, 1]); active.throwIfAborted()
     return output
   }, async dispose() { disposed++ } }
@@ -44,4 +45,17 @@ test('local backend unregister cancels recognition and its owner drains the work
   await rejected
   await assert.rejects(local.recognize(new Uint8Array(), 1, 1, signal), /closed/)
   service.dispose()
+})
+
+test('custom or unattested local recovery cannot claim bundled asset identity or restart sharing', async () => {
+  const service = new HostOcrService(() => 'local-tesseract')
+  service.register(createLocalTesseractOcrBackend({ async recognize() {
+    return { text: '', blocks: [], lines: [], words: [], confidence: null, status: 'complete', coverage: [], warnings: [] }
+  }, async dispose() {} }))
+  try {
+    const a = await service.cacheIdentity('session-a', signal), b = await service.cacheIdentity('session-b', signal)
+    assert.equal(a.reusable, false); assert.equal(b.reusable, false); assert.notEqual(a.fingerprint, b.fingerprint)
+    assert.notEqual(a.fingerprint, BUNDLED_LOCAL_OCR_PRODUCER.fingerprint)
+    assert.equal(createLocalTextRecovery(resolve('tests/fixtures/recovery-exit')).producer, undefined)
+  } finally { service.dispose() }
 })

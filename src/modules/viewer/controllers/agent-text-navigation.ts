@@ -1,5 +1,6 @@
+import { browserSha256 } from '../../../shared/browser-sha256.js'
 import type { AgentNavigationRequest, TextNavigationTarget } from '../../../contracts/navigation.js'
-import type { NavigationPosition } from '../../../navigation/index.js'
+import type { NavigationPosition } from '../../../shared/navigation-history.js'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { NativeDocument } from '../rendering/document.js'
 import { NativeViewport } from '../../../shared/geometry/native-viewport.js'
@@ -19,12 +20,6 @@ export interface AgentTextNavigationOptions {
   jump(page: number, options?: Partial<NavigationPosition>, remember?: boolean, guard?: ReaderNavigationGuard): Promise<boolean>
   timeoutMs?: number
   hashText?(text: string): Promise<string>
-}
-
-async function hashText(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
-  return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
 function stale(): never { throw new Error('The visible PDF changed before evidence navigation completed') }
@@ -103,8 +98,10 @@ export async function navigateAgentRequest(request: AgentNavigationRequest, sign
     const nativeSnapshot = ready.document!.snapshot
     if (nativeSnapshot.id !== request.documentId || nativeSnapshot.contentVersion !== request.contentVersion
       || nativeSnapshot.reader.bytesHash !== target.sourceDigest) return 'stale'
-    const text = joinPageText((await ready.document!.text(request.page, signal)).items)
-    const hash = options.hashText ?? hashText
+    const content = await ready.document!.text(request.page, signal, { recover: false })
+    if (content.extraction === 'local-ocr') return 'stale'
+    const text = joinPageText(content.items)
+    const hash = options.hashText ?? browserSha256
     if (target.endUtf16 > text.length || await hash(text) !== target.pageTextDigest
       || await hash(text.slice(target.startUtf16, target.endUtf16)) !== target.textSha256) return 'stale'
     validate()

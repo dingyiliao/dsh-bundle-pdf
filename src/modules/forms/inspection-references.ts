@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { FormPageInspection } from './index.js'
+import type { FormPageInspection } from './inspection.js'
 import type { PdfDocumentInfo } from '../../core/pdf-types.js'
 import { formFieldId } from './identity.js'
 

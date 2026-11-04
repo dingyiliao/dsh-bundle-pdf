@@ -1,24 +1,18 @@
-import { recordIndexPerformance } from '../modules/retrieval/index.js'
+import { createIndexingCache } from '../adapters/host/dsh/indexing/cache.js'
+import { createReaderIndexing } from '../adapters/host/dsh/indexing/runtime.js'
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { createEvidenceReferenceStore } from '../adapters/host/storage/evidence-references.js'
-import { retrievalCacheRecordSchema } from '../adapters/host/storage/retrieval-cache.js'
-import { createRetrievalStore } from '../adapters/host/filesystem/retrieval-store.js'
-import { createPdfRetrieval } from '../adapters/host/dsh/retrieval.js'
-import { createPdfPageContent } from '../adapters/host/dsh/page-content.js'
-import { createRetrievalPrefetch } from '../adapters/host/dsh/retrieval-prefetch.js'
-import { createPdfIndexing } from '../adapters/host/dsh/indexing.js'
-import { createDocumentIndexes } from '../adapters/host/dsh/document-indexes.js'
 import { createIndexingLog } from '../adapters/host/filesystem/indexing-log.js'
 import { resolveIndexingLogDirectory, resolveRetrievalStoreDirectory } from '../adapters/host/dsh/indexing-log-location.js'
 import { createIndexingDiagnostics } from '../adapters/host/dsh/indexing-diagnostics.js'
 import { createIndexingDiagnosticRoute } from '../adapters/host/dsh/indexing-diagnostic-route.js'
-import { createDocumentIndexPolicies, documentIndexRecordSchema, settingsForIndexPlan } from '../modules/retrieval/index.js'
+import { createDocumentIndexPolicies, documentIndexRecordSchema } from '../modules/retrieval/index.js'
 import { EmbeddingRegistry, createDisabledEmbeddingEngine } from '../embedding/index.js'
 import { createOpenAiCompatibleEmbeddingEngine } from '../adapters/host/embedding/openai-compatible.js'
-import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation, assertFreshSource,
+import { evidenceNavigationRequestSchema, revalidateEvidenceNavigation,
   savedReferenceSchema } from '../modules/evidence/index.js'
 import { Config, readConfig, type HostConfig } from './reader-host-config.js'
 import { createHostTranslations, createPdfOcrDispatch, createPdfRegionDispatch, createPdfSelectionDispatch,
@@ -42,6 +36,7 @@ import type { PdfNativeService } from './native-host.js'
 import { ImageUnderstandingError } from '../modules/image-understanding/index.js'
 import { CapabilityRegistry } from '../modules/capabilities/index.js'
 import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
+import { createPageOcrArtifacts } from '../adapters/host/ocr/page-ocr-artifacts.js'
 import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../modules/engines/index.js'
 import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildRequestSchema } from '../contracts/retrieval-index.js'
 import { defaultSettings } from '../shared/contracts.js'
@@ -123,56 +118,21 @@ export async function apply(
   const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfLibDocumentAdapter)
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))
   const capabilities = new CapabilityRegistry()
+  const readerContexts = createReaderContexts(workspaces)
+  const agentNavigation = createAgentNavigation(workspaces, readerContexts)
+  const transportLifetime = new AbortController()
+  const profile = ctx.get('profileContext')
+  const indexCache = createIndexingCache(ctx.storageDomain, {
+    directory: resolveRetrievalStoreDirectory(profile, suffix), suffix, lifetime: transportLifetime.signal,
+  })
+  const retrievalCache = indexCache.cache
   const pdfService = createPdfService(workspaces, {
     executable: ctx.pdfNative.executable,
     subprocess: ctx.subprocess,
     capabilities,
     textRecovery: createLocalTextRecovery(),
+    ocrArtifacts: createPageOcrArtifacts({ cache: retrievalCache }),
   })
-  const readerContexts = createReaderContexts(workspaces)
-  const agentNavigation = createAgentNavigation(workspaces, readerContexts)
-  const transportLifetime = new AbortController()
-  const profile = ctx.get('profileContext')
-  const retrievalStore = createRetrievalStore({ directory: resolveRetrievalStoreDirectory(profile, suffix), maxRecordBytes: 64 * 1024 * 1024, onMetric: recordIndexPerformance })
-  let migration: Promise<void> | undefined
-  function ensureMigration(): Promise<void> {
-    transportLifetime.signal.throwIfAborted()
-    if (migration) return migration
-    const pending = retrievalStore.migrateLegacy(async () => {
-      transportLifetime.signal.throwIfAborted()
-      const legacy = await ctx.storageDomain.open(defineDomain({
-        name: `pdf_retrieval_${suffix}`, version: 1, layout: 'per-record', invalidRecords: 'backup-and-skip',
-        tables: { cache: domainTable(retrievalCacheRecordSchema) },
-      }))
-      return { entries: () => legacy.table('cache').entries(), close: () => legacy.close() }
-    }, transportLifetime.signal)
-    migration = pending
-    void pending.catch(() => { if (migration === pending) migration = undefined })
-    return pending
-  }
-  async function waitForMigration(signal = transportLifetime.signal): Promise<void> {
-    signal.throwIfAborted()
-    const pending = ensureMigration()
-    let abort!: () => void
-    const cancelled = new Promise<never>((_resolve, reject) => {
-      abort = () => reject(signal.reason ?? new DOMException('PDF index migration cancelled', 'AbortError'))
-      signal.addEventListener('abort', abort, { once: true })
-      if (signal.aborted) abort()
-    })
-    try { await Promise.race([pending, cancelled]); signal.throwIfAborted() }
-    finally { signal.removeEventListener('abort', abort) }
-  }
-  // Migration is independent of Reader startup. No model/extraction request may
-  // bypass its barrier and overwrite reusable legacy OCR or vector results.
-  void ensureMigration().catch(() => {})
-  const retrievalCache = {
-    async get(key: string) { await waitForMigration(); return retrievalStore.get(key) },
-    async has(key: string) { await waitForMigration(); return retrievalStore.has(key) },
-    async set(key: string, value: unknown) { await waitForMigration(); await retrievalStore.set(key, value) },
-    async setMany(entries: readonly (readonly [string, unknown])[]) { await waitForMigration(); await retrievalStore.setMany(entries) },
-    async delete(key: string) { await waitForMigration(); await retrievalStore.delete(key) },
-    async clear() { await waitForMigration(); await retrievalStore.clear() },
-  }
   const pendingRequests = new Set<Promise<unknown>>()
   const track = (dispatch: Parameters<typeof retainPdfDocument>[0]): typeof dispatch => async (sessionId, input, agent, signal) => {
     const requestSignal = AbortSignal.any([signal, transportLifetime.signal])
@@ -199,48 +159,10 @@ export async function apply(
       return resolved?.value
     },
   }))
-  const retrieval = createDocumentIndexes({ documents: workspaces.listOpenDocuments, policies: indexPolicies,
-    clearCache: () => retrievalCache.clear(),
-    create(plan) {
-      const settings = settingsForIndexPlan(plan, readConfig(config))
-      const content = createPdfPageContent(workspaces, pdfService, { cache: retrievalCache, settings: () => settings,
-        ocr: () => ctx.get('ocr'), image: () => ctx.get('imageUnderstanding'), onActivity: indexingDiagnostics.activity })
-      const api = createPdfRetrieval(workspaces, pdfService, referenceStore,
-        { cache: retrievalCache, embeddings, settings: () => settings, content,
-          onFailure: indexingDiagnostics.failure,
-          limits: { maxMemoryBytes: 64 * 1024 * 1024, maxIndexes: 2 },
-          async freshSource(sessionId, documentId, signal) {
-            const resolved = await ctx.sessionController.resolveAgent(sessionId)
-            if ('error' in resolved) throw resolved.error
-            await assertFreshSource(sessionId, workspaces.readSnapshot(sessionId, documentId),
-              freshSourceReader(files, resolved.agent), signal)
-          },
-          async retain(sessionId, documentId, signal) {
-            const resolved = await ctx.sessionController.resolveAgent(sessionId)
-            if ('error' in resolved) throw resolved.error
-            if (resolved.agent.session.id !== sessionId) throw new Error('PDF retrieval session identity mismatch')
-            return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
-          },
-        })
-      return { ...api,
-        async availability(sessionId, signal, documentId) { await waitForMigration(signal); return api.availability(sessionId, signal, documentId) },
-        async prepare(sessionId, input, signal, onProgress) { await waitForMigration(signal); return api.prepare(sessionId, input, signal, onProgress) },
-        async prepareSlice(sessionId, input, signal, onProgress) { await waitForMigration(signal); return api.prepareSlice!(sessionId, input, signal, onProgress) },
-        async search(sessionId, input, signal) { await waitForMigration(signal); return api.search(sessionId, input, signal) },
-      }
-    },
+  const { retrieval, prefetch, indexing } = createReaderIndexing({
+    ctx, workspaces, pdfService, files, referenceStore, indexPolicies, embeddings, indexingDiagnostics,
+    retrievalCache, waitForMigration: indexCache.waitForMigration, readSettings: () => readConfig(config),
   })
-  const prefetch = createRetrievalPrefetch({
-    documents: workspaces.listOpenDocuments,
-    subscribe: workspaces.onDocumentsChanged,
-    selection: retrieval.selection,
-    prepare: (sessionId, input, signal, onProgress) => indexingDiagnostics.run(sessionId, input.documentId,
-      () => retrieval.prepare(sessionId, input, signal, onProgress)),
-    prepareSlice: (sessionId, input, signal, onProgress) => indexingDiagnostics.run(sessionId, input.documentId,
-      () => retrieval.prepareSlice!(sessionId, input, signal, onProgress)),
-    onDiagnostic: indexingDiagnostics.record,
-  })
-  const indexing = createPdfIndexing(prefetch, { documents: workspaces.listOpenDocuments, indexes: retrieval, enabled: () => true })
   const stopIndexPolicies = retrieval.subscribe(() => { prefetch.refresh(); indexing.changed() })
   const stopIndexingDocuments = workspaces.onDocumentsChanged(() => { retrieval.refresh(); indexing.changed() })
   const stopPrefetchEngines = embeddings.subscribe(() => { prefetch.refresh(); indexing.changed() })
@@ -309,7 +231,7 @@ export async function apply(
       // Draining queued position writes comes first: they resolve the working
       // copy they belong to, so releasing workspaces first would drop them.
       for (const close of [async () => { await Promise.allSettled([...pendingRequests]) }, async () => { await prefetchDrain }, async () => { await retrievalDrain },
-        () => positions.dispose(), () => drain, () => pdfService.dispose(), () => retrievalStore.dispose(),
+        () => positions.dispose(), () => drain, () => pdfService.dispose(), () => indexCache.dispose(),
         async () => { indexingDiagnostics.dispose(); await indexingLog.dispose() },
         () => policyDomain.close(), () => evidenceDomain.close(), () => positionDomain.close(), () => domain.close()]) {
         try { await close() } catch (error) { failures.push(error) }

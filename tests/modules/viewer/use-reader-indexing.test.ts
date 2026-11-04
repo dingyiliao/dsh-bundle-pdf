@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test, { type TestContext } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -9,9 +9,6 @@ import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } fro
 import { readerLocales } from '../../../src/modules/viewer/locales.ts'
 import type { PdfDocumentIndexPolicy, PdfDocumentIndexSettings } from '../../../src/contracts/indexing.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const t = (key: string) => readerLocales.en[key] ?? key
 const baseState: ReaderToolbarState = {
   hasDocument: true, canPromptExplanation: false, explanationActive: false, explanationSending: false,
@@ -43,13 +40,10 @@ async function withIndexing(run: (f: {
   mirror(value: PdfIndexingClientSnapshot): void;
   render(next: ReaderIndexingOptions): Promise<void>;
 }) => Promise<void>, initial = running(), timer?: TestContext) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const previous = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, navigator: dom.navigator, Node: dom.Node, Element: dom.Element,
-    HTMLElement: dom.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
-    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, navigator: dom.navigator, Node: dom.Node, Element: dom.Element,
+    HTMLElement: dom.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })
   timer?.mock.timers.enable({ apis: ['setTimeout'] })
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   let current = initial
@@ -88,11 +82,8 @@ async function withIndexing(run: (f: {
   } finally {
     await act(async () => { root.unmount() })
     timer?.mock.timers.reset()
-    dom.close()
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

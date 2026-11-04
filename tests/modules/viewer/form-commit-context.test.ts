@@ -1,21 +1,14 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useReaderFormCommits, type ReaderFormCommitOptions } from '../../../src/modules/viewer/rendering/FormCommitContext.tsx'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('the active form owner reports a rejected write through the latest handler and retains the draft for retry', async () => {
-  const dom = new JSDOM('<div id="root"></div>').window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [name, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
-    Object.defineProperty(globalThis, name, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<div id="root"></div>', { url: 'about:blank', globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const error = new Error('field write rejected'), reported: unknown[] = []
   const writes: [string, string | boolean | string[]][] = []
@@ -63,10 +56,7 @@ test('the active form owner reports a rejected write through the latest handler 
     assert.equal(dom.document.querySelector('output')?.textContent, 'clean')
   } finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
-      else Reflect.deleteProperty(globalThis, name)
-    }
+    restoreDom()
+
   }
 })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHostTranslations, type TranslationHostContext } from '../../../src/adapters/host/dsh/index.ts'
 import { defaultSettings } from '../../../src/shared/contracts.ts'
-import { TranslationError } from '../../../src/translation/types.ts'
+import { translationContextLimit, TranslationError } from '../../../src/translation/types.ts'
 import { createHostTranslationEngine } from '../../../src/adapters/client/remote/translation-api.ts'
 
 const input = { sessionId: 'session', engineId: 'dsh-model', text: 'A complete sentence.',
@@ -48,6 +48,25 @@ test('Host translation dispatch rejects payloads attempting to borrow a differen
       hasCode('invalid-request'))
     await assert.rejects(translations.dispatch('session', { ...input,
       context: { sessionId: 'other' } }, agent, signal()), hasCode('invalid-request'))
+  } finally { translations.registry.dispose() }
+})
+
+test('Host translation reports invalid context fields safely and retains the shared boundary', async () => {
+  const translations = createHostTranslations({ get() { return undefined },
+    sessionController: { async resolveAgent() { throw new Error('must not resolve') } },
+  } as unknown as TranslationHostContext, 'test', () => defaultSettings)
+  try {
+    for (const side of ['selectionBefore', 'selectionAfter'] as const) {
+      const privateText = 'private source context '.repeat(translationContextLimit)
+      await assert.rejects(translations.dispatch('session', { ...input,
+        context: { sessionId: 'session', [side]: privateText.slice(0, translationContextLimit + 1) } }, agent, signal()), error => {
+        assert.ok(error instanceof TranslationError)
+        assert.equal(error.code, 'invalid-request')
+        assert.match(error.message, new RegExp(`context\\.${side} \\(too_big\\)`))
+        assert.doesNotMatch(error.message, /private source|A complete sentence/)
+        return true
+      })
+    }
   } finally { translations.registry.dispose() }
 })
 
@@ -113,6 +132,43 @@ test('Host translation reports absent or failing default model selection as not 
       await assert.rejects(translations.dispatch('session', input, agent, signal()), hasCode('not-configured'))
     } finally { translations.registry.dispose() }
   }
+})
+
+test('Host translation maps a missing session to its own error contract without model inference', async () => {
+  const host = createHostTranslations({
+    get(key: string) { return key === 'llm' ? { async *stream() { assert.fail('must not run inference') } } : undefined },
+    sessionController: { async resolveAgent() { return { error: new Error('private session failure') } } },
+  } as unknown as TranslationHostContext, 'test', () => defaultSettings)
+  try {
+    await assert.rejects(host.dispatch('session', input, agent, signal()), error => {
+      assert.ok(error instanceof TranslationError)
+      assert.equal(error.code, 'not-configured')
+      assert.equal(error.message, 'The PDF session is unavailable.')
+      return true
+    })
+  } finally { host.registry.dispose() }
+})
+
+test('translation consumes the shared pending model route and preserves explicit reasoning effort', async () => {
+  const host = createHostTranslations({
+    get(key: string) {
+      if (key === 'sessionProjections') return { stateOf: () => ({ pending: {
+        provider: 'pending-provider', model: 'pending-model', reasoningEffort: 'high',
+      } }) }
+      if (key === 'llm') return { async *stream(options: { provider: string; model: string; reasoningEffort: string }) {
+        assert.deepEqual([options.provider, options.model, options.reasoningEffort],
+          ['pending-provider', 'pending-model', 'high'])
+        yield { type: 'text-delta', index: 0, text: '{"kind":"sentence","translation":"译文。"}' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } }
+      return undefined
+    },
+    sessionController: { async resolveAgent() { return { agent: { session: {
+      requestHeader: () => ({ config: { provider: 'previous-provider', model: 'previous-model' } }),
+    } } } } },
+  } as unknown as TranslationHostContext, 'test', () => defaultSettings)
+  try { assert.equal((await host.dispatch('session', input, agent, signal()) as { text: string }).text, '译文。') }
+  finally { host.registry.dispose() }
 })
 
 test('model repair metadata crosses the authenticated Host, registry and Client boundary without replacing the selected text', async () => {

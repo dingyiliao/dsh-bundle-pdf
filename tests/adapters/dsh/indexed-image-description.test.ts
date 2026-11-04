@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDshVisionBackend, resolveSessionVisionModel, supportsSessionImages } from '../../../src/adapters/host/dsh/image-backends.js'
 import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.js'
-import { HostImageUnderstandingService, type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
+import { HostImageUnderstandingService, ImageUnderstandingError, type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
 import { HostOcrService } from '../../../src/modules/ocr/index.js'
 
 const signal = new AbortController().signal, data = new Uint8Array(24)
@@ -67,6 +67,23 @@ test('session image delivery checks metadata without invoking the registered eng
   assert.deepEqual(f.counts(), { uploads: 0, streams: 0 })
   f.unload()
   await assert.rejects(supportsSessionImages(f.ctx, 'session', signal), { code: 'pdf/image-unavailable' })
+})
+
+test('vision maps unavailable session models to image errors and preserves caller cancellation', async () => {
+  for (const result of [{ error: new Error('private session failure') }, { agent: { session: {} } }]) {
+    const ctx = { get(key: string) {
+      return key === 'sessionController' ? { async resolveAgent() { return result } } : undefined
+    } } as never
+    await assert.rejects(resolveSessionVisionModel(ctx, 'session', signal), error => {
+      assert.ok(error instanceof ImageUnderstandingError)
+      assert.equal(error.code, 'pdf/image-unavailable')
+      assert.equal(error.message, 'The vision model is unavailable.')
+      return true
+    })
+  }
+  const abort = new AbortController(), reason = new Error('cancel image route')
+  const ctx = { get() { return { async resolveAgent() { abort.abort(reason); return { agent: { session: {} } } } } } } as never
+  await assert.rejects(resolveSessionVisionModel(ctx, 'session', abort.signal), error => error === reason)
 })
 
 test('model metadata lookup failure cannot masquerade as a text-only model and trigger a different engine', async () => {

@@ -1,10 +1,10 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { NavigationHistory, type NavigationPosition } from '../../../src/navigation/index.ts'
+import { NavigationHistory, type NavigationPosition } from '../../../src/shared/navigation-history.ts'
 import type { PdfClientApi } from '../../../src/shared/contracts.ts'
 import { useReaderNavigation, type ReaderNavigationOptions } from '../../../src/modules/viewer/index.ts'
 import { navigateAgentRequest } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
@@ -13,18 +13,10 @@ import type { NativeDocument, PageView } from '../../../src/modules/viewer/index
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { AgentNavigationRequest } from '../../../src/contracts/navigation.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 test('history return reports a failed page restore without popping the destination', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const origin: NavigationPosition = { documentVersion: 'v1', page: 1, x: 0, y: 100, fit: 'width', scale: 1 }
   const destination: NavigationPosition = { ...origin, page: 2 }
@@ -56,24 +48,18 @@ test('history return reports a failed page restore without popping the destinati
   } finally {
     tab.abort()
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })
 
 for (const resumePage of [1, 2]) test(resumePage === 1
   ? 'a successful in-memory resume restores and persists the saved location'
   : 'a failed in-memory resume cannot overwrite the saved position until a later jump succeeds', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
-    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })
   const root = createRoot(dom.document.getElementById('root')!), tab = new AbortController()
   const scroll = dom.document.createElement('div'), element = dom.document.createElement('div')
   const page = { page: 1, cropBox: [0, 0, 400, 600] as [number, number, number, number], rotation: 0, userUnit: 1 }
@@ -116,22 +102,16 @@ for (const resumePage of [1, 2]) test(resumePage === 1
     assert.equal(writes.length, resumePage === 2 ? 1 : 2)
     assert.equal(writes[0]?.page, 1, 'a successful user jump resumes normal position persistence')
   } finally {
-    tab.abort(); await act(async () => root.unmount()); dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    tab.abort(); await act(async () => root.unmount()); restoreDom()
+
   }
 })
 
 for (const padded of [false, true]) test(`exact evidence jumps use the Reader history for cross-page and same-page Back and history-menu restores${padded ? ' with asymmetric floating gutters' : ''}`, async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
-    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })
   const root = createRoot(dom.document.getElementById('root')!)
   const tab = new AbortController(), scroll = dom.document.createElement('div')
   const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
@@ -231,10 +211,7 @@ for (const padded of [false, true]) test(`exact evidence jumps use the Reader hi
     samePosition(navigation.capture(), beforeFailure)
     assert.equal(history.size, 0, 'a failed post-layout revision check must roll back without adding a return entry')
   } finally {
-    tab.abort(); await act(async () => root.unmount()); dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    tab.abort(); await act(async () => root.unmount()); restoreDom()
+
   }
 })

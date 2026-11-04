@@ -30,6 +30,7 @@ function nativeLayer(page: PageContent): PageContent {
   })) }
 }
 type Pages = AgentPageReadPort & Pick<ReturnType<typeof createPdfService>, 'renderOcrImage'>
+  & Partial<Pick<ReturnType<typeof createPdfService>, 'readOcrArtifact' | 'localOcrIdentity'>>
 type SelectedEngine = { binding: EngineBinding; identity?: EngineCacheIdentity; generation?: string; reason?: string; reasonCode?: string }
 interface Selection {
   config: string
@@ -274,7 +275,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     if (needsOcr || selection.describe) {
       type Rendered = Awaited<ReturnType<Pages['renderOcrImage']>>
       const failures: { error: unknown; warning: string }[] = []
-      const operations: { kind: 'ocr' | 'image'; run(rendered: Rendered): Promise<void>; warning: string }[] = []
+      const operations: { kind: 'ocr' | 'image'; needsRender: boolean; run(rendered?: Rendered): Promise<void>; warning: string }[] = []
       const recordFailure = (error: unknown, warning: string) => {
         // Authorization, source and lifetime changes invalidate the whole read.
         check()
@@ -313,31 +314,52 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       if (needsOcr) {
         const warning = 'Optional OCR enrichment failed; available page text is retained.'
         const identity = await restore('ocr', ocrBlock.id) ? undefined : await candidate('ocr', warning)
-        if (identity) operations.push({ kind: 'ocr', warning, async run(rendered) {
-          const service = options.ocr()!
-          const languages = service.selectedDescriptor(selection.ocr.binding)?.languages
-          const result = await service.recognize({ sessionId, image: rendered.png, mediaType: 'image/png',
-            width: rendered.width, height: rendered.height,
-            languages: languages?.length && !languages.includes('auto') ? languages.slice(0, 4) : ['auto'],
-            signal: active, binding: selection.ocr.binding })
-          check()
-          const actual = await service.cacheIdentity(sessionId, active, selection.ocr.binding)
-          check()
-          if (actual.fingerprint !== identity.fingerprint) throw fail('OCR model changed during page recognition.')
-          const spans = ocrPageContentSpans(result, geometry, rendered.width, rendered.height)
-          const representation = createPageRepresentation({ kind: 'ocr-text', text: result.text,
-            producer: { id: result.source.backendId, version: result.source.backendVersion,
-              configurationIdentity: identity.fingerprint }, inputDigest: pageContentDigestBytes(rendered.png),
-            ...(spans.length ? { spans } : {}), status: result.status,
-            warnings: result.warnings.slice(0, 20).map(warning => warning.slice(0, 500)) })
-          content = appendPageRepresentation(content, ocrBlock.id, representation)
-          await save(layerKey('ocr'), representation)
-        } })
+        if (identity) {
+          const local = pages.localOcrIdentity?.()
+          const sharedLocal = local?.reusable && identity.reusable && local.id === identity.backendId
+            && local.version === identity.backendVersion && local.fingerprint === identity.fingerprint
+          operations.push({ kind: 'ocr', warning, needsRender: !pages.readOcrArtifact, async run(rendered) {
+            const service = options.ocr()!
+            const languages = service.selectedDescriptor(selection.ocr.binding)?.languages
+            const selectedLanguages = languages?.length && !languages.includes('auto') ? languages.slice(0, 4) : ['auto']
+            const recognize = async (image: { png: Buffer; width: number; height: number }, producerSignal: AbortSignal) => {
+              const result = await service.recognize({ sessionId, image: image.png, mediaType: 'image/png',
+                width: image.width, height: image.height,
+                languages: selectedLanguages,
+                signal: producerSignal, binding: selection.ocr.binding })
+              const actual = await service.cacheIdentity(sessionId, producerSignal, selection.ocr.binding)
+              if (actual.fingerprint !== identity.fingerprint) throw fail('OCR model changed during page recognition.')
+              const { source: _source, ...output } = result
+              return output
+            }
+            const artifact = pages.readOcrArtifact ? (await pages.readOcrArtifact(sessionId, documentId, page, active,
+              sharedLocal ? undefined : { producer: { id: identity.backendId, version: identity.backendVersion,
+                fingerprint: identity.fingerprint, reusable: identity.reusable,
+                requestIdentity: canonicalEngineJson({ languages: selectedLanguages, options: {} }) },
+                maxEdge: 1024, recognize, check, ...(rendered ? { image: rendered } : {}) })).artifact : undefined
+            const result = artifact?.output ?? await recognize(rendered!, active)
+            const width = artifact?.input.render.width ?? rendered!.width
+            const height = artifact?.input.render.height ?? rendered!.height
+            check()
+            const actual = await service.cacheIdentity(sessionId, active, selection.ocr.binding)
+            check()
+            if (actual.fingerprint !== identity.fingerprint) throw fail('OCR model changed during page recognition.')
+            const spans = ocrPageContentSpans(result, geometry, width, height)
+            const representation = createPageRepresentation({ kind: 'ocr-text', text: result.text,
+              producer: { id: identity.backendId, version: identity.backendVersion,
+                configurationIdentity: identity.fingerprint }, inputDigest: artifact?.inputDigest ?? pageContentDigestBytes(rendered!.png),
+              ...(spans.length ? { spans } : {}), status: result.status,
+              warnings: result.warnings.slice(0, 20).map(warning => warning.slice(0, 500)) })
+            content = appendPageRepresentation(content, ocrBlock.id, representation)
+            await save(layerKey('ocr'), representation)
+          } })
+        }
       }
       if (selection.describe) {
         const warning = 'Optional image description failed; available page text is retained.'
         const identity = await restore('image', visual.id) ? undefined : await candidate('image', warning)
-        if (identity) operations.push({ kind: 'image', warning, async run(rendered) {
+        if (identity) operations.push({ kind: 'image', warning, needsRender: true, async run(image) {
+          const rendered = image!
           const service = options.image()!
           const result = await service.understand({ sessionId, image: { data: rendered.png, mediaType: 'image/png',
             width: rendered.width, height: rendered.height }, prompt: DESCRIPTION_PROMPT,
@@ -357,10 +379,10 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
           await save(layerKey('image'), representation)
         } })
       }
-      // Only viable consumers need pixels. Both consume the same clean render,
-      // while an ordinary failure in either consumer leaves the other eligible.
+      // Image descriptions and external OCR share the clean 1024px raster.
+      // Bundled OCR owns a separate 2048px artifact shared with text repair.
       let rendered: Rendered | undefined
-      if (operations.length) {
+      if (operations.some(operation => operation.needsRender)) {
         try {
           rendered = await observe('render', async () => {
             const value = await pages.renderOcrImage(sessionId, documentId, page, undefined, 1024, active, false)
@@ -369,7 +391,8 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
           })
         } catch (error) { recordFailure(error, 'Optional page image rendering failed; available page text is retained.') }
       }
-      if (rendered) for (const operation of operations) {
+      for (const operation of operations) {
+        if (operation.needsRender && !rendered) continue
         try { await observe(operation.kind, () => operation.run(rendered!)) } catch (error) { recordFailure(error, operation.warning) }
       }
       if (failures.length) {

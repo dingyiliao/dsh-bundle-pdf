@@ -1,13 +1,9 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } from '../../../src/modules/viewer/components/ReaderToolbar.tsx'
 import type { ExplanationToolsProps } from '../../../src/modules/viewer/components/ExplanationTools.tsx'
-
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 const readyState: ReaderToolbarState = {
   hasDocument: true, canPromptExplanation: true, explanationActive: false, explanationSending: false,
@@ -22,16 +18,13 @@ async function withToolbar(run: (f: {
   render(state?: Partial<ReaderToolbarState>, explanation?: ExplanationToolsProps): Promise<void>
   openMenu(): Promise<void>
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root" class="dsh-pdf-reader"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
     Element: dom.Element, Node: dom.Node, CustomEvent: dom.CustomEvent,
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const menu = createRef<HTMLDetailsElement>(), calls: string[] = []
@@ -57,11 +50,8 @@ async function withToolbar(run: (f: {
     } })
   } finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

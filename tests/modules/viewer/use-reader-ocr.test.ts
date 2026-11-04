@@ -1,17 +1,12 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { NavigationHistory } from '../../../src/navigation/index.ts'
+import { NavigationHistory } from '../../../src/shared/navigation-history.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderLifetime } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
 import { useReaderOcr, type ReaderOcrOptions } from '../../../src/modules/viewer/index.ts'
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 const snapshot = { id: 'doc-1', revision: 7, contentVersion: 'content-1' } as WorkspaceSnapshot
 
@@ -21,12 +16,9 @@ async function withOcr(run: (fixture: {
   render(options: ReaderOcrOptions): Promise<void>
   lifetime: ReaderLifetime
 }) => Promise<void>): Promise<void> {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const tab = new AbortController()
   const lifetime: ReaderLifetime = { history: new NavigationHistory({ capacity: 10 }), ocrPages: new Map() }
@@ -46,11 +38,8 @@ async function withOcr(run: (fixture: {
   finally {
     await act(async () => root.unmount())
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

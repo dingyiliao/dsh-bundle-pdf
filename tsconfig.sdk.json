@@ -14,5 +14,13 @@
     "rootDir": "src",
     "outDir": "dist/types"
   },
-  "include": ["src/ocr/**/*.ts", "src/translation/**/*.ts", "src/embedding/**/*.ts", "src/host/ocr-*.ts"]
+  "include": [
+    "src/ocr/index.ts",
+    "src/translation/index.ts",
+    "src/embedding/index.ts",
+    "src/host/ocr-plugin.ts",
+    "src/host/image-understanding-plugin.ts",
+    "src/modules/capabilities/index.ts",
+    "src/modules/engines/index.ts"
+  ]
 }

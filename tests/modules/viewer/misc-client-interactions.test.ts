@@ -1,5 +1,6 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire, registerHooks } from 'node:module'
+import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
@@ -20,16 +21,10 @@ import type { HostOcrRecognition } from '../../../src/adapters/client/remote/hos
 import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
 import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>',
-    { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
   const values = { window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLDialogElement: dom.HTMLDialogElement, Node: dom.Node, Element: dom.Element,
     Event: dom.Event, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent,
@@ -39,10 +34,7 @@ async function withDom(run: (dom: Window & typeof globalThis, container: HTMLEle
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
   const rootView = createRoot(container)
@@ -52,11 +44,8 @@ async function withDom(run: (dom: Window & typeof globalThis, container: HTMLEle
   try { await run(dom, container, render) }
   finally {
     await act(async () => { rootView.unmount() })
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

@@ -135,14 +135,33 @@ export function decodeCachedVector(value: unknown, dimensions: number): number[]
   return Math.abs(squaredNorm - 1) <= 1e-5 ? vector : undefined
 }
 
-export async function readCachedVector(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<number[] | undefined> {
+async function readVectorCache(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<{
+  record: CachedRetrievalVector; vector: number[]; persisted: boolean
+} | undefined> {
   try {
     const value = await cache?.get(key)
     if (validVector(value, dimensions)) {
       // Migrate old JSON arrays as they are reused, without embedding again.
-      await cacheDerived(cache, key, encodeCachedVector(value))
-      return [...value]
+      const record = encodeCachedVector(value)
+      let persisted = false
+      try { await cache?.set(key, record); persisted = !!cache }
+      catch (error) { if (storageFailure(error)) throw error }
+      return { record, vector: [...value], persisted }
     }
-    return decodeCachedVector(value, dimensions)
+    const vector = decodeCachedVector(value, dimensions)
+    return vector ? { record: { ...value as CachedRetrievalVector }, vector, persisted: true } : undefined
   } catch (error) { if (storageFailure(error)) throw error; return undefined }
+}
+
+/** Preserve the exact verified Float32 bytes when a checkpoint references this
+ * cache entry. A failed optional migration still needs a durable checkpoint copy. */
+export async function readCachedVectorRecord(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<{
+  record: CachedRetrievalVector; persisted: boolean
+} | undefined> {
+  const loaded = await readVectorCache(cache, key, dimensions)
+  return loaded ? { record: loaded.record, persisted: loaded.persisted } : undefined
+}
+
+export async function readCachedVector(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<number[] | undefined> {
+  return (await readVectorCache(cache, key, dimensions))?.vector
 }

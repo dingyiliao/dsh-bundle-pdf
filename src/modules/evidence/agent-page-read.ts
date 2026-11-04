@@ -18,6 +18,21 @@ export interface AgentPageReadPort {
   }>
 }
 
+/** Revalidate the attested representation instead of the current page-read default.
+ * A native reference must never trigger OCR or inherit its text/coordinates.
+ */
+export async function readEvidencePageText(pages: AgentPageReadPort, sessionId: string, documentId: string,
+  page: number, signal: AbortSignal, extraction?: NativeTextContent['extraction']) {
+  signal.throwIfAborted()
+  const read = await pages.readPageText(sessionId, documentId, page, signal, { recover: extraction === 'local-ocr' })
+  signal.throwIfAborted()
+  if (read.content.extraction !== extraction) {
+    throw Object.assign(new Error(`Page ${page} no longer provides the saved ${extraction === 'local-ocr' ? 'local OCR' : 'native text'} representation; read the page again for current evidence`),
+      { code: 'pdf/text-representation-unavailable' })
+  }
+  return read
+}
+
 const MAX_SEARCH_OUTPUT_CHARS = 64_000
 
 function stale(message: string): never {

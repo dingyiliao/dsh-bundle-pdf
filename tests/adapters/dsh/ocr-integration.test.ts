@@ -3,7 +3,7 @@ import test from 'node:test'
 import { OcrError, type OcrOutput } from '../../../src/ocr/types.js'
 import { createSessionLlmOcrBackend, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.js'
 import { HostOcrService, type HostOcrRequest } from '../../../src/modules/ocr/index.js'
-import { resolveOcrSessionModel } from '../../../src/adapters/host/dsh/ocr-model-route.js'
+import { resolveSessionModel } from '../../../src/adapters/host/dsh/session-model-route.js'
 import { Config as OcrConfig } from '../../../src/entrypoints/ocr-host.js'
 
 const request = (signal?: AbortSignal): HostOcrRequest => ({
@@ -151,7 +151,7 @@ test('session route prefers pending selection, then request header, then default
       return undefined
     },
   }
-  assert.equal((await resolveOcrSessionModel(ctx as never, 's', signal)).provider, 'pending')
+  assert.equal((await resolveSessionModel(ctx as never, 's', signal)).provider, 'pending')
   pending = null
-  assert.equal((await resolveOcrSessionModel(ctx as never, 's', signal)).provider, 'header')
+  assert.equal((await resolveSessionModel(ctx as never, 's', signal)).provider, 'header')
 })

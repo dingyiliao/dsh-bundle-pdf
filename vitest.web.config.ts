@@ -18,8 +18,7 @@ export default {
   test: {
     ...dshConfig.test,
     include: [
-      join(ownerRoot, 'tests', 'web.e2e.ts').replaceAll('\\', '/'),
-      join(ownerRoot, 'tests', 'client-panels.e2e.ts').replaceAll('\\', '/'),
+      join(ownerRoot, 'tests', 'browser', 'e2e', '*.e2e.ts').replaceAll('\\', '/'),
     ],
     fileParallelism: false,
   },

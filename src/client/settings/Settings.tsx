@@ -1,16 +1,16 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ConfigForm as DshConfigForm, ConfigFormSnapshot as DshConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../shared/contracts.js'
-import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
+import { defaultSettings, effectiveTranslationEngine, type PdfSettings } from '../../shared/contracts.js'
+import { migrateEngineConfigurations, migrateImageEngine } from '../../shared/engine-configuration-migration.js'
 import { defaultExplanationPromptTemplate, explanationTemplateIssue,
-  MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../shared/explanation-template.js'
+  MAX_EXPLANATION_INSTRUCTION_LENGTH } from '../../shared/explanation-template.js'
 import { engineBinding, validateEngineConfiguration, type EngineCatalogSnapshot, type EngineConfigurations,
-  type EngineKind, type EngineDescriptor, type EngineJson } from '../modules/engines/index.js'
+  type EngineKind, type EngineDescriptor, type EngineJson } from '../../modules/engines/index.js'
 import { mergeSettingsValue } from './settings-draft-merge.js'
 import { waitForSettingsAcknowledgement } from './settings-ack.js'
 import { EngineConfigurationFields } from './EngineConfigurationFields.js'
 import { DshVisionModelSettings, type VisionModelMode } from './DshVisionModelSettings.js'
-import type { ModelOptionsStore } from '../adapters/client/remote/model-options.js'
+import type { ModelOptionsStore } from '../../adapters/client/remote/model-options.js'
 
 // `mode` was removed from DSH's snapshot. Keep only the stable public fields so
 // the editor works with both older and newer Host connections.
@@ -491,7 +491,7 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
     })
     setNotice(''); setError('')
   }
-  function changeVisionConfiguration(config: import('../modules/engines/index.js').EngineConfiguration) {
+  function changeVisionConfiguration(config: import('../../modules/engines/index.js').EngineConfiguration) {
     const next = { ...configurations, image: { ...configurations.image, 'dsh-vision': config } }
     edit('engineConfigurations', JSON.stringify(next))
   }

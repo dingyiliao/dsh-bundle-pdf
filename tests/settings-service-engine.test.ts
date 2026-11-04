@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
 

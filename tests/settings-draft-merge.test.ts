@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mergeSettingsValue } from '../src/client/settings-draft-merge.ts'
+import { mergeSettingsValue } from '../src/client/settings/settings-draft-merge.ts'
 
 test('settings merge preserves disjoint nested configuration edits and removes cleared keys', () => {
   const base = { image: { endpoint: 'old', credential: 'old-reference' }, retired: true }

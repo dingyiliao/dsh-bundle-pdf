@@ -1,11 +1,13 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire, registerHooks } from 'node:module'
+import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderProps } from '../../../src/client/contracts.ts'
 import type { NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
 import { readerLifetime } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
+import { TranslationRegistry, type TranslationRequest } from '../../../src/translation/index.ts'
 import type { VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
 
 // The shipped Client bundles CSS as text. The Node component test only needs
@@ -14,11 +16,6 @@ registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
   return next(url, context)
 } })
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 function fixtureSnapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
@@ -77,7 +74,7 @@ async function withReader(run: (fixture: {
   loaded: string[]
   failed: string[]
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
   // JSDOM has no raster backend; these tests exercise Reader chrome and
   // controller actions, not painting. Page bounds stay zero unless a raster
   // test explicitly supplies them, while the scrollport has measurable size.
@@ -93,7 +90,7 @@ async function withReader(run: (fixture: {
         return Math.round(measured || (this.classList.contains('dsh-pdf-scroll') ? fallback : 0))
       } })
   }
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
   const values = {
     window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLInputElement: dom.HTMLInputElement, Element: dom.Element,
@@ -123,10 +120,7 @@ async function withReader(run: (fixture: {
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [key, value] of Object.entries(values)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(values)
   const { Reader } = await import('../../../src/client/Reader.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
@@ -168,11 +162,8 @@ async function withReader(run: (fixture: {
   finally {
     await act(async () => { root.unmount() })
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 
@@ -303,6 +294,68 @@ test('Reader rejects stale OCR output and explains a capability loss after the m
     assert.equal(recognizeCalls, 1)
     assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /reader.ocrStale/)
   })
+})
+
+test('Reader routes whole and partial OCR transcripts to its shared translation panel without native text geometry', async () => {
+  const registry = new TranslationRegistry({ timeoutMs: 1_000, maxInputCharacters: 1_000, maxOutputCharacters: 1_000 })
+  const requests: TranslationRequest[] = []
+  const recognized = 'First recognized line.\n这是 OCR 文字 😀。\nFinal recognized line.'
+  registry.register({ descriptor: { id: 'fixture-translation', name: 'Fixture', version: '1', execution: 'local' },
+    async translate(request) { requests.push(request); return { text: 'Translated OCR text', status: 'complete', warnings: [] } } })
+  registry.select({ id: 'fixture', engineId: 'fixture-translation', configurationRevision: '1', config: {} })
+  try {
+    await withReader(async ({ container, render, props, api, dom }) => {
+      let recognizes = 0
+      api.open = async () => fixtureSnapshot()
+      await render({ ...props, translation: registry,
+        settings: { ...defaultSettings, translationEngine: 'fixture-translation' },
+        hostOcr: { async availability() { return { status: 'available' } },
+          async recognize(request) {
+            recognizes++
+            assert.deepEqual([request.sessionId, request.documentId, request.page], ['session-1', 'document-1', 1])
+            return { documentId: 'document-1', page: 1, revision: 1, contentVersion: 'contents-1', text: recognized,
+              status: 'complete', source: { backendId: 'fixture-ocr', backendVersion: '1' }, geometry: { status: 'none' }, warnings: [] }
+          } },
+      })
+      await clickReaderCommand(container, 'reader.ocrPage')
+      await waitForReader(() => !!container.querySelector('.dsh-pdf-ocr-transcript'), 'OCR result should appear')
+      assert.equal(container.querySelector('.dsh-pdf-ocr-transcript')!.textContent, recognized)
+      const action = (label: string) => {
+        const button = [...container.querySelectorAll<HTMLButtonElement>('.dsh-pdf-ocr-actions button')]
+          .find(button => button.getAttribute('aria-label') === label || button.textContent === label)
+        assert.ok(button, `OCR action ${label} exists`)
+        return button
+      }
+      await act(async () => { action('reader.ocrTranslateAll').click() })
+      await waitForReader(() => requests.length === 1, 'whole OCR text should reach the translation engine')
+      assert.equal(container.querySelector('.dsh-pdf-translation-source-text')!.textContent, recognized)
+      assert.equal(container.querySelector('.dsh-pdf-translation-source-label')!.textContent, 'reader.translation.ocrOriginal')
+      assert.equal(container.querySelector('.dsh-pdf-translation-text')!.textContent, 'Translated OCR text')
+      assert.equal(requests[0]!.text, recognized)
+      assert.deepEqual(requests[0]!.context, { sessionId: 'session-1', documentId: 'document-1', contentVersion: 'contents-1', pages: [1] })
+
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="reader.translation.backToOcr"]')!.click() })
+      assert.equal(container.querySelector('[role="tab"][aria-label="reader.sidebar.ocr"]')!.getAttribute('aria-selected'), 'true')
+      const pre = container.querySelector('.dsh-pdf-ocr-transcript')!
+      const selected = '这是 OCR 文字 😀。'
+      const start = recognized.indexOf(selected), end = start + selected.length
+      const range = dom.document.createRange()
+      range.setStart(pre.firstChild!, start); range.setEnd(pre.firstChild!, end)
+      await act(async () => {
+        dom.getSelection()!.removeAllRanges(); dom.getSelection()!.addRange(range)
+        dom.document.dispatchEvent(new dom.Event('selectionchange'))
+      })
+      assert.equal(action('reader.ocrTranslateSelection').disabled, false)
+      await act(async () => { action('reader.ocrTranslateSelection').click() })
+      await waitForReader(() => requests.length === 2, 'selected OCR text should use the same translation engine')
+      assert.equal(requests[1]!.text, selected)
+      assert.equal(container.querySelector('.dsh-pdf-translation-source-text')!.textContent, selected)
+      assert.deepEqual(requests[1]!.context, { sessionId: 'session-1', documentId: 'document-1', contentVersion: 'contents-1',
+        pages: [1], selectionBefore: recognized.slice(0, start), selectionAfter: recognized.slice(end) })
+      assert.equal(recognizes, 1, 'translating a subset reuses the same OCR result')
+      assert.equal(container.querySelector('[role="alert"]'), null)
+    })
+  } finally { registry.dispose() }
 })
 
 test('Reader keeps a directory picker failure inside Save As and exits screenshot mode with Escape', async () => {

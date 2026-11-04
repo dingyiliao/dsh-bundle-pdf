@@ -1,5 +1,5 @@
 import type { PdfRect } from '../../core/pdf-types.js'
-import type { FormControlMarker } from './index.js'
+import type { FormControlMarker } from './inspection.js'
 
 /** Keep complete IDs inside their widgets, without adding margins or covering printed labels. */
 export function layoutFormInspection(viewport: { width: number; height: number },

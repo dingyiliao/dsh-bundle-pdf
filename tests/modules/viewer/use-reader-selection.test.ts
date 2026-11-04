@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -7,10 +7,6 @@ import type { ReaderSelection, PageView } from '../../../src/modules/viewer/mode
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import { useReaderSelection, type ReaderSelectionOptions } from '../../../src/modules/viewer/index.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const initial = { id: 'doc-1', revision: 4 } as WorkspaceSnapshot
 const selected: ReaderSelection = {
   revision: 4, kind: 'text', text: 'copied words',
@@ -27,20 +23,16 @@ async function withSelection(run: (fixture: {
   captured: (ReaderSelection | null)[]
   dragging(): number | null
 }) => Promise<void>): Promise<void> {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div><div id="scroll"><span>inside</span></div><div id="outside">outside</div></body></html>',
-    { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div><div id="scroll"><span>inside</span></div><div id="outside">outside</div></body></html>', { globals: [] })
   const frames = new Map<number, FrameRequestCallback>()
   let nextFrame = 0
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({
+
+  installDom({
     window: dom, document: dom.document, navigator: dom.navigator, DOMRect: dom.DOMRect,
     requestAnimationFrame: (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame },
     cancelAnimationFrame: (id: number) => { frames.delete(id) },
     IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  })
   const mount = createRoot(dom.document.getElementById('root')!)
   const scroll = dom.document.getElementById('scroll')!
   const tab = new AbortController()
@@ -73,11 +65,8 @@ async function withSelection(run: (fixture: {
   } finally {
     await act(async () => mount.unmount())
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

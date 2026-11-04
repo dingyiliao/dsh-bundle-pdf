@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SETTINGS_ACK_TIMEOUT_MS, waitForSettingsAcknowledgement } from '../src/client/settings-ack.ts'
-import type { ConfigForm, ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { SETTINGS_ACK_TIMEOUT_MS, waitForSettingsAcknowledgement } from '../src/client/settings/settings-ack.ts'
+import type { ConfigForm, ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
 function fixture() {

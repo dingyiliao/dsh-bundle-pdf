@@ -1,15 +1,12 @@
+import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot, type SettingsProps } from '../src/client/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot, type SettingsProps } from '../src/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
 import { createModelOptionsStore, type ModelOptionsSnapshot, type ModelOptionsStore } from '../src/adapters/client/remote/model-options.ts'
 import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const catalog: NonNullable<ModelOptionsSnapshot['catalog']> = { groups: [
   { id: 'provider/a', name: 'Provider A', models: [
     { id: 'vision/one', name: 'Visual One', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } },
@@ -37,16 +34,7 @@ async function withSettings(run: (harness: {
   publishSettings(settings: PdfSettings): Promise<void>
   render(overrides?: Partial<SettingsProps>): Promise<void>
 }) => Promise<void>, initial: PdfSettings = { ...defaultSettings }, models: ModelOptionsSnapshot = { status: 'ready', catalog }) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' }).window
-  const globals = new Map<string, PropertyDescriptor | undefined>()
-  for (const key of ['window', 'document', 'HTMLElement', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']) {
-    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-  }
-  Object.defineProperties(globalThis, {
-    window: { configurable: true, value: dom }, document: { configurable: true, value: dom.document },
-    HTMLElement: { configurable: true, value: dom.HTMLElement }, Event: { configurable: true, value: dom.Event },
-    MouseEvent: { configurable: true, value: dom.MouseEvent }, IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
-  })
+  const { dom, restore: restoreDom } = createDom()
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const listeners = new Set<() => void>(), modelListeners = new Set<() => void>()
@@ -112,11 +100,8 @@ async function withSettings(run: (harness: {
     })
   } finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of globals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

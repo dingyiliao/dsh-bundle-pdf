@@ -295,14 +295,16 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       return z.object({ width: z.number().int().min(1).max(1026), height: z.number().int().min(1).max(1026),
         mime: z.literal('image/png'), bytes: z.instanceof(Uint8Array) }).parse(await call({ action: 'tile', sessionId, id, bytesHash: reader.bytesHash, tile }, signal, 'pdf.native'))
     },
-    async text(sessionId, id, reader, page, signal) {
-      const result = await call({ action: 'text', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')
+    async text(sessionId, id, reader, page, signal, options) {
+      const result = await call({ action: 'text', sessionId, id, bytesHash: reader.bytesHash, page,
+        ...(options?.recover === undefined ? {} : { recover: options.recover }) }, signal, 'pdf.native')
       // The subprocess and Host enforce the detailed run and character budgets.
       return z.object({ items: z.array(z.object({ str: z.string(), transform: z.array(z.number().finite()).length(6),
         width: z.number().finite(), height: z.number().finite(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean(),
         glyphs: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite().positive()])).max(200000).optional() })).max(10000),
         styles: z.record(z.string(), z.object({ fontFamily: z.string(), ascent: z.number(), descent: z.number(), vertical: z.boolean() })),
-        lang: z.string().nullable() }).parse(result) as NativeTextContent
+        lang: z.string().nullable(), quality: z.object({ unmappedCharacters: z.number().int().nonnegative() }).optional(),
+        extraction: z.literal('local-ocr').optional(), warnings: z.array(z.string()).optional() }).parse(result) as NativeTextContent
     },
     async links(sessionId, id, reader, page, signal) { return z.array(z.unknown()).max(10000).parse(await call({ action: 'links', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')) },
     async outline(sessionId, id, reader, signal) {

@@ -1,5 +1,5 @@
 import { ByteCache } from '../../../shared/cache/index.ts'
-import type { NativeReaderApi, NativeTextContent, NativeTileRequest } from '../../../shared/native.ts'
+import type { NativeReaderApi, NativeTextContent, NativeTextReadOptions, NativeTileRequest } from '../../../shared/native.ts'
 import type { WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import type { ReaderAnnotation, ReaderDocument, ReaderOutlineItem, ReaderPage, ReaderRenderOptions } from '../ports/reader-document.ts'
 import { NativeViewport } from '../../../shared/geometry/native-viewport.ts'
@@ -68,11 +68,14 @@ export class NativeDocument implements ReaderDocument {
     if (typeof ref === 'number' && ref >= 0 && ref < this.numPages) return ref
     throw new Error('Native destinations must carry a page index')
   }
-  async text(number: number, signal?: AbortSignal): Promise<NativeTextContent> {
+  async text(number: number, signal?: AbortSignal, options?: NativeTextReadOptions): Promise<NativeTextContent> {
+    const recover = options?.recover !== false
     return this.read(async combined => {
-      const key = String(number), cached = this.textCache.get(key)
+      const key = JSON.stringify([number, recover]), cached = this.textCache.get(key)
       if (cached) return cached
-      const value = await this.api.text(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined)
+      const value = options === undefined
+        ? await this.api.text(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined)
+        : await this.api.text(this.sessionId, this.snapshot.id, this.snapshot.reader, number, combined, { recover })
       combined.throwIfAborted()
       this.textCache.set(key, value, JSON.stringify(value).length * 2)
       return value

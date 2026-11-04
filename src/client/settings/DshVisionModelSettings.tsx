@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import type { EngineConfiguration, EngineJson } from '../modules/engines/index.js'
-import type { ModelOptionsStore } from '../adapters/client/remote/model-options.js'
+import type { EngineConfiguration, EngineJson } from '../../modules/engines/index.js'
+import type { ModelOptionsStore } from '../../adapters/client/remote/model-options.js'
 
 export type VisionModelMode = 'follow' | 'specified'
 export type VisionModelTextKey =

@@ -8,11 +8,11 @@
 | `tests/adapters/` | DSH、PDF 库、存储及 Client 适配边界 | `npm test` |
 | `tests/entrypoints/` | Host／Client 装配、注册及资源清理 | `npm test` |
 | 根目录 `contracts-*`、`settings-*`、`pdf-*` 等 | 跨模块契约、设置和文档生命周期 | `npm test` |
-| `tests/web.e2e.ts`、`tests/client-panels.e2e.ts` | Chromium 中的 Reader 和面板交互 | `npm run test:web` |
+| `tests/browser/e2e/*.e2e.ts` | 按功能划分的 Chromium Reader 和面板交互 | `npm run test:web` |
 | `tests/native-*.test.ts` | PDFium 协议、渲染、文字及保存集成 | `npm test` |
 | `tests/browser/ocr-local-worker.test.ts` | 构建后的浏览器 OCR Worker 启动 | 项目覆盖率流程 |
 
-`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供测试数据；`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](../bench/README.md)。
+`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供测试数据；`tests/support/` 统一临时 DOM 环境的创建和恢复，各场景保留自己的 mock。`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](../bench/README.md)。
 
 ## 运行
 

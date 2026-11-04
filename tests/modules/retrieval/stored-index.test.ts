@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import test from 'node:test'
-import { digest, encodeCachedVector, type CachedRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
+import { isDeepStrictEqual, promisify } from 'node:util'
+import { decodeCachedVector, digest, encodeCachedVector, type CachedRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
 import { chunkRetrievalPage } from '../../../src/modules/retrieval/text.ts'
-import { buildIndexPageEntries, createVolatileIndexStore, readIndexHead, readIndexPage, readIndexSummary, storedIndexHeadKey, storedIndexPageKey,
-  summarizeIndexPage, type StoredIndexPage } from '../../../src/modules/retrieval/stored-index.ts'
+import { buildIndexPageEntries, createVolatileIndexStore, readIndexHead, readIndexPage, readIndexSummary, recoverIndexPageHeader,
+  storedIndexHeadKey, storedIndexPageKey, summarizeIndexPage, type StoredIndexPage,
+  type StoredIndexPageHeader } from '../../../src/modules/retrieval/stored-index.ts'
 import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
 
 const key = 'a'.repeat(64), generation = '42d2d852-35d6-4d86-89c9-824c816e9320'
@@ -19,6 +22,38 @@ function fixture() {
   const record: StoredIndexPage = { version: 1, generation, page: 1, content,
     vectors: { [chunks[0]!.id]: encodeCachedVector([3, 4]) } }
   return { values, calls, cache, head, page, content, chunks, record }
+}
+
+async function doubleNormalizationFixture() {
+  const f = fixture(), casCalls: string[] = []
+  f.content.units = [
+    { id: 'native', blockId: 'native', kind: 'native-text', text: f.content.text,
+      digest: `sha256:${digest(f.content.text)}`, nativeRange: { startUtf16: 0, endUtf16: f.content.text.length } },
+    { id: 'ocr', blockId: 'scan', kind: 'ocr-text', text: 'Retained scanned evidence.',
+      digest: `sha256:${digest('Retained scanned evidence.')}`, producer: { id: 'ocr-engine', version: '1' },
+      spans: [{ startUtf16: 0, endUtf16: 8, rectPdf: [1, 2, 5, 6] }] },
+  ]
+  f.content.warnings = ['OCR contains uncertain punctuation.']
+  const chunks = chunkRetrievalPage(1, f.content), id = chunks.find(chunk => chunk.source === 'ocr')!.id
+  const source = encodeCachedVector([11, 37]), rebuilt = encodeCachedVector(decodeCachedVector(source, 2)!)
+  assert.notEqual(source.sha256, rebuilt.sha256, 'this fixture reproduces actual Float32 renormalization drift')
+  f.record.vectors = { [id]: rebuilt }
+  f.record.failure = { code: 'ocr/partial', attempts: 2 }
+  const sourceKey = `retrieval_${'b'.repeat(64)}`, targetKey = `index_vector_${rebuilt.sha256}`
+  const built = buildIndexPageEntries(key, generation, f.record, chunks, undefined, { [id]: sourceKey })
+  for (const [recordKey, value] of built.entries) await f.cache.set(recordKey, structuredClone(value))
+  await f.cache.set(sourceKey, source)
+  const ocrKey = `retrieval_${'e'.repeat(64)}`, ocr = { source: 'ocr', text: 'Retained cached OCR layer.' }
+  await f.cache.set(ocrKey, ocr)
+  const header = structuredClone(f.values.get(f.page)) as StoredIndexPageHeader
+  const cache: RetrievalCache = { ...f.cache, async has(recordKey) { return f.values.has(recordKey) },
+    async compareAndSet(recordKey, expected, value) {
+      casCalls.push(recordKey)
+      if (!isDeepStrictEqual(f.values.get(recordKey), expected)) return false
+      f.values.set(recordKey, structuredClone(value)); return true
+    } }
+  return { ...f, cache, chunks, id, source, rebuilt, sourceKey, targetKey, header, casCalls, ocrKey, ocr,
+    contentKey: built.location.contentKey }
 }
 
 test('head and page keys are stable, filename-safe and isolate generations, pages and sources', () => {
@@ -321,6 +356,261 @@ test('V2 summary corruption and missing vectors never claim complete embedding c
   await assert.rejects(readIndexSummary(cache, key, generation, 1, 2, 1200), corrupt)
   f.values.set(f.page, header); f.values.delete(built.location.contentKey)
   await assert.rejects(readIndexSummary(cache, key, generation, 1, 2, 1200), { code: 'pdf/index-storage-missing' })
+})
+
+test('full and fast reads recover proven double-normalized references without changing evidence or data identity', async () => {
+  for (const firstRead of ['full', 'fast'] as const) {
+    const f = await doubleNormalizationFixture(), original = structuredClone(f.header)
+    const content = structuredClone(f.values.get(f.contentKey))
+    if (firstRead === 'fast') {
+      const light = await readIndexSummary(f.cache, key, generation, 1, 2, 1200)
+      assert.deepEqual(light, original.summary)
+      assert.equal(f.calls.includes(f.contentKey), false, 'fast recovery does not load OCR or glyph geometry')
+    } else {
+      const loaded = (await readIndexPage(f.cache, key, generation, 1, 2, 1200))!
+      assert.deepEqual(loaded.record.vectors[f.id], f.rebuilt)
+      assert.deepEqual([...loaded.vectors.get(f.id)!], decodeCachedVector(f.rebuilt, 2))
+      assert.deepEqual(loaded.record.content, f.content)
+      assert.deepEqual(loaded.location!.vectorRefs[f.id], { key: f.targetKey, sha256: f.rebuilt.sha256 })
+      assert.deepEqual(summarizeIndexPage(loaded.record, loaded.chunks, loaded.vectors.size), original.summary)
+    }
+    assert.equal(f.calls.filter(recordKey => recordKey === f.sourceKey).length, 1,
+      'each path validates the source vector in its existing load pass')
+    const repaired = f.values.get(f.page) as StoredIndexPageHeader
+    assert.deepEqual(repaired, { ...original, vectorRefs: { [f.id]: { key: f.targetKey, sha256: f.rebuilt.sha256 } } })
+    assert.deepEqual(f.header, original, 'recovery does not mutate the caller\'s scanned header')
+    assert.deepEqual(f.values.get(f.sourceKey), f.source, 'the original reusable vector remains immutable')
+    assert.deepEqual(f.values.get(f.targetKey), f.rebuilt)
+    assert.deepEqual(f.values.get(f.contentKey), content)
+    assert.deepEqual(f.values.get(f.ocrKey), f.ocr)
+    assert.deepEqual(f.casCalls, [f.targetKey, f.page], 'B is durable before the atomic header publication')
+    const loaded = (await readIndexPage(f.cache, key, generation, 1, 2, 1200))!
+    assert.deepEqual(await readIndexSummary(f.cache, key, generation, 1, 2, 1200),
+      summarizeIndexPage(loaded.record, loaded.chunks, loaded.vectors.size))
+    assert.equal(summarizeIndexPage(loaded.record, loaded.chunks, 1).dataVersion, original.summary.dataVersion)
+    assert.deepEqual(f.casCalls, [f.targetKey, f.page], 'subsequent reads perform no migration writes')
+  }
+})
+
+test('scanned header recovery infers validated dimensions, reuses existing B and is idempotent without reading content', async () => {
+  const f = await doubleNormalizationFixture()
+  f.values.set(f.targetKey, structuredClone(f.rebuilt))
+  f.values.delete(f.contentKey)
+  const repaired = await recoverIndexPageHeader(f.cache, f.page, f.header)
+  assert.equal(repaired!.repairedReferences, 1); assert.equal(repaired!.persisted, true)
+  assert.equal(repaired!.header.vectorRefs[f.id]!.key, f.targetKey)
+  assert.deepEqual(repaired!.header.summary, f.header.summary)
+  assert.deepEqual(f.casCalls, [f.page], 'validated immutable B is reused without being written again')
+  const next = await recoverIndexPageHeader(f.cache, f.page, f.values.get(f.page))
+  assert.equal(next!.repairedReferences, 0); assert.equal(next!.persisted, false)
+  assert.deepEqual(f.casCalls, [f.page])
+  assert.equal(f.calls.includes(f.contentKey), false)
+  assert.equal(f.calls.includes(f.ocrKey), false)
+  assert.equal(await recoverIndexPageHeader(f.cache, f.page, f.record), undefined, 'V1 pages remain on their normal reader')
+  await assert.rejects(recoverIndexPageHeader(f.cache, f.sourceKey, f.header), corrupt,
+    'the public repair entry point cannot overwrite arbitrary cache records')
+  await assert.rejects(recoverIndexPageHeader(f.cache, 'index_page_unsafe', f.header), corrupt)
+  await assert.rejects(recoverIndexPageHeader(f.cache, f.page, { ...f.header, summary: { ...f.header.summary, embedded: 99 } }), corrupt)
+})
+
+test('ports without atomic writes recover B in memory and leave all persistent records intact', async () => {
+  const f = await doubleNormalizationFixture(), snapshot = structuredClone([...f.values])
+  const cache: RetrievalCache = { async get(recordKey) { return f.cache.get(recordKey) },
+    async has(recordKey) { return f.values.has(recordKey) }, async set() { assert.fail('read recovery must not write without CAS') } }
+  const loaded = (await readIndexPage(cache, key, generation, 1, 2, 1200))!
+  assert.deepEqual(loaded.record.vectors[f.id], f.rebuilt)
+  assert.equal(loaded.location!.vectorRefs[f.id], undefined, 'a non-durable B key cannot be reused by a later checkpoint')
+  const light = await readIndexSummary(cache, key, generation, 1, 2, 1200)
+  assert.deepEqual(light, f.header.summary)
+  assert.deepEqual(light, summarizeIndexPage(loaded.record, loaded.chunks, loaded.vectors.size))
+  const recovered = await recoverIndexPageHeader(cache, f.page, f.header)
+  assert.equal(recovered!.repairedReferences, 1); assert.equal(recovered!.persisted, false)
+  assert.deepEqual(recovered!.header, f.header)
+  assert.deepEqual([...f.values], snapshot)
+  const checkpoint = buildIndexPageEntries(key, generation, loaded.record, loaded.chunks, loaded.location)
+  assert.ok(checkpoint.entries.some(([recordKey, value]) => recordKey === f.targetKey && isDeepStrictEqual(value, f.rebuilt)),
+    'normal checkpointing makes the recovered vector durable before publishing its reference')
+})
+
+test('high-dimensional multi-chunk recovery keeps fast, full and scanned results consistent in one vector-read pass', async () => {
+  const f = fixture(), dimensions = 8192
+  f.content.text = Array.from({ length: 12 }, (_, index) => `Distinct paragraph ${index} contains retained evidence.`).join('\n\n')
+  const chunks = chunkRetrievalPage(1, f.content), input = new Array<number>(dimensions).fill(0)
+  input[0] = 11; input[1] = 37
+  const source = encodeCachedVector(input), rebuilt = encodeCachedVector(decodeCachedVector(source, dimensions)!)
+  assert.notEqual(source.sha256, rebuilt.sha256)
+  f.record.vectors = Object.fromEntries(chunks.map(chunk => [chunk.id, rebuilt]))
+  const sourceKeys = Object.fromEntries(chunks.map(chunk => [chunk.id, `retrieval_${digest(chunk.id)}`]))
+  const built = buildIndexPageEntries(key, generation, f.record, chunks, undefined, sourceKeys)
+  for (const [recordKey, value] of built.entries) f.values.set(recordKey, structuredClone(value))
+  for (const sourceKey of Object.values(sourceKeys)) f.values.set(sourceKey, source)
+  const header = f.values.get(f.page) as StoredIndexPageHeader
+  const cache: RetrievalCache = { ...f.cache, async has(recordKey) { return f.values.has(recordKey) } }
+  const assertSinglePass = () => {
+    for (const sourceKey of Object.values(sourceKeys)) assert.equal(f.calls.filter(recordKey => recordKey === sourceKey).length, 1)
+    f.calls.length = 0
+  }
+  const light = await readIndexSummary(cache, key, generation, 1, dimensions, 1200)
+  assert.equal(f.calls.includes(built.location.contentKey), false); assertSinglePass()
+  const loaded = (await readIndexPage(cache, key, generation, 1, dimensions, 1200))!
+  assertSinglePass()
+  assert.deepEqual(light, summarizeIndexPage(loaded.record, loaded.chunks, loaded.vectors.size))
+  assert.deepEqual(light, header.summary)
+  assert.equal(loaded.vectors.size, chunks.length)
+  for (const vector of loaded.vectors.values()) assert.equal(vector.length, dimensions)
+  const recovered = await recoverIndexPageHeader(cache, f.page, header)
+  assertSinglePass()
+  assert.equal(recovered!.repairedReferences, chunks.length)
+  assert.deepEqual(recovered!.header.summary, light)
+})
+
+test('fast summaries and scanned recovery release high-dimensional vector payloads within a bounded heap', async () => {
+  const storedIndexUrl = new URL('../../../src/modules/retrieval/stored-index.ts', import.meta.url).href
+  const cacheUrl = new URL('../../../src/modules/retrieval/cache.ts', import.meta.url).href
+  const textUrl = new URL('../../../src/modules/retrieval/text.ts', import.meta.url).href
+  const script = `
+    import assert from 'node:assert/strict'
+    import { buildIndexPageEntries, readIndexSummary, recoverIndexPageHeader } from ${JSON.stringify(storedIndexUrl)}
+    import { decodeCachedVector, digest, encodeCachedVector } from ${JSON.stringify(cacheUrl)}
+    import { chunkRetrievalPage } from ${JSON.stringify(textUrl)}
+    const key = 'a'.repeat(64), generation = ${JSON.stringify(generation)}, dimensions = 65536
+    const content = { version: 1, source: 'pdf-text', text: Array.from({ length: 96 }, (_, index) =>
+      'Distinct paragraph ' + index + ' contains retained evidence.').join('\\n\\n') }
+    const chunks = chunkRetrievalPage(1, content), input = new Array(dimensions).fill(0)
+    input[0] = 11; input[1] = 37
+    const source = encodeCachedVector(input), rebuilt = encodeCachedVector(decodeCachedVector(source, dimensions))
+    assert.notEqual(source.sha256, rebuilt.sha256)
+    const record = { version: 1, page: 1, generation, content,
+      vectors: Object.fromEntries(chunks.map(chunk => [chunk.id, rebuilt])) }
+    const keys = Object.fromEntries(chunks.map(chunk => [chunk.id, 'retrieval_' + digest(chunk.id)]))
+    const sourceKeys = new Set(Object.values(keys))
+    const built = buildIndexPageEntries(key, generation, record, chunks, undefined, keys)
+    const [pageKey, header] = built.entries.at(-1)
+    let baseline = 0, peak = 0, reads = 0
+    const cache = {
+      async has(recordKey) { assert.equal(recordKey, built.location.contentKey); return true },
+      async get(recordKey) {
+        if (recordKey === pageKey) return header
+        assert.ok(sourceKeys.has(recordKey), 'the lightweight path must not load geometry')
+        reads++
+        if (reads % 12 === 0) { global.gc(); peak = Math.max(peak, process.memoryUsage().heapUsed - baseline) }
+        return source
+      },
+      async set() { assert.fail('read-only recovery cannot write') }
+    }
+    for (const mode of ['summary', 'scan']) {
+      global.gc(); baseline = process.memoryUsage().heapUsed; peak = 0; reads = 0
+      if (mode === 'summary') assert.deepEqual(await readIndexSummary(cache, key, generation, 1, dimensions, 1200), header.summary)
+      else assert.equal((await recoverIndexPageHeader(cache, pageKey, header)).repairedReferences, chunks.length)
+      assert.equal(reads, chunks.length)
+      assert.ok(peak < 16 * 1024 * 1024, mode + ' retained whole-page decoded vectors: ' + peak + ' bytes')
+    }
+    process.stdout.write('bounded')
+  `
+  const result = await promisify(execFile)(process.execPath,
+    ['--expose-gc', '--max-old-space-size=256', '--import', 'tsx', '--input-type=module', '--eval', script],
+    { timeout: 30_000, maxBuffer: 1024 * 1024 })
+  assert.equal(result.stdout, 'bounded')
+})
+
+test('unrelated checksum mismatches, invalid sources and wrong dimensions never qualify for double-normalization repair', async () => {
+  const invalidSources: unknown[] = [
+    undefined, {}, encodeCachedVector([0, 1]), [11, 37],
+    { ...encodeCachedVector([11, 37]), data: 'damaged' },
+    { ...encodeCachedVector([11, 37]), sha256: 'f'.repeat(64) },
+    { ...encodeCachedVector([11, 37]), dimensions: 3 },
+  ]
+  for (const raw of invalidSources) {
+    const f = await doubleNormalizationFixture()
+    f.values.set(f.sourceKey, raw)
+    const light = await readIndexSummary(f.cache, key, generation, 1, 2, 1200)
+    const loaded = (await readIndexPage(f.cache, key, generation, 1, 2, 1200))!
+    assert.equal(loaded.vectors.size, 0); assert.equal(light!.embedded, 0)
+    assert.deepEqual(light, summarizeIndexPage(loaded.record, loaded.chunks, 0))
+    const recovered = await recoverIndexPageHeader(f.cache, f.page, f.header, 2)
+    assert.equal(recovered!.repairedReferences, 0)
+    assert.deepEqual(f.values.get(f.page), f.header)
+    assert.equal(f.values.has(f.targetKey), false); assert.deepEqual(f.casCalls, [])
+  }
+  const wrongDimensions = await doubleNormalizationFixture()
+  assert.equal((await readIndexPage(wrongDimensions.cache, key, generation, 1, 3, 1200))!.vectors.size, 0)
+  assert.equal((await recoverIndexPageHeader(wrongDimensions.cache, wrongDimensions.page, wrongDimensions.header, 3))!.repairedReferences, 0)
+  for (const dimensions of [0, -1, 1.5, 65_537, Number.MAX_SAFE_INTEGER, Infinity]) {
+    const f = await doubleNormalizationFixture()
+    f.values.set(f.sourceKey, { ...f.source, dimensions })
+    assert.equal((await recoverIndexPageHeader(f.cache, f.page, f.header))!.repairedReferences, 0)
+    assert.deepEqual(f.casCalls, [], 'unattested migration dimensions are bounded before decoding')
+  }
+})
+
+test('recovery verifies existing content-addressed B rather than blessing or overwriting corrupt target records', async () => {
+  for (const target of [{}, encodeCachedVector([0, 1]), [11, 37], { data: 'damaged' }]) {
+    const f = await doubleNormalizationFixture()
+    f.values.set(f.targetKey, target)
+    await assert.rejects(recoverIndexPageHeader(f.cache, f.page, f.header), corrupt)
+    assert.deepEqual(f.values.get(f.page), f.header)
+    assert.deepEqual(f.values.get(f.targetKey), target)
+    assert.deepEqual(f.values.get(f.sourceKey), f.source)
+    assert.deepEqual(f.casCalls, [])
+  }
+})
+
+test('header CAS conflicts preserve the winning checkpoint and reject full, fast and scanned recovery as stale', async () => {
+  for (const path of ['full', 'fast', 'scan'] as const) {
+    const f = await doubleNormalizationFixture(), compareAndSet = f.cache.compareAndSet!
+    const replacement = buildIndexPageEntries(key, generation, { ...f.record, vectors: {} }, f.chunks).entries.at(-1)![1]
+    f.cache.compareAndSet = async (recordKey, expected, value) => {
+      if (recordKey === f.page) { f.values.set(f.page, replacement); return false }
+      return compareAndSet(recordKey, expected, value)
+    }
+    const read = path === 'full' ? readIndexPage(f.cache, key, generation, 1, 2, 1200)
+      : path === 'fast' ? readIndexSummary(f.cache, key, generation, 1, 2, 1200)
+        : recoverIndexPageHeader(f.cache, f.page, f.header)
+    await assert.rejects(read, { code: 'pdf/stale-reader' })
+    assert.deepEqual(f.values.get(f.page), replacement)
+    assert.deepEqual(f.values.get(f.sourceKey), f.source)
+    assert.deepEqual(f.values.get(f.targetKey), f.rebuilt, 'an unreferenced immutable B is safe after a lost publication race')
+  }
+})
+
+test('racing immutable B insertion is re-read and verified before updating a page header', async () => {
+  for (const validWinner of [true, false]) {
+    const f = await doubleNormalizationFixture(), compareAndSet = f.cache.compareAndSet!
+    const winner = validWinner ? f.rebuilt : encodeCachedVector([0, 1])
+    f.cache.compareAndSet = async (recordKey, expected, value) => {
+      if (recordKey === f.targetKey) { f.values.set(recordKey, winner); return false }
+      return compareAndSet(recordKey, expected, value)
+    }
+    if (validWinner) {
+      assert.equal((await recoverIndexPageHeader(f.cache, f.page, f.header))!.persisted, true)
+      assert.equal((f.values.get(f.page) as StoredIndexPageHeader).vectorRefs[f.id]!.key, f.targetKey)
+    } else {
+      await assert.rejects(recoverIndexPageHeader(f.cache, f.page, f.header), corrupt)
+      assert.deepEqual(f.values.get(f.page), f.header)
+    }
+    assert.deepEqual(f.values.get(f.targetKey), winner)
+  }
+})
+
+test('failed vector or header persistence propagates storage errors while leaving the original checkpoint and OCR untouched', async () => {
+  for (const failingRecord of ['vector', 'header'] as const) {
+    for (const path of ['full', 'fast', 'scan'] as const) {
+      const f = await doubleNormalizationFixture(), compareAndSet = f.cache.compareAndSet!
+      const error = Object.assign(new Error('write refused'), { code: 'pdf/index-storage-write-failed' })
+      f.cache.compareAndSet = async (recordKey, expected, value) => {
+        if (recordKey === (failingRecord === 'vector' ? f.targetKey : f.page)) throw error
+        return compareAndSet(recordKey, expected, value)
+      }
+      const read = path === 'full' ? readIndexPage(f.cache, key, generation, 1, 2, 1200)
+        : path === 'fast' ? readIndexSummary(f.cache, key, generation, 1, 2, 1200)
+          : recoverIndexPageHeader(f.cache, f.page, f.header)
+      await assert.rejects(read, value => value === error)
+      assert.deepEqual(f.values.get(f.page), f.header)
+      assert.deepEqual(f.values.get(f.sourceKey), f.source)
+      assert.deepEqual(f.values.get(f.ocrKey), f.ocr)
+      assert.equal(f.values.has(f.targetKey), failingRecord === 'header')
+    }
+  }
 })
 
 test('summary restore falls back to full validation without an existence probe and keeps V1 arrays readable', async () => {

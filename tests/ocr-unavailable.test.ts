@@ -3,7 +3,7 @@ import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createHostOcrApi } from '../src/adapters/client/remote/host-ocr-api.ts'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
 test('global PDF settings offer an OCR engine selector instead of a permanently disabled switch', () => {

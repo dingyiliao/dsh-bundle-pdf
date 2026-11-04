@@ -3,6 +3,7 @@ import { TranslationError, type TranslationErrorCode, type TranslationRequest, t
 import { translationSourceLanguage, translationTargetLanguages } from '../../../shared/contracts.js'
 import { ScrollablePanel } from './ScrollablePanel.js'
 import { TranslationLanguageMenu } from './TranslationLanguageMenu.js'
+import { ToolbarIcon } from './ToolbarIcon.js'
 
 export interface TranslationPanelProps {
   selection: {
@@ -11,11 +12,13 @@ export interface TranslationPanelProps {
     targetLanguage: string
     selectionBefore?: string
     selectionAfter?: string
+    sourceKind?: 'ocr'
   }
   engineName: string
   translate: (request: TranslationRequest) => Promise<TranslationResult>
   rememberTargetLanguage?: (language: string) => Promise<boolean>
   onClose: () => void
+  onReturnToSource?: () => void
   t: (key: string) => string
 }
 
@@ -35,7 +38,7 @@ const errorKeys: Readonly<Record<TranslationErrorCode, string>> = {
   'empty-model-output': 'errorEmptyModelOutput',
 }
 
-interface PanelResult { value: TranslationResult; sourceText: string }
+interface PanelResult { value: TranslationResult; sourceText: string; sourceKind?: 'ocr' }
 type PanelStatus = 'loading' | 'complete' | 'cancelled' | 'error'
 
 function interpretationLabel(interpretation: NonNullable<TranslationResult['interpretation']>, t: (key: string) => string): string {
@@ -43,6 +46,32 @@ function interpretationLabel(interpretation: NonNullable<TranslationResult['inte
     ? interpretation.certainty === 'tentative' ? 'interpretationPossibleCorrection' : 'interpretationCorrection'
     : interpretation.certainty === 'tentative' ? 'interpretationPossibleCompletion' : 'interpretationCompletion'
   return t(`reader.translation.${key}`)
+}
+
+/** Clamp only the presentation; requests and copying always retain the captured selection. */
+function TranslationSourceText({ text, t }: { text: string; t: (key: string) => string }) {
+  const textId = useId()
+  const paragraph = useRef<HTMLParagraphElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflow, setOverflow] = useState(false)
+
+  useEffect(() => {
+    const element = paragraph.current
+    if (!element || expanded) return
+    const measure = () => setOverflow(element.clientHeight > 0 && element.scrollHeight > element.clientHeight + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [expanded])
+
+  return <>
+    <p ref={paragraph} id={textId} className="dsh-pdf-translation-source-text" data-expanded={expanded} dir="auto">{text}</p>
+    {(overflow || expanded) && <button type="button" className="dsh-pdf-translation-source-toggle"
+      aria-expanded={expanded} aria-controls={textId} onClick={() => setExpanded(value => !value)}>
+      {t(`reader.translation.${expanded ? 'collapseOriginal' : 'expandOriginal'}`)}
+    </button>}
+  </>
 }
 
 /** Show only classified, localized failures; Remote error messages may contain provider diagnostics. */
@@ -91,9 +120,15 @@ export function TranslationContent({ value, t }: {
   return <>
     {interpretation && <aside className="dsh-pdf-translation-interpretation" role="note"
       data-certainty={interpretation.certainty} data-interpretation-kind={interpretation.kind}>
-      <strong>{interpretationLabel(interpretation, t)}</strong>
-      <p className="dsh-pdf-translation-interpreted-text" dir="auto">{interpretation.text}</p>
-      <p className="dsh-pdf-translation-interpretation-explanation" dir="auto">{interpretation.explanation}</p>
+      <details>
+        <summary>
+          <strong>{interpretationLabel(interpretation, t)}</strong>
+          <span className="dsh-pdf-translation-interpretation-toggle">{t('reader.translation.viewInterpretation')}</span>
+          <ToolbarIcon name="chevronDown" />
+        </summary>
+        <p className="dsh-pdf-translation-interpreted-text" dir="auto">{interpretation.text}</p>
+        <p className="dsh-pdf-translation-interpretation-explanation" dir="auto">{interpretation.explanation}</p>
+      </details>
     </aside>}
     {value.detail
       ? <TranslationDetails detail={value.detail} t={t} />
@@ -102,9 +137,9 @@ export function TranslationContent({ value, t }: {
 }
 
 /** An explicit, cancellable translation of the selection captured by the reader. */
-export function TranslationPanel({ selection, engineName, translate, rememberTargetLanguage, onClose, t }: TranslationPanelProps) {
-  const callbacks = useRef({ translate, rememberTargetLanguage, onClose, t })
-  callbacks.current = { translate, rememberTargetLanguage, onClose, t }
+export function TranslationPanel({ selection, engineName, translate, rememberTargetLanguage, onClose, onReturnToSource, t }: TranslationPanelProps) {
+  const callbacks = useRef({ translate, rememberTargetLanguage, onClose, onReturnToSource, t })
+  callbacks.current = { translate, rememberTargetLanguage, onClose, onReturnToSource, t }
   const alive = useRef(false)
   const closeRequested = useRef(false)
   const generation = useRef(0)
@@ -153,7 +188,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
           signal: controller.signal,
         })
         if (!current()) return
-        const completed = { value, sourceText: source.text }
+        const completed = { value, sourceText: source.text, sourceKind: source.sourceKind }
         latestResult.current = completed
         setResult(completed)
         setStatus('complete')
@@ -233,7 +268,7 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
       // Begin the clipboard write in the click gesture, before awaiting anything.
       const interpretation = captured.value.interpretation
       const copied = interpretation ? [
-        `${callbacks.current.t('reader.translation.original')}: ${captured.sourceText}`,
+        `${callbacks.current.t(`reader.translation.${captured.sourceKind === 'ocr' ? 'ocrOriginal' : 'original'}`)}: ${captured.sourceText}`,
         `${interpretationLabel(interpretation, callbacks.current.t)}: ${interpretation.text}`,
         interpretation.explanation, '', captured.value.text,
       ].join('\n') : captured.value.text
@@ -254,8 +289,14 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
   const loading = status === 'loading'
 
   return <ScrollablePanel className="dsh-pdf-translation-panel" verticalLabel={t('reader.verticalScroll')}
-    horizontalLabel={t('reader.horizontalScroll')} title={label('title')} titleId={titleId}
-    actions={<button type="button" onClick={requestClose} aria-label={label('close')}>×</button>}
+    horizontalLabel={t('reader.horizontalScroll')} title={label(selection.sourceKind === 'ocr' ? 'ocrTitle' : 'title')} titleId={titleId}
+    actions={<>
+      {onReturnToSource && <button type="button" aria-label={label('backToOcr')} title={label('backToOcr')}
+        onClick={() => { const back = callbacks.current.onReturnToSource; requestClose(); back?.() }}>
+        <ToolbarIcon name="back" />
+      </button>}
+      <button type="button" onClick={requestClose} aria-label={label('close')}>×</button>
+    </>}
     onKeyDown={(event) => {
       // Shortcuts inside the panel must not edit the PDF behind it.
       event.stopPropagation()
@@ -266,16 +307,13 @@ export function TranslationPanel({ selection, engineName, translate, rememberTar
     }}>
     <section className="dsh-pdf-translation-content" aria-labelledby={titleId}>
       <div className="dsh-pdf-translation-source">
-        <span className="dsh-pdf-translation-source-label">{label('original')}</span>
-        <p className="dsh-pdf-translation-source-text" dir="auto">{selection.text}</p>
-        <p className="dsh-pdf-translation-meta">
-          <span>{label('pages')} {pages}</span><span aria-hidden="true"> · </span>
-          <span>{label('engine')} {engineName}</span>
-        </p>
+        <span className="dsh-pdf-translation-source-label">{label(selection.sourceKind === 'ocr' ? 'ocrOriginal' : 'original')}</span>
+        <TranslationSourceText key={selection.text} text={selection.text} t={t} />
+        <p className="dsh-pdf-translation-meta">{label('sourcePages').replace('{pages}', pages)}</p>
       </div>
       <div className="dsh-pdf-translation-result-header">
         <div className="dsh-pdf-translation-result-heading">
-          <h4>{label('result')}</h4>
+          <h4 title={`${label('engine')} ${engineName}`}>{label('result')}</h4>
           <TranslationLanguageMenu value={targetLanguage} label={label('targetLanguage')}
             languageName={languageName} onChange={changeTargetLanguage} />
         </div>

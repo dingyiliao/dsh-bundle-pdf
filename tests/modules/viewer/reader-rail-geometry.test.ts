@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -8,10 +8,6 @@ import { ExplanationQuestionEditor } from '../../../src/modules/viewer/component
 import { FloatingToolbar } from '../../../src/modules/viewer/components/FloatingToolbar.tsx'
 import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const rect = (left: number, top: number, width: number, height: number): DOMRect => ({
   left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {},
 })
@@ -25,8 +21,7 @@ async function withReader(run: (fixture: {
   resize(target: Element): Promise<void>
   flushFrames(): Promise<void>
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><div class="dsh-pdf-reader"><nav data-pdf-tool-rail class="dsh-pdf-floating-controls"><div class="dsh-pdf-floating-controls-layout"><div class="dsh-pdf-main-toolbar"></div></div></nav><div id="viewport" tabindex="0"></div><div id="mount"></div></div>',
-    { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div class="dsh-pdf-reader"><nav data-pdf-tool-rail class="dsh-pdf-floating-controls"><div class="dsh-pdf-floating-controls-layout"><div class="dsh-pdf-main-toolbar"></div></div></nav><div id="viewport" tabindex="0"></div><div id="mount"></div></div>', { globals: [] })
   const observers = new Set<Observer>()
   class Observer {
     targets = new Set<Element>()
@@ -35,7 +30,7 @@ async function withReader(run: (fixture: {
     unobserve(target: Element) { this.targets.delete(target) }
     disconnect() { observers.delete(this) }
   }
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
   const frames = new Map<number, FrameRequestCallback>()
   let nextFrame = 0, frameTime = 0
   const globals = { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Element: dom.Element,
@@ -47,10 +42,7 @@ async function withReader(run: (fixture: {
       return id
     },
     cancelAnimationFrame: (id: number) => { frames.delete(id) }, IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(globals)
   Object.defineProperties(dom.HTMLElement.prototype, {
     attachEvent: { configurable: true, value() {} }, detachEvent: { configurable: true, value() {} },
     offsetWidth: { configurable: true, get() {
@@ -108,11 +100,8 @@ async function withReader(run: (fixture: {
   } finally {
     await act(async () => root.unmount())
     frames.clear()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

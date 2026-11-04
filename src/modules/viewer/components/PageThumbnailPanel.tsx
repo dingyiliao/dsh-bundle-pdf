@@ -60,7 +60,11 @@ export function PageThumbnailPanel({ pdf, active, currentPage, onNavigatePage, t
   useLayoutEffect(() => {
     const element = root.current
     if (!active || !element) return
-    const update = () => { setColumns(thumbnailColumnCount(element.clientWidth)) }
+    const update = () => {
+      const style = getComputedStyle(element)
+      const horizontalPadding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+      setColumns(thumbnailColumnCount(Math.max(0, element.clientWidth - horizontalPadding)))
+    }
     const observer = new ResizeObserver(update)
     observer.observe(element)
     update()

@@ -154,10 +154,14 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
       return value.payload
     } finally { metric({ stage: 'store-verify', durationMs: performance.now() - started, bytes: Buffer.byteLength(text), records: 1 }) }
   }
-  function transaction(db: DatabaseSync, operation: () => void, records = 0, bytes = 0): void {
+  function transaction(db: DatabaseSync, operation: () => void | number, records = 0, bytes = 0): void {
     const started = performance.now()
     db.exec('BEGIN IMMEDIATE')
-    try { operation(); db.exec('COMMIT'); commits++; diskWrites += records }
+    try {
+      const written = operation()
+      if (typeof written === 'number') records = written
+      db.exec('COMMIT'); commits++; diskWrites += records
+    }
     catch (error) { try { db.exec('ROLLBACK') } catch { /* Preserve the original storage error. */ } throw error }
     finally { metric({ stage: 'store-write', durationMs: performance.now() - started, bytes, records }) }
   }
@@ -417,6 +421,31 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     async set(key: string, value: unknown): Promise<void> {
       const record = encode(key, value)
       return enqueue('write', record.text.length * 2, async () => { writeRows(await ensureDatabase(), [record], true) })
+    },
+    async compareAndSet(key: string, expected: unknown, value: unknown): Promise<boolean> {
+      const record = encode(key, value), previous = expected === undefined ? undefined : encode(key, expected)
+      return enqueue('write', (record.text.length + (previous?.text.length ?? 0)) * 2, async () => {
+        const db = await ensureDatabase(); invalidateExternalWrites(db)
+        let changed = false
+        transaction(db, () => {
+          const row = readRow(db, record.id)
+          if (row) {
+            if (Number(row.actualBytes) > maxRecordBytes) throw failure('record-too-large', 'The PDF index record exceeds its storage limit.')
+            if (row.key !== key || typeof row.envelope !== 'string' || Number(row.bytes) !== Buffer.byteLength(row.envelope)) {
+              throw failure('corrupt', 'The PDF index record identity is invalid.')
+            }
+            decode(row.envelope, key)
+            if (!previous || row.envelope !== previous.text) return 0
+          } else if (previous) return 0
+          db.prepare('INSERT OR REPLACE INTO records(id,key,envelope,bytes) VALUES (?,?,?,?)')
+            .run(record.id, key, record.text, record.bytes)
+          changed = true
+          return 1
+        }, 0, record.bytes)
+        if (changed) remember(record.id, record.text)
+        else forget(record.id)
+        return changed
+      })
     },
     async setMany(entries: readonly (readonly [string, unknown])[]): Promise<void> {
       if (sealed) throw failure('closed', 'The PDF index storage is closed.')

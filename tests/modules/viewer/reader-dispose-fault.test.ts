@@ -1,5 +1,6 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire, registerHooks } from 'node:module'
+import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
@@ -10,11 +11,6 @@ registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
   return next(url, context)
 } })
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 function snapshot(id: string): WorkspaceSnapshot {
   return {
@@ -27,9 +23,9 @@ function snapshot(id: string): WorkspaceSnapshot {
 }
 
 test('document cleanup faults do not fail a loaded replacement or a closing tab', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
   Object.defineProperty(dom.HTMLCanvasElement.prototype, 'getContext', { configurable: true, value: () => null })
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+
   const globals = {
     window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, HTMLInputElement: dom.HTMLInputElement, Element: dom.Element,
@@ -42,10 +38,7 @@ test('document cleanup faults do not fail a loaded replacement or a closing tab'
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   }
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  installDom(globals)
 
   const originalDispose = NativeDocument.prototype.dispose
   const originalWarn = console.warn
@@ -149,10 +142,7 @@ test('document cleanup faults do not fail a loaded replacement or a closing tab'
     tab.abort()
     NativeDocument.prototype.dispose = originalDispose
     console.warn = originalWarn
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 })

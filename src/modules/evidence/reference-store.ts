@@ -17,12 +17,14 @@ export const textEvidenceSchema = z.object({
   page: z.number().int().min(1).max(100_000),
   source: z.literal('pdf-text'),
   extraction: z.literal('local-ocr').optional(),
+  /** Observed page decoding quality, not a persisted annotation capability. */
+  quality: z.object({ unmappedCharacters: z.number().int().nonnegative() }).strict().optional(),
   pageTextDigest: digest.optional(),
   snapshot: z.object({ text: z.string().max(8000), sha256: digest }).strict(),
   locator: z.object({ kind: z.literal('text-window'), startUtf16: z.number().int().nonnegative(),
     endUtf16: z.number().int().nonnegative(),
     rectsPdf: z.array(z.array(z.number().finite()).length(4)).max(32).optional() }).strict(),
-  precision: z.enum(['exact-text', 'approximate-geometry']),
+  precision: z.enum(['exact-text', 'approximate-geometry', 'page-only']),
   limitations: z.array(z.string().max(512)).max(8),
 }).strict()
 export type PdfTextEvidence = z.infer<typeof textEvidenceSchema>

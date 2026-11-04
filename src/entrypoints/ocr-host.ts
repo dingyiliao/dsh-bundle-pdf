@@ -1,8 +1,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { OcrError } from '../ocr/types.js'
-import { createSessionLlmOcrBackend, registerOcrAgentTool, resolveOcrSessionModel,
-  type OcrModelRouteContext, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
+import { createSessionLlmOcrBackend, registerOcrAgentTool, resolveSessionModel, SessionModelRouteError,
+  type SessionModelRouteContext, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../adapters/host/dsh/index.js'
 import { HostOcrService } from '../modules/ocr/index.js'
 import { createLocalTextRecovery } from '../adapters/host/ocr/local-text-recovery.js'
 import { createLocalTesseractOcrBackend } from '../adapters/host/ocr/local-backend.js'
@@ -33,13 +33,18 @@ export function apply(ctx: Context, config: Config): void {
     getLlm: () => ctx.get('llm') as SessionOcrLlm | undefined,
     getAttachments: () => ctx.get('attachments') as SessionOcrAttachmentStore | undefined,
     async resolveModel(sessionId, signal) {
-      const sessionController = ctx.get('sessionController') as OcrModelRouteContext['sessionController'] | undefined
+      const sessionController = ctx.get('sessionController') as SessionModelRouteContext['sessionController'] | undefined
       if (!sessionController) throw new OcrError('engine-unavailable', 'The DSH session controller is unavailable.')
-      const routeCtx: OcrModelRouteContext = {
+      const routeCtx: SessionModelRouteContext = {
         sessionController,
-        get: ctx.get.bind(ctx) as OcrModelRouteContext['get'],
+        get: ctx.get.bind(ctx) as SessionModelRouteContext['get'],
       }
-      return resolveOcrSessionModel(routeCtx, sessionId, signal)
+      try { return await resolveSessionModel(routeCtx, sessionId, signal) }
+      catch (error) {
+        if (!(error instanceof SessionModelRouteError)) throw error
+        throw new OcrError('not-configured', error.code === 'session-unavailable'
+          ? 'The OCR session is unavailable.' : 'Choose a model for this session before using OCR.', { cause: error.cause })
+      }
     },
   }))
   ctx.effect(() => unregister, 'ocr: current-session model backend')

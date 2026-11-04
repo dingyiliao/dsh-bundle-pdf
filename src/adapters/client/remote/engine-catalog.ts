@@ -1,3 +1,4 @@
+import { pauseRemotePoll } from './request.js'
 import { engineCatalogSchema, type EngineCatalogSnapshot } from '../../../modules/engines/index.js'
 import type { PdfConnection } from './pdf-api.js'
 import { z } from 'zod'
@@ -12,12 +13,6 @@ export function createEngineCatalogStore(connection: PdfConnection, lifetime: Ab
   let snapshot = engineCatalogSchema.parse(initial)
   const listeners = new Set<() => void>()
   let watch: AbortController | undefined
-  const pause = (signal: AbortSignal, ms: number) => new Promise<void>(resolve => {
-    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
-    if (signal.aborted) done()
-  })
   const start = () => {
     if (watch || lifetime.aborted || !listeners.size) return
     const controller = new AbortController()
@@ -34,9 +29,9 @@ export function createEngineCatalogStore(connection: PdfConnection, lifetime: Ab
             snapshot = reply.value
             for (const listener of [...listeners]) { try { listener() } catch { /* Isolate observers. */ } }
           }
-          if (Date.now() - started < 250) await pause(signal, 250)
+          if (Date.now() - started < 250) await pauseRemotePoll(signal, 250)
         } catch {
-          if (!signal.aborted) await pause(signal, 1000)
+          if (!signal.aborted) await pauseRemotePoll(signal, 1000)
           // Keep the last directory across disconnects; connection loss is not
           // evidence that every installed engine was unregistered.
         }

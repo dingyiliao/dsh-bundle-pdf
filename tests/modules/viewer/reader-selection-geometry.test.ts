@@ -1,21 +1,14 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import { captureTextSelection, clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition, overlapFraction,
   pdfRectToViewport, translatePdfRectInViewport, viewportRectToPdf } from '../../../src/modules/viewer/model/reader-selection.ts'
 import type { PageView, PageViewport } from '../../../src/modules/viewer/model/reader-selection.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 function withSelectionDom(html: string, run: (document: Document, select: (range: Range) => ReturnType<typeof captureTextSelection>) => void) {
-  const dom = new JSDOM(`<div id="root">${html}</div>`).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, Node: dom.Node, NodeFilter: dom.NodeFilter })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom(`<div id="root">${html}</div>`, { url: 'about:blank', globals: [] })
+
+  installDom({ window: dom, document: dom.document, Node: dom.Node, NodeFilter: dom.NodeFilter })
   try {
     const createRange = dom.document.createRange.bind(dom.document)
     dom.document.createRange = () => {
@@ -36,11 +29,8 @@ function withSelectionDom(html: string, run: (document: Document, select: (range
       return captureTextSelection(dom.document.getElementById('root')!, views, 1)
     })
   } finally {
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

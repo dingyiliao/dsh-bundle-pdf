@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -7,10 +7,6 @@ import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contra
 import type { NativeReaderApi, NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
 import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/modules/viewer/controllers/use-reader-document.ts'
 
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 const snapshot = (hash = 'bytes-before-save', revision = 1, id = 'document'): WorkspaceSnapshot => ({
   id, path: `/tmp/${id}.pdf`, sourceVersion: `source-${revision}`, contentVersion: 'content', revision,
   dirty: false, canUndo: false, canRedo: false, conflict: false,
@@ -43,14 +39,11 @@ async function fixture(run: (value: {
   render(value?: ReaderDocumentOptions): Promise<void>
   unmount(): Promise<void>
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const prior = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
-    createImageBitmap: async () => ({ width: 100, height: 100, close() {} }) as ImageBitmap })) {
-    prior.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+    createImageBitmap: async () => ({ width: 100, height: 100, close() {} }) as ImageBitmap })
   const root = createRoot(dom.document.getElementById('root')!)
   let state!: ReturnType<typeof useReaderDocument>
   const Harness = (options: ReaderDocumentOptions) => { state = useReaderDocument(options); return null }
@@ -78,11 +71,8 @@ async function fixture(run: (value: {
   try { await run({ state: () => state, options, api, errors, ready, tab, watch, render, unmount }) }
   finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalEngineJson } from '../../../modules/engines/index.js'
 import type { EngineJson } from '../../../modules/engines/index.js'
-import type { OcrModelRoute } from './ocr-model-route.js'
+import type { SessionModelRoute } from './session-model-route.js'
 
 /** Public model metadata only. Provider connection settings and credentials never enter the cache key. */
 export interface SessionModelInfo {
@@ -21,7 +21,7 @@ export interface SessionModelInfo {
  * Service registration generations remain separate fences for in-flight work.
  * The same provider/model route is treated as the same configured model;
  * DSH does not expose immutable server-side weight revisions. */
-export function sessionModelCacheIdentity(route: OcrModelRoute, info: SessionModelInfo,
+export function sessionModelCacheIdentity(route: SessionModelRoute, info: SessionModelInfo,
   controls: EngineJson): string {
   return createHash('sha256').update(canonicalEngineJson({
     version: 2,

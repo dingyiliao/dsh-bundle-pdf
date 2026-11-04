@@ -6,7 +6,8 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
-import { createMemoryEvidenceReferenceStore, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
+import { createMemoryEvidenceReferenceStore, describeEvidenceCapabilities, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
+import { projectPdfToolOutput } from '../../../../src/adapters/host/dsh/tool-output.ts'
 import { createAgentNavigation, createReaderContexts } from '../../../../src/modules/navigation/index.ts'
 import { EmbeddingError, EmbeddingRegistry, type EmbeddingEngine } from '../../../../src/embedding/index.ts'
 import { createOpenAiCompatibleEmbeddingEngine } from '../../../../src/adapters/host/embedding/openai-compatible.ts'
@@ -53,7 +54,7 @@ function adapterFixture(options: NonNullable<Parameters<typeof createPdfRetrieva
         ...(state.warnings.has(page) ? { warnings: state.warnings.get(page)! } : {}) } }
     },
   }, references, options)
-  return { state, retrieval }
+  return { state, retrieval, references }
 }
 
 const fixtureSettings = () => ({ ...defaultSettings, embeddingEngine: 'fixture' })
@@ -80,9 +81,37 @@ test('semantic quality warnings summarize a book once and identify affected cand
     assert.ok(warnings[0]!.sampleOtherPages.every(page => !warnings[0]!.candidatePages.includes(page)))
     assert.equal(warnings[0]!.omittedPageCount, 1141)
     assert.ok(result.candidates.every(candidate => candidate.annotationStatus === 'unavailable'))
+    for (const candidate of result.candidates) {
+      assert.equal(describeEvidenceCapabilities(candidate.evidence).exactAnnotate, false)
+      assert.equal(describeEvidenceCapabilities(candidate.evidence).textMatching, 'exact')
+    }
     assert.ok(JSON.stringify(warnings).length < 600, 'thousands of repeated page warnings must not dominate tool output')
     assert.equal('qualityWarningsOmitted' in result.coverage, false)
   } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('native decoding quality persists with a retrieved ref and agrees with its model capability report', async () => {
+  const { state, retrieval, references } = adapterFixture()
+  state.unmappedPages.add(1)
+  try {
+    const result = await retrieval.search(sessionId, { documentId: 'document', query: 'atomic', mode: 'lexical', topK: 1 }, signal)
+    assert.equal(result.status, 'complete')
+    const candidate = result.candidates[0]!
+    assert.equal(candidate.annotationStatus, 'unavailable')
+    assert.equal(candidate.evidence.source, 'pdf-text')
+    const stored = references.get(candidate.evidence.refId)!.evidence as PdfTextEvidence
+    assert.deepEqual(stored.quality, { unmappedCharacters: 1 })
+    const caps = describeEvidenceCapabilities(stored)
+    assert.equal(caps.source, 'native-text')
+    assert.equal(caps.textMatching, 'exact')
+    assert.equal(caps.navigation, 'range')
+    assert.equal(caps.exactAnnotate, false)
+    const model = projectPdfToolOutput(result) as { candidates: Array<{ annotationStatus: string;
+      evidence: { capabilities: typeof caps } }> }
+    assert.equal(model.candidates[0]!.annotationStatus, 'unavailable')
+    assert.equal(model.candidates[0]!.evidence.capabilities.exactAnnotate, false)
+    assert.match(model.candidates[0]!.evidence.capabilities.reason, /unmapped characters.*Host must recheck/)
+  } finally { await retrieval.dispose() }
 })
 
 test('quality summaries deduplicate each page, preserve unknown messages and distinguish unrelated page warnings', async () => {
@@ -187,7 +216,7 @@ for (const scenario of ['disabled', 'missing-engine', 'not-configured', 'engine-
       assert.match(status.capabilityDetails.semanticSearch.reason, reasons[scenario])
       assert.match(status.capabilityDetails.semanticSearch.reason, /pdf_keyword_search/)
       assert.doesNotMatch(status.capabilityDetails.semanticSearch.reason, /Private/)
-      assert.match(tools.get('pdf_semantic_search')!.description, /pdf_status.*capabilities\.semanticSearch=true/)
+      assert.match(tools.get('pdf_semantic_search')!.description, /pdf_status.*capabilities\.semanticSearch must be true/)
       assert.match(tools.get('pdf_status')!.description, /before starting pdf_semantic_search/)
       await assert.rejects(run('pdf_semantic_search', { documentId: 'document', query: 'Explain atomic rollback',
         topK: 10, fromPage: 1, maxPages: 1151 }), error => {

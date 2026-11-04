@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { retrievalPageText } from '../../../src/modules/retrieval/paragraphs.ts'
+import { nativePageContentText } from '../../../src/modules/document/index.ts'
 import { chunkPage } from '../../../src/modules/retrieval/text.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
@@ -11,7 +11,7 @@ function line(str: string, y: number, size = 15, x = 42, hasEOL = true): Item {
     hasEOL, fontName: 'fixture', dir: 'ltr' }
 }
 const chunks = (items: Item[]) => {
-  const page = retrievalPageText(items)
+  const page = nativePageContentText(items)
   assert.equal(page.text, joinPageText(items))
   return chunkPage(1, page.text, 'pdf-text', { paragraphBreaks: page.paragraphBreaks })
 }
@@ -38,23 +38,23 @@ test('font-size changes between blocks split headings but inline font changes ke
 test('line-end superscripts and leading small markers do not split an ordinary wrapped paragraph', () => {
   const endSuperscript = [line('A body sentence with a footnote marker', 300, 12, 42, false),
     line('1', 304, 8, 270), line('continues on the next visual line.', 286, 12)]
-  assert.deepEqual(retrievalPageText(endSuperscript).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(endSuperscript).paragraphBreaks, [])
   assert.equal(chunks(endSuperscript).length, 1)
   const leadingMarker = [line('The first visual body line continues', 300, 12),
     line('2', 290, 8, 42, false), line('with ordinary prose after a short marker.', 286, 12, 50)]
-  assert.deepEqual(retrievalPageText(leadingMarker).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(leadingMarker).paragraphBreaks, [])
   assert.equal(chunks(leadingMarker).length, 1)
   // Several shorter body runs still outweigh one longer superscript run.
   const fragments = [line('Body ', 300, 12, 42, false), line('words ', 300, 12, 72, false),
     line('here ', 300, 12, 108, false), line('123456', 304, 8, 138),
     line('A normally wrapped continuation.', 286, 12)]
-  assert.deepEqual(retrievalPageText(fragments).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(fragments).paragraphBreaks, [])
   assert.equal(chunks(fragments).length, 1)
 })
 
 test('ordinary double-spaced lines remain one bounded passage rather than one vector per line', () => {
   const items = Array.from({ length: 16 }, (_, index) => line(`Wrapped line ${index}.`, 700 - index * 24, 12))
-  assert.deepEqual(retrievalPageText(items).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(items).paragraphBreaks, [])
   assert.equal(chunks(items).length, 1)
   // The previous line may consist of several same-baseline runs.
   const runs = [line('Wrapped ', 300, 12, 42, false), line('line.', 300, 12, 90),
@@ -74,7 +74,7 @@ test('interleaved columns retain their original ambiguous range and extraction o
   // Incorrect/same-baseline EOLs are not permission to reorder column text.
   const sameBaseline = [line('Title', 400, 24), line('Left start', 340, 12, 60),
     line('Right unrelated', 340, 12, 180), line('Left following', 320, 12, 60)]
-  assert.deepEqual(retrievalPageText(sameBaseline).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(sameBaseline).paragraphBreaks, [])
   assert.equal(chunks(sameBaseline).length, 1)
 })
 
@@ -82,15 +82,15 @@ test('unknown geometry, orientation changes and upward column jumps do not inven
   const invalid = [line('First', 300), { ...line('No geometry', 250), transform: [NaN, 0, 0, 15, 42, 250] },
     { ...line('Zero scale', 200), transform: [0, 0, 0, 0, 42, 200], height: 0 },
     { ...line('Rotated elsewhere', 150), transform: [0, 15, -15, 0, 150, 42] }]
-  assert.deepEqual(retrievalPageText(invalid).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(invalid).paragraphBreaks, [])
   assert.equal(chunks([line('Lower', 100), line('Upper column', 500)]).length, 1)
-  assert.deepEqual(retrievalPageText([line('First', 300), line(' ', 200), line('Last', 100)]).paragraphBreaks, [])
-  assert.deepEqual(retrievalPageText([]), { text: '', paragraphBreaks: [] })
+  assert.deepEqual(nativePageContentText([line('First', 300), line(' ', 200), line('Last', 100)]).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText([]), { text: '', paragraphBreaks: [] })
 })
 
 test('explicit blank lines survive even when an item itself contains several lines without final-baseline geometry', () => {
   const items = [line('One paragraph\nwraps here.\n\nAnother paragraph.', 300), line('Continues.', 250)]
-  assert.deepEqual(retrievalPageText(items).paragraphBreaks, [])
+  assert.deepEqual(nativePageContentText(items).paragraphBreaks, [])
   assert.deepEqual(chunks(items).map(chunk => chunk.text), ['One paragraph\nwraps here.', 'Another paragraph.\nContinues.'])
 })
 

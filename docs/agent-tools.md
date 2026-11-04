@@ -2,6 +2,8 @@
 
 本文定义模型工具的职责、调用方式和结果约束。工具提供材料和确定性动作，由模型组合阅读、搜索、解释与编辑流程。
 
+纯状态、ID、修订及操作结果直接输出 JSON。返回包含文档文字或图像时，保留一条简短的不可信内容标记；写操作回显的覆盖原文、表单校验错误中的原生字段名也按文档内容处理。标记只描述内容来源，不改变返回数据、证据校验或工具卡元数据。
+
 ## 工具列表
 
 | 工具 | 职责 |
@@ -20,7 +22,7 @@
 | `pdf_form_inspect` | 返回同一快照的编号页图、字段类型、选项及 inspection ID |
 | `pdf_form_fill` | 原子填写一个已检查页面的草稿 |
 | `pdf_annotation_list` | 列出当前草稿中的标注、评论及精确 ID |
-| `pdf_annotation_create` | 根据已解析文字引用或便签区域创建标注 |
+| `pdf_annotation_create` | 根据已解析文字引用或便签区域，单项或原子批量创建标注 |
 | `pdf_annotation_update` | 修改已有标注颜色或评论文本，保留其身份与回复关系 |
 | `pdf_annotation_delete` | 删除指定可编辑标注或评论 |
 | `pdf_bookmark_list` | 读取 PDF 内置书签树和精确 outline ID |
@@ -41,7 +43,7 @@
 
 ## 搜索、读取与证据
 
-`pdf_keyword_search` 搜索字面原文，归一化匹配须显式选择。`pdf_semantic_search` 用于概念、问题或不同表述；没有可用 embedding 引擎时报告不可用，不把关键词结果伪装成语义检索。语义索引复用统一 `PageContent` 的原生文字、OCR 文字及可选图像描述，并保留来源位置。图像描述对应整页 `visual-region`，不提供独立图表、表格或公式区域检测；`pdf_page_read` 与关键词搜索保留各自的读取和精度策略。
+`pdf_keyword_search` 搜索字面原文，`mode: "exact"` 区分大小写，显式 `mode: "normalized"` 折叠大小写和空白并保留原始偏移。`pdf_semantic_search` 用于概念、问题或不同表述；没有可用 embedding 引擎时报告不可用，不把关键词结果伪装成语义检索。语义索引复用统一 `PageContent` 的原生文字、OCR 文字及可选图像描述，并保留来源位置。图像描述对应整页 `visual-region`，不提供独立图表、表格或公式区域检测。
 
 开始语义搜索前，先用该 `documentId` 调用 `pdf_status`，仅在 `capabilities.semanticSearch` 为 `true` 时调用 `pdf_semantic_search`。为 `false` 时读取 `capabilityDetails.semanticSearch.reason`；引擎关闭、缺失或不可用时，组合 `pdf_keyword_search` 的相关词搜索与 `pdf_page_read` 的上下文阅读，并明确这是关键词检索和阅读判断，不能称为语义搜索结果。未经用户明确要求，不启用、切换或修改 embedding 引擎及其配置。`pdf_current` 的文档和页提示不代表语义搜索可用。
 
@@ -53,13 +55,28 @@
 
 语义结果的 `coverage.qualityWarnings` 按相同问题聚合：`message` 仅出现一次，`affectedPageCount` 是受影响页数，`candidatePages` 精确列出本次命中中受影响的页，`sampleOtherPages` 最多列出 8 个其他页，`omittedPageCount` 明确报告未列出的页数。最多返回 8 类警告，优先呈现影响当前候选的类型；更多类型以 `qualityWarningsOmitted` 汇总，不能把省略当作无问题。`complete` 表示请求范围的索引已完成且无失败页，不表示每个字符都已准确解码；字符缺失与 `failedPages` 的读取／预处理失败分别报告。质量信号按页统计，是否影响具体引文仍需结合原文核对。对相关页的关键文字或符号有疑问时用 `pdf_page_read` 补读，必要时用 `pdf_page_render` 视觉核对。
 
-读取与搜索返回统一的 `refId`。原生文字引用指向某个版本中的具体 UTF-16 文字范围，不能把相同文字的其他出现位置当成该引用。OCR 与图像描述引用保留派生文字快照及近似页／区域位置，不能冒充原生精确文字，也不能直接用于精确文字标注。引用的范围可能大于用户想标记的段落，必须先阅读确认；派生来源需要精确标注时，先重新读取可验证的原生文字，或使用适合该页的区域／页级材料。
+读取与搜索返回可复用的 `refId`。页面读取、语义搜索和文字证据读取的模型输出每段正文只保留一份，分别使用 `text`、候选的 `quote` 和 `pages[].text`；证据描述保留引用、来源、精度、能力和限制，不重复嵌入 `snapshot`、摘要或几何。完整有界快照和重验信息仍由 Host 及工具卡元数据保留。
+
+`capabilities` 由 Host 根据实际来源推导，包含 `source/textMatching/navigation/exactAnnotate/reason`：
+
+| 来源 | `textMatching` | 匹配与导航能力 |
+| --- | --- | --- |
+| `native-text` | `exact` | 对应原生文字的具体 UTF-16 范围；可解析引用内唯一子段，支持精确范围导航和标注 |
+| `local-ocr` | `derived` | 只能在 OCR 快照内缩小文字范围；`page-only` 导航，不支持原生文字标注 |
+| `ocr-text`、`auxiliary-vision` | `derived` | 派生文字；只导航至已验证的来源页，不支持原生文字标注 |
+| `direct-image` | `none` | 图像证据；只导航至已验证的来源页，无原生文字范围 |
+
+`exactAnnotate: true` 仅表示来源支持精确标注，执行时仍须重验来源、整页文字、修订和原生字形；客户端自报能力、OCR 坐标或相同文字的另一出现位置都不能授权标注。引用可能大于所需段落，应先缩小再写入。
+
+文字引用固定使用签发时的原生或 local OCR 表示。复读、缩小、原生几何解析和 Reader 跳转核对沿用该表示，不因普通读页自动启用 OCR 而换源。Reader 的原生与修复文字分别缓存。Host 观察到原生页有未解码字符时，保守报告 `exactAnnotate: false` 并说明原因；文字仍可复读和缩小，具体子段是否可精确操作仍由 Host 的来源和字形校验决定。旧引用复读也更新这些质量观察，不降低校验要求。
 
 `pdf_evidence_read` 有两种输入：
 
 ```json
 {"documentId":"doc-id","refId":"ref-id","quote":"可选：引用内部唯一的精确子段"}
 ```
+
+`quote` 默认使用 `quoteMatch: "exact"`，保留换行等所有字符。显式 `quoteMatch: "whitespace-normalized"` 只将连续空白折为一个空格，唯一匹配后映回原始 UTF-16 范围；不裁剪首尾、不折叠大小写、标点、断字或 Unicode 组合形式。两种模式都只匹配父引用内部，多义或越界时拒绝。exact 仅因空白不同而失败时返回 `pdf/quote-whitespace-mismatch` 和 `retryHint`，可使用同一父 `refId` 与 `quote` 显式重试，不扩大范围。`quoteMatch` 必须与 `quote` 一起使用。
 
 ```json
 {
@@ -71,9 +88,9 @@
 }
 ```
 
-连续范围包含起止之间的全部页和文字，最多十页、8,000 UTF-16 字符。Host 验证来源、页文字和原生几何；阅读顺序不明确、引文歧义、文字映射不可靠或范围过大时拒绝，不猜坐标。缩小或解析成功后用返回的最终 `refId` 创建标注和跳转。
+`range` 使用精确起止引文，包含起止之间的全部页和文字，最多十页、8,000 UTF-16 字符。Host 验证来源、页文字和原生几何；阅读顺序不明确、引文歧义、文字映射不可靠或范围过大时拒绝。缩小或解析成功后用返回的最终 `refId` 创建标注和跳转。
 
-证据读取也用于重放保存的图像或派生文字，不能用重新 OCR／识图代替同一次结果。Host 重验会话、文档版本、源文件和附件摘要；已失效的来源应重新读取。OCR 或辅助视觉产生的是派生文字，不冒充精确原生文字，不可直接用于文本标注。
+已保存的图像或 OCR／识图结果句柄重放不重新推理。local OCR 文字引用的重验优先复用页面缓存，缓存缺失时可能重新识别，再核对整页文字摘要、提取来源和原范围。Host 始终重验会话、文档版本和源文件，图像句柄还校验附件摘要；local OCR 要求源 PDF 字节与存证一致，已失效时重新读取。
 
 列表工具沿用各自的 `nextCursor/cursor`，游标必须原样传回；文档变化后重新列举。搜索会话与列表游标不可混用。
 
@@ -107,13 +124,15 @@ UI 区域 OCR 使用同一个识别服务：框选、裁剪和页面坐标映射
 }
 ```
 
-独立便签使用 `subtype: "Text"` 和 `target: {kind:"pdf-region",page,rectPdf:[left,bottom,right,top]}`。引文及跨页起止范围先交给证据工具解析，标注工具只消费最终引用。一次连续范围的所有页标注仍属于同一个可撤销事务，失败不部分提交。写入时重新验证来源、修订和原生字形，不能把“已解析”当成永久有效。
+多个独立段落使用同一请求的 `annotations:[{subtype,target,color?,comment?},…]`，不得与顶层 `subtype/target/color/comment` 混用。批量最多 50 项、100 个页标记、64,000 个文字字符及 64,000 个输入字符。所有引用先解析，整批共用一个 `expectedRevision`；有新增时通过一次 CAS 提交一个草稿事务、增加一次修订并产生一条撤销记录，全为复用则不增加修订。任一来源、几何、修订或重叠检查失败，整批零写入。结果逐项返回覆盖范围和标注 ID，应核对后再报告完成。同一文档的后续写入串行使用上一次成功结果的 `revision`。
 
-完全相同的已有标注可以复用；不同颜色／评论或部分重叠会报告已有 ID，供列表检查或更新。修改、删除使用 `pdf_annotation_list` 返回的完整 ID 和当前修订；更新不通过删后重建实现。评论回复先于父标注删除。
+独立便签使用 `subtype: "Text"` 和 `target: {kind:"pdf-region",page,rectPdf:[left,bottom,right,top]}`。一个引用可跨页，标注工具只消费最终引用，覆盖其完整范围；写入时仍重新验证来源、修订和原生字形。
+
+完全相同的已有标注可以复用，省略颜色／评论保留原有复用规则；批内相同请求共用一个 ID，不同选项或部分重叠则整批拒绝并报告条目索引和冲突 ID。修改、删除使用 `pdf_annotation_list` 返回的完整 ID 和当前修订；更新不通过删后重建实现。评论回复先于父标注删除。
 
 `pdf_bookmark_list` 仅列内置目录。`pdf_bookmark_edit` 接受结构化 `operations` 数组，一次 1–100 项 `outline-add/update/delete/move`。新增可指定父节点与插入位置；删除包括子树；移动位置按移出原子树后计算。仅改名或移动保留既有目的地、外链、样式和折叠状态，显式修改 `page` 才重设目的地。
 
-`pdf_page_jump` 消费最终引用，或物理页码与当前 `contentVersion`；不隐式打开标签。同一文档多个 Reader 时用 `pdf_current` 的 `tabId` 明确目标。成功跳转进入相同的多级阅读回退历史；读取、检索和编辑不自动导航。
+`pdf_page_jump` 消费最终引用，或物理页码与当前 `contentVersion`；连续范围跳至起点，OCR 只跳至已验证的来源页且不生成 native 高亮目标。历史 OCR 工具卡必须提供与当前源字节一致的摘要，缺失或失效时重新读取；旧 native 卡仍可经整页文字与字形重验跨越仅标注保存。工具不隐式打开标签，同一文档多个 Reader 时用 `pdf_current` 的 `tabId` 明确目标。成功跳转进入相同的多级阅读回退历史；读取、检索和编辑不自动导航。
 
 ## 表单与保存
 

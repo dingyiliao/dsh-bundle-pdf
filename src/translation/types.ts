@@ -1,6 +1,9 @@
 export type TranslationJson = null | boolean | number | string | TranslationJson[] | { [key: string]: TranslationJson }
 export type TranslationConfiguration = Readonly<Record<string, TranslationJson>>
 
+/** Maximum adjacent source context per side, measured in UTF-16 code units. */
+export const translationContextLimit = 80
+
 export type TranslationErrorCode =
   | 'disabled' | 'not-configured' | 'engine-unavailable' | 'authentication-failed'
   | 'invalid-request' | 'limit-exceeded' | 'timeout' | 'cancelled' | 'stale-result' | 'translation-failed'
@@ -28,7 +31,7 @@ export interface TranslationRequest {
     documentId?: string
     contentVersion?: string
     pages?: readonly number[]
-    /** Text immediately adjacent to the selection in the same PDF text run. */
+    /** Original text immediately adjacent to the selection; each side is bounded by translationContextLimit. */
     selectionBefore?: string
     selectionAfter?: string
   }

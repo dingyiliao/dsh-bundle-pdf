@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { encodeFrame, FrameDecoder } from '../src/engine/framing.ts'
+import { encodeFrame, FrameDecoder } from '../src/adapters/host/pdfium/framing.ts'
 import { NativeWorker, type NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
 
 type Request = { command: string; requestId: string }

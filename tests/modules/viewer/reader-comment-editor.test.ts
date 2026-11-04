@@ -1,15 +1,10 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
 import { ReaderCommentEditor, type ReaderCommentEditorProps } from '../../../src/modules/viewer/components/ReaderCommentEditor.tsx'
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 async function withEditor(run: (fixture: {
   container: HTMLElement
@@ -17,12 +12,9 @@ async function withEditor(run: (fixture: {
   render(props: ReaderCommentEditorProps): Promise<void>
   actions: string[]
 }) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const container = dom.document.getElementById('root')!
   const root = createRoot(container)
   const actions: string[] = []
@@ -40,11 +32,8 @@ async function withEditor(run: (fixture: {
   try { await render(props); await run({ container, props, render, actions }) }
   finally {
     await act(async () => root.unmount())
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 

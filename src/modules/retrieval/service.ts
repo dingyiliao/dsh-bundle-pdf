@@ -2,9 +2,11 @@ import { measureIndexOperation, recordIndexPerformance } from './performance.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { fatalContentError } from '../document/index.js'
-import { cacheDerived, digest, encodeCachedVector, pageCacheKey, readCachedPage, readCachedVector, retrievalCacheKey, validVector, validateRetrievalPage, RETRIEVAL_EXTRACTION_VERSION } from './cache.js'
+import { cacheDerived, digest, encodeCachedVector, pageCacheKey, readCachedPage, readCachedVectorRecord, retrievalCacheKey, validVector, validateRetrievalPage, RETRIEVAL_EXTRACTION_VERSION } from './cache.js'
 import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION, tokenizeRetrievalText, type RetrievalChunk } from './text.js'
-import { hybridCandidates, type RankedChunk } from './ranking.js'
+import { collapseRepresentations, hybridCandidates } from './ranking.js'
+import { encodeRetrievalCursor, parseRetrievalCursor, retrievalPrepareSchema, retrievalQuerySchema,
+  type RetrievalPrepareScope, type RetrievalQuery } from './request.js'
 import { searchStoredIndex, type SearchPage } from './streaming-search.js'
 import { openIndexHead, promoteIndexHead } from './index-head.js'
 import { buildIndexPageEntries, createVolatileIndexStore, readIndexPage, readIndexSummary,
@@ -12,23 +14,7 @@ import { buildIndexPageEntries, createVolatileIndexStore, readIndexPage, readInd
 import { createSharedRetrievalSource, type RetrievalBinding, type SharedRetrievalSource } from './shared-source.js'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalPrepareInput, RetrievalProgress, RetrievalResult, RetrievalService } from './types.js'
 
-const inputSchema = z.object({
-  documentId: z.string().min(1).max(512), query: z.string().trim().min(1).max(2000),
-  terms: z.array(z.string().trim().min(1).max(200)).max(32).default([]),
-  mode: z.enum(['auto', 'lexical', 'semantic', 'hybrid']).default('auto'),
-  topK: z.number().int().min(1).max(20).default(6),
-  fromPage: z.number().int().min(1).default(1), maxPages: z.number().int().min(1).max(100_000).optional(),
-  cursor: z.string().min(1).max(4096).optional(),
-}).strict()
 const pageFailureSchema = z.object({ code: z.string().min(1).max(100) }).strict()
-const prepareSchema = inputSchema.pick({ documentId: true, fromPage: true, maxPages: true }).extend({
-  rebuild: z.boolean().optional(), rebuildToken: z.string().min(1).max(2048).optional(),
-})
-const cursorSchema = z.object({
-  version: z.literal(2), key: z.string().length(64), generation: z.string().uuid(),
-  binding: z.string().length(64), query: z.string().length(64),
-}).strict()
-type Query = z.infer<typeof inputSchema>
 interface Index {
   key: string; contentDigest: string; sourcePath?: string; pageCount: number; fromPage: number; toPage: number
   generation: string; provider?: Pick<RetrievalEmbedding, 'dimensions' | 'maxBatchSize' | 'maxInputCharacters'>; selectionIdentity: string; extractionIdentity: string
@@ -58,35 +44,6 @@ const providerIdentity = (provider: RetrievalEmbedding | undefined) => provider
     ...(provider.documentFingerprint === undefined ? [] : [provider.documentFingerprint])]) : 'none'
 const invalidDocumentIdentity = (provider: RetrievalEmbedding) => provider.documentFingerprint !== undefined
   && (typeof provider.documentFingerprint !== 'string' || !provider.documentFingerprint || provider.documentFingerprint.length > 512)
-
-/** Alternative representations of one block compete as one result. Choose a
- * representation using its best rank in each branch, retaining that unit's
- * distinct subranges so long native paragraphs still produce separate hits. */
-function collapseRepresentations(rankings: RankedChunk[][], chunks: readonly RetrievalChunk[]): RankedChunk[][] {
-  const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))
-  const blocks = new Map<string, Map<string, { score: number; priority: number }>>()
-  for (const ranking of rankings) {
-    const seen = new Set<string>()
-    for (const [rank, hit] of ranking.entries()) {
-      const chunk = byId.get(hit.chunkId), representation = chunk?.representation
-      if (!representation) continue
-      const block = JSON.stringify([chunk.page, representation.blockId]), key = JSON.stringify([block, representation.id])
-      if (seen.has(key)) continue
-      seen.add(key)
-      const units = blocks.get(block) ?? new Map<string, { score: number; priority: number }>()
-      const value = units.get(representation.id) ?? { score: 0,
-        priority: representation.kind === 'native-text' ? 0 : representation.kind === 'ocr-text' ? 1 : 2 }
-      value.score += 1 / (60 + rank + 1)
-      units.set(representation.id, value); blocks.set(block, units)
-    }
-  }
-  const selected = new Map([...blocks].map(([block, units]) => [block, [...units].sort((a, b) =>
-    b[1].score - a[1].score || a[1].priority - b[1].priority || a[0].localeCompare(b[0]))[0]![0]]))
-  return rankings.map(ranking => ranking.filter(hit => {
-    const chunk = byId.get(hit.chunkId), representation = chunk?.representation
-    return !representation || selected.get(JSON.stringify([chunk.page, representation.blockId])) === representation.id
-  }))
-}
 
 /** A bounded index owns derived text only; working-copy access and pinning belong to its caller. */
 export function createRetrievalService(ports: RetrievalPorts): RetrievalService {
@@ -346,9 +303,10 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     const frames = new Map<number, Frame>()
     const rows = new Map<string, { text: string; targets: Array<{ frame: Frame; chunk: RetrievalChunk }> }>()
     let batches = 0, bytes = 0
-    const assign = (frame: Frame, chunk: RetrievalChunk, encoded: StoredIndexPage['vectors'][string], key: string, computed = false) => {
+    const assign = (frame: Frame, chunk: RetrievalChunk, encoded: StoredIndexPage['vectors'][string], key?: string, computed = false) => {
       frame.record.vectors[chunk.id] = encoded
-      frame.vectorKeys[chunk.id] = key
+      if (key) frame.vectorKeys[chunk.id] = key
+      else delete frame.vectorKeys[chunk.id]
       frame.changed = true
       if (computed) frame.computed++
     }
@@ -423,10 +381,10 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
         const key = retrievalCacheKey('vector', modelKey, 'document', digest(chunk.text))
         const equivalent = rows.get(key)
         if (equivalent) { equivalent.targets.push({ frame, chunk }); continue }
-        const cached = await readCachedVector(ports.cache ?? storage, key, provider.dimensions)
+        const cached = await readCachedVectorRecord(ports.cache ?? storage, key, provider.dimensions)
         source.check()
         recordIndexPerformance({ stage: 'vector-cache', durationMs: 0, records: 1, cacheHit: !!cached })
-        if (cached) assign(frame, chunk, encodeCachedVector(cached), key)
+        if (cached) assign(frame, chunk, cached.record, cached.persisted ? key : undefined)
         else rows.set(key, { text: chunk.text, targets: [{ frame, chunk }] })
         if (rows.size === batchSize) await flush()
       }
@@ -498,14 +456,6 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     })
   }
 
-  function parseCursor(token: string): z.infer<typeof cursorSchema> {
-    try {
-      const decoded = Buffer.from(token, 'base64url')
-      if (decoded.toString('base64url') !== token) throw new Error('Invalid encoding')
-      return cursorSchema.parse(JSON.parse(decoded.toString('utf8')))
-    } catch { throw fail('pdf/invalid-window', 'Invalid retrieval cursor; restart the search') }
-  }
-
   let opening = Promise.resolve()
   function waitForOpening(task: Promise<void>, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
@@ -518,7 +468,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     })
   }
   async function getIndex(binding: RetrievalBinding,
-    query: Pick<Query, 'documentId' | 'fromPage' | 'maxPages' | 'cursor'>,
+    query: Pick<RetrievalQuery, 'documentId' | 'fromPage' | 'maxPages' | 'cursor'>,
     preferReady = false, rebuildToken?: string, onProgress?: (progress: RetrievalProgress) => void): Promise<Index> {
     const { document, provider, selectionIdentity } = binding
     const extractionIdentity = binding.indexExtractionIdentity ?? binding.extractionIdentity
@@ -588,7 +538,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       && index.pageCount === binding.document.pageCount
       && index.extractionIdentity === (binding.indexExtractionIdentity ?? binding.extractionIdentity)
   }
-  async function rebuildIndex(binding: RetrievalBinding, scope: z.infer<typeof prepareSchema>,
+  async function rebuildIndex(binding: RetrievalBinding, scope: RetrievalPrepareScope,
     onProgress?: (progress: RetrievalProgress) => void): Promise<Index> {
     for (;;) {
       checkBinding(binding)
@@ -640,7 +590,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       if (rebuilding) throw fail('pdf/retrieval-busy', 'PDF search indexes are being reset; retry shortly')
       if (rebuildFailed) throw fail('pdf/retrieval-cache-unavailable', 'PDF index reset failed; retry rebuilding the index before searching')
       if (preparations.size >= limits.maxConcurrentQueries) throw fail('pdf/retrieval-busy', 'Too many background PDF preparations are waiting; retry shortly')
-      const scope = prepareSchema.parse(input)
+      const scope = retrievalPrepareSchema.parse(input)
       const controller = new AbortController()
       const abort = () => controller.abort(externalSignal?.reason ?? cancelled())
       externalSignal?.addEventListener('abort', abort, { once: true })
@@ -729,7 +679,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       if (rebuilding) throw fail('pdf/retrieval-busy', 'PDF search indexes are being reset; retry shortly')
       if (rebuildFailed) throw fail('pdf/retrieval-cache-unavailable', 'PDF index reset failed; retry rebuilding the index before searching')
       if (queries.size >= limits.maxConcurrentQueries) throw fail('pdf/retrieval-busy', 'Too many PDF retrieval queries are active; retry shortly')
-      const query = inputSchema.parse(input)
+      const query = retrievalQuerySchema.parse(input)
       let activeIndex: Index | undefined
       const controller = new AbortController()
       const abort = () => controller.abort(externalSignal?.reason ?? cancelled())
@@ -763,7 +713,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
           ...(binding.extractionIdentity ? [binding.extractionIdentity] : [])]))
         const queryHash = digest(JSON.stringify([query.query, query.terms, query.topK, query.mode, query.fromPage, query.maxPages ?? null]))
         if (query.cursor) {
-          const cursor = parseCursor(query.cursor)
+          const cursor = parseRetrievalCursor(query.cursor)
           if (cursor.key !== index.key || cursor.generation !== index.generation) {
             throw stale('PDF search progress no longer matches the active index; start a new search with documentId and query')
           }
@@ -794,8 +744,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
         results.set(result, { sessionId, lifetime, document: { ...binding.document }, selectionIdentity,
           extractionIdentity: binding.extractionIdentity, indexExtractionIdentity: binding.indexExtractionIdentity })
         if (!available) {
-          result.nextCursor = Buffer.from(JSON.stringify({ version: 2, key: index.key, generation: index.generation,
-            binding: bindingHash, query: queryHash })).toString('base64url')
+          result.nextCursor = encodeRetrievalCursor({ version: 2, key: index.key, generation: index.generation,
+            binding: bindingHash, query: queryHash })
           return result
         }
         const dataRevision = index.dataRevision

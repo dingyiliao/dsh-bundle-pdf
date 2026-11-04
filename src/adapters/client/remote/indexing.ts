@@ -1,13 +1,11 @@
+import { responseSchema } from '../../../contracts/rpc/index.js'
+import { pauseRemotePoll } from './request.js'
 import { z } from 'zod'
 import { PDF_INDEXING_METHOD, indexingSnapshotSchema, type indexingRequestSchema, type PdfDocumentIndexPolicy,
   type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
 import type { PdfConnection } from './pdf-api.js'
 import type { PdfIndexingClientSnapshot } from '../../../modules/viewer/index.js'
 import { PDF_INDEXING_DIAGNOSTICS_METHOD, indexingDiagnosticsResultSchema } from '../../../contracts/indexing-diagnostics.js'
-const reply = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: z.unknown() }),
-  z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
-])
 interface SessionStore {
   value: PdfIndexingClientSnapshot; listeners: Set<() => void>; watch?: AbortController; sequence: number
 }
@@ -38,12 +36,6 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
     entry.value = { ...value, dismissed }
     for (const listener of [...entry.listeners]) { try { listener() } catch { /* Isolate views. */ } }
   }
-  const pause = (signal: AbortSignal, ms: number) => new Promise<void>(resolve => {
-    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
-    if (signal.aborted) done()
-  })
   const request = async (input: object, signal: AbortSignal, method: string): Promise<unknown> => {
     signal.throwIfAborted()
     let abort!: () => void
@@ -53,7 +45,7 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
       if (signal.aborted) abort()
     })
     try {
-      const response = reply.parse(await Promise.race([
+      const response = responseSchema.parse(await Promise.race([
         connection.rpc.call('/api', method, input, signal), cancelled,
       ]))
       signal.throwIfAborted()
@@ -77,11 +69,11 @@ export function createPdfIndexingApi(connection: PdfConnection, lifetime: AbortS
             ...(entry.value.status === 'ready' && entry.value.revision ? { revision: entry.value.revision } : {}) }, signal)
           if (signal.aborted) break
           if (entry.sequence === sequence) { entry.sequence++; publish(entry, { status: 'ready', ...value }) }
-          if (Date.now() - started < 200) await pause(signal, 200)
+          if (Date.now() - started < 200) await pauseRemotePoll(signal, 200)
         } catch {
           if (signal.aborted) break
           if (entry.sequence === sequence) { entry.sequence++; publish(entry, { ...entry.value, status: 'unavailable' }) }
-          await pause(signal, 1000)
+          await pauseRemotePoll(signal, 1000)
         }
       }
       if (entry.watch === controller) entry.watch = undefined

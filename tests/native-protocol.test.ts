@@ -3,8 +3,9 @@ import test from 'node:test'
 import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/engine/framing.ts'
-import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
+import { PassThrough } from 'node:stream'
+import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/adapters/host/pdfium/framing.ts'
+import { NativeWorker, type NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
 import { NativeTestSubprocess, nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { ByteCache } from '../src/shared/cache/index.ts'
@@ -190,29 +191,62 @@ test('disposing during executable lookup prevents the pending startup from spawn
   } finally { subprocess.releaseLookup(); await worker.dispose(); await fake.close() }
 })
 
-test('a replacement waits for the previous managed process range to exit', { skip: process.platform === 'win32' }, async () => {
-  class DelayedRangeSubprocess extends NativeTestSubprocess {
+test('a replacement waits for the previous managed process range to exit', async () => {
+  // This is a range-ordering proof, independent of OS process startup speed.
+  // The real-pipe timeout/restart test above covers the actual deadline path.
+  class DelayedRangeSubprocess implements NativeProcessRuntime {
     spawns = 0
+    lookups = 0
+    exitFirst!: () => void
     releaseRange!: () => void
+    private enteredRange!: () => void
+    readonly waitingForRange = new Promise<void>(resolve => { this.enteredRange = resolve })
     private readonly rangeGate = new Promise<void>(resolve => { this.releaseRange = resolve })
-    override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
-      const handle = super.spawn(spec)
-      this.spawns++
-      if (this.spawns !== 1) return handle
-      return { ...handle, waitForExit: async () => { await this.rangeGate; return handle.waitForExit() } }
+    async resolveExecutable(command: string): Promise<string> { this.lookups++; return command }
+    spawn(_spec: SubprocessSpawnSpec): SubprocessHandle {
+      const generation = ++this.spawns
+      const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough()
+      let exit!: () => void
+      const done = new Promise<{ exitCode: number; signal: null }>(resolve => {
+        exit = () => resolve({ exitCode: 0, signal: null })
+      })
+      if (generation === 1) this.exitFirst = exit
+      const decoder = new FrameDecoder(frame => {
+        const request = frame.metadata as { command: string; requestId: string }
+        const value = request.command === 'hello'
+          ? { protocolVersion: 1, build: '156.0.8076.0' } : { command: request.command }
+        for (const part of encodeFrame({ requestId: request.requestId, ok: true, value })) stdout.write(part)
+      })
+      stdin.on('data', chunk => decoder.feed(chunk))
+      return { stdin, stdout, stderr, done, control: undefined, collected: {},
+        terminate: () => { exit(); stdin.destroy(); stdout.destroy(); stderr.destroy() },
+        waitForExit: async () => {
+          if (generation === 1) { this.enteredRange(); await this.rangeGate }
+          await done
+          return true
+        },
+      } as unknown as SubprocessHandle
     }
   }
-  const fake = await fakeWorker(), subprocess = new DelayedRangeSubprocess()
-  const worker = new NativeWorker(fake.executable, subprocess, 1000)
+  const subprocess = new DelayedRangeSubprocess()
+  const worker = new NativeWorker('/not-executed/native-worker', subprocess, 1000)
   try {
     await worker.ready()
-    await assert.rejects(worker.request({ command: 'hang' }), { code: 'pdf/native-timeout' })
+    subprocess.exitFirst()
+    // Process completion alone is insufficient: the provider is still waiting
+    // for its entire managed process range. Synchronize on that actual boundary.
+    await subprocess.waitingForRange
     const restart = worker.ready()
+    let restarted = false
+    void restart.then(() => { restarted = true }, () => {})
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(subprocess.spawns, 1, 'must not overlap native process generations')
+    assert.equal(subprocess.lookups, 1, 'replacement startup cannot begin before the old range exits')
+    assert.equal(restarted, false)
     subprocess.releaseRange()
     await restart
     assert.equal(subprocess.spawns, 2)
     assert.equal(worker.generation, 2)
-  } finally { subprocess.releaseRange(); await worker.dispose(); await fake.close() }
+    assert.deepEqual((await worker.request({ command: 'recovered' })).value, { command: 'recovered' })
+  } finally { subprocess.releaseRange(); await worker.dispose() }
 })

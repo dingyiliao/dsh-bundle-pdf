@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { FrameDecoder, encodeFrame, type NativeFrame } from '../../../engine/framing.js'
+import { FrameDecoder, encodeFrame, type NativeFrame } from './framing.js'
 
 export interface NativeReply { value: unknown; bytes: Buffer }
 /** The native worker uses DSH's execution-world lookup and managed process range. */

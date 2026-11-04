@@ -83,7 +83,7 @@ function sharedArea(left: readonly Polygon[], right: readonly Polygon[]): number
 
 /** Compare positioned text marks, not their excerpts: the same words may occur more than once. */
 export function annotationOverlaps(proposed: Pick<PdfAnnotation, 'page' | 'subtype' | 'quadPoints'>,
-  existing: readonly PdfAnnotation[]): AnnotationOverlap[] {
+  existing: readonly Pick<PdfAnnotation, 'id' | 'page' | 'subtype' | 'quadPoints' | 'replyToId'>[]): AnnotationOverlap[] {
   const requested = quadPolygons(proposed.quadPoints ?? [])
   if (!requested.length) return []
   const requestedArea = requested.reduce((total, polygon) => total + Math.abs(signedArea(polygon)), 0)

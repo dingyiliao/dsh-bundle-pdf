@@ -1,5 +1,5 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -7,11 +7,6 @@ import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { NativeDocument } from '../../../src/modules/viewer/index.ts'
 import type { OcrPage } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
 import { useReaderSearch, type ReaderSearchOptions } from '../../../src/modules/viewer/index.ts'
-
-const testRequire = createRequire(import.meta.url)
-const { JSDOM } = testRequire('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
 
 const pages: PdfPageInfo[] = [1, 2].map(page => ({ page, cropBox: [0, 0, 400, 600], rotation: 0, userUnit: 1 }))
 
@@ -27,12 +22,9 @@ async function withSearch(run: (fixture: {
   options: ReaderSearchOptions
   render(options: ReaderSearchOptions): Promise<void>
 }) => Promise<void>): Promise<void> {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   const tab = new AbortController()
   let latest: ReturnType<typeof useReaderSearch> | undefined
@@ -45,11 +37,8 @@ async function withSearch(run: (fixture: {
   finally {
     await act(async () => root.unmount())
     tab.abort()
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 
@@ -70,7 +59,7 @@ test('content reset invalidates prior results without clearing the user query', 
     await act(async () => state().setQuery('elephant'))
     await act(async () => { await state().run() })
     assert.equal(state().hits.length, 2)
-    await act(async () => state().resetContent())
+    await act(async () => state().invalidateDocument())
     assert.equal(state().searched, false)
     assert.equal(state().hits.length, 0)
     assert.equal(state().query, 'elephant')

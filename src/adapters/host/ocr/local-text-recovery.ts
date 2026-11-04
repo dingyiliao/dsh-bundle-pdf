@@ -3,19 +3,25 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { normalizeTesseractOutput } from '../../../ocr/local.js'
 import type { OcrOutput } from '../../../ocr/types.js'
+import type { OcrProducerIdentity } from './page-ocr-artifacts.js'
+import { BUNDLED_LOCAL_OCR_PRODUCER } from './local-identity.js'
 
 export interface TextRecovery {
+  /** Only attested assets/configuration may share persistent recognition results. */
+  readonly producer?: OcrProducerIdentity
   recognize(png: Uint8Array, width: number, height: number, signal: AbortSignal): Promise<OcrOutput>
   dispose(): Promise<void>
 }
 
-/** Lazy, local-only recognition. The PDF service serializes admission and caches positioned results. */
-export function createLocalTextRecovery(root = fileURLToPath(new URL(import.meta.url.endsWith('.ts')
-  ? '../../../../dist/assets/ocr/' : './assets/ocr/', import.meta.url))): TextRecovery {
+/** Lazy, local-only recognition; the page artifact owner coalesces and caches work. */
+export function createLocalTextRecovery(assetRoot?: string): TextRecovery {
+  const root = assetRoot ?? fileURLToPath(new URL(import.meta.url.endsWith('.ts')
+    ? '../../../../dist/assets/ocr/' : './assets/ocr/', import.meta.url))
   const active = new Set<AbortController>()
   const threads = new Set<Promise<number>>()
   let closed = false
   return {
+    ...(assetRoot === undefined ? { producer: BUNDLED_LOCAL_OCR_PRODUCER } : {}),
     async recognize(png, width, height, signal) {
       signal.throwIfAborted()
       if (closed) throw new Error('PDF text recovery is closed')

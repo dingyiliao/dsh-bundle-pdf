@@ -1,12 +1,11 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import test from 'node:test'
 import React, { act } from 'react'
 import type { OutlineAccess } from '../../../src/modules/viewer/ports/outline.ts'
 import type { PdfOutlineItem, PdfOutlineOperation } from '../../../src/core/pdf-types.ts'
 import type { ReaderDocument } from '../../../src/modules/viewer/ports/reader-document.ts'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as { JSDOM: new (html: string) => { window: Window & typeof globalThis & { close(): void } } }
 const t = (key: string) => key
 const initial: PdfOutlineItem[] = [
   { id: 'chapter', title: 'Chapter', page: 1, children: [{ id: 'child', title: 'Section', page: 2, children: [] }] },
@@ -18,18 +17,15 @@ async function withPanel(run: (fixture: {
   render(access?: Partial<OutlineAccess>, active?: boolean): Promise<void>
   click(label: string): Promise<void>; key(target: Element, key: string, altKey?: boolean): Promise<void>
 }) => Promise<void>) {
-  const dom = new JSDOM('<div id="root" class="dsh-pdf-reader"></div>').window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
+  const { dom, restore: restoreDom, install: installDom } = createDom('<div id="root" class="dsh-pdf-reader"></div>', { url: 'about:blank', globals: [] })
+
   const globals = { window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement,
     Element: dom.Element, Node: dom.Node, Event: dom.Event, MutationObserver: dom.MutationObserver,
     getComputedStyle: dom.getComputedStyle.bind(dom),
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     requestAnimationFrame: (fn: FrameRequestCallback) => setTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: clearTimeout, IS_REACT_ACT_ENVIRONMENT: true }
-  for (const [name, value] of Object.entries(globals)) {
-    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
-    Object.defineProperty(globalThis, name, { configurable: true, value })
-  }
+  installDom(globals)
   const { BookmarkPanel } = await import('../../../src/modules/viewer/components/BookmarkPanel.tsx')
   const { createRoot } = await import('react-dom/client')
   const root = dom.document.getElementById('root')!, view = createRoot(root)
@@ -52,10 +48,8 @@ async function withPanel(run: (fixture: {
   }) }
   try { await render(); await run({ dom, root, calls, render, click, key }) }
   finally {
-    await act(async () => view.unmount()); dom.close()
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name)
-    }
+    await act(async () => view.unmount()); restoreDom()
+
   }
 }
 

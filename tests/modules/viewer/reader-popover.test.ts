@@ -1,36 +1,26 @@
+import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import React, { act, useRef, useState, type ReactNode } from 'react'
 import { ReaderPopover } from '../../../src/modules/viewer/components/ReaderPopover.js'
 
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
-  JSDOM: new (html: string, options: { url: string }) => { window: Window & typeof globalThis & { close(): void } }
-}
-
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div><input id="outside" /></body></html>', { url: 'http://localhost' }).window
-  const saved = new Map<string, PropertyDescriptor | undefined>()
-  for (const [key, value] of Object.entries({ window: dom, document: dom.document,
+  const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div><input id="outside" /></body></html>', { globals: [] })
+
+  installDom({ window: dom, document: dom.document,
     HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, CustomEvent: dom.CustomEvent,
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
-    Object.defineProperty(globalThis, key, { configurable: true, value })
-  }
+    cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id), IS_REACT_ACT_ENVIRONMENT: true })
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
   const root = createRoot(container)
   try { await run(dom, container, async element => { await act(async () => { root.render(element) }) }) }
   finally {
     await act(async () => { root.unmount() })
-    dom.close()
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
-    }
+    restoreDom()
+
   }
 }
 
