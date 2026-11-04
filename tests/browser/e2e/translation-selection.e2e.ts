@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, MODEL_FIXTURE, ROOT, SESSION } from '../support/scaffold.ts'
+import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, MODEL_FIXTURE, ROOT, SESSION } from '../support/scaffold.ts'
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -40,6 +40,15 @@ it('shows a real selected-word translation and handles screenshot preview copy a
     const page = await newEnglishPage(opened)
     const tripwire = watchConsole(page)
     const reader = await openReader(page, scaffold.authenticatedUrl, title)
+    // This workflow controls llm.stream for both translation and region OCR.
+    // Explicitly choose that backend; the shipped default is local Tesseract.
+    await openSettings(page, 'en')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'PDF', exact: true }).click()
+    await settings.getByRole('combobox', { name: 'OCR engine', exact: true }).selectOption('session-llm')
+    await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'pdf-reader')?.value)
+      .toMatchObject({ ocrEngine: 'session-llm' })
+    await page.keyboard.press('Escape')
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents()).toContain('Coverage page 1')
     await reader.evaluate(element => {
       const glyphs = [...element.querySelectorAll<HTMLElement>('[data-pdf-page="1"] span[data-pdf-run]')]
