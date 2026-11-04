@@ -15,9 +15,7 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 - **Save and recover**: undo/redo, draft recovery, save/save as, and source-file conflict detection.
 - **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts and annotation-only saves.
 
-![Agent highlights a passage and adds a comment](docs/screenshots/01-ai-edits-pdf.png)
-
-![Multi-step navigation and back history](docs/screenshots/04-multilevel-back-history.png)
+![AI-assisted PDF reading, navigation and annotation](docs/screenshots/reader-overview.png)
 
 ## Install
 

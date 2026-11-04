@@ -15,9 +15,7 @@
 - **保存与恢复**：撤销／重做、草稿恢复、保存／另存为和源文件冲突检测。
 - **OCR 与检索**：区域截图、文字识别，以及基于自配 embedding 模型的语义搜索（实验功能）。索引持久化到磁盘，支持扫描页文字、图像描述、失败续建，重启或仅保存标注后继续复用。
 
-![模型高亮原文并添加批注](docs/screenshots/01-ai-edits-pdf.png)
-
-![多级跳转与回退](docs/screenshots/04-multilevel-back-history.png)
+![AI 辅助阅读、定位与标注](docs/screenshots/reader-overview.png)
 
 ## 安装
 
