@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFile, cp, mkdir, readFile, writeFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -16,14 +17,33 @@ const out = join(root, 'dist/native')
 await mkdir(cache, { recursive: true }); await mkdir(jsonDir, { recursive: true }); await mkdir(out, { recursive: true })
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 async function exists(file) { return stat(file).then(() => true, () => false) }
+async function fetchDependency(url) {
+  const host = new URL(url).hostname
+  const attempts = 3
+  for (let attempt = 1; ; attempt++) {
+    let response
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(120000) })
+      if (response.ok) return Buffer.from(await response.arrayBuffer())
+    } catch (cause) {
+      if (attempt === attempts) throw new Error(`Dependency download failed: ${host}`, { cause })
+    }
+    if (response && !response.ok) {
+      await response.body?.cancel().catch(() => {})
+      if (attempt === attempts || ![408, 429, 500, 502, 503, 504].includes(response.status)) {
+        throw new Error(`Dependency download HTTP ${response.status}: ${host}`)
+      }
+    }
+    console.warn(`Dependency download from ${host} failed${response && !response.ok ? ` (HTTP ${response.status})` : ''}. Retrying (${attempt + 1}/${attempts}).`)
+    await delay(2000 * attempt)
+  }
+}
 async function download(url, file, expected) {
   if (await exists(file)) {
     const bytes = await readFile(file)
     if (digest(bytes) === expected) return
   }
-  const response = await fetch(url, { signal: AbortSignal.timeout(120000) })
-  if (!response.ok) throw new Error(`Dependency download HTTP ${response.status}: ${new URL(url).hostname}`)
-  const bytes = Buffer.from(await response.arrayBuffer())
+  const bytes = await fetchDependency(url)
   if (digest(bytes) !== expected) throw new Error(`Dependency checksum mismatch for ${file}`)
   await mkdir(dirname(file), { recursive: true }); await writeFile(file, bytes)
 }

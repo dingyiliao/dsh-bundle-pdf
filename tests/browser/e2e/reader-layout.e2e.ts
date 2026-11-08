@@ -843,13 +843,11 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     const main = sidebar.locator('.dsh-pdf-sidebar-main')
     const motion = await sidebar.evaluate(element => ({
       sidebar: getComputedStyle(element).transitionProperty,
-      shell: getComputedStyle(element.querySelector('.dsh-pdf-sidebar-shell')!).transitionProperty,
       content: getComputedStyle(element.querySelector('.dsh-pdf-sidebar-main')!).transitionProperty,
       panels: getComputedStyle(element.querySelector('.dsh-pdf-sidebar-panels')!).transitionProperty,
       pagination: getComputedStyle(element.querySelector('.dsh-pdf-sidebar-compact-nav')!).transitionDuration,
     }))
     expect(motion.sidebar).toContain('width')
-    expect(motion.shell).toContain('clip-path')
     expect(motion.content).toContain('opacity')
     expect(motion.panels).toContain('transform')
     expect(motion.pagination).toBe('0s')
@@ -859,13 +857,20 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     expect(await main.getAttribute('aria-hidden')).toBe('true')
     expect(await main.evaluate(element => (element as HTMLElement).inert)).toBe(true)
     await expect.poll(() => sidebar.evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(56)
-    await expect.poll(() => sidebar.evaluate(element => {
-      const clip = getComputedStyle(element.querySelector('.dsh-pdf-sidebar-shell')!).clipPath
-      const shadowBleed = -parseFloat(clip.slice('inset('.length))
-      const rail = element.querySelector('.dsh-pdf-sidebar-rail')!.getBoundingClientRect().width
-      return shadowBleed > 0 && clip.includes(`calc(100% - ${rail + shadowBleed}px)`)
-    }), { message: 'the collapsed clip retains the rail and its outer glass shadow' }).toBe(true)
-    expect(await sidebar.locator('.dsh-pdf-sidebar-rail').evaluate(element => element.getBoundingClientRect().width)).toBe(56)
+    await expect.poll(() => main.evaluate(element => getComputedStyle(element).visibility)).toBe('hidden')
+    const collapsed = await sidebar.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      const shell = getComputedStyle(element.querySelector('.dsh-pdf-sidebar-shell')!)
+      const rail = element.querySelector('.dsh-pdf-sidebar-rail')!.getBoundingClientRect()
+      return { overflow: style.overflow, clipMargin: parseFloat(style.overflowClipMargin), shellClip: shell.clipPath,
+        railWidth: rail.width, railOffset: Math.abs(rail.right - bounds.right) }
+    })
+    expect(collapsed.overflow).toBe('clip')
+    expect(collapsed.clipMargin).toBeGreaterThan(0)
+    expect(collapsed.shellClip).toBe('none')
+    expect(collapsed.railWidth).toBe(56)
+    expect(collapsed.railOffset).toBeLessThanOrEqual(1)
     await assertSharedGlass(false)
     const theme = await page.locator('body').getAttribute('data-ds-dark-theme')
     await page.locator('body').evaluate(element => element.setAttribute('data-ds-dark-theme', ''))
@@ -890,7 +895,6 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await expect.poll(() => main.evaluate(element => getComputedStyle(element).opacity)).toBe('1')
     await page.emulateMedia({ reducedMotion: 'reduce' })
     expect(await sidebar.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
-    expect(await sidebar.locator('.dsh-pdf-sidebar-shell').evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
     expect(await main.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
     expect(await sidebar.locator('.dsh-pdf-sidebar-panels').evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s')
     const setReaderWidth = async (width: number) => {
@@ -948,7 +952,7 @@ it('keeps all PDF sidebar sections aligned and usable at the minimum width', asy
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
     await toggle.click()
     await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
-    await sidebar.locator('.dsh-pdf-sidebar-shell').evaluate(element =>
+    await sidebar.evaluate(element =>
       Promise.all(element.getAnimations().map(animation => animation.finished)))
     const dividerBounds = await sidebar.locator('.dsh-pdf-sidebar-divider').boundingBox()
     expect(dividerBounds).not.toBeNull()
