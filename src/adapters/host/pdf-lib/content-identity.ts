@@ -4,6 +4,7 @@ import {
   PDFArray, PDFBool, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNull,
   PDFNumber, PDFObject, PDFRef, PDFStream, PDFString,
 } from 'pdf-lib'
+import type { PdfDocumentInfo } from '../../../core/pdf-types.js'
 
 interface ContentIdentityLimits {
   maxObjects?: number
@@ -75,25 +76,51 @@ function balancedGraphicsState(program: Uint8Array): boolean {
  * path instead of preventing an otherwise readable PDF from opening.
  */
 export function pdfIndexContentDigest(document: PDFDocument, limits: ContentIdentityLimits = {}): string | undefined {
+  return pdfIndexContentIdentity(document, limits).indexContentDigest
+}
+
+export function pdfIndexContentIdentity(document: PDFDocument, limits: ContentIdentityLimits = {}):
+Pick<PdfDocumentInfo, 'indexContentDigest' | 'indexPageDigests'> {
   const maxObjects = limits.maxObjects ?? 500_000
-  const maxBytes = limits.maxBytes ?? 256 * 1024 * 1024
+  // Count aggregate work separately from per-page work and individual buffers.
+  // Large books can exceed 256 MiB of decoded data without any large page.
+  const maxBytes = limits.maxBytes ?? 1024 * 1024 * 1024
+  const maxPageBytes = Math.min(maxBytes, 256 * 1024 * 1024)
   const maxDepth = limits.maxDepth ?? 64
   const maxStreamBytes = limits.maxStreamBytes ?? 32 * 1024 * 1024
-  const memo = new Map<PDFObject, string>(), active = new Set<PDFObject>()
+  const memo = new WeakMap<PDFObject, string>(), active = new Set<PDFObject>()
   const groups = new Map<PDFObject, number>()
-  let objects = 0, bytes = 0
+  let objects = 0, totalBytes = 0, pageBytes = 0
+
+  function chargeBytes(size: number): void {
+    if (size > maxPageBytes - pageBytes || size > maxBytes - totalBytes) {
+      throw new Error('PDF content identity byte budget exceeded')
+    }
+    pageBytes += size; totalBytes += size
+  }
+  function inflate(contents: Uint8Array, limit: number): Uint8Array {
+    const maxOutputLength = Math.min(limit, maxPageBytes - pageBytes, maxBytes - totalBytes)
+    if (maxOutputLength <= 0) throw new Error('PDF content identity byte budget exceeded')
+    let decoded: Uint8Array
+    try { decoded = inflateSync(contents, { maxOutputLength }) }
+    catch (error) {
+      // A failed decode may have used the whole allowance before throwing.
+      chargeBytes(maxOutputLength)
+      throw error
+    }
+    chargeBytes(decoded.byteLength)
+    return decoded
+  }
 
   function node(kind: string, parts: readonly string[], payload?: Uint8Array): string {
     const hash = createHash('sha256')
     for (const part of [kind, ...parts]) {
       const size = Buffer.byteLength(part)
-      bytes += size
-      if (bytes > maxBytes) throw new Error('PDF content identity byte budget exceeded')
+      chargeBytes(size)
       hash.update(`${size}:`); hash.update(part)
     }
     if (payload) {
-      bytes += payload.byteLength
-      if (bytes > maxBytes) throw new Error('PDF content identity byte budget exceeded')
+      chargeBytes(payload.byteLength)
       hash.update(`payload:${payload.byteLength}:`); hash.update(payload)
     }
     return hash.digest('hex')
@@ -130,38 +157,44 @@ export function pdfIndexContentDigest(document: PDFDocument, limits: ContentIden
     const previous = memo.get(value)
     if (previous !== undefined) return previous
     active.add(value)
-    let result: string
+    try {
+      const result = hashObject(value, depth)
+      memo.set(value, result)
+      return result
+    } finally { active.delete(value) }
+  }
+  function hashObject(value: PDFArray | PDFDict | PDFStream, depth: number): string {
     if (value instanceof PDFArray) {
       const parts: string[] = []
       for (let index = 0; index < value.size(); index++) parts.push(visit(value.get(index), depth + 1))
-      result = node('array', parts)
-    } else if (value instanceof PDFStream) {
-      let contents = value.getContents()
+      return node('array', parts)
+    }
+    if (value instanceof PDFStream) {
+      const contents = value.getContents()
       if (contents.byteLength > maxStreamBytes) throw new Error('PDF content stream budget exceeded')
       const filter = lookup(value.dict.get(name('Filter')))
       const single = filter instanceof PDFArray && filter.size() === 1 ? lookup(filter.get(0)) : filter
       const flate = single instanceof PDFName && ['FlateDecode', 'Fl'].includes(single.decodeText())
-      if (flate || filter === undefined || filter === PDFNull) {
-        if (flate) contents = inflateSync(contents, { maxOutputLength: Math.min(maxStreamBytes, maxBytes - bytes) })
-        const parameters = lookup(value.dict.get(name('DecodeParms')))
-        // Predictors remain significant after Flate decompression.
-        result = node('decoded-stream', [dictionary(value.dict, depth, new Set(['Length', 'Filter', 'DecodeParms'])),
-          visit(parameters instanceof PDFArray && parameters.size() === 1 ? parameters.get(0) : parameters, depth + 1)], contents)
-      } else result = node('encoded-stream', [dictionary(value.dict, depth, new Set(['Length']))], contents)
-    } else {
-      const type = lookup(value.get(name('Type')))
-      if (type instanceof PDFName && ['Page', 'Pages', 'Catalog'].includes(type.decodeText())) {
-        throw new Error('PDF resources refer back into the document container')
+      if (!flate && filter !== undefined && filter !== PDFNull) {
+        return node('encoded-stream', [dictionary(value.dict, depth, new Set(['Length']))], contents)
       }
-      if (type instanceof PDFName && type.decodeText() === 'OCG') {
-        const index = groups.get(value)
-        if (index === undefined) throw new Error('Unregistered optional-content group')
-        // Two identical OCG dictionaries may have distinct ON/OFF membership.
-        result = node('optional-content-group', [String(index), dictionary(value, depth)])
-      } else result = dictionary(value, depth)
+      const parameters = lookup(value.dict.get(name('DecodeParms')))
+      // Hash the dependencies before decoding so nested streams don't retain each other's decoded buffers.
+      const parts = [dictionary(value.dict, depth, new Set(['Length', 'Filter', 'DecodeParms'])),
+        visit(parameters instanceof PDFArray && parameters.size() === 1 ? parameters.get(0) : parameters, depth + 1)]
+      return node('decoded-stream', parts, flate ? inflate(contents, maxStreamBytes) : contents)
     }
-    active.delete(value); memo.set(value, result)
-    return result
+    const type = lookup(value.get(name('Type')))
+    if (type instanceof PDFName && ['Page', 'Pages', 'Catalog'].includes(type.decodeText())) {
+      throw new Error('PDF resources refer back into the document container')
+    }
+    if (type instanceof PDFName && type.decodeText() === 'OCG') {
+      const index = groups.get(value)
+      if (index === undefined) throw new Error('Unregistered optional-content group')
+      // Two identical OCG dictionaries may have distinct ON/OFF membership.
+      return node('optional-content-group', [String(index), dictionary(value, depth)])
+    }
+    return dictionary(value, depth)
   }
   function resources(value: PDFDict | undefined): string {
     const normalized = PDFDict.withContext(document.context)
@@ -188,9 +221,11 @@ export function pdfIndexContentDigest(document: PDFDocument, limits: ContentIden
       if (parameters !== undefined && parameters !== PDFNull) return undefined
       let bytes = stream.getContents()
       if (filter instanceof PDFName && filter.decodeText() === 'FlateDecode') {
-        bytes = inflateSync(bytes, { maxOutputLength: limit })
+        bytes = inflate(bytes, limit)
       } else if (filter !== undefined && filter !== PDFNull) return undefined
-      return bytes.length <= limit ? bytes : undefined
+      if (bytes.length > limit) return undefined
+      chargeBytes(bytes.length + 1)
+      return bytes
     }
     function wrapper(raw: PDFObject, operator: number): boolean {
       const bytes = decoded(raw, 128)
@@ -228,17 +263,31 @@ export function pdfIndexContentDigest(document: PDFDocument, limits: ContentIden
         groups.set(group, index)
       }
     }
-    const pages = document.getPages(), parts = [visit(optional), visit(document.catalog.get(name('OutputIntents')))]
-    for (const page of pages) {
-      const media = page.getMediaBox(), crop = page.getCropBox()
-      const geometry = [media.x, media.y, media.width, media.height, crop.x, crop.y, crop.width, crop.height,
-        page.getRotation().angle]
-      if (!geometry.every(Number.isFinite)) throw new Error('Invalid PDF content geometry')
-      // A stream and a one-element stream array execute the same page program.
-      const streams = pageStreams(page.node.Contents())
-      parts.push(node('page', [JSON.stringify(geometry), visit(page.node.get(name('UserUnit')) ?? document.context.obj(1)),
-        visit(page.node.get(name('Group'))), resources(page.node.Resources()), node('contents', streams.map(stream => visit(stream)))]))
+    const pages = document.getPages(), shared = [visit(optional), visit(document.catalog.get(name('OutputIntents')))]
+    const parts = [...shared], pageDigests = new Array<string | null>(pages.length).fill(null)
+    for (const [index, page] of pages.entries()) {
+      if (objects >= maxObjects || totalBytes >= maxBytes) break
+      pageBytes = 0
+      try {
+        const media = page.getMediaBox(), crop = page.getCropBox()
+        const geometry = [media.x, media.y, media.width, media.height, crop.x, crop.y, crop.width, crop.height,
+          page.getRotation().angle]
+        if (!geometry.every(Number.isFinite)) throw new Error('Invalid PDF content geometry')
+        // A stream and a one-element stream array execute the same page program.
+        const streams = pageStreams(page.node.Contents())
+        const part = node('page', [JSON.stringify(geometry), visit(page.node.get(name('UserUnit')) ?? document.context.obj(1)),
+          visit(page.node.get(name('Group'))), resources(page.node.Resources()), node('contents', streams.map(stream => visit(stream)))])
+        pageDigests[index] = `sha256:${node('pdf-index-page-v1', [...shared, part])}`
+        parts.push(part)
+      } catch { /* Other pages can still be proven independently. */ }
     }
-    return `sha256:${node('pdf-index-content-v1', parts)}`
-  } catch { return undefined }
+    const identity: Pick<PdfDocumentInfo, 'indexContentDigest' | 'indexPageDigests'> = {}
+    if (parts.length > shared.length) identity.indexPageDigests = Object.freeze(pageDigests)
+    if (parts.length === shared.length + pages.length) {
+      pageBytes = 0
+      try { identity.indexContentDigest = `sha256:${node('pdf-index-content-v1', parts)}` }
+      catch { /* Keep verified page identities if the final aggregate exceeds its budget. */ }
+    }
+    return identity
+  } catch { return {} }
 }

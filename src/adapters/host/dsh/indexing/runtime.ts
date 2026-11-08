@@ -4,6 +4,7 @@ import { assertFreshSource, type EvidenceReferenceStore } from '../../../../modu
 import { settingsForIndexPlan, type createDocumentIndexPolicies, type RetrievalCache } from '../../../../modules/retrieval/index.js'
 import type { createWorkingCopyService } from '../../../../modules/working-copy/index.js'
 import type { PdfSettings } from '../../../../shared/contracts.js'
+import type { createLocalFiles } from '../../filesystem/local-files.js'
 import { createPdfPageContent } from '../page-content.js'
 import { createPdfRetrieval } from '../retrieval.js'
 import { createDocumentIndexes } from '../document-indexes.js'
@@ -17,7 +18,7 @@ type IndexingDependencies = {
   ctx: Pick<Context, 'get'> & Pick<Parameters<typeof registerPdfTransport>[0], 'sessionController'>
   workspaces: ReturnType<typeof createWorkingCopyService>
   pdfService: Parameters<typeof createPdfPageContent>[1] & Parameters<typeof createPdfRetrieval>[1]
-  files: Parameters<typeof freshSourceReader>[0]
+  files: Pick<ReturnType<typeof createLocalFiles>, 'read' | 'readIndexSourceVersion'>
   referenceStore: EvidenceReferenceStore
   indexPolicies: ReturnType<typeof createDocumentIndexPolicies>
   embeddings: EmbeddingRegistry
@@ -41,11 +42,15 @@ export function createReaderIndexing(options: IndexingDependencies) {
         { cache: retrievalCache, embeddings, settings: () => settings, content,
           onFailure: indexingDiagnostics.failure,
           limits: { maxMemoryBytes: 64 * 1024 * 1024, maxIndexes: 2 },
-          async freshSource(sessionId, documentId, signal) {
+          async freshSource(sessionId, documentId, signal, purpose) {
             const resolved = await ctx.sessionController.resolveAgent(sessionId)
             if ('error' in resolved) throw resolved.error
-            await assertFreshSource(sessionId, workspaces.readSnapshot(sessionId, documentId),
-              freshSourceReader(files, resolved.agent), signal)
+            if (resolved.agent.session.id !== sessionId) throw new Error('PDF retrieval session identity mismatch')
+            const snapshot = workspaces.readSnapshot(sessionId, documentId)
+            const readSource = purpose === 'indexing'
+              ? () => files.readIndexSourceVersion(resolved.agent, snapshot.path, signal)
+              : freshSourceReader(files, resolved.agent)
+            await assertFreshSource(sessionId, snapshot, readSource, signal, workspaces.bytesHash(snapshot.bytes))
           },
           async retain(sessionId, documentId, signal) {
             const resolved = await ctx.sessionController.resolveAgent(sessionId)
@@ -57,7 +62,10 @@ export function createReaderIndexing(options: IndexingDependencies) {
       return { ...api,
         async availability(sessionId, signal, documentId) { await waitForMigration(signal); return api.availability(sessionId, signal, documentId) },
         async prepare(sessionId, input, signal, onProgress) { await waitForMigration(signal); return api.prepare(sessionId, input, signal, onProgress) },
-        async prepareSlice(sessionId, input, signal, onProgress) { await waitForMigration(signal); return api.prepareSlice!(sessionId, input, signal, onProgress) },
+        async prepareSlice(sessionId, input, signal, onProgress, occurrence) {
+          await waitForMigration(signal)
+          return api.prepareSlice!(sessionId, input, signal, onProgress, occurrence)
+        },
         async search(sessionId, input, signal) { await waitForMigration(signal); return api.search(sessionId, input, signal) },
       }
     },
@@ -68,8 +76,8 @@ export function createReaderIndexing(options: IndexingDependencies) {
     selection: retrieval.selection,
     prepare: (sessionId, input, signal, onProgress) => indexingDiagnostics.run(sessionId, input.documentId,
       () => retrieval.prepare(sessionId, input, signal, onProgress)),
-    prepareSlice: (sessionId, input, signal, onProgress) => indexingDiagnostics.run(sessionId, input.documentId,
-      () => retrieval.prepareSlice!(sessionId, input, signal, onProgress)),
+    prepareSlice: (sessionId, input, signal, onProgress, occurrence) => indexingDiagnostics.run(sessionId, input.documentId,
+      () => retrieval.prepareSlice!(sessionId, input, signal, onProgress, occurrence)),
     onDiagnostic: indexingDiagnostics.record,
   })
   const indexing = createPdfIndexing(prefetch, { documents: workspaces.listOpenDocuments, indexes: retrieval, enabled: () => true })

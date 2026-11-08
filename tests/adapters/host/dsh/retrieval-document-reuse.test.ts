@@ -4,13 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
-import { PDFDocument, degrees } from 'pdf-lib'
+import { PDFArray, PDFDocument, PDFName, PDFRawStream, PDFString, decodePDFRawStream, degrees } from 'pdf-lib'
 import { applyPdfOperations, loadPdfDocument } from '../../../../src/adapters/host/pdf-lib/pdf-document.ts'
 import { createRetrievalStore } from '../../../../src/adapters/host/filesystem/retrieval-store.ts'
 import { createPdfPageContent } from '../../../../src/adapters/host/dsh/page-content.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { EmbeddingRegistry } from '../../../../src/embedding/index.ts'
-import { createMemoryEvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
+import { createMemoryEvidenceReferenceStore, createTextRangeReferences } from '../../../../src/modules/evidence/index.ts'
 import { HostOcrService } from '../../../../src/modules/ocr/index.ts'
 import { HostImageUnderstandingService } from '../../../../src/modules/image-understanding/index.ts'
 import { createRetrievalService } from '../../../../src/modules/retrieval/service.ts'
@@ -23,13 +23,13 @@ import { defaultSettings } from '../../../../src/shared/contracts.ts'
 const signal = new AbortController().signal
 const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const sentence = (page: number) => `A needle identifies the original content on page ${page}.`
-const nativeText = (page: number): NativeTextContent => ({ items: [{ str: sentence(page),
+const nativeText = (text: string): NativeTextContent => ({ items: [{ str: text,
   transform: [10, 0, 0, 10, 20, 200], width: 180, height: 10, dir: 'ltr', fontName: 'Fixture', hasEOL: false }],
 styles: {}, lang: null })
 
-async function source(mode: 'native' | 'ocr' | 'image') {
+async function source(mode: 'native' | 'ocr' | 'image', pageCount: number) {
   const doc = await PDFDocument.create()
-  for (let page = 1; page <= 2; page++) {
+  for (let page = 1; page <= pageCount; page++) {
     const sheet = doc.addPage([240, 320])
     if (mode === 'native') sheet.drawText(sentence(page), { x: 20, y: 200, size: 8 })
     else sheet.drawRectangle({ x: 20, y: 100, width: 180, height: 100, borderWidth: 2 })
@@ -37,14 +37,31 @@ async function source(mode: 'native' | 'ocr' | 'image') {
   return doc.save({ useObjectStreams: false, updateFieldAppearances: false })
 }
 
+/** Decode the ASCII text operators emitted by this fixture's Helvetica pages. */
+async function fixturePageText(bytes: Uint8Array): Promise<string[]> {
+  const pdf = await PDFDocument.load(bytes)
+  return pdf.getPages().map(page => {
+    const contents = page.node.Contents()
+    const streams = contents instanceof PDFArray ? contents.asArray().map(ref => pdf.context.lookup(ref)) : contents ? [contents] : []
+    return streams.flatMap(stream => {
+      assert.ok(stream instanceof PDFRawStream, 'a serialized fixture must expose raw page streams')
+      const program = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1')
+      return Array.from(program.matchAll(/<([0-9a-f]+)>\s+Tj/gi), match => Buffer.from(match[1]!, 'hex').toString('ascii'))
+    }).join('\n')
+  })
+}
+
 /** Real parsed/saved PDFs and SQLite persistence; deterministic extraction and
  * inference ports measure reuse, rather than OCR or embedding model quality. */
-async function fixture(t: TestContext, mode: 'native' | 'ocr' | 'image') {
+async function fixture(t: TestContext, mode: 'native' | 'ocr' | 'image',
+  { pageCount = 2, pagesPerStep }: { pageCount?: number; pagesPerStep?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'pdf-content-reuse-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  let bytes: Uint8Array = await source(mode), document = await loadPdfDocument(bytes)
+  let bytes: Uint8Array = await source(mode, pageCount), document = await loadPdfDocument(bytes)
+  let pageText = mode === 'native' ? await fixturePageText(bytes) : []
   let session = 'first-session', id = 'first-document', path = '/synthetic/reuse.pdf', revision = 0
-  const counts = { native: 0, renders: 0, ocr: 0, image: 0, documentEmbeddings: 0 }
+  const calls = { native: [] as number[], renders: [] as number[], ocr: [] as number[], image: [] as number[],
+    documentEmbeddings: [] as string[] }
   const snapshot = (caller: string, documentId: string): HostWorkspaceSnapshot => {
     if (caller !== session || documentId !== id) throw Object.assign(new Error('No current caller authority'), { code: 'pdf/unknown-document' })
     return { id, path, bytes, document, revision, sourceVersion: hash(bytes), contentVersion: `open-${id}`,
@@ -52,62 +69,78 @@ async function fixture(t: TestContext, mode: 'native' | 'ocr' | 'image') {
   }
   const pages: Parameters<typeof createPdfPageContent>[1] = {
     async readPageText(caller, documentId, page) {
-      counts.native++
-      return { snapshot: snapshot(caller, documentId), content: mode === 'native' ? nativeText(page) : { items: [], styles: {}, lang: null } }
+      calls.native.push(page)
+      return { snapshot: snapshot(caller, documentId), content: mode === 'native' ? nativeText(pageText[page - 1]!) : { items: [], styles: {}, lang: null } }
     },
     async renderOcrImage(caller, documentId, page, _region, _edge, _signal, includeWidgets) {
-      counts.renders++
+      calls.renders.push(page)
       assert.equal(includeWidgets, false, 'indexing uses the clean body without annotation/widget overlays')
-      const png = Buffer.alloc(25)
+      const current = snapshot(caller, documentId)
+      const png = Buffer.alloc(26)
       png.set([137, 80, 78, 71, 13, 10, 26, 10]); png.write('IHDR', 12)
-      png.writeUInt32BE(240, 16); png.writeUInt32BE(320, 20); png[24] = page
-      return { snapshot: snapshot(caller, documentId), png, width: 240, height: 320, pdfRegion: [0, 0, 240, 320] }
+      png.writeUInt32BE(240, 16); png.writeUInt32BE(320, 20)
+      png[24] = page; png[25] = current.document.pages[page - 1]!.rotation / 90
+      return { snapshot: current, png, width: 240, height: 320, pdfRegion: [0, 0, 240, 320] }
     },
   }
   const settings = { ...defaultSettings, embeddingEngine: 'fixture', ocrEngine: 'fixture-ocr', imageEngine: 'fixture-image',
     indexScanPages: mode === 'ocr', indexImageDescriptions: mode === 'image' }
   let store: ReturnType<typeof createRetrievalStore>, embeddings: EmbeddingRegistry,
     ocr: HostOcrService, image: HostImageUnderstandingService, retrieval: ReturnType<typeof createPdfRetrieval>
+  const workspaces = { readSnapshot: snapshot }
+  const references = createMemoryEvidenceReferenceStore()
+  const evidence = createTextRangeReferences(workspaces, pages, references)
   function start() {
     store = createRetrievalStore({ directory, maxMemoryBytes: 4096 })
     embeddings = new EmbeddingRegistry()
     embeddings.register({ descriptor: { id: 'fixture', name: 'Fixture', version: '1', execution: 'local' },
       describe: () => ({ engineId: 'fixture', engineVersion: '1', model: 'fixture', modelRevision: '1', dimensions: 2,
         maxBatchSize: 16, maxInputCharacters: 1200, encoding: 'fixture', fingerprint: 'stable-embedding-v1' }),
-      async embed(request) { if (request.purpose === 'document') counts.documentEmbeddings += request.texts.length
+      async embed(request) { if (request.purpose === 'document') calls.documentEmbeddings.push(...request.texts)
         return request.texts.map(() => [1, 0]) } })
     ocr = new HostOcrService(() => 'fixture-ocr')
     ocr.register({ descriptor: { id: 'fixture-ocr', name: 'Fixture OCR', version: '1', execution: 'local',
       capabilities: ['ocr-text'], geometry: [], confidence: false },
       async cacheIdentity() { return 'stable-ocr-v1' }, async availability() { return { status: 'available' } },
-      async recognize(request) { counts.ocr++; const page = new Uint8Array(request.image as Uint8Array)[24]!
+      async recognize(request) { const page = new Uint8Array(request.image as Uint8Array)[24]!; calls.ocr.push(page)
         return { text: sentence(page), blocks: [], lines: [], words: [], confidence: null, status: 'complete', coverage: [], warnings: [] } } })
     image = new HostImageUnderstandingService(() => 'fixture-image')
     image.register({ descriptor: { id: 'fixture-image', name: 'Fixture image', version: '1', execution: 'local' },
       async cacheIdentity() { return 'stable-vision-v1' }, async availability() { return { available: true } },
-      async understand(request) { counts.image++; return { text: sentence(request.image.data[24]!), model: 'fixture-vision-v1' } } })
-    const workspaces = { readSnapshot: snapshot }
+      async understand(request) { const page = request.image.data[24]!; calls.image.push(page)
+        return { text: sentence(page), model: 'fixture-vision-v1' } } })
     const content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: store })
-    retrieval = createPdfRetrieval(workspaces, pages, createMemoryEvidenceReferenceStore(), {
+    retrieval = createPdfRetrieval(workspaces, pages, references, {
       settings: () => settings, embeddings, content, cache: store,
+      ...(pagesPerStep !== undefined ? { limits: { pagesPerStep } } : {}),
       async freshSource(caller, documentId) { snapshot(caller, documentId) },
     })
   }
   async function close() { await retrieval.dispose(); ocr.dispose(); image.dispose(); embeddings.dispose(); await store.dispose() }
   start()
   return {
-    counts, get bytes() { return bytes }, get document() { return document }, get session() { return session }, get id() { return id },
+    calls,
+    get counts() { return { native: calls.native.length, renders: calls.renders.length, ocr: calls.ocr.length,
+      image: calls.image.length, documentEmbeddings: calls.documentEmbeddings.length } },
+    get bytes() { return bytes }, get document() { return document }, get session() { return session }, get id() { return id },
     get retrieval() { return retrieval }, snapshot: () => snapshot(session, id),
+    readEvidence: (refId: string) => evidence.readEvidence(session, id, refId, signal),
     async reopen() { await close(); session = `session-${++revision}`; id = `document-${revision}`; start() },
     async save(operations: PdfWorkingCopyOperation[]) {
-      const oldHash = hash(bytes), oldContent = document.indexContentDigest
+      const oldHash = hash(bytes), oldContent = document.indexContentDigest, oldPages = document.indexPageDigests
       bytes = (await applyPdfOperations(bytes, operations)).bytes
       document = await loadPdfDocument(bytes)
       assert.notEqual(hash(bytes), oldHash, 'the test must actually serialize different PDF bytes')
       assert.ok(oldContent, 'real inspection must expose a stable body identity')
       assert.equal(document.indexContentDigest, oldContent, 'annotation/outline saves preserve the real body')
+      assert.deepEqual(document.indexPageDigests, oldPages, 'annotation/outline saves preserve every page identity')
     },
-    async replace(next: Uint8Array) { bytes = next; document = await loadPdfDocument(bytes) },
+    async replace(next: Uint8Array) {
+      document = await loadPdfDocument(next)
+      if (mode === 'native') pageText = await fixturePageText(next)
+      bytes = next
+      revision++
+    },
     changePath(next: string) { path = next }, close,
   }
 }
@@ -149,20 +182,113 @@ for (const mode of ['native', 'ocr', 'image'] as const) test(`${mode} index surv
       assert.equal(f.counts.ocr, before.ocr); assert.equal(f.counts.image, before.image)
       assert.equal(f.counts.documentEmbeddings, before.documentEmbeddings)
     }
+    const pageDigests = f.document.indexPageDigests
+    assert.ok(pageDigests?.length === 2 && pageDigests.every(digest => typeof digest === 'string'))
     const parsed = await PDFDocument.load(f.bytes)
     parsed.getPage(0).setRotation(degrees(90))
     await f.replace(await parsed.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    assert.notEqual(f.document.indexPageDigests?.[0], pageDigests[0])
+    assert.equal(f.document.indexPageDigests?.[1], pageDigests[1])
     await f.reopen()
-    const reads = f.counts.native
+    const before = f.counts
     await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
+    assert.deepEqual(f.calls.native.slice(before.native), [1], 'rotation invalidates only the changed page extraction')
+    assert.deepEqual(f.calls.renders.slice(before.renders), mode === 'native' ? [] : [1])
+    assert.deepEqual(f.calls.ocr.slice(before.ocr), mode === 'ocr' ? [1] : [])
+    assert.deepEqual(f.calls.image.slice(before.image), mode === 'image' ? [1] : [])
+    assert.equal(f.counts.documentEmbeddings, before.documentEmbeddings, 'rotation preserves the encoded text')
     const changed = await f.retrieval.search(f.session, { documentId: f.id, query: 'needle', mode: 'semantic' }, signal)
     assert.notEqual(changed.indexGeneration, generation)
-    assert.ok(f.counts.native > reads, 'actual page geometry changes invalidate cached extraction')
     f.changePath('/synthetic/another.pdf')
     await f.reopen()
     const movedReads = f.counts.native
     await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
     assert.ok(f.counts.native > movedReads, 'a new canonical path gets its own document index namespace')
+  } finally { await f.close() }
+})
+
+test('replacing text on two pages reuses the other pages and fences old evidence and search cursors', async t => {
+  const f = await fixture(t, 'native', { pageCount: 4, pagesPerStep: 1 })
+  try {
+    const query = { documentId: f.id, query: 'needle', mode: 'semantic' as const, topK: 4 }
+    await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
+    const original = await f.retrieval.search(f.session, query, signal)
+    assert.equal(original.status, 'complete')
+    const oldCandidates = new Map(original.candidates.map(candidate => [candidate.page, candidate]))
+    assert.equal(oldCandidates.size, 4)
+    assert.equal(oldCandidates.get(2)?.quote, sentence(2))
+    assert.equal(oldCandidates.get(4)?.quote, sentence(4))
+    const originalDigests = f.document.indexPageDigests
+    assert.ok(originalDigests?.length === 4 && originalDigests.every(digest => typeof digest === 'string'))
+
+    const lexicalQuery = { ...query, mode: 'lexical' as const }
+    const pending = await f.retrieval.search(f.session, lexicalQuery, signal)
+    assert.ok(pending.nextCursor, 'a bounded search must leave a caller-bound continuation')
+
+    const replacements = new Map([[2, 'A replacement needle describes an updated second page.'],
+      [4, 'A revised needle points to the new conclusion on the final page.']])
+    const parsed = await PDFDocument.load(f.bytes)
+    for (const [page, text] of replacements) {
+      const sheet = parsed.getPage(page - 1)
+      sheet.node.set(PDFName.of('Contents'), parsed.context.obj([]))
+      sheet.drawText(text, { x: 20, y: 200, size: 8 })
+    }
+    await f.replace(await parsed.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    assert.deepEqual(f.document.indexPageDigests?.map((digest, index) => digest === originalDigests[index]),
+      [true, false, true, false], 'the new PDF must actually change just the two edited pages')
+
+    const before = f.counts
+    await assert.rejects(f.retrieval.search(f.session, { ...lexicalQuery, cursor: pending.nextCursor }, signal), { code: 'pdf/stale-reader' })
+    assert.deepEqual(f.counts, before, 'an obsolete cursor cannot start new extraction or inference')
+    await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
+    assert.deepEqual(f.calls.native.slice(before.native), [2, 4])
+    assert.deepEqual(f.calls.documentEmbeddings.slice(before.documentEmbeddings), [...replacements.values()])
+    assert.equal(f.counts.renders, before.renders)
+    assert.equal(f.counts.ocr, before.ocr)
+    assert.equal(f.counts.image, before.image)
+
+    for (const page of replacements.keys()) {
+      await assert.rejects(f.readEvidence(oldCandidates.get(page)!.evidence.refId), { code: 'pdf/stale-reader' })
+    }
+    const rebound = await f.readEvidence(oldCandidates.get(1)!.evidence.refId)
+    assert.equal(rebound.revalidated, true)
+    assert.equal(rebound.pages[0]?.snapshot.text, sentence(1))
+    assert.equal(rebound.pages[0]?.sourceDigest, hash(f.bytes))
+
+    const updated = await f.retrieval.search(f.session, query, signal)
+    assert.equal(updated.status, 'complete')
+    assert.notEqual(updated.indexGeneration, original.indexGeneration)
+    assert.deepEqual(new Map(updated.candidates.map(candidate => [candidate.page, candidate.quote])),
+      new Map([[1, sentence(1)], [2, replacements.get(2)!], [3, sentence(3)], [4, replacements.get(4)!]]))
+    for (const candidate of updated.candidates) {
+      assert.equal(candidate.evidence.sourceDigest, hash(f.bytes))
+      assert.notEqual(candidate.evidence.refId, oldCandidates.get(candidate.page)!.evidence.refId)
+      assert.ok('text' in candidate.evidence.snapshot, 'native evidence must carry literal page text')
+      assert.equal(candidate.evidence.snapshot.text, candidate.quote)
+    }
+  } finally { await f.close() }
+})
+
+test('a page without a reliable identity follows the source bytes while proven pages can still be reused', async t => {
+  const f = await fixture(t, 'native', { pageCount: 3 })
+  try {
+    const original = await PDFDocument.load(f.bytes)
+    original.getPage(1).node.Resources()!.set(PDFName.of('Unknown'), PDFString.of('An unsupported resource category'))
+    await f.replace(await original.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    assert.equal(f.document.indexContentDigest, undefined)
+    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, false, true])
+    await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
+
+    const edited = await PDFDocument.load(f.bytes)
+    edited.getPage(2).drawText('A newly indexed needle sentence.', { x: 20, y: 180, size: 8 })
+    await f.replace(await edited.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, false, true])
+    await f.reopen()
+    const before = f.counts
+    await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
+    assert.deepEqual(f.calls.native.slice(before.native), [2, 3], 'revisit the uncertain page and the changed page, then reuse the proven one')
+    assert.equal(f.counts.documentEmbeddings, before.documentEmbeddings + 1, 'the uncertain page still reuses its unchanged text vector')
+    assert.match(f.calls.documentEmbeddings.at(-1)!, /A newly indexed needle sentence/)
   } finally { await f.close() }
 })
 

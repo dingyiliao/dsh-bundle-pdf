@@ -131,7 +131,7 @@ export function createDocumentIndexes(options: {
     }))
   }
   async function prepare(sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
-    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean): Promise<boolean> {
+    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean, occurrence?: object): Promise<boolean> {
     return owned(sessionId, input.documentId, async owner => {
       await options.policies.settled(owner.path)
       if (options.policies.desired(owner.path).policy.embeddingEngine === 'none') {
@@ -150,7 +150,7 @@ export function createDocumentIndexes(options: {
           const request = { documentId: input.documentId,
             ...(input.fromPage ? { fromPage: input.fromPage } : {}), ...(input.maxPages ? { maxPages: input.maxPages } : {}),
             ...(plan.force ? { rebuild: true, rebuildToken: plan.id } : {}) }
-          if (slice && api.prepareSlice) return api.prepareSlice(sessionId, request, active, onProgress)
+          if (slice && api.prepareSlice) return api.prepareSlice(sessionId, request, active, onProgress, occurrence)
           await api.prepare(sessionId, request, active, onProgress)
           return true
         })
@@ -219,7 +219,8 @@ export function createDocumentIndexes(options: {
       await prepare(sessionId, input, signal, onProgress, false)
     },
     prepareSlice: (sessionId: string, input: RetrievalPrepareInput & { indexPlanId?: string }, signal: AbortSignal,
-      onProgress?: (progress: RetrievalProgress) => void) => prepare(sessionId, input, signal, onProgress, true),
+      onProgress?: (progress: RetrievalProgress) => void, occurrence?: object) =>
+      prepare(sessionId, input, signal, onProgress, true, occurrence),
     async search(sessionId: string, input: Parameters<PdfRetrieval['search']>[1], signal: AbortSignal) {
       return owned(sessionId, input.documentId, async owner => {
         await options.policies.settled(owner.path)

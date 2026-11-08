@@ -84,6 +84,29 @@ test('Host-owned continuation IDs resolve to an authorized document before the o
   await f.lifecycle.dispose()
 })
 
+test('document access is checked while pinned, before execution and before returning results', async () => {
+  let pinned = 0, allowed = false, executed = 0
+  const denied = () => Object.assign(new Error('Protected document'), { code: 'pdf/protected-document' })
+  const f = fixture(async () => { pinned++; return () => { pinned-- } }, {
+    assertDocument(_sessionId, _documentId) {
+      assert.equal(pinned, 1)
+      if (!allowed) throw denied()
+    },
+  })
+  f.register('pdf_status', async () => { executed++; return { status: 'ok' } })
+  const status = f.definitions.get('pdf_status')!
+  await assert.rejects(status.execute({ documentId: 'document' }, { agent, signal } as never), { code: 'pdf/protected-document' })
+  assert.equal(executed, 0)
+  assert.equal(pinned, 0)
+  allowed = true
+  f.register('pdf_bookmark_list', async () => { executed++; allowed = false; return { status: 'stale' } })
+  await assert.rejects(f.definitions.get('pdf_bookmark_list')!.execute({ documentId: 'document' }, { agent, signal } as never),
+    { code: 'pdf/protected-document' }, 'a document protected during an asynchronous operation cannot return its result')
+  assert.equal(executed, 1)
+  assert.equal(pinned, 0)
+  await f.lifecycle.dispose()
+})
+
 test('tool errors and cancellation release pins, while rejected acquisition never executes the body', async () => {
   let pinned = 0, calls = 0, rejected = false
   const f = fixture(async () => {

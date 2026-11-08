@@ -86,6 +86,8 @@ export interface PdfClientApi {
   native: NativeReaderApi
   positions: PdfReadingPositionApi
   open(sessionId: string, address: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
+  /** Explicit user password entry; never retain or replay it during automatic recovery. */
+  unlock(sessionId: string, address: string, password: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
   /** Read the current working-copy snapshot without reloading the source or acquiring a view reference. */
   refresh(sessionId: string, id: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Omit id to permanently close this occurrence's reference, including opens whose reply was lost. */

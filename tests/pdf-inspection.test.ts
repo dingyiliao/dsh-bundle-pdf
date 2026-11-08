@@ -9,7 +9,7 @@ async function fixture(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(`./fixtures/${name}.pdf`, import.meta.url)))
 }
 
-test('encrypted PDFs fail strict inspection rather than opening in a second reader', async () => {
+test('encrypted object streams remain outside the editable pdf-lib parser', async () => {
   for (const name of ['encrypted-object-stream', 'password-object-stream']) {
     await assert.rejects(loadPdfDocument(await fixture(name)), (error: unknown) =>
       error instanceof PdfDocumentError && error.code === 'invalid-pdf')
@@ -29,7 +29,7 @@ test('ordinary PDFs keep editable metadata and malformed input is rejected', asy
     error instanceof PdfDocumentError && error.code === 'invalid-pdf')
 })
 
-test('workspaces reject encrypted PDFs before creating a working copy or writing', async () => {
+test('workspaces without the native unlock port reject encrypted PDFs without writing', async () => {
   const bytes = await fixture('encrypted-object-stream')
   const path = 'D:/fixtures/encrypted.pdf'
   const sessionId = 'encrypted-session'

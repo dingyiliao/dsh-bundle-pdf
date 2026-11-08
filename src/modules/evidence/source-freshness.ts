@@ -13,7 +13,7 @@ function stale(message: string): never {
 
 /** A working copy can remain unchanged while its source is overwritten or removed. */
 export async function assertFreshSource(sessionId: string, snapshot: HostWorkspaceSnapshot,
-  readSource: FreshSourceRead, signal: AbortSignal): Promise<void> {
+  readSource: FreshSourceRead, signal: AbortSignal, baselineDigest?: string): Promise<void> {
   signal.throwIfAborted()
   let current: Awaited<ReturnType<FreshSourceRead>>
   try { current = await readSource(sessionId, snapshot, signal) }
@@ -22,7 +22,7 @@ export async function assertFreshSource(sessionId: string, snapshot: HostWorkspa
     return stale('The PDF source can no longer be verified; reopen the document')
   }
   signal.throwIfAborted()
-  if (current.path !== snapshot.path || current.digest !== evidenceSha256(snapshot.bytes)) {
+  if (current.path !== snapshot.path || current.digest !== (baselineDigest ?? evidenceSha256(snapshot.bytes))) {
     stale('The PDF source changed outside this working copy; reopen the document')
   }
 }

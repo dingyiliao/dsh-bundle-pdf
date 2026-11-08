@@ -7,6 +7,10 @@ import { NativeDocument, openNativeDocument } from '../rendering/document.js'
 const noAnnotations: PdfAnnotation[] = []
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
 const readerIdentity = (snapshot: WorkspaceSnapshot) => `${snapshot.id}:${snapshot.reader.bytesHash}:${snapshot.reader.generation}`
+const passwordError = (error: unknown): 'required' | 'incorrect' | null => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+  return code === 'pdf/password-required' ? 'required' : code === 'pdf/password-incorrect' ? 'incorrect' : null
+}
 
 export interface ReaderDocumentOptions {
   api: PdfClientApi
@@ -36,8 +40,22 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
   const [displayOwner, setDisplayOwner] = useState<{ token: number; content: ReaderContentLease; resource: typeof resource } | null>(null)
   const [pdf, setPdf] = useState<NativeDocument | null>(null)
   const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>(noAnnotations)
+  const [passwordPrompt, setPasswordPrompt] = useState<'required' | 'incorrect' | 'cancelled' | null>(null)
+  const [unlocking, setUnlocking] = useState(false)
+  const [openAttempt, setOpenAttempt] = useState(0)
+  const unlockFlight = useRef<AbortController | null>(null)
   const ownerSequence = useRef(0)
   const activePdf = useRef<{ document: NativeDocument; identity: string; dispose(): Promise<void> } | null>(null)
+  const clearNative = () => {
+    const active = activePdf.current
+    activePdf.current = null
+    active?.document.retire()
+    const capture = latest.current.releaseRegionCapture()
+    void Promise.resolve(capture).catch(() => undefined).then(() => active?.dispose())
+      .catch(failure => { console.warn('[pdf] Could not release a locked document', failure) })
+    setPdf(null)
+    setPdfAnnotations(noAnnotations)
+  }
   const mounted = useRef(true)
   const latestSnapshotRef = useRef(snapshot)
   latestSnapshotRef.current = snapshot
@@ -88,6 +106,10 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
   useEffect(() => {
     const controller = new AbortController()
     const token = ++ownerSequence.current
+    unlockFlight.current?.abort()
+    unlockFlight.current = null
+    setUnlocking(false)
+    setPasswordPrompt(null)
     recovery.current.flight?.controller.abort()
     recovery.current = { attempted: new Set(), flight: null }
     failedOwner.current = null
@@ -104,14 +126,76 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
       }
     }).catch(failure => {
       if (!controller.signal.aborted && token === ownerSequence.current) {
+        const prompt = passwordError(failure)
+        if (prompt) {
+          setSnapshot(null)
+          clearNative()
+          setPasswordPrompt(prompt)
+          return
+        }
         failedOwner.current = { resource, revision: ownerContent.revision }
         settleWaiters()
         latest.current.onError(failure)
         ownerContent.failed()
       }
     })
-    return () => { controller.abort(); recovery.current.flight?.controller.abort(); tabSignal.removeEventListener('abort', stop) }
-  }, [api, sessionId, resourceAddress, content.revision, tabSignal])
+    return () => { controller.abort(); unlockFlight.current?.abort(); recovery.current.flight?.controller.abort(); tabSignal.removeEventListener('abort', stop) }
+  }, [api, sessionId, resourceAddress, content.revision, tabSignal, openAttempt])
+
+  const unlock = useCallback(async (password: string): Promise<void> => {
+    if (!password || password.length > 1024 || password.includes('\0') || unlockFlight.current
+      || currentResource.current !== resource || tabSignal.aborted) return
+    const token = ownerSequence.current
+    const ownerContent = latest.current.content
+    const controller = new AbortController()
+    unlockFlight.current = controller
+    setUnlocking(true)
+    try {
+      const next = await api.unlock(sessionId, resourceAddress, password,
+        AbortSignal.any([controller.signal, tabSignal]))
+      if (controller.signal.aborted || tabSignal.aborted || currentResource.current !== resource
+        || token !== ownerSequence.current) return
+      failedOwner.current = null
+      recovery.current = { attempted: new Set(), flight: null }
+      setPasswordPrompt(null)
+      setSnapshot(next)
+      setDisplayOwner({ token, content: ownerContent, resource })
+    } catch (failure) {
+      if (controller.signal.aborted || tabSignal.aborted || currentResource.current !== resource
+        || token !== ownerSequence.current) return
+      const prompt = passwordError(failure)
+      if (prompt) setPasswordPrompt(prompt)
+      else {
+        setPasswordPrompt(null)
+        failedOwner.current = { resource, revision: ownerContent.revision }
+        settleWaiters()
+        latest.current.onError(failure)
+        ownerContent.failed()
+      }
+    } finally {
+      if (unlockFlight.current === controller) {
+        unlockFlight.current = null
+        if (mounted.current) setUnlocking(false)
+      }
+    }
+  }, [api, sessionId, resourceAddress, resource, tabSignal])
+
+  const cancelUnlock = useCallback(() => {
+    if (currentResource.current !== resource || tabSignal.aborted) return
+    unlockFlight.current?.abort()
+    unlockFlight.current = null
+    setUnlocking(false)
+    setPasswordPrompt('cancelled')
+    failedOwner.current = { resource, revision: latest.current.content.revision }
+    settleWaiters()
+    latest.current.content.failed()
+  }, [resource, tabSignal])
+
+  const retryUnlock = useCallback(() => {
+    if (currentResource.current !== resource || tabSignal.aborted) return
+    failedOwner.current = null
+    setPasswordPrompt('required')
+  }, [resource, tabSignal])
 
   useEffect(() => {
     if (!snapshot || displayOwner?.resource !== resource) return
@@ -144,6 +228,14 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
     const current = latestSnapshotRef.current
     if (current && readerIdentity(current) !== readerIdentity(document.snapshot)) return
     const fail = (failure: unknown) => {
+      const prompt = passwordError(failure)
+      if (prompt) {
+        setSnapshot(null)
+        setDisplayOwner(null)
+        clearNative()
+        setPasswordPrompt(prompt)
+        return
+      }
       failedOwner.current = { resource, revision: latest.current.content.revision }
       settleWaiters()
       latest.current.onError(failure)
@@ -259,5 +351,6 @@ export function useReaderDocument(options: ReaderDocumentOptions) {
   } }, [])
 
   const documentReady = useCallback(() => typeof readiness(resource, rendered.current) === 'number', [resource])
-  return { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, activePdf, documentReady, waitForReady }
+  return { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, passwordPrompt, unlocking, unlock,
+    cancelUnlock, retryUnlock, reopen: () => setOpenAttempt(value => value + 1), ownerSequence, activePdf, documentReady, waitForReady }
 }

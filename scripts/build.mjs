@@ -49,6 +49,11 @@ const hostBuild = await build({
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
 })
+const documentWorkerBuild = await build({
+  ...common, entryPoints: ['src/adapters/host/pdf-lib/document-worker.ts'], outfile: 'dist/pdf-document-worker.mjs',
+  platform: 'node', target: 'node22', format: 'esm',
+  banner: { js: 'import { createRequire as __pdfWorkerRequire } from "node:module";\nconst require = __pdfWorkerRequire(import.meta.url);' },
+})
 const nativeProviderBuild = await build({
   ...common, entryPoints: ['src/entrypoints/native-host.ts'], outfile: 'dist/native-provider.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
@@ -157,7 +162,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, enginesBuild, bridgeBuild, recoveryBuild]) {
+for (const result of [hostBuild, documentWorkerBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, enginesBuild, bridgeBuild, recoveryBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)

@@ -17,6 +17,8 @@ export type { EvidenceReferenceStore, PdfTextEvidence, PdfImageEvidence, SavedRe
 export { createImageEvidenceRegistry } from './image-reference.js'
 export { prepareTextSelectionEvidence } from './selection.js'
 export type { SelectionEvidenceRequest, SelectionFragment, SelectionTextReader } from './selection.js'
+export { revalidateTextSelectionEvidence, selectionRevalidationRequestSchema } from './selection-revalidation.js'
+export type { SelectionRevalidationRequest, SelectionRevalidationResult } from './selection-revalidation.js'
 export type { ImageEvidenceCapture, ImageAttachmentVerifier } from './image-reference.js'
 export { captureRenderedPageEvidence } from './image-capture.js'
 export { windowPageText, textWindow } from './text-window.js'

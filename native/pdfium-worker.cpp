@@ -7,6 +7,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include "fpdf_text.h"
 #include "fpdf_formfill.h"
 #include "fpdf_signature.h"
+#include "fpdf_transformpage.h"
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -411,12 +413,76 @@ json render_tile(Document& doc, const json& request, std::vector<unsigned char>&
   return {{"width",w},{"height",h},{"format","rgba"}};
 }
 
-enum class Command { unknown, hello, open, close, text, outline, destination, links, inspect, render };
+void validate_document_page_geometry(bool has_bounds, int rotation, float width, float height) {
+  if (!has_bounds)
+    throw Failure("pdf/native-document-info", "PDFium could not read a page's effective bounds");
+  if (rotation < 0 || rotation > 3)
+    throw Failure("pdf/native-document-info", "PDFium could not read a page rotation");
+  if (!std::isfinite(width) || width <= 0 || !std::isfinite(height) || height <= 0)
+    throw Failure("pdf/native-document-info", "PDFium could not read a page display size");
+}
+
+json document_info(Document& doc, const json& request) {
+  const int start = request.contains("offset") ? integer(request, "offset", 0, doc.count) : 0;
+  const int limit = request.contains("limit") ? integer(request, "limit", 1, 2048) : doc.count - start;
+  const int stop = std::min(doc.count, start + limit);
+  json pages = json::array();
+  for (int index = start; index < stop; index++) {
+    const auto page = doc.page(index);
+    FS_RECTF visible{};
+    const bool has_bounds = FPDF_GetPageBoundingBox(page, &visible);
+    const int rotation = FPDFPage_GetRotation(page);
+    const float rendered_width = FPDF_GetPageWidthF(page), rendered_height = FPDF_GetPageHeightF(page);
+    validate_document_page_geometry(has_bounds, rotation, rendered_width, rendered_height);
+    const json visible_box = json::array({visible.left, visible.bottom, visible.right, visible.top});
+    float media_left = 0, media_bottom = 0, media_right = 0, media_top = 0;
+    // These APIs inspect only the page dictionary, not inherited boxes on a
+    // /Pages ancestor. The effective bounding box is always the geometry used
+    // by PDFium for rasterization, so fall back to it rather than rejecting an
+    // otherwise renderable encrypted document.
+    const bool has_media = FPDFPage_GetMediaBox(page, &media_left, &media_bottom, &media_right, &media_top);
+    float crop_left = 0, crop_bottom = 0, crop_right = 0, crop_top = 0;
+    const bool has_crop = FPDFPage_GetCropBox(page, &crop_left, &crop_bottom, &crop_right, &crop_top);
+    pages.push_back({{"page", index + 1},
+      {"mediaBox", has_media ? json::array({media_left, media_bottom, media_right, media_top}) : visible_box},
+      {"cropBox", has_crop ? json::array({crop_left, crop_bottom, crop_right, crop_top})
+                             : visible_box},
+      {"visibleBox", visible_box},
+      {"boxSource", has_media && has_crop ? "page-dictionary" : "effective-bounds"},
+      {"rotation", rotation * 90},
+      {"renderedWidth", rendered_width}, {"renderedHeight", rendered_height},
+      // The pinned PDFium public API does not expose /UserUnit. Never claim 1
+      // for an encrypted page whose actual scale may differ.
+      {"userUnit", nullptr}});
+  }
+  json result = {{"securityRevision", FPDF_GetSecurityHandlerRevision(doc.handle)},
+    {"permissions", FPDF_GetDocPermissions(doc.handle)}, {"pages", std::move(pages)}};
+  const auto title_size = FPDF_GetMetaText(doc.handle, "Title", nullptr, 0);
+  if (title_size > 2 && title_size <= 16384 && title_size % 2 == 0) {
+    std::vector<uint16_t> units(title_size / 2);
+    if (FPDF_GetMetaText(doc.handle, "Title", units.data(), title_size) == title_size) {
+      std::string title;
+      for (size_t i = 0; i + 1 < units.size(); i++) {
+        uint32_t scalar = units[i];
+        if (scalar >= 0xd800 && scalar <= 0xdbff && i + 2 < units.size()
+            && units[i + 1] >= 0xdc00 && units[i + 1] <= 0xdfff) {
+          scalar = 0x10000 + ((scalar - 0xd800) << 10) + (units[++i] - 0xdc00);
+        }
+        title += utf8(scalar);
+      }
+      if (!title.empty()) result["title"] = std::move(title);
+    }
+  }
+  return result;
+}
+
+enum class Command { unknown, hello, open, close, security, documentInfo, text, outline, destination, links, inspect, render };
 
 Command command_for(const json& request) {
   const auto name = request.at("command").get<std::string>();
-  static constexpr std::array<std::pair<std::string_view, Command>, 9> commands{{
+  static constexpr std::array<std::pair<std::string_view, Command>, 11> commands{{
     {"hello", Command::hello}, {"open", Command::open}, {"close", Command::close},
+    {"security", Command::security}, {"documentInfo", Command::documentInfo},
     {"text", Command::text}, {"outline", Command::outline}, {"destination", Command::destination},
     {"links", Command::links}, {"inspect", Command::inspect}, {"render", Command::render},
   }};
@@ -429,15 +495,28 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
   case Command::unknown:
     break;
   case Command::hello:
-    return {{"protocolVersion", 1}, {"engine", "pdfium"}, {"build", "156.0.8076.0"}};
+    return {{"protocolVersion", 1}, {"engine", "pdfium"}, {"build", "156.0.8076.0"},
+      {"encryptedOpen", true}};
   case Command::open: {
     const auto id = id_for(request, "documentId");
     require(documents.size() < 32 || documents.count(id), "Native document limit reached");
     require(!payload.empty(), "PDF input bytes are required");
+    std::optional<std::string> password;
+    if (request.contains("password")) {
+      require(request["password"].is_string(), "PDF password must be a string");
+      password = request["password"].get<std::string>();
+      require(password->size() <= 4096 && password->find('\0') == std::string::npos, "Invalid PDF password");
+    }
     auto doc = std::make_unique<Document>();
     doc->bytes = std::move(payload);
-    doc->handle = FPDF_LoadMemDocument64(doc->bytes.data(), doc->bytes.size(), nullptr);
-    if (!doc->handle) throw Failure("pdf/native-open", "PDFium could not open the document (error " + std::to_string(FPDF_GetLastError()) + ")");
+    doc->handle = FPDF_LoadMemDocument64(doc->bytes.data(), doc->bytes.size(), password ? password->c_str() : nullptr);
+    if (!doc->handle) {
+      const auto error = FPDF_GetLastError();
+      if (error == FPDF_ERR_PASSWORD) throw Failure(password ? "pdf/password-incorrect" : "pdf/password-required",
+        password ? "PDF password is incorrect" : "PDF password is required");
+      if (error == FPDF_ERR_SECURITY) throw Failure("pdf/security-unsupported", "PDF security scheme is unsupported");
+      throw Failure("pdf/native-open", "PDFium could not open the document (error " + std::to_string(error) + ")");
+    }
     doc->count = FPDF_GetPageCount(doc->handle);
     require(doc->count > 0 && doc->count <= 100000, "Unsupported native page count");
     doc->formType = FPDF_GetFormType(doc->handle);
@@ -450,6 +529,13 @@ json run(const json& request, std::vector<unsigned char>& payload, std::vector<u
   case Command::close:
     documents.erase(id_for(request, "documentId"));
     return {{"closed", true}};
+  case Command::security: {
+    const auto& doc = doc_for(request);
+    return {{"securityRevision", FPDF_GetSecurityHandlerRevision(doc.handle)},
+      {"permissions", FPDF_GetDocPermissions(doc.handle)}};
+  }
+  case Command::documentInfo:
+    return document_info(doc_for(request), request);
   case Command::text:
     return text_content(doc_for(request), request);
   case Command::outline:

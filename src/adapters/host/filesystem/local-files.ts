@@ -14,6 +14,7 @@ interface FsProvider {
   contains(parent: FsTarget, child: FsTarget): boolean
   stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined>
   readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
+  readByteRange?(target: FsTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array>
 }
 export type PdfFilePolicy = Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot'>
 interface FileContext {
@@ -28,6 +29,7 @@ export interface PdfFileVersion {
   size: number
 }
 export interface PdfFileRead extends PdfFileVersion { bytes: Uint8Array }
+interface IndexSourceProof { stamp: string; digest: string; firstByte: number | undefined }
 export class PdfFileError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'PdfFileError' }
 }
@@ -49,6 +51,7 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
   }
   maxBytes()
   const queues = new Map<string, Promise<unknown>>()
+  const indexSourceProofs = new Map<string, IndexSourceProof>()
   const local = options.isLocalProvider
   const roots = options.writableRoots ?? defaultWritableRoots
 
@@ -94,6 +97,50 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
   async function read(agent: PdfAgent, path: string, signal?: AbortSignal): Promise<PdfFileRead> {
     const located = await locate(agent, path, signal)
     return snapshot(located.target, located.hostPath, signal)
+  }
+
+  /** Reuse a digest only after an exact, authorized read of this file version. */
+  async function readIndexSourceVersion(agent: PdfAgent, path: string, signal: AbortSignal): Promise<{ path: string; digest: string }> {
+    const { target, hostPath } = await locate(agent, path, signal)
+    const limit = maxBytes()
+    if (!ctx.fs.readByteRange) {
+      const source = await snapshot(target, hostPath, signal, limit)
+      return { path: source.path, digest: source.version }
+    }
+    const key = JSON.stringify([agent.session.id, pathKey(hostPath)])
+    const observe = async () => {
+      const info = await ctx.fs.stat(target, signal)
+      if (!info) fail('PDF_NOT_FOUND', 'PDF file does not exist')
+      const localInfo = await lstat(hostPath, { bigint: true })
+      signal.throwIfAborted()
+      if (info.type !== 'file' || !localInfo.isFile()) fail('PDF_NOT_REGULAR_FILE', 'PDF path must be a regular file')
+      if (localInfo.size > BigInt(limit) || (info.size ?? 0) > limit) fail('PDF_TOO_LARGE', 'PDF exceeds the configured byte limit')
+      const stamp = JSON.stringify([info.version, String(localInfo.dev), String(localInfo.ino), String(localInfo.size),
+        String(localInfo.mtimeNs), String(localInfo.ctimeNs)])
+      return { stamp, fsVersion: info.version, size: Number(localInfo.size),
+        cacheable: localInfo.ino > 0n && localInfo.ctimeNs > 0n }
+    }
+    const before = await observe()
+    const proof = indexSourceProofs.get(key)
+    if (before.cacheable && proof?.stamp === before.stamp) {
+      // A range read still exercises the caller's read access on a cache hit.
+      const first = await ctx.fs.readByteRange(target, { offset: 0, length: 1 }, signal)
+      if ((await observe()).stamp !== before.stamp) fail('PDF_STALE_VERSION', 'PDF changed while it was being checked')
+      if (first.length === Math.min(1, before.size) && first[0] === proof.firstByte) {
+        return { path: hostPath, digest: proof.digest }
+      }
+    }
+    const source = await snapshot(target, hostPath, signal, limit)
+    const after = await observe()
+    if (after.stamp !== before.stamp || after.fsVersion !== source.fsVersion || after.size !== source.size) {
+      fail('PDF_STALE_VERSION', 'PDF changed while it was being checked')
+    }
+    if (before.cacheable) {
+      indexSourceProofs.delete(key)
+      indexSourceProofs.set(key, { stamp: after.stamp, digest: source.version, firstByte: source.bytes[0] })
+      if (indexSourceProofs.size > 64) indexSourceProofs.delete(indexSourceProofs.keys().next().value!)
+    }
+    return { path: hostPath, digest: source.version }
   }
 
   async function writePermission(agent: PdfAgent, path: string, signal?: AbortSignal) {
@@ -189,7 +236,8 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
     queues.set(key, operation)
     try { return await operation } finally { if (queues.get(key) === operation) queues.delete(key) }
   }
-  return { read, save, resolvePath: async (agent: PdfAgent, path: string, signal?: AbortSignal) => (await locate(agent, path, signal)).hostPath }
+  return { read, readIndexSourceVersion, save,
+    resolvePath: async (agent: PdfAgent, path: string, signal?: AbortSignal) => (await locate(agent, path, signal)).hostPath }
 }
 
 /** Reject path-level symlinks/junctions and fingerprint every existing parent. */

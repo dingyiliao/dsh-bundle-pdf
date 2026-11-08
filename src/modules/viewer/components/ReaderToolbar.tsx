@@ -26,6 +26,7 @@ export interface ReaderToolbarState {
   busy: boolean
   editable: boolean
   readOnly?: boolean
+  protectedDocument?: boolean
   formPending?: boolean
   saveFeedback?: SaveFeedbackState | null
   ocrBusy: boolean
@@ -125,11 +126,11 @@ export function ReaderToolbar({ t, menuRef, state, actions, mode, explanation, s
           aria-pressed={mode?.kind === 'note'} disabled={!state.editable || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
           onClick={() => mode?.kind === 'note' ? mode.onCancel() : actions.onNote()}><ToolbarIcon name="note" /></button>
         <button type="button" className="dsh-pdf-tool-screenshot" aria-label={t('reader.regionScreenshot')} data-tooltip={t('reader.regionScreenshot')}
-          aria-pressed={mode?.kind === 'region'} disabled={!state.hasDocument || state.busy || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
+          aria-pressed={mode?.kind === 'region'} disabled={!state.hasDocument || state.protectedDocument || state.busy || state.screenshotPreparing || state.screenshotActive || state.explanationActive}
           onClick={() => mode?.kind === 'region' ? mode.onCancel() : actions.onScreenshot()}><ToolbarIcon name="crop" /></button>
         <span data-tooltip={ocrLabel} className="dsh-pdf-tool-availability">
           <button type="button" className="dsh-pdf-tool-ocr" aria-label={t('reader.ocrPage')} title={ocrLabel}
-            disabled={!state.hasDocument || state.ocrBusy || state.ocrAvailability?.status !== 'available'}
+            disabled={!state.hasDocument || state.protectedDocument || state.ocrBusy || state.ocrAvailability?.status !== 'available'}
             onClick={actions.onOcr}><ToolbarIcon name="ocr" /></button>
         </span>
       </div>

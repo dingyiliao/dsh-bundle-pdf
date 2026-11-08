@@ -631,9 +631,12 @@ test('diagnostics cannot copy or report late failures after attempt, view or can
 test('failed and cancelled cards retain last measured progress and visible failure codes', async () => {
   await withIndexing(async f => {
     for (const state of ['failed', 'cancelled'] as const) {
-      await f.publish({ ...running(), tasks: [{ ...running().tasks[0]!, state, failureCode: 'pdf/embedding-timeout' }] })
+      const task = running().tasks[0]!
+      await f.publish({ ...running(), tasks: [{ ...task, state, failureCode: 'pdf/embedding-timeout',
+        progress: { ...task.progress!, failedPages: 2 } }] })
       const card = f.container.querySelector('[data-status-id="indexing:a"]')!
       assert.match(card.textContent ?? '', /pdf\/embedding-timeout/)
+      assert.match(card.textContent ?? '', /Pages needing retry\s*2/)
       assert.equal(card.querySelector<HTMLProgressElement>('progress[aria-label="Read pages: alpha.pdf"]')?.value, 3)
       assert.equal(card.querySelector<HTMLProgressElement>('progress[aria-label="Indexed passages: alpha.pdf"]')?.value, 2)
       assert.match(card.textContent ?? '', /3\/10.*2\/6/)

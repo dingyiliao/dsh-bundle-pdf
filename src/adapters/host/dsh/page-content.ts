@@ -1,7 +1,7 @@
 import { measureIndexOperation } from '../../../modules/retrieval/index.js'
 import { createHash } from 'node:crypto'
 import { appendPageRepresentation, buildNativePageContent, createPageRepresentation, parsePageContent, fatalContentError,
-  ocrPageContentSpans, pageContentBlockId, PageRepresentationSchema, PAGE_CONTENT_VERSION,
+  ocrPageContentSpans, pageContentBlockId, pageContentCacheIdentity, PageRepresentationSchema, PAGE_CONTENT_VERSION,
   NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, type PageContent } from '../../../modules/document/index.js'
 import type { HostOcrService } from '../../../modules/ocr/index.js'
 import type { HostImageUnderstandingService } from '../../../modules/image-understanding/index.js'
@@ -12,7 +12,7 @@ import type { createPdfService } from '../pdfium/pdf-service.js'
 import type { RetrievalCache } from '../../../modules/retrieval/index.js'
 import { defaultSettings, type PdfSettings } from '../../../shared/contracts.js'
 import type { IndexingDiagnosticActivity } from './indexing-diagnostics.js'
-import { adoptLegacyPageContents, pageContentAggregateKey } from './page-content-legacy.js'
+import { adoptLegacyPageContents, canRebindLegacyModel, pageContentAggregateKey } from './page-content-legacy.js'
 
 const PIPELINE_VERSION = 'page-content-v3-shared-vision-clean-1024-description-v1'
 const LAYER_VERSION = 'page-content-layers-v1-clean-1024'
@@ -40,6 +40,7 @@ interface Selection {
   ocr: SelectedEngine
   image: SelectedEngine
 }
+interface CacheBinding { digest: string; acceptedPolicy: boolean }
 
 export interface PdfPageContent {
   prepare(sessionId: string, signal: AbortSignal, documentId?: string): Promise<void>
@@ -109,8 +110,22 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     selections.set(sessionId, { config: config.config, fingerprint, scan: config.scan, describe: config.describe, ocr, image })
     while (selections.size > 256) selections.delete(selections.keys().next().value!)
     if (documentId && options.cache?.scan) {
-      const before = workspaces.readSnapshot(sessionId, documentId), sourceDigest = pageContentDigestBytes(before.bytes)
-      if (before.document.indexContentDigest) {
+      const before = workspaces.readSnapshot(sessionId, documentId)
+      const { indexContentDigest, indexPageDigests } = before.document
+      const engine = (value: SelectedEngine) => ({ id: value.binding.engineId,
+        fingerprint: value.identity?.fingerprint, reusable: value.identity?.reusable,
+        explicitModel: !!(value.binding.config?.provider || value.binding.config?.model) })
+      const legacyOcr = engine(ocr), legacyImage = engine(image)
+      // A raw aggregate from a previous model cannot be found by its current
+      // runtime key. Only reusable follow-session defaults need that scan.
+      const hasDefaultModel = config.scan && canRebindLegacyModel('ocr', legacyOcr)
+        || config.describe && canRebindLegacyModel('image', legacyImage)
+      const hasPrivateEngine = config.scan && legacyOcr.reusable === false
+        || config.describe && legacyImage.reusable === false
+      const needsMigration = indexPageDigests === undefined ? !!indexContentDigest
+        : hasDefaultModel && !hasPrivateEngine && indexPageDigests.some(digest => digest !== null)
+      if (needsMigration) {
+        const sourceDigest = pageContentDigestBytes(before.bytes)
         const check = () => {
           active.throwIfAborted()
           const current = workspaces.readSnapshot(sessionId, documentId)
@@ -119,14 +134,11 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
             throw fail('PDF source or content engine changed during legacy index migration.')
           }
         }
-        const engine = (value: SelectedEngine) => ({ id: value.binding.engineId,
-          fingerprint: value.identity?.fingerprint, reusable: value.identity?.reusable,
-          explicitModel: !!(value.binding.config?.provider || value.binding.config?.model) })
         check()
         await adoptLegacyPageContents(options.cache, { pipeline: PIPELINE_VERSION, path: before.path, sourceDigest,
-          indexContentDigest: before.document.indexContentDigest, pageRects: before.document.pages.map(page => page.cropBox),
+          indexContentDigest, indexPageDigests, pageRects: before.document.pages.map(page => page.cropBox),
           extractionIdentity: fingerprint, indexIdentity: indexIdentity(sessionId), scan: config.scan, describe: config.describe,
-          ocr: engine(ocr), image: engine(image) }, check)
+          ocr: legacyOcr, image: legacyImage }, check)
       }
     }
   }
@@ -181,9 +193,21 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     const before = workspaces.readSnapshot(sessionId, documentId)
     const sourceDigest = pageContentDigestBytes(before.bytes)
     const indexContentDigest = before.document.indexContentDigest
-    const contentDigest = indexContentDigest ?? sourceDigest
     const geometry = before.document.pages[page - 1]
     if (!geometry || page < 1 || !Number.isSafeInteger(page)) throw new Error('PDF content page is outside the document.')
+    const pageDigests = before.document.indexPageDigests
+    const reportedPageDigest = pageDigests?.[page - 1]
+    const indexPageDigest = pageDigests === undefined ? undefined
+      : reportedPageDigest && /^sha256:[a-f0-9]{64}$/.test(reportedPageDigest) ? reportedPageDigest : null
+    const sourceIdentity = { sourceDigest, ...(indexContentDigest ? { indexContentDigest } : {}),
+      ...(indexPageDigest === undefined ? {} : { indexPageDigest }) }
+    const primaryBinding = { digest: pageContentCacheIdentity(sourceIdentity),
+      acceptedPolicy: indexPageDigest !== null && (indexPageDigest !== undefined || indexContentDigest !== undefined) }
+    const bindings: CacheBinding[] = [primaryBinding]
+    if (typeof indexPageDigest === 'string') {
+      if (indexContentDigest && indexContentDigest !== sourceDigest) bindings.push({ digest: indexContentDigest, acceptedPolicy: true })
+      bindings.push({ digest: sourceDigest, acceptedPolicy: false })
+    }
     const activity = (layer: IndexingDiagnosticActivity['layer'], event: IndexingDiagnosticActivity['event'], error?: unknown) => {
       reportActivity(sessionId, documentId, { page, layer, event, ...(error === undefined ? {} : { error }) })
     }
@@ -204,10 +228,12 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       }
     }
     check()
-    const aggregateIdentity = indexContentDigest ? indexIdentity(sessionId) : selection.fingerprint
-    const key = pageContentAggregateKey(PIPELINE_VERSION, before.path, contentDigest, page, aggregateIdentity)
-    const layerKey = (kind: 'native' | 'ocr' | 'image') => `pagecontent_${kind}_${hash([
-      LAYER_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, before.path, contentDigest, page, geometry,
+    const acceptedIdentity = primaryBinding.acceptedPolicy ? indexIdentity(sessionId) : selection.fingerprint
+    const aggregateKey = (binding: CacheBinding) => pageContentAggregateKey(PIPELINE_VERSION, before.path, binding.digest, page,
+      binding.acceptedPolicy ? acceptedIdentity : selection.fingerprint)
+    const key = aggregateKey(primaryBinding)
+    const layerKey = (kind: 'native' | 'ocr' | 'image', binding = primaryBinding) => `pagecontent_${kind}_${hash([
+      LAYER_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, before.path, binding.digest, page, geometry,
       ...(kind === 'native' ? [] : [selection[kind].identity?.fingerprint,
         kind === 'image' ? DESCRIPTION_PROMPT : 'ocr-auto-languages-v1']),
     ])}`
@@ -222,48 +248,69 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       check()
       return value
     }
-    // Stable content keys can survive a different serialization of the same
-    // pages. Rebind only source provenance; representation IDs and pixels stay
-    // owned by the verified content identity, never by the current draft ID.
-    const currentContent = (cached: PageContent | undefined, acceptedPolicy = false): PageContent | undefined => {
-      if (!cached || (cached.indexContentDigest ?? cached.sourceDigest) !== contentDigest) return undefined
-      const extractionIdentity = acceptedPolicy && indexContentDigest ? selection.fingerprint : cached.extractionIdentity
-      return cached.sourceDigest === sourceDigest && cached.extractionIdentity === extractionIdentity
-        ? cached : { ...cached, sourceDigest, extractionIdentity }
-    }
-    {
-      let cached: PageContent | undefined
-      try { cached = currentContent(parsePageContent(await options.cache?.get(key)), true) } catch { /* Derived storage is optional. */ }
-      check()
-      if (cached?.sourceDigest === sourceDigest && cached.page === page && cached.extractionIdentity === selection.fingerprint && !cached.failure) {
-        if (cached.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) await verify(sessionId, active)
-        check()
-        // Older aggregate records can seed the independent layers lazily.
-        // This is disposable derived data, never another document authority.
-        if (cached.blocks.some(block => block.representations.some(rep => rep.kind === 'native-text'
-          && rep.producer.version !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION))) {
-          await save(layerKey('native'), nativeLayer(cached))
-          for (const representation of cached.blocks.flatMap(block => block.representations)) {
-            if (representation.kind === 'native-text') continue
-            const kind = representation.kind === 'ocr-text' ? 'ocr' : 'image'
-            if (representation.producer.configurationIdentity === selection[kind].identity?.fingerprint) {
-              await save(layerKey(kind), representation)
-            }
-          }
-        }
-        return cached
+    const lookup = async <T>(keyFor: (binding: CacheBinding) => string,
+      decode: (value: unknown, binding: CacheBinding) => T | undefined) => {
+      for (const binding of bindings) {
+        const value = decode(await get(keyFor(binding)), binding)
+        if (value !== undefined) return { value, binding }
       }
     }
-    let native = currentContent(parsePageContent(await get(layerKey('native'))))
-    if (native?.sourceDigest !== sourceDigest || native.page !== page
-      || native.extractionIdentity !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION || native.failure
-      || native.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) native = undefined
+    // Rebind only after checking the current source and the original cache
+    // attestation. Producer provenance, pixels, and representation IDs stay
+    // with the original artifact even when its block acquires a page key.
+    const currentContent = (cached: PageContent | undefined, binding: CacheBinding,
+      extractionIdentity: string): PageContent | undefined => {
+      if (!cached || cached.page !== page || cached.failure || pageContentCacheIdentity(cached) !== binding.digest
+        || !binding.acceptedPolicy && cached.sourceDigest !== sourceDigest
+        || !geometry.cropBox.every((coordinate, index) => cached.pageRect[index] === coordinate)) return undefined
+      if (cached.sourceDigest === sourceDigest && cached.indexContentDigest === indexContentDigest
+        && cached.indexPageDigest === indexPageDigest && cached.extractionIdentity === extractionIdentity) return cached
+      const { indexContentDigest: _documentDigest, indexPageDigest: _pageDigest, ...rest } = cached
+      const rebound = { ...rest, ...sourceIdentity, extractionIdentity }
+      if (binding === primaryBinding) return rebound
+      const blockIdentity = { ...rebound, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION }
+      return { ...rebound, blocks: rebound.blocks.map(block => ({ ...block,
+        id: pageContentBlockId(blockIdentity, block.kind === 'visual-region' ? 'full-page-visual'
+          : block.kind === 'text' ? 'native-text' : block.id),
+      })) }
+    }
+    const aggregate = await lookup(aggregateKey, (value, binding) => {
+      const cached = parsePageContent(value)
+      if (!binding.acceptedPolicy && cached?.extractionIdentity !== selection.fingerprint) return
+      return currentContent(cached, binding, selection.fingerprint)
+    })
+    if (aggregate) {
+      const cached = aggregate.value
+      if (cached.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) await verify(sessionId, active)
+      check()
+      // Older aggregate records seed independent layers only when read.
+      if (aggregate.binding !== primaryBinding || cached.blocks.some(block => block.representations.some(rep => rep.kind === 'native-text'
+        && rep.producer.version !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION))) {
+        await save(layerKey('native'), nativeLayer(cached))
+        for (const representation of cached.blocks.flatMap(block => block.representations)) {
+          if (representation.kind === 'native-text') continue
+          const kind = representation.kind === 'ocr-text' ? 'ocr' : 'image'
+          if (representation.producer.configurationIdentity === selection[kind].identity?.fingerprint) {
+            await save(layerKey(kind), representation)
+          }
+        }
+      }
+      if (aggregate.binding !== primaryBinding) await save(key, cached)
+      return cached
+    }
+    const storedNative = await lookup(binding => layerKey('native', binding), (value, binding) => {
+      const cached = parsePageContent(value)
+      if (!cached || cached.extractionIdentity !== NATIVE_PAGE_CONTENT_EXTRACTION_VERSION
+        || cached.blocks.some(block => block.representations.some(rep => rep.kind !== 'native-text'))) return
+      return currentContent(cached, binding, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION)
+    })
+    let native = storedNative?.value
+    if (storedNative && storedNative.binding !== primaryBinding) await save(layerKey('native'), storedNative.value)
     if (!native) {
       native = await observe('native', async () => {
         const extracted = await pages.readPageText(sessionId, documentId, page, active, { recover: false })
         check()
-        const value = buildNativePageContent({ sourceDigest, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
-          ...(indexContentDigest ? { indexContentDigest } : {}),
+        const value = buildNativePageContent({ ...sourceIdentity, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
           pageRect: [...geometry.cropBox], content: extracted.content })
         await save(layerKey('native'), value)
         return value
@@ -303,12 +350,16 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       const restore = async (kind: 'ocr' | 'image', blockId: string): Promise<boolean> => {
         const selected = selection[kind].identity
         if (!selected) return false
-        const parsed = PageRepresentationSchema.safeParse(await get(layerKey(kind)))
-        if (!parsed.success || parsed.data.kind !== (kind === 'ocr' ? 'ocr-text' : 'image-description')
-          || parsed.data.producer.configurationIdentity !== selected.fingerprint) return false
+        const cached = await lookup(binding => layerKey(kind, binding), value => {
+          const parsed = PageRepresentationSchema.safeParse(value)
+          if (parsed.success && parsed.data.kind === (kind === 'ocr' ? 'ocr-text' : 'image-description')
+            && parsed.data.producer.configurationIdentity === selected.fingerprint) return parsed.data
+        })
+        if (!cached) return false
         await verify(sessionId, active)
         check()
-        content = appendPageRepresentation(content, blockId, parsed.data)
+        content = appendPageRepresentation(content, blockId, cached.value)
+        if (cached.binding !== primaryBinding) await save(layerKey(kind), cached.value)
         return true
       }
       if (needsOcr) {

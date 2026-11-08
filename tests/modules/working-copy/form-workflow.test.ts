@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { pdfLibDocumentAdapter } from '../../../src/adapters/host/pdf-lib/document-adapter.js'
+import { createPdfLibDocumentAdapter } from '../../../src/adapters/host/pdf-lib/document-adapter.js'
 import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.js'
 import { digestPdfBytes } from '../../../src/modules/document/index.js'
 import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.js'
@@ -32,7 +32,8 @@ test('form edits use one durable draft, undo/redo, and the ordinary safe-save tr
       return { path, version: digestPdfBytes(bytes), fsVersion: 'fs-2', size: bytes.length }
     },
   }
-  const service = createWorkingCopyService(files, drafts, pdfLibDocumentAdapter)
+  const adapter = createPdfLibDocumentAdapter()
+  const service = createWorkingCopyService(files, drafts, adapter)
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('document' in opened)
@@ -60,5 +61,8 @@ test('form edits use one durable draft, undo/redo, and the ordinary safe-save tr
     assert.equal(saved.dirty, false)
     assert.equal((await PDFDocument.load(current)).getForm().getTextField('applicant').getText(), '最终值')
     assert.equal(records.size, 0)
-  } finally { await service.dispose() }
+  } finally {
+    await service.dispose()
+    await adapter.dispose()
+  }
 })

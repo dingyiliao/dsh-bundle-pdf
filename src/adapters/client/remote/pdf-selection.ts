@@ -1,28 +1,8 @@
-import { z } from 'zod'
 import { responseSchema } from '../../../contracts/rpc/index.js'
+import { selectionPrepareRequestSchema, selectionPrepareResultSchema,
+  selectionRevalidationRequestSchema, selectionRevalidationResultSchema } from '../../../contracts/selection.js'
 import type { PdfTextSelectionEvidenceApi } from '../../../modules/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
-
-const identity = z.string().min(1).max(512)
-const coordinate = z.number().finite()
-const rect = z.tuple([coordinate, coordinate, coordinate, coordinate])
-const requestSchema = z.object({
-  sessionId: identity, documentId: identity,
-  expectedRevision: z.number().int().nonnegative(), expectedContentVersion: identity,
-  quote: z.string().min(1).max(12_000),
-  fragments: z.array(z.object({ page: z.number().int().min(1).max(100_000), rect,
-    quadPoints: z.array(coordinate).min(8).max(1024) }).strict()).min(1).max(10),
-}).strict()
-const resultSchema = z.object({
-  text: z.string().min(1).max(8_000), documentId: identity,
-  sourcePath: z.string().min(1).max(32_768),
-  sourceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  sourceVersion: z.string().min(1).max(4096), contentVersion: identity,
-  revision: z.number().int().nonnegative(),
-  excerpts: z.array(z.object({ page: z.number().int().min(1).max(100_000),
-    text: z.string().min(1).max(8_000), refId: z.string().regex(/^pdfref_[0-9a-f-]{36}$/),
-    startUtf16: z.number().int().nonnegative(), endUtf16: z.number().int().positive() }).strict()).min(1).max(10),
-}).strict()
 
 /** The Host, not the browser selection, determines the text admitted as evidence. */
 export function createTextSelectionEvidenceApi(connection: PdfConnection, lifetime: AbortSignal): PdfTextSelectionEvidenceApi {
@@ -30,16 +10,37 @@ export function createTextSelectionEvidenceApi(connection: PdfConnection, lifeti
     async prepare(input, signal) {
       const combined = signal ? AbortSignal.any([signal, lifetime]) : lifetime
       combined.throwIfAborted()
-      const request = requestSchema.parse(input)
+      const request = selectionPrepareRequestSchema.parse(input)
       const response = responseSchema.parse(await connection.rpc.call('/api', 'pdf.selection', request, combined))
       combined.throwIfAborted()
       if (!response.ok) throw Object.assign(new Error(response.error.message), { code: response.error.code })
-      const result = resultSchema.parse(response.value)
+      const result = selectionPrepareResultSchema.parse(response.value)
       if (result.documentId !== request.documentId || result.contentVersion !== request.expectedContentVersion
         || result.revision !== request.expectedRevision
         || result.excerpts.some(excerpt => !request.fragments.some(fragment => fragment.page === excerpt.page)
           || excerpt.endUtf16 <= excerpt.startUtf16)) {
         throw new Error('Host text selection identity does not match the requested PDF selection')
+      }
+      return result
+    },
+    async revalidate(input, signal) {
+      const combined = signal ? AbortSignal.any([signal, lifetime]) : lifetime
+      combined.throwIfAborted()
+      const request = selectionRevalidationRequestSchema.parse({ ...input, action: 'revalidate' })
+      const response = responseSchema.parse(await connection.rpc.call('/api', 'pdf.selection', request, combined))
+      combined.throwIfAborted()
+      if (!response.ok) throw Object.assign(new Error(response.error.message), { code: response.error.code })
+      const result = selectionRevalidationResultSchema.parse(response.value)
+      if (result.documentId !== request.documentId || result.contentVersion !== request.expectedContentVersion
+        || result.revision !== request.expectedRevision || result.selections.length !== request.selections.length
+        || result.selections.some((selection, index) => {
+          const expected = request.selections[index]!
+          return selection.id !== expected.id || selection.evidenceRefs.length !== expected.refIds.length
+            || selection.evidenceRefs.some((ref, part) => ref !== expected.refIds[part])
+            || selection.fragments.length !== expected.refIds.length
+            || selection.fragments.some((fragment, part) => part > 0 && fragment.page <= selection.fragments[part - 1]!.page)
+        })) {
+        throw new Error('Host text revalidation does not match the requested selections or working revision')
       }
       return result
     },

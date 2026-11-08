@@ -45,8 +45,8 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     content?: PdfPageContent
     /** Receives Host-only failures before the shared retrieval privacy boundary. */
     onFailure?(sessionId: string, documentId: string, error: unknown): void
-    /** Resolve the caller's session policy and re-read the actual source, including ready-cache hits. */
-    freshSource?(sessionId: string, documentId: string, signal: AbortSignal): Promise<void>
+    /** Resolve the caller's session policy and verify the current source, including ready-cache hits. */
+    freshSource?(sessionId: string, documentId: string, signal: AbortSignal, purpose?: 'indexing'): Promise<void>
     retain?: (sessionId: string, documentId: string, signal: AbortSignal) => Promise<() => void>
   } = {}) {
   const digests = new WeakMap<Uint8Array, string>()
@@ -60,6 +60,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     if (current.conflict) throw Object.assign(new Error('PDF source has changed; resolve the conflict before retrieval.'), { code: 'pdf/stale-reader' })
     return { id: current.id, path: current.path, sourceDigest: hash(current.bytes),
       ...(current.document.indexContentDigest ? { indexContentDigest: current.document.indexContentDigest } : {}),
+      ...(current.document.indexPageDigests ? { indexPageDigests: current.document.indexPageDigests } : {}),
       contentVersion: current.contentVersion, pageCount: current.document.pageCount }
   }
   function reportFailure(sessionId: string, documentId: string, error: unknown): void {
@@ -165,22 +166,22 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     return { status: 'unavailable' as const, reason: 'Embedding model changed repeatedly during the availability check.' }
   }
   async function prepare(sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal,
-    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean): Promise<boolean> {
+    onProgress: ((progress: RetrievalProgress) => void) | undefined, slice: boolean, occurrence?: object): Promise<boolean> {
     // Each quantum reauthorizes its caller and owns a lease only until its work
     // drains. Yielding does not retain a document or authorize the next turn.
     const release = await options.retain?.(sessionId, input.documentId, signal)
     try {
       signal.throwIfAborted()
-      await options.freshSource?.(sessionId, input.documentId, signal)
+      await options.freshSource?.(sessionId, input.documentId, signal, 'indexing')
       const ready = await availability(sessionId, signal, input.documentId)
       if (ready.status !== 'available') {
         throw Object.assign(new Error(ready.reason), { code: 'pdf/retrieval-engine-unavailable' })
       }
       await options.content?.prepare(sessionId, signal, input.documentId)
-      const complete = slice ? await service.prepareSlice(sessionId, input, signal, onProgress)
+      const complete = slice ? await service.prepareSlice(sessionId, input, signal, onProgress, occurrence)
         : await service.prepare(sessionId, input, signal, onProgress).then(() => true)
       await options.content?.verify(sessionId, signal)
-      await options.freshSource?.(sessionId, input.documentId, signal)
+      await options.freshSource?.(sessionId, input.documentId, signal, 'indexing')
       return complete
     } finally { release?.() }
   }
@@ -189,8 +190,9 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
     async prepare(sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal, onProgress?: (progress: RetrievalProgress) => void) {
       await prepare(sessionId, input, signal, onProgress, false)
     },
-    prepareSlice: (sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal, onProgress?: (progress: RetrievalProgress) => void) =>
-      prepare(sessionId, input, signal, onProgress, true),
+    prepareSlice: (sessionId: string, input: RetrievalPrepareInput, signal: AbortSignal,
+      onProgress?: (progress: RetrievalProgress) => void, occurrence?: object) =>
+      prepare(sessionId, input, signal, onProgress, true, occurrence),
     async search(sessionId: string, input: RetrievalInput, signal: AbortSignal) {
       signal.throwIfAborted()
       // Even a ready shared index requires the current caller's authority
@@ -287,7 +289,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
             'Ranking gives leads, not verified answers or proof of absence. Read context and inspect complex pages before drawing conclusions.',
             'Text references are checked against the original page; annotation and exact navigation still validate native glyph geometry and may reject ambiguous layouts.',
             ...(result.nextCursor ? ['The requested scope is not fully indexed. Continue pdf_semantic_search with only the returned searchId while hasMore is true.']
-              : result.status === 'incomplete' ? ['Some page content could not be indexed. These are ranked available representations, not complete coverage. Rebuild the document index to retry failed enrichment.'] : []),
+              : result.status === 'incomplete' ? ['Some page content could not be indexed. These are ranked available representations, not complete coverage. Resume document indexing to retry incomplete pages.'] : []),
           ] }
       } finally { release?.() }
     },

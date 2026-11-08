@@ -42,6 +42,12 @@ export interface MixedExplanationPromptOptions {
   signal?: AbortSignal
 }
 
+const lineBreak = /\r\n|[\r\n\u2028\u2029]/g
+
+function quoteSource(text: string): string {
+  return `│ ${text.replace(lineBreak, '\n│ ')}`
+}
+
 /**
  * Build one user turn in excerpt order. Image routing is decided by the Host:
  * direct images reach only a visual Session using Host-verified bytes, while a
@@ -82,22 +88,26 @@ export async function buildMixedExplanationPrompt(
 
   // This source boundary stays outside the customizable template.
   const parts: PromptContentPart[] = [{ type: 'text', text: [before,
-    t('reader.explain.regionSourceWarning')].filter(Boolean).join('\n\n') }]
+    t('reader.explain.promptSourceWarning')].filter(Boolean).join('\n\n') }]
+  // DSH joins text parts verbatim, including those on either side of images.
+  const appendSection = (lines: string[]) => {
+    parts.push({ type: 'text', text: `\n\n${lines.filter(Boolean).join('\n')}` })
+  }
+  const evidenceLine = (refs: readonly string[]) => refs.length
+    ? `${t('reader.explain.promptEvidence')}: ${refs.join(', ')}` : ''
 
   for (const [index, excerpt] of excerpts.entries()) {
     options.signal?.throwIfAborted()
     const question = excerpt.question.trim()
     if (!question) throw new Error('Cannot explain a PDF excerpt without a question')
-    const location = `${t(excerpt.kind === 'text' ? 'reader.explain.excerpt' : 'reader.explain.region')} ${index + 1}`
-      + ` (${t('reader.explain.pages')}: ${explanationPages(excerpt).join(', ')})`
-    const questionLine = `${t(excerpt.kind === 'text'
-      ? 'reader.explain.itemPromptQuestion' : 'reader.explain.regionQuestion')}: ${JSON.stringify(question)}`
+    const pages = explanationPages(excerpt)
+    const location = `${t(pages.length === 1 ? 'reader.explain.page' : 'reader.explain.pages')}: ${pages.join(', ')}`
+      + (excerpt.kind === 'region' ? ` · ${t('reader.explain.region')}` : '')
+    const questionLine = `${index + 1}. ${question.replace(lineBreak, '\n   ')}`
 
     if (excerpt.kind === 'text') {
-      const refs = excerpt.evidenceRefs?.length
-        ? `\nHost-verified PDF text evidence references: ${JSON.stringify(excerpt.evidenceRefs)}.` : ''
-      parts.push({ type: 'text', text: `${location}:\n${guidance.text ? `${guidance.text}\n` : ''}`
-        + `${JSON.stringify(excerpt.text)}${refs}\n${questionLine}` })
+      appendSection([questionLine, location, evidenceLine(excerpt.evidenceRefs ?? []), guidance.text,
+        t('reader.explain.promptSourceText'), quoteSource(excerpt.text)])
       continue
     }
 
@@ -110,28 +120,25 @@ export async function buildMixedExplanationPrompt(
     if (!prepared.evidence.refId || prepared.evidence.documentId !== options.documentId) {
       throw new Error('PDF image reference does not belong to this document')
     }
-    const evidenceLine = `PDF image evidence reference: ${JSON.stringify(prepared.evidence.refId)}.`
-      + ' The pdf_evidence_read tool can revalidate this reference against the current document.'
+    const header = [questionLine, location, evidenceLine([prepared.evidence.refId]), guidance.image]
 
     if (prepared.kind === 'direct-image') {
       if (prepared.image.mediaType !== 'image/png') throw new Error('PDF image reference is not a PNG')
       const data = encodeExplanationImageBytes(prepared.image.data, options.signal)
-      parts.push({ type: 'text', text: `${location}:\n${guidance.image ? `${guidance.image}\n` : ''}${questionLine}\n`
-        + `${evidenceLine}\n${t('reader.explain.regionSourceWarning')}` })
+      appendSection(header)
       parts.push({ type: 'image', mediaType: 'image/png', data })
       continue
     }
 
     const derived = prepared.text.trim()
     if (!derived) throw new Error('The image backend returned no usable text')
-    const source = t('reader.explain.derivedImageWarning')
-    parts.push({ type: 'text', text: `${location}:\n${guidance.image ? `${guidance.image}\n` : ''}${questionLine}\n${evidenceLine}\n`
-      + `${t('reader.explain.derivedSource')} (${JSON.stringify(prepared.provenance.backendId)}, ${prepared.provenance.mode}`
-      + `${prepared.provenance.model ? `, model ${JSON.stringify(prepared.provenance.model)}` : ''}): ${source}\n`
-      + `${prepared.limitations ? `${t('reader.explain.derivedLimitation')}: ${JSON.stringify(prepared.limitations)}\n` : ''}`
-      + `${t('reader.explain.regionSourceWarning')} ${JSON.stringify(derived)}` })
+    const engine = [prepared.provenance.backendId, prepared.provenance.model]
+      .filter(Boolean).map(value => JSON.stringify(value)).join(' / ')
+    appendSection([...header, `${t('reader.explain.derivedSource')} (${engine})`,
+      t('reader.explain.derivedImageWarning'), quoteSource(derived),
+      prepared.limitations ? `${t('reader.explain.derivedLimitation')}\n${quoteSource(prepared.limitations)}` : ''])
   }
 
-  if (after) parts.push({ type: 'text', text: after })
+  if (after) appendSection([after])
   return parts
 }

@@ -1,8 +1,10 @@
 import { measureIndexOperation, recordIndexPerformance } from './performance.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { fatalContentError } from '../document/index.js'
-import { cacheDerived, digest, encodeCachedVector, pageCacheKey, readCachedPage, readCachedVectorRecord, retrievalCacheKey, validVector, validateRetrievalPage, RETRIEVAL_EXTRACTION_VERSION } from './cache.js'
+import { fatalContentError, pageContentCacheIdentity } from '../document/index.js'
+import { cacheDerived, digest, encodeCachedVector, pageCacheKey, pageCacheSourceKey, readCachedPage,
+  readCachedVectorRecord, readPageCacheSource, retrievalCacheKey, validVector, validateRetrievalPage,
+  MAX_PAGE_CACHE_SOURCE_PAGES, RETRIEVAL_EXTRACTION_VERSION, type PageCacheSource } from './cache.js'
 import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION, tokenizeRetrievalText, type RetrievalChunk } from './text.js'
 import { collapseRepresentations, hybridCandidates } from './ranking.js'
 import { encodeRetrievalCursor, parseRetrievalCursor, retrievalPrepareSchema, retrievalQuerySchema,
@@ -23,10 +25,18 @@ interface Index {
   failures: Map<number, { page: number; attempts: number; code: string }>
   bytes: number; lastUsed: number; users: number
   phase: NonNullable<RetrievalProgress['phase']>; computedChunks: number
+  previousPageCacheSource?: PageCacheSource; pageCacheSourceRecorded?: boolean
   progress: Set<() => void>
   release(): void
 }
-interface Job { controller: AbortController; promise: Promise<void>; subscribers: Set<RetrievalBinding> }
+interface PreparationPass {
+  key: string; generation: string; sessionId: string; documentId: string
+  nextPage: number; nextRetryPage: number
+}
+interface Job {
+  controller: AbortController; promise: Promise<void>; subscribers: Set<RetrievalBinding>
+  retrying: boolean; pass?: PreparationPass
+}
 interface SessionLifetime { valid: boolean; id: string }
 const fail = (code: string, message: string) => Object.assign(new Error(message), { code })
 const cancelled = () => fail('pdf/cancelled', 'PDF retrieval was cancelled')
@@ -34,9 +44,12 @@ const stale = (message = 'PDF search snapshot is no longer current; start a new 
   fail('pdf/stale-reader', message)
 const codeOf = (error: unknown): string => error && typeof error === 'object' && 'code' in error
   && typeof error.code === 'string' ? error.code.slice(0, 100) : 'pdf/retrieval-extraction-failed'
+const isContentDigest = (value: unknown): value is string => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
+const samePageDigests = (a: RetrievalDocument['indexPageDigests'], b: RetrievalDocument['indexPageDigests']) =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((value, index) => value === b[index]))
 const sameDocument = (a: RetrievalDocument, b: RetrievalDocument) => a.id === b.id && a.path === b.path
   && a.sourceDigest === b.sourceDigest && a.contentVersion === b.contentVersion && a.pageCount === b.pageCount
-  && a.indexContentDigest === b.indexContentDigest
+  && a.indexContentDigest === b.indexContentDigest && samePageDigests(a.indexPageDigests, b.indexPageDigests)
 const indexContentDigest = (document: RetrievalDocument) => document.indexContentDigest ?? document.sourceDigest
 const providerIdentity = (provider: RetrievalEmbedding | undefined) => provider
   ? JSON.stringify([provider.fingerprint, provider.generation ?? '', provider.configurationIdentity ?? '',
@@ -55,6 +68,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   const jobs = new Map<string, Job>()
   const queries = new Map<AbortController, string>()
   const preparations = new Map<AbortController, string>()
+  const preparationPasses = new WeakMap<object, PreparationPass>()
   const pendingQueries = new Set<Promise<void>>()
   const sessions = new Map<string, SessionLifetime>()
   // Weak result fences retain identity only, not the heavy index. Adapters can
@@ -125,10 +139,15 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     const value = ports.documents.snapshot(sessionId, documentId)
     const document: RetrievalDocument = { id: value.id, path: value.path, sourceDigest: value.sourceDigest,
       contentVersion: value.contentVersion, pageCount: value.pageCount,
-      ...(value.indexContentDigest === undefined ? {} : { indexContentDigest: value.indexContentDigest }) }
-    if (document.indexContentDigest !== undefined && (typeof document.indexContentDigest !== 'string'
-      || !/^sha256:[a-f0-9]{64}$/.test(document.indexContentDigest))) {
+      ...(value.indexContentDigest === undefined ? {} : { indexContentDigest: value.indexContentDigest }),
+      ...(value.indexPageDigests === undefined ? {} : { indexPageDigests: value.indexPageDigests }) }
+    if (document.indexContentDigest !== undefined && !isContentDigest(document.indexContentDigest)) {
       throw fail('pdf/retrieval-extraction-failed', 'PDF content identity is invalid')
+    }
+    const pageDigests = document.indexPageDigests
+    if (pageDigests !== undefined && (!Array.isArray(pageDigests) || pageDigests.length !== document.pageCount
+      || Array.from(pageDigests).some(value => value === null ? document.indexContentDigest !== undefined : !isContentDigest(value)))) {
+      throw fail('pdf/retrieval-extraction-failed', 'PDF page content identities are invalid')
     }
     const extractionIdentity = ports.pages.identity?.(sessionId) ?? ''
     const indexExtractionIdentity = ports.pages.indexIdentity?.(sessionId) ?? extractionIdentity
@@ -161,7 +180,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const computedChunks = index.computedChunks - computedAtStart
       const progress: RetrievalProgress = { indexedPages: index.pages.size, totalPages: index.toPage - index.fromPage + 1,
         embeddedChunks: index.embeddedCount, totalChunks: index.chunkCount,
-        phase: complete ? 'ready' : index.phase, reusedChunks: Math.max(0, index.embeddedCount - computedChunks), computedChunks }
+        phase: complete ? 'ready' : index.phase, reusedChunks: Math.max(0, index.embeddedCount - computedChunks), computedChunks,
+        ...(index.failures.size ? { failedPages: index.failures.size } : {}) }
       const signature = JSON.stringify(progress)
       if (signature === last) return
       last = signature
@@ -232,14 +252,39 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       await writeMany(buildIndexPageEntries(index.persistentKey, index.generation, stored.record, stored.chunks, stored.location).entries)
       source.check(); break
     }
-    recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: !!stored && !stored.record.failure })
     if (stored && !stored.record.failure) {
+      recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: true })
       summarize(index, stored.record, stored.chunks, stored.vectors.size)
       return
     }
-    const key = pageCacheKey(source.current().document.path, index.contentDigest, page, index.extractionIdentity)
+    const document = source.current().document
+    const pageDigest = document.indexPageDigests?.[page - 1]
+    const cacheKey = (content: string) => pageCacheKey(document.path, content, page, index.extractionIdentity)
+    const key = cacheKey(pageContentCacheIdentity({ ...document, indexPageDigest: pageDigest }))
     let cached = stored?.record.failure ? undefined : await readCachedPage(ports.cache, key)
     source.check()
+    if (!cached && pageDigest && !stored?.record.failure) {
+      // Older installations keyed pages by the exact whole source or its
+      // verified complete body. Both attest this page of the current document.
+      const keys = new Set([index.contentDigest, document.sourceDigest])
+      const previous = index.previousPageCacheSource
+      if (previous?.indexPageDigests[page - 1] === pageDigest) {
+        if (previous.indexContentDigest) keys.add(previous.indexContentDigest)
+        keys.add(previous.sourceDigest)
+      }
+      for (const legacy of keys) {
+        try { cached = await readCachedPage(ports.cache, cacheKey(legacy)) }
+        catch (error) {
+          if (!['pdf/index-storage-corrupt', 'pdf/index-storage-missing'].includes(codeOf(error))) throw error
+        }
+        source.check()
+        if (!cached) continue
+        await cacheDerived(ports.cache, key, cached)
+        source.check()
+        break
+      }
+    }
+    recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: !!cached })
     let pageFailure: z.infer<typeof pageFailureSchema> | undefined
     if (!cached) {
       phase(index, 'extracting')
@@ -392,41 +437,57 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     await flush()
   }
 
-  async function step(index: Index, source: SharedRetrievalSource, deadline = Infinity): Promise<void> {
+  function nextIncompletePage(index: Index, fromPage: number, includePartial = true): number {
+    for (let page = fromPage; page <= index.toPage; page++) {
+      if (!index.pages.has(page) || includePartial && index.failures.has(page)) return page
+    }
+    return index.toPage + 1
+  }
+
+  async function step(index: Index, source: SharedRetrievalSource, deadline: number, retrying: boolean, pass?: PreparationPass): Promise<void> {
     phase(index, 'restoring')
-    const todo = index.nextPage <= index.toPage
-      ? Array.from({ length: Math.min(limits.pagesPerStep, index.toPage - index.nextPage + 1) }, (_, i) => index.nextPage + i)
-      : [...index.failures.keys()].slice(0, limits.pagesPerStep)
-    for (const page of todo) {
-      try { await readPage(index, page, source) } catch (error) {
-        source.check()
-        const critical = fatalContentError(error)
-        if (critical !== undefined) throw critical
-        const code = codeOf(error)
-        if (code.includes('budget') || code.startsWith('pdf/index-storage-')) throw error
-        index.failures.set(page, { page, attempts: (index.failures.get(page)?.attempts ?? 0) + 1, code })
+    // Foreground continuations can repair missing pages. Optional enrichment
+    // on already usable pages is only retried by an indexing occurrence.
+    let page = retrying ? nextIncompletePage(index, pass?.nextRetryPage ?? index.fromPage, !!pass) : index.nextPage
+    for (let processed = 0; processed < limits.pagesPerStep && page <= index.toPage; processed++) {
+      if (retrying || !index.pages.has(page)) {
+        try { await readPage(index, page, source) } catch (error) {
+          source.check()
+          const critical = fatalContentError(error)
+          if (critical !== undefined) throw critical
+          const code = codeOf(error)
+          if (code.includes('budget') || code.startsWith('pdf/index-storage-')) throw error
+          index.failures.set(page, { page, attempts: (index.failures.get(page)?.attempts ?? 0) + 1, code })
+        }
       }
-      index.nextPage = Math.max(index.nextPage, page + 1)
+      if (retrying) {
+        if (pass) pass.nextRetryPage = page + 1
+      } else index.nextPage = Math.max(index.nextPage, page + 1)
       await new Promise<void>(resolve => setImmediate(resolve)); source.check()
       if (performance.now() >= deadline) break
+      page = retrying ? nextIncompletePage(index, page + 1, !!pass) : index.nextPage
     }
     await embedStep(index, source, deadline)
     source.check(); notifyProgress(index)
   }
 
-  function joinStep(index: Index, binding: RetrievalBinding, slice = false): Promise<void> {
+  function joinStep(index: Index, binding: RetrievalBinding, slice = false, pass?: PreparationPass): Promise<void> {
     const signal = binding.signal
     let job = jobs.get(index.key)
     if (job?.controller.signal.aborted) throw fail('pdf/retrieval-busy', 'The previous indexing step is still cancelling; retry shortly')
+    // Other callers can observe durable results without lending their source
+    // authority to a retry initiated by this occurrence.
+    if (job?.retrying && job.pass !== pass) return waitForWork([job.promise], signal)
     if (!job) {
       if (jobs.size >= limits.maxConcurrentJobs) throw fail('pdf/retrieval-busy', 'Other PDF indexes are being built; retry shortly')
       const controller = new AbortController()
-      const created: Job = { controller, subscribers: new Set(), promise: Promise.resolve() }
+      const retrying = index.nextPage > index.toPage
+      const created: Job = { controller, subscribers: new Set(), promise: Promise.resolve(), retrying, pass }
       // Defer execution until the job is registered and subscribers are attached.
       created.promise = Promise.resolve().then(async () => {
         const source = createSharedRetrievalSource(ports, created.subscribers, controller.signal,
           () => checkIndex(index, controller.signal), checkBinding, checkOrigin)
-        try { await step(index, source, slice ? performance.now() + 750 : Infinity) } finally { source.dispose() }
+        try { await step(index, source, slice ? performance.now() + 750 : Infinity, retrying, pass) } finally { source.dispose() }
       }).finally(() => jobs.delete(index.key))
       void created.promise.catch(() => {})
       job = created; jobs.set(index.key, job)
@@ -495,14 +556,19 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const key = digest(JSON.stringify([persistentKey, selected.id, selectionIdentity]))
       let index = indexes.get(key)
       if (!index) {
+        const previousPageCacheSource = document.indexPageDigests && ports.cache
+          ? await readPageCacheSource(ports.cache, pageCacheSourceKey(document.path, extractionIdentity)) : undefined
+        checkBinding(binding)
         index = { key, persistentKey, head, contentDigest: indexContentDigest(document),
           ...(document.indexContentDigest ? { sourcePath: document.path } : {}), pageCount: document.pageCount,
           fromPage: query.fromPage, toPage, generation: selected.id,
           provider: provider && { dimensions: provider.dimensions, maxBatchSize: provider.maxBatchSize,
             maxInputCharacters: provider.maxInputCharacters }, selectionIdentity, extractionIdentity,
           pages: new Map(), nextPage: created ? query.fromPage : toPage + 1, chunkCount: 0, embeddedCount: 0, dataRevision: 0,
-          failures: new Map(), bytes: 512, lastUsed: Date.now(), users: 0,
+          failures: new Map(), bytes: 512 + (previousPageCacheSource?.indexPageDigests.length ?? 0) * 160,
+          lastUsed: Date.now(), users: 0,
           phase: 'restoring', computedChunks: 0, progress: new Set(),
+          ...(previousPageCacheSource ? { previousPageCacheSource } : {}),
           release: reservedPin }
         reservedPin = undefined
         indexes.set(key, index)
@@ -516,7 +582,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
             guard(index, binding)
             if (summary) applySummary(index, page, summary)
             notifyProgress(index)
-            if ((!summary || summary.failure) && index.nextPage > page) index.nextPage = page
+            if (!summary && index.nextPage > page) index.nextPage = page
             if (page % 20 === 0) await new Promise<void>(resolve => setImmediate(resolve))
           }
         } catch (error) { if (indexes.get(key) === index) indexes.delete(key); index.release(); throw error }
@@ -556,6 +622,19 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       signal: binding.signal, check: () => guard(index, binding),
       onFailure: error => ports.onFailure?.(binding.sessionId, binding.document.id, error),
     })
+    const { document } = binding, pages = document.indexPageDigests
+    if (ports.cache && !index.pageCacheSourceRecorded && pages && pages.length <= MAX_PAGE_CACHE_SOURCE_PAGES
+      && index.fromPage === 1 && index.toPage === document.pageCount) {
+      // Remember the source that proved a ready index. An upgrade can thus
+      // restore it without eagerly rewriting every legacy page cache record.
+      guard(index, binding)
+      await ports.cache.set(pageCacheSourceKey(document.path, index.extractionIdentity), { version: 1,
+        sourceDigest: document.sourceDigest, indexPageDigests: pages,
+        ...(document.indexContentDigest ? { indexContentDigest: document.indexContentDigest } : {}),
+      }).catch(() => {})
+      guard(index, binding)
+      index.pageCacheSourceRecorded = true
+    }
   }
   function invalidatePage(index: Index, page: number): void {
     const summary = index.pages.get(page)
@@ -585,7 +664,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   }
 
   async function prepare(sessionId: string, input: RetrievalPrepareInput, externalSignal: AbortSignal | undefined,
-    onProgress: ((progress: RetrievalProgress) => void) | undefined, singleSlice: boolean): Promise<boolean> {
+    onProgress: ((progress: RetrievalProgress) => void) | undefined, singleSlice: boolean, occurrence?: object): Promise<boolean> {
       if (disposed) throw cancelled()
       if (rebuilding) throw fail('pdf/retrieval-busy', 'PDF search indexes are being reset; retry shortly')
       if (rebuildFailed) throw fail('pdf/retrieval-cache-unavailable', 'PDF index reset failed; retry rebuilding the index before searching')
@@ -624,12 +703,27 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
           : await getIndex(binding, scope, false, undefined, onProgress)
         index.users++; activeIndex = index
         guard(index, binding)
+        const previous = occurrence && preparationPasses.get(occurrence)
+        const pass = previous?.key === index.key && previous.generation === index.generation
+          && previous.sessionId === sessionId && previous.documentId === scope.documentId ? previous
+          : { key: index.key, generation: index.generation, sessionId, documentId: scope.documentId,
+              nextPage: index.nextPage, nextRetryPage: index.fromPage }
+        if (occurrence) preparationPasses.set(occurrence, pass)
+        // A live occurrence can outlast the hot index. Restore its scan
+        // cursor even when a failed page had no checkpoint to reload.
+        index.nextPage = Math.max(index.nextPage, pass.nextPage)
         stopProgress = observeProgress(index, signal, onProgress)
+        let sliced = false
         while (!ready(index) || index.failures.size > 0) {
+          if (index.nextPage > index.toPage && index.embeddedCount === index.chunkCount
+            && nextIncompletePage(index, pass.nextRetryPage) > index.toPage) {
+            throw fail('pdf/retrieval-incomplete', 'Some PDF content could not be indexed. Resume indexing to retry only incomplete pages.')
+          }
+          if (singleSlice && sliced) return false
           let shared: Promise<void> | undefined
           while (!shared) {
             guard(index, binding)
-            try { shared = joinStep(index, binding, singleSlice) } catch (error) {
+            try { shared = joinStep(index, binding, singleSlice, pass) } catch (error) {
               if (codeOf(error) !== 'pdf/retrieval-busy') throw error
               // Foreground searches keep their fast-busy admission. Background
               // work waits for an existing real step to free capacity instead
@@ -639,17 +733,16 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
           }
           await shared
           guard(index, binding)
-          if (index.nextPage > index.toPage && [...index.failures.values()].some(failure => failure.attempts >= 2)) {
-            throw fail('pdf/retrieval-incomplete', 'Some PDF pages could not be indexed; retry with a smaller page range or inspect the source')
-          }
-          if (singleSlice && (!ready(index) || index.failures.size)) return false
+          pass.nextPage = Math.max(pass.nextPage, index.nextPage)
+          sliced = true
           // Background preparation cooperates with interactive work between
           // bounded shared steps; it never generates a synthetic search query.
-          await new Promise<void>(resolve => setTimeout(resolve, 0))
-          guard(index, binding)
+          if (!singleSlice) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0))
+            guard(index, binding)
+          }
         }
         guard(index, binding)
-        if (index.failures.size) throw fail('pdf/retrieval-incomplete', 'Some PDF content could not be indexed. Resume indexing to retry only incomplete pages.')
         await promote(index, binding)
         return true
       } finally {
@@ -673,7 +766,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   return {
     state() { return disposed ? 'disposed' : rebuilding ? 'rebuilding' : rebuildFailed ? 'failed' : 'ready' },
     async prepare(sessionId, input, signal, onProgress) { await prepare(sessionId, input, signal, onProgress, false) },
-    prepareSlice(sessionId, input, signal, onProgress) { return prepare(sessionId, input, signal, onProgress, true) },
+    prepareSlice(sessionId, input, signal, onProgress, occurrence) { return prepare(sessionId, input, signal, onProgress, true, occurrence) },
     async search(sessionId, input: RetrievalInput, externalSignal) {
       if (disposed) throw cancelled()
       if (rebuilding) throw fail('pdf/retrieval-busy', 'PDF search indexes are being reset; retry shortly')

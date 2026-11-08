@@ -90,7 +90,8 @@ await run(compiler, ['-std=c++17', '-O0', '-g', '-fprofile-instr-generate', '-fc
   join(root, 'native/form-callback-test.cpp'), `-L${join(sdk, 'lib')}`, '-lpdfium',
   `-Wl,-rpath,${process.platform === 'darwin' ? '@loader_path' : '$ORIGIN'}`, '-o', callbackBinary])
 
-await run(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', 'tests/native-integration.test.ts'], {
+await run(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1',
+  'tests/native-integration.test.ts', 'tests/native-encrypted.test.ts'], {
   env: { ...process.env, DSH_PDF_REQUIRE_NATIVE_TESTS: '1', DSH_PDF_NATIVE_HELPER: binary,
     DSH_PDF_NATIVE_COVERAGE: '1', LLVM_PROFILE_FILE: join(rawDir, '%p.profraw') },
 })

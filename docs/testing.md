@@ -32,9 +32,16 @@ node --import tsx --test tests/<path>.test.ts
 ## 跨边界验证
 
 - **SDK 和卸载**：运行 `runtime-compatibility` 与版本准入测试，验证实际 SDK 调用、Fiber 注销和存储边界；支持新版本还需验证 Loader 装配。
+- **Desktop 安装兼容性**：在 macOS 上使用系统安装的 DeepSeek Harness Desktop 及其自带 CLI，在临时 Desktop profile 中从 npm 安装精确版本的 PDF 插件，检查安装准入、原生依赖和 bundle 配置。这项检查独立于使用源码宿主的 CI 浏览器测试。
 - **退出与更新**：被动订阅须及时返回，取消及卸载排空任务；更新锁既要结束观察请求，也要等待已接纳写入。真实安装更新另外检查旧 Host 退出、安装器交接和新进程启动。
 - **模型功能**：受控模型流验证请求、协议、截断和展示；真实 Runtime 集成验证适配边界；在线模型验收验证识别、翻译及解释质量，分别报告结果。
 - **翻译**：原选区和有界上下文须实际经过 Host 适配器；由模型判断残缺内容及修复，不以固定残词规则拒绝输入。浏览器测试走完整请求链，在线验收核对原文、修复说明和结果。
 - **文件互操作**：用外部阅读器核对保存后的标注、回复、书签及表单值和外观；自动化协议测试不能代替文件互操作。
 
 报告区分完整运行、过滤运行、跳过和失败。缺失宿主或测试夹具导致的失败不得记为通过；单一通道的覆盖率不代表全项目覆盖率。
+
+验证系统安装的 Desktop 能否安装已发布的 PDF 插件时，指定插件的 npm 版本。应用默认取自 `/Applications/DeepSeek Harness.app`，也可以通过 `--app` 指定另一个已安装的应用：
+
+```sh
+node scripts/smoke-dsh-compatibility.mjs --package @dylanl1/dsh-plugin-pdf@0.1.7
+```

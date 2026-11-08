@@ -1,12 +1,13 @@
 """Regenerate the small synthetic fixtures with pypdf 6.10 and cryptography.
 
 The encrypted object stream comes first, reproducing pdf-lib's early parse
-failure. These documents contain only blank pages and a synthetic annotation.
-Private pypdf fields are used only to assemble this reproducible test fixture.
+failure. The documents contain only synthetic pages, text and annotations.
+Private pypdf fields are used only to assemble the test fixtures.
 """
 from io import BytesIO
 from pathlib import Path
 from pypdf import PdfWriter
+from pypdf.constants import UserAccessPermissions
 from pypdf.generic import (
     ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject,
     NameObject, NumberObject, RectangleObject, TextStringObject,
@@ -84,7 +85,49 @@ def fixture(password: str) -> bytes:
     return output.getvalue()
 
 
+def inherited_boxes_fixture() -> bytes:
+    """An encrypted page with geometry inherited from its /Pages parent."""
+    writer = PdfWriter()
+    page = writer.add_blank_page(400, 600)
+    parent = writer._pages.get_object()
+    parent[NameObject('/MediaBox')] = RectangleObject((0, 0, 400, 600))
+    parent[NameObject('/CropBox')] = RectangleObject((20, 30, 340, 530))
+    parent[NameObject('/Rotate')] = NumberObject(90)
+    del page[NameObject('/MediaBox')]
+    page[NameObject('/UserUnit')] = NumberObject(2)
+    writer.add_metadata({'/Title': 'Inherited 😀 geometry'})
+    writer.encrypt('fixture-password', 'fixture-owner', algorithm='AES-256')
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def restricted_text_fixture() -> bytes:
+    """A password-protected page with visible text and copying disabled."""
+    writer = PdfWriter()
+    page = writer.add_blank_page(300, 400)
+    page[NameObject('/Resources')] = DictionaryObject({
+        NameObject('/Font'): DictionaryObject({
+            NameObject('/F1'): DictionaryObject({
+                NameObject('/Type'): NameObject('/Font'),
+                NameObject('/Subtype'): NameObject('/Type1'),
+                NameObject('/BaseFont'): NameObject('/Helvetica'),
+            }),
+        }),
+    })
+    content = DecodedStreamObject()
+    content.set_data(b'BT /F1 14 Tf 35 350 Td (Protected fixture text) Tj ET\n')
+    page[NameObject('/Contents')] = writer._add_object(content)
+    permissions = UserAccessPermissions(0xfffffffc) & ~UserAccessPermissions.EXTRACT
+    writer.encrypt('fixture-password', 'fixture-owner', permissions_flag=permissions, algorithm='AES-256')
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 if __name__ == '__main__':
     directory = Path(__file__).parent
     (directory / 'encrypted-object-stream.pdf').write_bytes(fixture(''))
     (directory / 'password-object-stream.pdf').write_bytes(fixture('fixture-password'))
+    (directory / 'encrypted-inherited-boxes.pdf').write_bytes(inherited_boxes_fixture())
+    (directory / 'encrypted-restricted-text.pdf').write_bytes(restricted_text_fixture())

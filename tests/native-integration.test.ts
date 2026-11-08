@@ -207,7 +207,7 @@ test('native dispatcher rejects an unknown command without stopping the worker',
     await assert.rejects(worker.request({ command: 'unknown' }), /Unknown native command/)
     await assert.rejects(worker.request({}), /Invalid native command/)
     assert.deepEqual((await worker.request({ command: 'hello' })).value,
-      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
+      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0', encryptedOpen: true })
   } finally { await worker.dispose() }
 })
 
@@ -262,7 +262,7 @@ test('oversized native replies return an explicit error without stopping the wor
     await assert.rejects(worker.request({ command: 'outline', documentId: 'large-outline' }),
       { code: 'pdf/native-reply-too-large' })
     assert.deepEqual((await worker.request({ command: 'hello' })).value,
-      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0' })
+      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0', encryptedOpen: true })
   } finally { await worker.dispose() }
 })
 
@@ -380,6 +380,9 @@ test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen an
   try {
     const opened = await api.open('native-test', 'dsh-resource://file/session/native-test//fixtures/native.pdf')
     assert.equal(opened.reader.protocolVersion, 1); assert.equal('bytes' in opened, false)
+    assert.ok(state.workspaces.readSnapshot('native-test', opened.id).document.indexPageDigests?.length)
+    assert.equal('indexPageDigests' in calls.at(-1)!.value.document, false, 'index page identities stay on the Host')
+    assert.equal('indexContentDigest' in calls.at(-1)!.value.document, false)
     assert.equal(opened.document.annotations.find(a => a.linkAction)?.linkAction, 'NextPage')
     const changed = await api.change('native-test', opened.id, opened.revision, [{ type: 'add', annotation: { id: 'v1-note', page: 1, subtype: 'Text', rect: [80, 80, 100, 100], contents: 'Native note' } }])
     assert.equal(changed.dirty, true); assert.ok(changed.document.annotations.some(a => a.id === 'v1-note'))

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { NativeWorker, type NativeProcessRuntime } from './native-worker.js'
 import { encodePng } from './png.js'
+import { encryptedDocumentInfo } from './encrypted-document.js'
 import { ByteCache } from '../../../shared/cache/index.js'
 import { ocrRegionRenderPlan, pageRenderPlan, recoveredPageText } from '../../../modules/document/index.js'
 import { CapabilityRegistry, pdfCapabilities, requiredPdfOpenCapabilities } from '../../../modules/capabilities/index.js'
@@ -16,10 +17,12 @@ import type { NativeOutlineItem, NativeTextContent, ReaderDescriptor } from '../
 import { binaryResult, type PdfDispatch } from '../dsh/index.js'
 import type { createWorkingCopyService, HostWorkspaceSnapshot } from '../../../modules/working-copy/index.js'
 import { recordIndexPerformance } from '../../../modules/retrieval/index.js'
+import type { PdfDocumentInfo } from '../../../core/pdf-types.js'
 
 const id = z.string().min(1).max(512)
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const integer = z.number().int()
+const openProbe = z.object({ pageCount: integer.min(1).max(100000), formType: integer, signatureCount: integer })
 const common = { sessionId: id, id, bytesHash: hash }
 const nativeRequest = z.discriminatedUnion('action', [
   z.object({ ...common, action: z.literal('tile'), tile: z.object({
@@ -59,7 +62,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   const worker = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
   const capabilities = options.capabilities ?? new CapabilityRegistry()
   const unregisterNative = capabilities.register({ id: 'pdfium.native',
-    capabilities: [pdfCapabilities.renderPage, pdfCapabilities.renderAcroForm, pdfCapabilities.previewSigned], implementation: worker })
+    capabilities: [pdfCapabilities.renderPage, pdfCapabilities.renderAcroForm, pdfCapabilities.previewSigned,
+      pdfCapabilities.unlockDocument], implementation: worker })
   const handles = new Map<string, Handle>()
   const openings = new Map<string, Promise<void>>()
   const tiles = new ByteCache<Buffer>(options.cacheBytes ?? 32 * 1024 * 1024)
@@ -85,6 +89,59 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     return run
   }
 
+  async function admitBytes(bytes: number): Promise<void> {
+    const limit = 128 * 1024 * 1024
+    if (bytes > limit) fail('pdf/native-size', 'PDF exceeds the native working-set limit')
+    for (const [key, handle] of handles) {
+      if (handle.generation !== worker.generation) { handles.delete(key); handlesBytes -= handle.bytes }
+    }
+    while (handles.size >= 16 || handlesBytes + bytes > limit) {
+      const key = handles.keys().next().value
+      if (key === undefined) break
+      const old = handles.get(key)!
+      handles.delete(key); handlesBytes -= old.bytes
+      await worker.request({ command: 'close', documentId: key })
+    }
+  }
+
+  function inspectEncrypted(bytes: Uint8Array, password: string | undefined, signal: AbortSignal): Promise<PdfDocumentInfo | undefined> {
+    return withHandleLease(async () => {
+      signal.throwIfAborted()
+      if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+      await worker.ready()
+      if (!worker.encryptedOpen) {
+        if (password !== undefined) fail('pdf/security-unsupported', 'Update the native PDF plugin to open protected PDFs')
+        return undefined
+      }
+      await admitBytes(bytes.byteLength)
+      signal.throwIfAborted()
+      const documentId = randomUUID()
+      const generation = worker.generation
+      let opened = false
+      try {
+        const reply = await worker.request({ command: 'open', documentId, ...(password !== undefined ? { password } : {}) }, bytes)
+        opened = true
+        const value = openProbe.parse(reply.value)
+        const security = await worker.request({ command: 'security', documentId }, undefined, signal)
+        const { securityRevision } = z.object({ securityRevision: integer }).parse(security.value)
+        if (securityRevision < 0) return undefined
+        const plan = await capabilities.plan(requiredPdfOpenCapabilities(value, undefined, true), { signal }, 'pdfium.native')
+        if (!plan.supported) {
+          fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
+        }
+        return await encryptedDocumentInfo(value, async (offset, limit) =>
+          (await worker.request({ command: 'documentInfo', documentId, offset, limit }, undefined, signal)).value)
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'pdf/native-open' && password === undefined) return undefined
+        throw error
+      } finally {
+        if (opened && !closed && generation === worker.generation) {
+          await worker.request({ command: 'close', documentId }).catch(() => undefined)
+        }
+      }
+    })
+  }
+
   async function ensure(snapshot: HostWorkspaceSnapshot, signal?: AbortSignal): Promise<void> {
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     await worker.ready()
@@ -99,20 +156,12 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     // This keeps an abandoned open from leaving an untracked native handle.
     const task = admission.catch(() => undefined).then(async () => {
       if (existing) { handles.delete(snapshot.id); handlesBytes -= existing.bytes }
-      for (const [key, handle] of handles) {
-        if (handle.generation !== worker.generation) { handles.delete(key); handlesBytes -= handle.bytes }
-      }
-      while (handles.size >= 16 || handlesBytes + snapshot.bytes.byteLength > 128 * 1024 * 1024) {
-        const key = handles.keys().next().value
-        if (key === undefined) break
-        const old = handles.get(key)!
-        handles.delete(key); handlesBytes -= old.bytes
-        await worker.request({ command: 'close', documentId: key })
-      }
-      if (snapshot.bytes.byteLength > 128 * 1024 * 1024) fail('pdf/native-size', 'PDF exceeds the native working-set limit')
-      const reply = await worker.request({ command: 'open', documentId: snapshot.id }, snapshot.bytes)
+      await admitBytes(snapshot.bytes.byteLength)
+      const password = snapshot.document.encrypted ? workspaces.passwordFor(snapshot.id, bytesHash) : undefined
+      const reply = await worker.request({ command: 'open', documentId: snapshot.id,
+        ...(password !== undefined ? { password } : {}) }, snapshot.bytes)
       try {
-        const value = z.object({ pageCount: integer, formType: integer, signatureCount: integer }).parse(reply.value)
+        const value = openProbe.parse(reply.value)
         if (value.pageCount !== snapshot.document.pageCount) {
           fail('pdf/native-unsupported', 'PDF page counts differ between the parser and native reader')
         }
@@ -120,7 +169,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
           fail('pdf/native-unsupported', 'The native reader did not recognize this AcroForm; its fields may be missing')
         }
         const required = requiredPdfOpenCapabilities({ ...value,
-          signatureCount: Math.max(value.signatureCount, snapshot.document.signed ? 1 : 0) }, snapshot.document.formKind)
+          signatureCount: Math.max(value.signatureCount, snapshot.document.signed ? 1 : 0) }, snapshot.document.formKind, snapshot.document.encrypted)
         const plan = await capabilities.plan(required, { signal }, 'pdfium.native')
         if (!plan.supported) {
           fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
@@ -140,7 +189,6 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
 
   async function descriptor(snapshot: HostWorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
-    if (snapshot.document.encrypted) fail('pdf/native-unsupported', 'Encrypted PDFs are not supported by the native reader')
     await ensure(snapshot, signal)
     return { bytesHash, protocolVersion: 1, generation: worker.generation }
   }
@@ -161,7 +209,13 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       value.annotationDelta = { fromRevision: previous.revision,
         remove: [...before.keys()].filter(key => !document.annotations.some(a => a.id === key)),
         upsert: document.annotations.filter(a => JSON.stringify(a) !== JSON.stringify(before.get(a.id))) }
-    } else { value.document = document; value.baselineAnnotations = baselineAnnotations; value.baselineOutline = baselineOutline; value.baselineFormFields = baselineFormFields }
+    } else {
+      const { indexContentDigest: _indexContent, indexPageDigests: _indexPages, ...readerDocument } = document
+      value.document = readerDocument
+      value.baselineAnnotations = baselineAnnotations
+      value.baselineOutline = baselineOutline
+      value.baselineFormFields = baselineFormFields
+    }
     histories.delete(snapshot.id); histories.set(snapshot.id, snapshot)
     while (histories.size > 32) histories.delete(histories.keys().next().value!)
     return value
@@ -221,7 +275,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
       const snapshot = workspaces.readSnapshot(sessionId, input.id)
       if (workspaces.bytesHash(snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF baseline changed; use the latest reader snapshot')
-      const read = await readPageText(sessionId, input.id, input.page, signal, { recover: input.recover })
+      const read = await readPageText(sessionId, input.id, input.page, signal, { recover: input.recover, reader: true })
       if (workspaces.bytesHash(read.snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF changed while the text request waited; use the latest reader snapshot')
       return read.content
     }
@@ -234,9 +288,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     if ('page' in input && input.page > snapshot.document.pageCount || 'tile' in input && input.tile.page > snapshot.document.pageCount) fail('pdf/invalid-page', 'Page is outside the document')
     await ensure(snapshot, signal)
     if (input.action === 'tile') {
-      const t = input.tile
+      const encrypted = snapshot.document.encrypted
+      const t = encrypted ? { ...input.tile, annotations: true } : input.tile
       const key = JSON.stringify([input.bytesHash, t])
-      let png = tiles.get(key)
+      let png = encrypted ? undefined : tiles.get(key)
       if (!png) {
         const reply = await worker.request({ command: 'render', documentId: input.id, ...t, pageIndex: t.page - 1 }, undefined, signal, 10)
         const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
@@ -244,10 +299,13 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
         png = await encodePng(reply.bytes, t.width, t.height)
         signal.throwIfAborted()
         // A completed old render cannot update a newly saved working copy's cache.
-        tiles.set(key, png, png.byteLength)
+        if (!encrypted) tiles.set(key, png, png.byteLength)
       }
       signal.throwIfAborted()
       return binaryResult({ width: t.width, height: t.height, mime: 'image/png' }, png, 'image/png')
+    }
+    if (snapshot.document.encrypted && input.action === 'inspect') {
+      fail('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
     }
     const command = input.action === 'outline' ? { command: 'outline' }
       : input.action === 'destination' ? { command: 'destination', name: input.name }
@@ -265,7 +323,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     try { return await nativeRequestDispatch(sessionId, raw, agent, signal) } finally { release() }
   }
   async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
-    readOptions?: { recover?: boolean }): Promise<{
+    readOptions?: { recover?: boolean; reader?: boolean }): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }> {
     const read = await withHandleLease(async () => {
@@ -273,6 +331,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
     if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
       fail('pdf/invalid-page', 'Page is outside the document')
+    }
+    if (snapshot.document.encrypted) {
+      if (!readOptions?.reader) fail('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
+      if (!snapshot.document.allowTextExtraction) return { snapshot, content: { items: [], styles: {}, lang: null } }
     }
     await descriptor(snapshot, signal)
     const reply = await worker.request({ command: 'text', documentId, pageIndex: page - 1 }, undefined, signal, -5)
@@ -284,7 +346,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       lang: z.string().nullable(), quality: z.object({ unmappedCharacters: integer.min(0) }).optional() }).parse(reply.value)
     return { snapshot, content }
     })
-    if (readOptions?.recover === false || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
+    if (read.snapshot.document.encrypted || readOptions?.recover === false
+      || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
     const { snapshot, artifact } = await readOcrArtifact(sessionId, documentId, page, signal, undefined, read.snapshot)
     return { snapshot, content: recoveredPageText(artifact.output, read.snapshot.document.pages[page - 1],
       artifact.input.render.width, artifact.input.render.height) }
@@ -296,6 +359,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     active.throwIfAborted()
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    rejectProtected(snapshot)
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
     if (expectedSnapshot && workspaces.bytesHash(expectedSnapshot.bytes) !== bytesHash) fail('pdf/stale-reader', 'PDF changed before text recovery')
     const geometry = snapshot.document.pages[page - 1]
@@ -376,6 +440,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   }> { return withHandleLease(async () => {
     signal.throwIfAborted()
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    rejectProtected(snapshot)
     await descriptor(snapshot, signal)
     const reply = await worker.request({ command: 'outline', documentId }, undefined, signal, -5)
     signal.throwIfAborted()
@@ -392,6 +457,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     signal.throwIfAborted()
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
+    rejectProtected(snapshot)
     if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
       fail('pdf/invalid-page', 'Page is outside the document')
     }
@@ -452,6 +518,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const raster = await withHandleLease(async () => {
       signal.throwIfAborted()
       const snapshot = workspaces.readSnapshot(sessionId, documentId)
+      rejectProtected(snapshot)
       if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
         fail('pdf/invalid-page', 'Page is outside the document')
       }
@@ -503,7 +570,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       }
     })
   }
-  return { dispatch, native, readPageText, readOutline, readOcrArtifact,
+  return { dispatch, native, inspectEncrypted, readPageText, readOutline, readOcrArtifact,
     localOcrIdentity: () => options.textRecovery?.producer,
     renderPage, renderFormPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
@@ -516,4 +583,8 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       const rejected = disposed.find(result => result.status === 'rejected')
       if (rejected?.status === 'rejected') throw rejected.reason
     } }
+}
+
+function rejectProtected(snapshot: HostWorkspaceSnapshot): void {
+  if (snapshot.document.encrypted) fail('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
 }

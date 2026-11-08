@@ -178,6 +178,8 @@ export async function apply(ctx: ClientContext): Promise<void> {
     const readerApi = useMemo<ReaderProps['api']>(() => ({
       ...api,
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
+      unlock: (sessionId, address, password, signal) =>
+        sessionLifecycle.unlock(owner, sessionId, address, password, signal),
     }), [owner])
     return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={configuredOcr}
       indexingApi={indexingApi}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { pdfLibDocumentAdapter } from '../src/adapters/host/pdf-lib/document-adapter.ts'
+import { inProcessPdfDocument } from './fixtures/working-copy-service.ts'
 import { createV1DraftRepository } from '../src/adapters/host/storage/v1-drafts.ts'
 import { createV1NavigationStore } from '../src/adapters/host/storage/v1-navigation.ts'
 import { createReadingPositions,
@@ -67,7 +67,7 @@ function harness(data: CapturedV1, bytes: Uint8Array, sourceExists = true) {
     async save() { throw new Error('Compatibility replay must not write the source PDF') },
   }
   const start = () => {
-    const workingCopy = createWorkingCopyService(files, createV1DraftRepository(table(drafts)), pdfLibDocumentAdapter)
+    const workingCopy = createWorkingCopyService(files, createV1DraftRepository(table(drafts)), inProcessPdfDocument)
     const positionService = createReadingPositions(workingCopy, createV1NavigationStore(table(positions)))
     const agent = { session: { id: data.sessionId, header: { cwd: '/fixtures' } } }
     const signal = new AbortController().signal

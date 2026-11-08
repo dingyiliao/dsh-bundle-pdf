@@ -46,7 +46,7 @@ Click a screenshot to open it at full resolution.
 
 ## Install
 
-Validated with DSH `0.2.1-rc.5`; other supported versions are declared in [package.json](package.json).
+Validated with DSH `0.2.2-rc.1`. See [package.json](package.json) for supported versions.
 
 Use the npm package name below, not a GitHub URL. The source repository does not include `dist/`; installing it directly leaves the entry files missing and prevents the plugin from loading.
 

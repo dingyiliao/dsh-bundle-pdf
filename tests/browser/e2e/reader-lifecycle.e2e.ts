@@ -6,6 +6,55 @@ import { join } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 
+it('opens a password-protected PDF through the Reader tab and renders it read-only', async () => {
+  const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
+  let browser: Browser | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-password-web-e2e')
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title: 'Protected PDF test' })
+    const name = 'protected-e2e.pdf'
+    const bytes = await readFile(new URL('../../fixtures/password-object-stream.pdf', import.meta.url))
+    await writeFile(join(scaffold.workspaceCwd, name), bytes)
+
+    browser = await launchBrowser()
+    const page = await newEnglishPage(browser)
+    const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-password-browser'))
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })
+    await page.getByRole('treeitem').filter({ hasText: 'Protected PDF test' }).click()
+    const expand = page.locator('[data-sidebar-right-expand]')
+    if (await expand.isVisible()) await expand.click()
+    const column = page.locator('[data-rightbar-col]')
+    await column.locator('[data-sidebar-right-guide-entry="files"]').click()
+    await column.locator('[data-files-state="tree"]').waitFor({ state: 'visible' })
+    await column.locator('[data-files-reload]').click()
+    await column.locator('[data-files-entry="file"]').getByRole('button', { name, exact: true }).click()
+
+    const reader = page.locator('.dsh-pdf-reader')
+    const prompt = reader.getByRole('form', { name: 'Unlock PDF' })
+    const password = prompt.getByLabel('Password')
+    const unlock = prompt.getByRole('button', { name: 'Unlock', exact: true })
+    await password.fill('incorrect-fixture-password')
+    await unlock.click()
+    await prompt.getByRole('alert').filter({ hasText: 'Incorrect password' }).waitFor({ state: 'visible' })
+    expect(await password.inputValue()).toBe('')
+    expect(await reader.locator('[data-pdf-page] canvas').count()).toBe(0)
+
+    await password.fill('fixture-password')
+    await unlock.click()
+    await reader.locator('[data-pdf-page] canvas').first().waitFor({ state: 'visible', timeout: 20_000 })
+    await prompt.waitFor({ state: 'detached' })
+    await reader.getByText('This PDF is encrypted and opens for reading only.', { exact: false }).waitFor({ state: 'visible' })
+    expect(tripwire.pageErrors).toEqual([])
+  } finally {
+    await browser?.close()
+    await scaffold.close()
+  }
+}, 120_000)
+
 it('resumes the remembered reading position on a fresh client and skips it after an external change', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined

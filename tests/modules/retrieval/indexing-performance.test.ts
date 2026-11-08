@@ -85,6 +85,106 @@ test('one preparation slice yields without discarding its generation or successf
   } finally { await service.dispose() }
 })
 
+test('a retry pass reaches later OCR failures across slices and hot index eviction', async () => {
+  const f = fixture(3)
+  f.ports.limits = { pagesPerStep: 1, maxIndexes: 1 }
+  const snapshot = f.ports.documents.snapshot
+  f.ports.documents.snapshot = (session, id) => id === 'other'
+    ? { ...snapshot(session, id), path: '/other.pdf', sourceDigest: 'other', pageCount: 1 }
+    : snapshot(session, id)
+  const read = f.ports.pages.read, reads: number[] = []
+  let firstPageRecovered = false
+  f.ports.pages.read = async (...args) => {
+    const [, id, page] = args
+    if (id === 'other') return { text: 'Other document.', source: 'pdf-text' }
+    const firstRead = !reads.includes(page)
+    reads.push(page)
+    const content = await read(...args)
+    if (page === 1 && !firstPageRecovered || page === 2 && firstRead) {
+      return { ...content, failure: { code: 'recognition-failed' } }
+    }
+    return content
+  }
+  const service = createRetrievalService(f.ports)
+  const occurrence = {}
+  const slice = (pass = occurrence) => service.prepareSlice('a', { documentId: 'doc' },
+    new AbortController().signal, undefined, pass)
+  try {
+    for (let page = 1; page <= 3; page++) assert.equal(await slice(), false)
+    assert.deepEqual(reads, [1, 2, 3])
+    assert.equal(await slice(), false, 'a repeatedly failed page leaves the next failed page queued')
+    assert.deepEqual(reads, [1, 2, 3, 1])
+    await service.prepare('b', { documentId: 'other' })
+    await assert.rejects(slice(), { code: 'pdf/retrieval-incomplete' })
+    assert.deepEqual(reads, [1, 2, 3, 1, 2], 'eviction did not rewind the retry pass')
+    assert.equal(f.batches.flat().filter(text => text.includes('Unique paragraph')).length, 3)
+
+    firstPageRecovered = true
+    assert.equal(await slice({}), true, 'a new occurrence retries the still incomplete page')
+    assert.deepEqual(reads, [1, 2, 3, 1, 2, 1])
+    assert.equal(f.batches.flat().filter(text => text.includes('Unique paragraph')).length, 3)
+  } finally { await service.dispose() }
+})
+
+test('another session cannot keep a cancelled occurrence’s retry alive', async () => {
+  const f = fixture(1)
+  const read = f.ports.pages.read
+  let announceRetry!: () => void
+  const retryStarted = new Promise<void>(resolve => { announceRetry = resolve })
+  const attemptedSessions: string[] = []
+  f.ports.pages.read = async (...args) => {
+    const [session, , , signal] = args
+    attemptedSessions.push(session)
+    if (session === 'a' && attemptedSessions.length === 2) {
+      announceRetry()
+      await new Promise<never>((_, reject) => {
+        const abort = () => reject(signal.reason)
+        if (signal.aborted) abort()
+        else signal.addEventListener('abort', abort, { once: true })
+      })
+    }
+    const content = await read(...args)
+    return session === 'a' ? { ...content, failure: { code: 'recognition-failed' } } : content
+  }
+  const service = createRetrievalService(f.ports)
+  const input = { documentId: 'doc' }, occurrence = {}, controller = new AbortController()
+  try {
+    assert.equal(await service.prepareSlice('a', input, undefined, undefined, occurrence), false)
+    const a = service.prepareSlice('a', input, controller.signal, undefined, occurrence)
+    const cancelled = assert.rejects(a, { name: 'AbortError' })
+    await retryStarted
+    let announceWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { announceWaiting = resolve })
+    const b = service.prepare('b', input, undefined, announceWaiting)
+    await waiting
+    controller.abort()
+    await cancelled
+    await b
+    assert.deepEqual(attemptedSessions, ['a', 'a', 'b'])
+    assert.equal(f.batches.flat().length, 1)
+  } finally { controller.abort(); await service.dispose() }
+})
+
+test('an incomplete retry pass checkpoints the remaining vectors for usable text', async () => {
+  const f = fixture(1, 1)
+  f.ports.limits = { embeddingBatchesPerStep: 1 }
+  const paragraphs = ['First paragraph.', 'Second paragraph.', 'Third paragraph.']
+  let reads = 0
+  f.ports.pages.read = async () => {
+    reads++
+    return { text: paragraphs.join('\n\n'), source: 'pdf-text', failure: { code: 'recognition-failed' } }
+  }
+  const service = createRetrievalService(f.ports), occurrence = {}
+  const slice = () => service.prepareSlice('a', { documentId: 'doc' }, undefined, undefined, occurrence)
+  try {
+    assert.equal(await slice(), false)
+    assert.equal(await slice(), false, 'the retry is exhausted but a native vector remains')
+    await assert.rejects(slice(), { code: 'pdf/retrieval-incomplete' })
+    assert.equal(reads, 2)
+    assert.deepEqual(f.batches.flat(), paragraphs)
+  } finally { await service.dispose() }
+})
+
 test('performance scopes isolate concurrent attempts, measure failed operations and tolerate broken observers', async () => {
   const a: IndexPerformanceMetric[] = [], b: IndexPerformanceMetric[] = []
   await Promise.all([

@@ -337,8 +337,15 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
   const submit = async () => {
     if (!active?.excerpts.length || activeEditor || !snapshot || !promptExplanation || submitting.current || saving) return
     const submittedKey = active.key
-    const source = active.source
-    if (!sameExplanationSource(source, sessionId, currentSnapshot())) {
+    let source = active.source
+    let excerpts = active.excerpts
+    const current = explanationSourceIdentity(sessionId, currentSnapshot())
+    // A retained text reference may survive annotation edits or a save. It is
+    // reusable only after Host revalidation, never by dropping revision checks.
+    const canRevalidate = !!current && excerpts.every(item => item.kind === 'text' && item.evidenceRefs?.length)
+      && current.sessionId === source.sessionId && current.documentId === source.documentId
+      && current.path === source.path && current.contentVersion === source.contentVersion
+    if (!sameExplanationSource(source, sessionId, currentSnapshot()) && !canRevalidate) {
       setError(t('reader.explain.sourceChanged'))
       return
     }
@@ -352,7 +359,41 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
     setSending(true)
     setError('')
     try {
-      const prompt = await buildMixedExplanationPrompt(source.path, active.excerpts, t, {
+      const textExcerpts = excerpts.filter(item => item.kind === 'text')
+      if (textExcerpts.length) {
+        const expected = explanationSourceIdentity(sessionId, currentSnapshot())
+        if (!expected || !textSelectionEvidence || textExcerpts.some(item => !item.evidenceRefs?.length)) {
+          setError(t('reader.explain.sourceChanged'))
+          return
+        }
+        const checked = await textSelectionEvidence.revalidate({ sessionId, documentId: source.documentId,
+          expectedRevision: expected.revision, expectedContentVersion: expected.contentVersion,
+          selections: textExcerpts.map(item => ({ id: item.id, refIds: [...item.evidenceRefs!] })) }, signal)
+        signal.throwIfAborted()
+        if (!ownsSubmission()) return
+        if (!sameExplanationSource(expected, sessionId, currentSnapshot())
+          || checked.documentId !== expected.documentId || checked.sourcePath !== expected.path
+          || checked.sourceDigest !== expected.baselineDigest || checked.sourceVersion !== expected.sourceVersion
+          || checked.contentVersion !== expected.contentVersion || checked.revision !== expected.revision
+          || checked.selections.length !== textExcerpts.length
+          || checked.selections.some((item, index) => {
+            const original = textExcerpts[index]!
+            return item.id !== original.id || item.text !== original.text
+              || item.evidenceRefs.length !== original.evidenceRefs!.length
+              || item.evidenceRefs.some((ref, part) => ref !== original.evidenceRefs![part])
+              || item.fragments.length !== original.fragments.length
+              || item.fragments.some((fragment, part) => fragment.page !== original.fragments[part]!.page)
+          })) {
+          setError(t('reader.explain.sourceChanged'))
+          return
+        }
+        const verified = new Map(checked.selections.map(item => [item.id, item]))
+        excerpts = excerpts.map(item => item.kind === 'text'
+          ? { ...item, fragments: verified.get(item.id)!.fragments } : item)
+        source = expected
+        setExplanation(draft => draft?.key === submittedKey ? { ...draft, source, excerpts } : draft)
+      }
+      const prompt = await buildMixedExplanationPrompt(source.path, excerpts, t, {
         sessionId, documentId: source.documentId, template: promptTemplate, guidance: promptGuidance,
         prepareReference: (request, signal) => imageUnderstanding.prepareReference(request, signal),
         signal,
@@ -378,7 +419,12 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
         clearSelection()
       }
     } catch (failure) {
-      if (ownsSubmission()) setError(failure instanceof Error ? failure.message : String(failure))
+      if (ownsSubmission()) {
+        const code = failure && typeof failure === 'object' && 'code' in failure ? failure.code : undefined
+        setError(code === 'pdf/stale-reader' || code === 'pdf/source-conflict'
+          ? t('reader.explain.sourceChanged') : code === 'pdf/text-geometry-unavailable'
+            ? t('reader.explain.selectionUnverifiable') : failure instanceof Error ? failure.message : String(failure))
+      }
     } finally {
       if (submitting.current === submission) {
         submitting.current = null

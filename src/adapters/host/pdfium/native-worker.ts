@@ -25,6 +25,7 @@ export class NativeWorker {
   private retiring?: Promise<void>
   private queuedBytes = 0
   generation = 0
+  encryptedOpen = false
   constructor(readonly executable: string, private readonly subprocess: NativeProcessRuntime,
     private readonly timeoutMs = 30_000) {}
 
@@ -72,11 +73,12 @@ export class NativeWorker {
     )
     child.stdin.on('error', () => { if (this.child === child) this.fail(failure('pdf/native-crashed', 'Native worker input closed')) })
     const reply = await this.enqueue({ command: 'hello' }, new Uint8Array(), undefined, 100)
-    const value = reply.value as { protocolVersion?: number; build?: string }
+    const value = reply.value as { protocolVersion?: number; build?: string; encryptedOpen?: boolean }
     if (value?.protocolVersion !== 1 || value.build !== '156.0.8076.0') {
       const error = failure('pdf/native-version', 'Native helper protocol or PDFium build does not match this plugin')
       this.fail(error); throw error
     }
+    this.encryptedOpen = value.encryptedOpen === true
   }
 
   async request(command: object, bytes: Uint8Array = new Uint8Array(), signal?: AbortSignal, priority = 0): Promise<NativeReply> {

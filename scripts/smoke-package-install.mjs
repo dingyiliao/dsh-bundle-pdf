@@ -55,7 +55,7 @@ try {
   await writeFile(join(temporary, 'package.json'), JSON.stringify({ name: 'pdf-package-install-smoke', private: true, type: 'module' }))
   await checked(process.execPath, [await npmCli(), 'install', '--ignore-scripts', '--no-audit', '--no-fund',
     '--package-lock=false', '--include=optional', '--registry=https://registry.npmjs.org/', ...(options.offline ? ['--offline'] : []),
-    ...(options.package ? [options.package] : [options.main, options.native]), '@deepseek-ai/cordis@4.0.5'], temporary, 180_000)
+    ...(options.package ? [options.package] : [options.main, options.native])], temporary, 180_000)
   const installed = createRequire(join(temporary, 'package.json'))
   const mainFile = installed.resolve(`${main.name}/package.json`)
   const mainRoot = dirname(mainFile)
@@ -110,7 +110,9 @@ try {
   const manifest = JSON.parse(await readFile(join(nativeRoot, 'bin/manifest.json'), 'utf8'))
   assert.equal(reply.requestId, requestId)
   assert.equal(reply.ok, true)
-  assert.deepEqual(reply.value, { protocolVersion: 1, engine: 'pdfium', build: manifest.pdfiumVersion })
+  assert.equal(reply.value?.protocolVersion, 1)
+  assert.equal(reply.value?.engine, 'pdfium')
+  assert.equal(reply.value?.build, manifest.pdfiumVersion)
   console.log(`[package-smoke] public /native provider and real PDFium hello: ${target}, protocol=1, build=${reply.value.build}`)
 
   const compiler = join(root, 'node_modules/typescript/bin/tsc')

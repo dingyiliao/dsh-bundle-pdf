@@ -4,7 +4,7 @@ import { deflateSync } from 'node:zlib'
 import test from 'node:test'
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream,
   PDFRef, PDFString, degrees } from 'pdf-lib'
-import { pdfIndexContentDigest } from '../../../src/adapters/host/pdf-lib/content-identity.js'
+import { pdfIndexContentDigest, pdfIndexContentIdentity } from '../../../src/adapters/host/pdf-lib/content-identity.js'
 import { applyPdfOperations, loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.js'
 
 const name = PDFName.of
@@ -28,7 +28,13 @@ test('annotation, comment, note and bookmark saves retain the same indexed page 
   const { doc } = await fixture()
   const bytes = await doc.save({ useObjectStreams: false })
   const original = await loadPdfDocument(bytes)
-  assert.match(original.indexContentDigest ?? '', /^sha256:[a-f0-9]{64}$/)
+  assert.equal(original.indexContentDigest, 'sha256:2e39b05ccc7c3b6135b11c63ed53f9590c2a6807094c1c212687f6934a456e68')
+  assert.match(original.indexPageDigests?.[0] ?? '', /^sha256:[a-f0-9]{64}$/)
+  async function checkIdentity(saved: Uint8Array) {
+    const reopened = await loadPdfDocument(saved)
+    assert.equal(reopened.indexContentDigest, original.indexContentDigest)
+    assert.deepEqual(reopened.indexPageDigests, original.indexPageDigests)
+  }
   const added = await applyPdfOperations(bytes, [
     { type: 'add', annotation: { id: 'highlight', page: 1, subtype: 'Highlight', rect: [10, 20, 80, 40],
       quadPoints: [10, 40, 80, 40, 10, 20, 80, 20], contents: 'Comment one', color: [1, 1, 0] } },
@@ -37,17 +43,95 @@ test('annotation, comment, note and bookmark saves retain the same indexed page 
   ])
   assert.notEqual(createHash('sha256').update(bytes).digest('hex'), createHash('sha256').update(added.bytes).digest('hex'))
   assert.equal(added.document.indexContentDigest, original.indexContentDigest)
-  assert.equal((await loadPdfDocument(added.bytes)).indexContentDigest, original.indexContentDigest)
+  assert.deepEqual(added.document.indexPageDigests, original.indexPageDigests)
+  await checkIdentity(added.bytes)
   const edited = await applyPdfOperations(added.bytes, [
     { type: 'update', id: 'highlight', patch: { contents: 'Revised comment', color: [0, 1, 0], commentPosition: [200, 200] } },
     { type: 'update', id: 'note', patch: { contents: 'Revised note', rect: [200, 100, 250, 150] } },
     { type: 'outline-update', id: 'chapter', patch: { title: 'Renamed chapter' } },
   ])
-  assert.equal((await loadPdfDocument(edited.bytes)).indexContentDigest, original.indexContentDigest)
+  await checkIdentity(edited.bytes)
   const removed = await applyPdfOperations(edited.bytes, [
     { type: 'delete', id: 'highlight' }, { type: 'delete', id: 'note' }, { type: 'outline-delete', id: 'chapter' },
   ])
-  assert.equal((await loadPdfDocument(removed.bytes)).indexContentDigest, original.indexContentDigest)
+  await checkIdentity(removed.bytes)
+})
+
+test('a saved page program change preserves other page digests and invalidates the document digest', async () => {
+  const { doc, stream } = await fixture()
+  const second = doc.addPage([400, 600])
+  second.node.set(name('Contents'), stream)
+  const original = await loadPdfDocument(await doc.save())
+  assert.equal(original.indexPageDigests?.length, 2)
+  assert.equal(original.indexPageDigests?.[0], original.indexPageDigests?.[1])
+
+  second.node.set(name('Contents'), doc.context.register(doc.context.stream('q 1 0 0 rg 10 20 30 40 re f Q\n')))
+  const edited = await loadPdfDocument(await doc.save())
+  assert.equal(edited.indexPageDigests?.[0], original.indexPageDigests?.[0])
+  assert.notEqual(edited.indexPageDigests?.[1], original.indexPageDigests?.[1])
+  assert.notEqual(edited.indexContentDigest, original.indexContentDigest)
+})
+
+test('page fingerprints include document-wide visibility and output-intent dependencies', async () => {
+  const { doc } = await fixture()
+  doc.addPage([400, 600])
+  let previous = pdfIndexContentIdentity(doc).indexPageDigests!
+  for (const [key, value] of [
+    ['OCProperties', doc.context.obj({ D: { BaseState: 'OFF' } })],
+    ['OutputIntents', doc.context.obj([{ S: 'GTS_PDFA1', OutputConditionIdentifier: PDFString.of('New output intent') }])],
+  ] as const) {
+    doc.catalog.set(name(key), value)
+    const current = pdfIndexContentIdentity(doc).indexPageDigests!
+    assert.equal(current.length, 2)
+    for (const [index, value] of current.entries()) assert.notEqual(value, previous[index])
+    previous = current
+  }
+  doc.catalog.set(name('OCProperties'), PDFRef.of(99999))
+  assert.deepEqual(pdfIndexContentIdentity(doc), {})
+})
+
+test('an unverifiable page leaves a hole and unwinds resource traversal before later pages', async () => {
+  const { doc, page, stream } = await fixture()
+  const second = doc.addPage([400, 600])
+  second.node.set(name('Contents'), stream)
+  const shared = doc.context.register(doc.context.obj({ Inner: { Value: 42 } }))
+  second.node.Resources()!.set(name('Properties'), doc.context.obj({ Resource: shared }))
+  const verified = pdfIndexContentIdentity(doc).indexPageDigests?.[1]
+  assert.match(verified ?? '', /^sha256:[a-f0-9]{64}$/)
+
+  page.node.Resources()!.set(name('Properties'), doc.context.obj({ Wrapper: { Wrapper: { Resource: shared } } }))
+  assert.deepEqual(pdfIndexContentIdentity(doc, { maxDepth: 5 }), { indexPageDigests: [null, verified] })
+  page.node.Resources()!.delete(name('Properties'))
+  page.node.set(name('Contents'), doc.context.register(PDFRawStream.of(doc.context.obj({ Filter: 'FlateDecode' }), Buffer.from([1, 2, 3]))))
+  assert.deepEqual(pdfIndexContentIdentity(doc), { indexPageDigests: [null, verified] })
+})
+
+test('independent pages can exceed 256 MiB of decoded data within the total work budget', async () => {
+  const doc = await PDFDocument.create(), size = 16 * 1024 * 1024
+  const contents = deflateSync(Buffer.alloc(size, 32))
+  for (let index = 0; index < 17; index++) {
+    const page = doc.addPage([400, 600])
+    page.node.set(name('Contents'), doc.context.register(PDFRawStream.of(doc.context.obj({ Filter: 'FlateDecode' }), contents)))
+  }
+  const identity = pdfIndexContentIdentity(doc)
+  assert.match(identity.indexContentDigest ?? '', /^sha256:[a-f0-9]{64}$/)
+  assert.equal(identity.indexPageDigests?.filter(Boolean).length, 17)
+
+  const limited = pdfIndexContentIdentity(doc, { maxBytes: size * 4 })
+  assert.equal(limited.indexContentDigest, undefined)
+  assert.equal(limited.indexPageDigests?.[0], identity.indexPageDigests?.[0])
+  assert.equal(limited.indexPageDigests?.[16], null)
+})
+
+test('an exhausted document aggregate budget keeps the proven individual page digests', async () => {
+  const { doc, stream } = await fixture()
+  doc.addPage([400, 600]).node.set(name('Contents'), stream)
+  const complete = pdfIndexContentIdentity(doc)
+  assert.match(complete.indexContentDigest ?? '', /^sha256:[a-f0-9]{64}$/)
+  assert.equal(complete.indexPageDigests?.filter(Boolean).length, 2)
+
+  const bounded = pdfIndexContentIdentity(doc, { maxBytes: 900 })
+  assert.deepEqual(bounded, { indexPageDigests: complete.indexPageDigests })
 })
 
 test('external annotation and metadata rewrites do not invalidate the page identity', async () => {

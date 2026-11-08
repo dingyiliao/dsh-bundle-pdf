@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { adoptLegacyPageContents, pageContentAggregateKey } from '../../../../src/adapters/host/dsh/page-content-legacy.js'
 import { appendPageRepresentation, buildNativePageContent, createPageRepresentation,
-  NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, pageContentBlockId, pageContentDigest, parsePageContent,
+  NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, pageContentBlockId, pageContentCacheIdentity, pageContentDigest, parsePageContent,
   type PageContent, type PageRepresentation } from '../../../../src/modules/document/index.js'
 import type { RetrievalCache } from '../../../../src/modules/retrieval/index.js'
 import type { NativeTextContent } from '../../../../src/shared/native.js'
@@ -50,9 +50,12 @@ function storedKey(page: PageContent, change: { pipeline?: string; path?: string
     change.digest ?? page.sourceDigest, page.page, page.extractionIdentity)
 }
 const aggregate = (page: PageContent, plan: Target) => pageContentAggregateKey(plan.pipeline, plan.path,
-  plan.indexContentDigest, page.page, plan.indexIdentity)
+  pageContentCacheIdentity({ sourceDigest: plan.sourceDigest, indexContentDigest: plan.indexContentDigest,
+    indexPageDigest: plan.indexPageDigests?.[page.page - 1] }), page.page, plan.indexIdentity)
 const marker = (plan: Target) => `pagecontent_adopted_${createHash('sha256')
   .update(JSON.stringify([plan.path, plan.indexContentDigest, plan.indexIdentity])).digest('hex')}`
+const pageMarker = (plan: Target) => `pagecontent_adopted_pages_${createHash('sha256')
+  .update(JSON.stringify([plan.pipeline, plan.path, plan.indexIdentity])).digest('hex')}`
 const reps = (page: PageContent, kind?: PageRepresentation['kind']) => page.blocks.flatMap(block => block.representations)
   .filter(rep => !kind || rep.kind === kind)
 
@@ -96,6 +99,54 @@ test('default legacy enrichments become a content-bound alias without changing p
   const counts = [f.scans.length, f.writes.length]
   await adoptLegacyPageContents(f.cache, plan, () => {})
   assert.deepEqual([f.scans.length, f.writes.length], counts, 'the accepted migration marker makes reopening idempotent')
+})
+
+test('page migration retains verified old results and scans once for each path and policy even after a source edit', async () => {
+  const old = legacy(), unverifiable = legacy({ page: 2 })
+  const plan = target({ indexContentDigest: undefined, indexPageDigests: [pageContentDigest('page one'), null], pageRects: [rect, rect] })
+  const f = memory([[storedKey(old), old], [storedKey(unverifiable), unverifiable]])
+  await adoptLegacyPageContents(f.cache, plan, () => {})
+  const adopted = parsePageContent(f.data.get(aggregate(old, plan)))!
+  assert.equal(adopted.indexPageDigest, plan.indexPageDigests![0])
+  assert.equal(adopted.indexContentDigest, undefined)
+  assert.deepEqual(reps(adopted), reps(old))
+  assert.equal(f.data.has(aggregate(unverifiable, plan)), false)
+  assert.deepEqual(f.data.get(pageMarker(plan)), { version: 1 })
+  const scans = f.scans.length, writes = f.writes.length
+
+  const changed = target({ ...plan, sourceDigest: pageContentDigest('edited file'), indexContentDigest: pageContentDigest('new whole document'),
+    indexPageDigests: [plan.indexPageDigests![0]!, pageContentDigest('edited second page')] })
+  await adoptLegacyPageContents(f.cache, changed, () => {})
+  assert.equal(aggregate(old, changed), aggregate(old, plan))
+  assert.deepEqual([f.scans.length, f.writes.length], [scans, writes])
+
+  const anotherPolicy = target({ ...changed, indexIdentity: 'another plan' })
+  await adoptLegacyPageContents(f.cache, anotherPolicy, () => {})
+  assert.ok(f.scans.length > scans)
+  assert.equal(f.data.has(aggregate(old, anotherPolicy)), false, 'a scan of the edited file cannot adopt the previous raw source')
+  assert.deepEqual(f.data.get(pageMarker(anotherPolicy)), { version: 1 })
+})
+
+test('an existing whole-document completion marker avoids rescanning for the same verified document', async () => {
+  const old = legacy(), whole = target(), f = memory([[storedKey(old), old]])
+  await adoptLegacyPageContents(f.cache, whole, () => {})
+  const aliases = f.writes.length, scans = f.scans.length
+  const perPage = target({ ...whole, sourceDigest: pageContentDigest('resaved same document'),
+    indexPageDigests: [pageContentDigest('same page')] })
+  await adoptLegacyPageContents(f.cache, perPage, () => {})
+  assert.equal(f.scans.length, scans)
+  assert.deepEqual(f.writes.slice(aliases), [pageMarker(perPage)])
+  assert.equal(f.data.has(aggregate(old, perPage)), false, 'verified whole-document aliases are read through lazily')
+  assert.deepEqual(reps(parsePageContent(f.data.get(aggregate(old, whole)))!), reps(old))
+})
+
+test('page migration preserves an existing verified aggregate', async () => {
+  const old = legacy(), plan = target({ indexPageDigests: [pageContentDigest('same page')] })
+  const alias = aggregate(old, plan), current = { version: 'concurrently stored' }
+  const f = memory([[storedKey(old), old], [alias, current]])
+  await adoptLegacyPageContents(f.cache, plan, () => {})
+  assert.deepEqual(f.data.get(alias), current)
+  assert.deepEqual(f.writes, [pageMarker(plan)])
 })
 
 test('partial native text retains OCR on its text block while disabled enrichments are omitted', async () => {

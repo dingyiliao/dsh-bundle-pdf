@@ -85,6 +85,46 @@ test('source and saved engine changes cancel outdated preparation and retain onl
   } finally { for (const gate of gates) gate.resolve(); await prefetch.dispose() }
 })
 
+test('a verified annotation-only save retains a ready index while a new body or path queues work', async () => {
+  const body = `sha256:${'a'.repeat(64)}`
+  let current = { ...document('a'), path: '/book.pdf', indexContentDigest: body }, calls = 0
+  const prefetch = createRetrievalPrefetch({ documents: () => [current], selection: () => ({ identity: 'engine' }),
+    async prepare() { calls++ } })
+  try {
+    await turn()
+    const ready = prefetch.status()
+    assert.equal(ready.documents[0]?.state, 'ready')
+    current = { ...current, sourceDigest: 'saved-note' }
+    prefetch.refresh(); await turn()
+    assert.deepEqual(prefetch.status(), ready, 'saving annotations does not publish a replacement task')
+    assert.equal(calls, 1)
+    current = { ...current, sourceDigest: 'saved-text', indexContentDigest: `sha256:${'b'.repeat(64)}` }
+    prefetch.refresh(); await turn()
+    assert.equal(calls, 2, 'body changes require a new index')
+    current = { ...current, path: '/another.pdf' }
+    prefetch.refresh(); await turn()
+    assert.equal(calls, 3, 'save as requires the destination index namespace')
+  } finally { await prefetch.dispose() }
+})
+
+test('a verified annotation-only save still fences an in-flight index read to its original bytes', async () => {
+  const gate = deferred(), signals: AbortSignal[] = []
+  let current = { ...document('a'), path: '/book.pdf', indexContentDigest: `sha256:${'a'.repeat(64)}` }
+  const prefetch = createRetrievalPrefetch({ documents: () => [current], selection: () => ({ identity: 'engine' }),
+    async prepare(_session, _input, signal) { signals.push(signal); if (signals.length === 1) await gate.promise } })
+  try {
+    await turn()
+    assert.equal(prefetch.status().documents[0]?.state, 'running')
+    current = { ...current, sourceDigest: 'saved-note' }
+    prefetch.refresh(); await turn()
+    assert.equal(signals[0]?.aborted, true)
+    assert.equal(signals.length, 1)
+    gate.resolve(); await turn()
+    assert.equal(signals.length, 2)
+    assert.equal(prefetch.status().documents[0]?.state, 'ready')
+  } finally { gate.resolve(); await prefetch.dispose() }
+})
+
 test('the default background document budget bounds preparation at 64 owned documents', async () => {
   const documents = Array.from({ length: 67 }, (_, index) => document(`document-${index}`))
   let calls = 0

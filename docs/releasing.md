@@ -44,7 +44,7 @@ different content under the same version requires a new version.
 After publication, verify automatic native selection from the registry alone:
 
 ```sh
-npm run package:smoke -- --package @dylanl1/dsh-plugin-pdf@0.1.5
+npm run package:smoke -- --package @dylanl1/dsh-plugin-pdf@0.1.7
 ```
 
 Use the version being released in that command.

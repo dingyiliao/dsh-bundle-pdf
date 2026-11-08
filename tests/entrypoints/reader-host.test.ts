@@ -10,6 +10,7 @@ import { updateVolatile } from '@deepseek-ai/cosmokit'
 import { PDFDocument } from 'pdf-lib'
 import { apply, inject, name } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
+import { PDF_ENDPOINT, responseSchema, wireSnapshotSchema } from '../../src/contracts/rpc/index.ts'
 import { defaultSettings } from '../../src/shared/contracts.ts'
 import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
 import { nativeTestSubprocess } from '../native-test-subprocess.ts'
@@ -136,12 +137,8 @@ function assertDomainsClosed(runtime: ReturnType<typeof host>): void {
   }
 }
 
-async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string, text?: string) {
+async function mountDocument(runtime: ReturnType<typeof host>, assetRoot: string, bytes: Uint8Array) {
   const root = await realpath(assetRoot), path = join(root, 'evidence.pdf')
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([200, 200])
-  if (text) page.drawText(text, { x: 10, y: 160, size: 10 })
-  const bytes = await pdf.save()
   await writeFile(path, bytes)
   runtime.ctx.fs = {
     async resolve(input, options) {
@@ -163,6 +160,15 @@ async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot
     },
   }
   runtime.ctx.sandboxPolicy = { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) }
+  return path
+}
+
+async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string, text?: string) {
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([200, 200])
+  if (text) page.drawText(text, { x: 10, y: 160, size: 10 })
+  const bytes = await pdf.save()
+  const path = await mountDocument(runtime, assetRoot, bytes)
   const opened = await runtime.registeredTools.get('pdf_open')!.execute({ path }, {
     agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal,
   }) as { documentId: string; contentVersion: string; revision: number }
@@ -1074,6 +1080,46 @@ test('Host image evidence resolver binds each request to a live matching Session
       'pdfref_00000000-0000-4000-8000-000000000000', new AbortController().signal),
     { code: 'pdf/unknown-document' })
   } finally { await mounted.disposeEffects() }
+})
+
+test('Host keeps an unlocked Reader tab out of agent context and image evidence', { skip: !existsSync(indexingWorker) }, async t => {
+  const assets = await assetFixture(t), sessionId = 'protected-reader-host'
+  const readImage = t.mock.fn(async () => { assert.fail('Protected content must not reach the attachment store') })
+  const runtime = host({ agentSessionId: sessionId, attachments: { readImage } })
+  runtime.ctx.pdfNative.executable = indexingWorker
+  const bytes = await readFile(new URL('../fixtures/password-object-stream.pdf', import.meta.url))
+  const path = await mountDocument(runtime, assets, bytes)
+  await apply(runtime.ctx, runtime.config, assets)
+  const request = async (method: string, payload: Record<string, unknown>) => {
+    const response = await runtime.routes.get(`/api/${method}`)!.fetch(infoRequest({
+      type: 'client-request', method, rpcId: 'protected-reader-fixture', payload: { ...payload, sessionId },
+    }))
+    assert.equal(response.status, 200)
+    return responseSchema.parse((await response.json()).result)
+  }
+  try {
+    const referenceId = 'protected-tab'
+    const address = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(path)}`
+    const locked = await request(PDF_ENDPOINT, { action: 'open', address, referenceId })
+    assert.equal(locked.ok, false)
+    assert.equal(locked.error.code, 'pdf/password-required')
+    const unlocked = await request(PDF_ENDPOINT, { action: 'unlock', address, referenceId, password: 'fixture-password' })
+    assert.equal(unlocked.ok, true)
+    const document = wireSnapshotSchema.parse(unlocked.value)
+    assert.equal(document.document?.encrypted, true)
+
+    const context = await request('pdf.readercontext', { action: 'set', tabId: referenceId, leaseId: 'protected-lease',
+      sequence: 1, documentId: document.id, contentVersion: document.contentVersion, page: 1 })
+    assert.equal(context.ok, false)
+    assert.equal(context.error.code, 'pdf/protected-document')
+    const execution = { agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal }
+    assert.deepEqual(await runtime.registeredTools.get('pdf_current')!.execute({}, execution), { status: 'none', documents: [] })
+
+    const resolver = runtime.services.get('pdfImageEvidence') as PdfImageEvidenceResolver
+    await assert.rejects(resolver.resolve(sessionId, document.id, 'pdfref_00000000-0000-4000-8000-000000000001',
+      execution.signal), { code: 'pdf/protected-document' })
+    assert.equal(readImage.mock.callCount(), 0)
+  } finally { await runtime.disposeEffects() }
 })
 
 test('Host bootstrap closes earlier domains when navigation, evidence or index preferences fail to open', async (t) => {

@@ -15,6 +15,7 @@ const source = Uint8Array.from([1, 2])
 const materialized = Uint8Array.from([1, 2, 3])
 const info: PdfDocumentInfo = {
   pageCount: 1, pages: [{ page: 1, cropBox: [0, 0, 100, 100], rotation: 0, userUnit: 1 }],
+  indexContentDigest: `sha256:${'a'.repeat(64)}`,
   annotations: [], signed: false, encrypted: false, readOnly: false,
 }
 
@@ -61,10 +62,11 @@ test('working-copy commands use injected PDF/file ports and preserve logical con
     },
   }
   const service = createWorkingCopyService(files, drafts, pdf)
-  const openedSources: Array<{ sourceDigest: string; contentVersion: string }> = []
+  const openedSources: Array<{ sourceDigest: string; contentVersion: string; indexContentDigest?: string }> = []
   service.onDocumentsChanged(() => {
     const current = service.listOpenDocuments()[0]
-    if (current) openedSources.push({ sourceDigest: current.sourceDigest, contentVersion: current.contentVersion })
+    if (current) openedSources.push({ sourceDigest: current.sourceDigest, contentVersion: current.contentVersion,
+      indexContentDigest: current.indexContentDigest })
   })
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
@@ -85,9 +87,9 @@ test('working-copy commands use injected PDF/file ports and preserve logical con
     assert.equal(saved.dirty, false)
     assert.equal(saved.contentVersion, opened.contentVersion)
     assert.deepEqual(openedSources, [
-      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(source) },
-      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(materialized) },
-    ], 'a saved byte baseline notifies index consumers even when logical contentVersion is retained')
+      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(source), indexContentDigest: info.indexContentDigest },
+      { contentVersion: opened.contentVersion, sourceDigest: digestPdfBytes(materialized), indexContentDigest: info.indexContentDigest },
+    ], 'an annotation-only save publishes new source bytes while keeping the verified body identity')
     assert.equal(saved.revision, edited.revision + 1)
     assert.equal(inspectCount, 1)
     assert.equal(materializeCount, 1)

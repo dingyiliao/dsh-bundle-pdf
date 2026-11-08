@@ -8,6 +8,8 @@ export interface RetrievalDocument {
   /** Stable page-content identity; annotations and file serialization are excluded.
    * Raw sourceDigest remains mandatory for caller freshness and evidence. */
   indexContentDigest?: string
+  /** Ordered Host-verified page identities. A null entry is bound to the exact source bytes. */
+  indexPageDigests?: readonly (string | null)[]
   contentVersion: string
   pageCount: number
 }
@@ -139,6 +141,8 @@ export interface RetrievalProgress {
   phase?: 'restoring' | 'extracting' | 'embedding' | 'ready'
   reusedChunks?: number
   computedChunks?: number
+  /** Pages that still lack requested content, including usable partial pages. */
+  failedPages?: number
 }
 export interface RetrievalResult {
   status: 'building' | 'complete' | 'incomplete'
@@ -169,9 +173,9 @@ export interface RetrievalService {
   state(): 'ready' | 'rebuilding' | 'failed' | 'disposed'
   prepare(sessionId: string, input: RetrievalPrepareInput, signal?: AbortSignal,
     onProgress?: (progress: RetrievalProgress) => void): Promise<void>
-  /** Cooperatively finish one bounded unit; false preserves resumable work. */
+  /** Cooperatively finish one bounded unit. Reuse the occurrence object across slices of one task. */
   prepareSlice(sessionId: string, input: RetrievalPrepareInput, signal?: AbortSignal,
-    onProgress?: (progress: RetrievalProgress) => void): Promise<boolean>
+    onProgress?: (progress: RetrievalProgress) => void, occurrence?: object): Promise<boolean>
   search(sessionId: string, input: RetrievalInput, signal?: AbortSignal): Promise<RetrievalResult>
   /** Revalidate after adapter awaits, including reference issuance; never an authorization grant. */
   validate(sessionId: string, result: RetrievalResult): void

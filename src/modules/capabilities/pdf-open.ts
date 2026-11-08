@@ -8,8 +8,9 @@ export interface PdfOpenProbe {
 }
 
 /** Neither parser may silently downgrade a feature detected by the other. */
-export function requiredPdfOpenCapabilities(probe: PdfOpenProbe, parsedFormKind?: 'acroform' | 'xfa'): string[] {
+export function requiredPdfOpenCapabilities(probe: PdfOpenProbe, parsedFormKind?: 'acroform' | 'xfa', encrypted = false): string[] {
   const required: string[] = [pdfCapabilities.renderPage]
+  if (encrypted) required.push(pdfCapabilities.unlockDocument)
   if (parsedFormKind === 'acroform') required.push(pdfCapabilities.renderAcroForm)
   else if (parsedFormKind === 'xfa') required.push(pdfCapabilities.renderXfa)
   if (probe.formType === 1) required.push(pdfCapabilities.renderAcroForm)

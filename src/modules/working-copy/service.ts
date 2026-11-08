@@ -5,7 +5,7 @@ import { decodePdfBaseline, digestPdfBytes, encodePdfBaseline } from '../documen
 import { appendGroup, moveCursor, projectedDocument, projectWorkingCopyOperations } from './history.js'
 import { saveWorkingCopy } from './save.js'
 import { freshRecord, workspaceSnapshot, type WorkingCopyState } from './state.js'
-import type { PdfDocumentInfo } from '../../core/pdf-types.js'
+import { PdfDocumentError, type PdfDocumentInfo } from '../../core/pdf-types.js'
 import type {
   HostWorkspaceSnapshot, PdfDocumentPort, WorkingCopyDraftPort, WorkingCopyAgent, WorkingCopyFilePort, WorkingCopyFileRead,
   DocumentReleaseStatus, DocumentResidency, OpenWorkingCopyDocument,
@@ -18,13 +18,19 @@ import { draftSchema, type DraftRecord, type WorkspaceRecord } from './schema.js
 export type { HostWorkspaceSnapshot } from './ports.js'
 type RenderedPdf = Pick<HostWorkspaceSnapshot, 'bytes' | 'document'>
 interface DocumentReferences { ui: Set<string>; modelReferenceId?: string; pins: number; touched: number }
-interface SuspendedCopy { record: WorkspaceRecord; conflict: boolean; warning?: string }
+interface SuspendedCopy { record: WorkspaceRecord; conflict: boolean; warning?: string; indexContentDigest?: string }
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 
 /** Authoritative working copies, serialized per session. A draft is durable before the UI accepts it. */
-export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: WorkingCopyDraftPort, pdf: PdfDocumentPort) {
+export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: WorkingCopyDraftPort, pdf: PdfDocumentPort,
+  protectedReader?: {
+    inspect(bytes: Uint8Array, password: string | undefined, signal: AbortSignal): Promise<PdfDocumentInfo | undefined>
+    release(id: string): void
+  }) {
   const copies = new Map<string, WorkingCopyState>()
+  // Scoped to a live Reader-owned copy. Neither snapshots nor draft records carry credentials.
+  const passwords = new Map<string, string>()
   const byPath = new Map<string, string>()
   // Identity and ownership outlive resident PDF bytes. Both entry points share
   // this table; cache eviction must not manufacture a new document identity.
@@ -47,10 +53,13 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     return [...references].flatMap(([id, refs]) => {
       if (!refs.ui.size && refs.modelReferenceId === undefined) return []
       const active = copies.get(id), dormant = suspended.get(id)
+      if (active?.snapshot.document.encrypted) return []
       const record = active?.record ?? dormant?.record
       if (!record) return []
+      const indexContentDigest = active?.snapshot.document.indexContentDigest ?? dormant?.indexContentDigest
       return [{ sessionId: record.sessionId, id, path: record.path, contentVersion: record.contentVersion,
-        sourceDigest: record.sourceHash, conflict: active?.snapshot.conflict ?? dormant!.conflict,
+        sourceDigest: record.sourceHash, ...(indexContentDigest ? { indexContentDigest } : {}),
+        conflict: active?.snapshot.conflict ?? dormant!.conflict,
         title: (basename(record.path) || 'PDF').slice(0, 512) }]
     })
   }
@@ -75,7 +84,20 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   function touch(id: string): void { const refs = references.get(id); if (refs) refs.touched = Date.now() }
   function idle(sessionId: string, id: string): void {
     const refs = references.get(id)
-    if (refs && !refs.ui.size && !refs.pins) for (const listener of idleListeners) {
+    if (!refs || refs.ui.size) return
+    const copy = copies.get(id)
+    if (copy?.snapshot.document.encrypted) {
+      passwords.delete(id)
+      if (refs.pins) return
+      copies.delete(id)
+      const key = drafts.key(sessionId, copy.record.path)
+      if (byPath.get(key) === id) byPath.delete(key)
+      references.delete(id)
+      for (const listener of revisionListeners.get(`${sessionId}\0${id}`) ?? []) listener()
+      protectedReader?.release(id)
+    }
+    if (refs.pins) return
+    for (const listener of idleListeners) {
       try { listener(sessionId, id) } catch { /* Reclamation must not fail a completed document operation. */ }
     }
   }
@@ -118,6 +140,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   async function baselinePdf(record: WorkspaceRecord): Promise<RenderedPdf> {
     if (!record.original) fail('pdf/draft-damaged', 'Saved draft baseline is missing')
     const bytes = decodePdfBaseline(record.original, record.sourceHash)
+    hashes.set(bytes, record.sourceHash)
     return { bytes, document: await pdf.inspect(bytes) }
   }
 
@@ -126,6 +149,30 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     // inspect those exact bytes without encoding, decoding and hashing another copy.
     hashes.set(source.bytes, source.version)
     return { bytes: source.bytes, document: await pdf.inspect(source.bytes) }
+  }
+
+  async function openSource(source: WorkingCopyFileRead, owner: 'ui' | 'agent', signal: AbortSignal,
+    password?: string): Promise<RenderedPdf> {
+    if (password === undefined) {
+      try { return await sourcePdf(source) }
+      catch (error) {
+        if (!protectedReader || !(error instanceof PdfDocumentError)
+          || error.code !== 'invalid-pdf' && error.code !== 'encrypted') throw error
+        const document = await protectedReader.inspect(source.bytes, undefined, signal).catch((cause: unknown) => {
+          if (owner === 'agent' && cause instanceof Error && 'code' in cause && cause.code === 'pdf/password-required') {
+            fail('pdf/protected-document', 'Open this protected PDF in the Reader')
+          }
+          throw cause
+        })
+        if (!document) throw error
+        if (owner === 'agent') fail('pdf/protected-document', 'Open this protected PDF in the Reader')
+        return { bytes: source.bytes, document }
+      }
+    }
+    hashes.set(source.bytes, source.version)
+    const document = await protectedReader?.inspect(source.bytes, password, signal)
+    if (!document) fail('pdf/not-encrypted', 'This PDF no longer requires a password; reopen it')
+    return { bytes: source.bytes, document }
   }
 
   async function recoverCommitted(copy: WorkingCopyState, source: WorkingCopyFileRead, signal?: AbortSignal): Promise<HostWorkspaceSnapshot> {
@@ -180,6 +227,11 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       copy.snapshot = { ...copy.snapshot, sourceVersion: source.fsVersion }
     }
     if (source && conflict && !copy.snapshot.dirty && copy.record.groups.length === 0) {
+      if (copy.snapshot.document.encrypted) {
+        // Keep displaying the already authorized version until an explicit reopen.
+        copy.snapshot = { ...copy.snapshot, conflict: true }
+        return copy.snapshot
+      }
       return publish(copy, freshRecord(copy.record.sessionId, source, copy.record.revision + 1), false, signal, undefined, await sourcePdf(source))
     }
     copy.snapshot = { ...copy.snapshot, conflict }
@@ -206,7 +258,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     signal.throwIfAborted()
     copies.set(id, copy)
     suspended.delete(id)
-    await refresh(copy, source, signal)
+    if (!observed) await refresh(copy, source, signal)
     return copy
   }
 
@@ -219,7 +271,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
   }
 
   async function open(sessionId: string, address: string, owner: 'ui' | 'agent', referenceId: string | undefined,
-    agent: WorkingCopyAgent, signal: AbortSignal) {
+    agent: WorkingCopyAgent, signal: AbortSignal, password?: string) {
     if (owner === 'ui' && releasedReferences.has(JSON.stringify([sessionId, referenceId ?? 'legacy-ui']))) {
       fail('pdf/reference-released', 'This PDF view has closed; open it with a new view reference')
     }
@@ -230,9 +282,30 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     const key = drafts.key(sessionId, path)
     const existingId = byPath.get(key)
     if (existingId) {
-      const wasResident = copies.has(existingId)
       const copy = await resident(sessionId, existingId, agent, signal, { source })
-      const snapshot = wasResident ? await refresh(copy, source, signal) : copy.snapshot
+      if (copy.snapshot.document.encrypted && owner === 'agent') fail('pdf/protected-document', 'Open this protected PDF in the Reader')
+      const cleanReplacement = source && source.version !== copy.record.sourceHash && !copy.record.groups.length
+      const reopeningProtected = copy.snapshot.document.encrypted && !references.get(existingId)?.ui.size
+      if (password !== undefined || reopeningProtected || cleanReplacement && protectedReader) {
+        if (!source) fail('PDF_NOT_FOUND', 'PDF file does not exist')
+        if (copy.record.groups.length) fail('pdf/source-conflict', 'Resolve the existing PDF draft before opening a different version')
+        const opened = await openSource(source, owner, signal, password)
+        signal.throwIfAborted()
+        if (source.version !== copy.record.sourceHash) {
+          const next = freshRecord(sessionId, source, copy.record.revision + 1)
+          if (copy.snapshot.document.encrypted || opened.document.encrypted) {
+            copy.record = next
+            copy.baseline = opened.document
+            copy.snapshot = workspaceSnapshot(copy.id, next, opened.document, opened.bytes, opened.document, false)
+          } else await publish(copy, next, false, signal, undefined, opened)
+          if (opened.document.encrypted) references.get(existingId)!.modelReferenceId = undefined
+        }
+        if (password !== undefined) passwords.set(existingId, password)
+        else passwords.delete(existingId)
+        own(existingId, owner, referenceId)
+        return copy.snapshot
+      }
+      const snapshot = await refresh(copy, source, signal)
       own(existingId, owner, referenceId)
       return snapshot
     }
@@ -243,6 +316,9 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       fail('pdf/draft-mismatch', 'The saved draft does not belong to this file and session')
     }
     const id = randomUUID()
+    if (password !== undefined && (!source || stored?.groups.length)) {
+      fail('pdf/source-conflict', 'The PDF source or its existing draft changed; reopen it')
+    }
     // A file may have committed just before the connection or draft cleanup
     // failed. A hash persisted before the write proves that recovery is complete.
     const alreadySaved = stored && source && stored.renderedHash !== stored.sourceHash
@@ -253,7 +329,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     if (stored && source && (stored.groups.length === 0 || alreadySaved)) {
       record = freshRecord(sessionId, source, stored.revision + 1,
         alreadySaved ? stored.contentVersion : randomUUID())
-      baseline = await sourcePdf(source)
+      baseline = await openSource(source, owner, signal, password)
       snapshot = workspaceSnapshot(id, record, baseline.document, baseline.bytes, baseline.document, false)
       try {
         await drafts.delete(key)
@@ -267,7 +343,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       if (source && record.sourceHash === source.version && record.sourceVersion !== source.fsVersion) {
         record = { ...record, sourceVersion: source.fsVersion }
       }
-      baseline = restoredBaseline ?? (stored ? await baselinePdf(record) : await sourcePdf(source!))
+      baseline = restoredBaseline ?? (stored ? await baselinePdf(record) : await openSource(source!, owner, signal, password))
       snapshot = workspaceSnapshot(id, record, baseline.document, baseline.bytes,
         projectedDocument(baseline.document, record), record.sourceHash !== source?.version)
       if (stored && (!stored.baseKey || !stored.groupDates)) {
@@ -278,6 +354,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     }
     signal.throwIfAborted()
     copies.set(id, { id, record, baseline: baseline.document, snapshot })
+    if (password !== undefined) passwords.set(id, password)
     byPath.set(key, id)
     own(id, owner, referenceId)
     return snapshot
@@ -317,6 +394,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         await drafts.delete(key)
         const id = byPath.get(key)
         if (id) {
+          passwords.delete(id)
           copies.delete(id)
           suspended.delete(id)
           references.delete(id)
@@ -356,7 +434,8 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     // no new operation can observe native buffers halfway through disposal.
     await evict?.()
     suspended.set(id, { record: { ...next, original: undefined },
-      conflict: copy.snapshot.conflict, warning: copy.snapshot.warning })
+      conflict: copy.snapshot.conflict, warning: copy.snapshot.warning,
+      indexContentDigest: copy.snapshot.document.indexContentDigest })
     copies.delete(id)
     return 'released'
   }
@@ -365,11 +444,13 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     const input = requestSchema.parse(raw)
     if (input.sessionId !== agent.session.id) fail('pdf/session-mismatch', 'Session identity mismatch')
     if (input.action === 'open') return open(input.sessionId, input.address, input.owner ?? 'ui', input.referenceId, agent, signal)
+    if (input.action === 'unlock') return open(input.sessionId, input.address, 'ui', input.referenceId, agent, signal, input.password)
     if (input.action === 'release') {
+      const referenceKey = JSON.stringify([input.sessionId, input.referenceId])
       if (input.id === undefined) {
         // A failed/lost open reply may hide the document ID from the Client.
         // Closing the occurrence by token also fences delayed open retries.
-        releasedReferences.add(JSON.stringify([input.sessionId, input.referenceId]))
+        releasedReferences.add(referenceKey)
         const released: string[] = []
         for (const [id, refs] of references) {
           const record = copies.get(id)?.record ?? suspended.get(id)?.record
@@ -381,12 +462,13 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         return { released }
       }
       const record = copies.get(input.id)?.record ?? suspended.get(input.id)?.record
+      if (record) recordFor(input.sessionId, input.id)
+      releasedReferences.add(referenceKey)
       if (!record) return { id: input.id, status: 'already-closed' as const }
-      recordFor(input.sessionId, input.id)
       references.get(input.id)!.ui.delete(input.referenceId)
       touch(input.id)
       idle(input.sessionId, input.id)
-      return { id: input.id, status: references.get(input.id)!.ui.size ? 'retained-ui' as const : 'released' as const }
+      return { id: input.id, status: references.get(input.id)?.ui.size ? 'retained-ui' as const : 'released' as const }
     }
     if (input.action === 'refresh') {
       const wasResident = copies.has(input.id)
@@ -404,6 +486,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     if (input.action === 'discardMany' || input.action === 'discardAddresses') return discardCopies(input, agent)
     const copy = await resident(input.sessionId, input.id, agent, signal)
     if (copy.record.revision !== input.revision) fail('pdf/stale-revision', 'The working copy changed in another tab; reopen it to load the latest draft')
+    if (copy.snapshot.document.encrypted) fail('pdf/read-only', 'Protected PDFs can only be viewed in the Reader')
     const record = copy.record
     if (input.action === 'discard') {
       // Discard the draft against the current source, not the stale baseline.
@@ -465,7 +548,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
     try {
       const value = await task
       if (value && typeof value === 'object' && 'id' in value && 'revision' in value
-        && input.action !== 'open' && input.action !== 'inspectTarget') {
+        && input.action !== 'inspectTarget') {
         for (const listener of revisionListeners.get(`${sessionId}\0${String(value.id)}`) ?? []) listener()
       }
       return value
@@ -486,7 +569,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       return serialize(sessionId, async () => {
         signal.throwIfAborted()
         const source = await files.read(agent, path, signal)
-        const document = await pdf.inspect(source.bytes)
+        const { document } = await openSource(source, 'agent', signal)
         signal.throwIfAborted()
         return { path: source.path, size: source.size, sourceVersion: source.fsVersion,
           sourceDigest: source.version, document }
@@ -499,6 +582,9 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       signal.throwIfAborted()
       recordFor(sessionId, id)
       const refs = references.get(id)!
+      if (copies.get(id)?.snapshot.document.encrypted && !refs.ui.size) {
+        fail('pdf/unknown-document', 'Protected PDF is no longer open in the Reader')
+      }
       refs.pins += 1
       touch(id)
       let released = false
@@ -507,7 +593,11 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         released = true
         refs.pins -= 1
         touch(id)
-        idle(sessionId, id)
+        if (copies.get(id)?.snapshot.document.encrypted && !refs.ui.size) {
+          // An unlock may be awaiting PDFium in this same session queue.
+          // Don't remove its working-copy entry before it can take ownership.
+          if (!closing) void serialize(sessionId, async () => { idle(sessionId, id) }).catch(() => undefined)
+        } else idle(sessionId, id)
         if (![...references.values()].some(value => value.pins)) for (const done of [...pinWaiters]) done()
       }
       try {
@@ -614,6 +704,22 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
       return copy.snapshot
     },
     bytesHash: renderedHash,
+    async releaseProtectedSession(sessionId: string): Promise<void> {
+      if (closing) return
+      await serialize(sessionId, async () => {
+        for (const [id, refs] of references) {
+          const copy = copies.get(id)
+          if (copy?.record.sessionId !== sessionId || !copy.snapshot.document.encrypted) continue
+          refs.ui.clear()
+          idle(sessionId, id)
+        }
+      })
+    },
+    passwordFor(id: string, bytesHash: string): string | undefined {
+      const copy = copies.get(id)
+      if (copy?.snapshot.document.encrypted
+        && copy.record.sourceHash === bytesHash) return passwords.get(id)
+    },
     dispose(): Promise<void> {
       if (disposal) return disposal
       closing = true
@@ -632,7 +738,7 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         const durableBaselines = new Set([...copies.values(), ...suspended.values()]
           .filter(value => value.record.groups.length).map(value => value.record.baseKey))
         await Promise.allSettled([...temporaryBaselines].filter(key => !durableBaselines.has(key)).map(key => drafts.delete(key)))
-        copies.clear(); suspended.clear(); byPath.clear(); references.clear(); releasedReferences.clear(); queues.clear(); revisionListeners.clear(); idleListeners.clear(); documentListeners.clear(); pinWaiters.clear(); temporaryBaselines.clear()
+        passwords.clear(); copies.clear(); suspended.clear(); byPath.clear(); references.clear(); releasedReferences.clear(); queues.clear(); revisionListeners.clear(); idleListeners.clear(); documentListeners.clear(); pinWaiters.clear(); temporaryBaselines.clear()
       })()
       return disposal
     },

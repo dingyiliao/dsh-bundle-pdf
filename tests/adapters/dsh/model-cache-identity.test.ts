@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
-import { pdfIndexContentDigest } from '../../../src/adapters/host/pdf-lib/content-identity.ts'
+import { pdfIndexContentIdentity } from '../../../src/adapters/host/pdf-lib/content-identity.ts'
 import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
 import { sessionModelCacheIdentity, type SessionModelInfo } from '../../../src/adapters/host/dsh/model-cache-identity.ts'
 import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.ts'
@@ -151,8 +151,9 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
   registerBackends(legacy)
   const pdf = await PDFDocument.create(); pdf.addPage([200, 300])
   const bytes = await pdf.save()
-  const indexContentDigest = pdfIndexContentDigest(await PDFDocument.load(bytes))
-  assert.ok(indexContentDigest)
+  const indexIdentity = pdfIndexContentIdentity(await PDFDocument.load(bytes))
+  assert.ok(indexIdentity.indexContentDigest)
+  assert.match(indexIdentity.indexPageDigests?.[0] ?? '', /^sha256:[a-f0-9]{64}$/)
   let modernMetadata = !legacy, authorizedSession = 'session'
   let documentId = 'doc', contentVersion = 'content-one', nativeReads = 0, renders = 0, documentVectors = 0
   const snapshot = (): HostWorkspaceSnapshot => ({ id: documentId, path: '/scanned.pdf', bytes,
@@ -160,7 +161,7 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     dirty: false, conflict: false, canUndo: false, canRedo: false,
     document: { pageCount: 1, pages: [{ page: 1, userUnit: 1, rotation: 0, mediaBox: [0, 0, 200, 300], cropBox: [0, 0, 200, 300] }],
       annotations: [], signed: false, encrypted: false, readOnly: false,
-      ...(modernMetadata ? { indexContentDigest } : {}) } })
+      ...(modernMetadata ? indexIdentity : {}) } })
   const workspaces = { readSnapshot(sessionId: string, id: string) {
     if (sessionId !== authorizedSession || id !== documentId) {
       throw Object.assign(new Error('Document is not owned by this session'), { code: 'pdf/unknown-document' })
@@ -219,6 +220,7 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
       const value = aggregate[0]![1]
       assert.ok(value && typeof value === 'object')
       assert.equal('indexContentDigest' in value, false, 'the fixture must use the 0.1.4 record shape')
+      assert.equal('indexPageDigest' in value, false)
       assert.ok('extractionIdentity' in value)
       assert.equal(value.extractionIdentity, content.identity('session'))
     }
@@ -246,7 +248,9 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     embeddings = new EmbeddingRegistry(); embeddings.register(embeddingBackend)
     documentId = 'reopened-document'; contentVersion = 'new-working-copy-identity'
     modernMetadata = true; authorizedSession = 'new-session'
-    content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: store })
+    let upgradeScans = 0
+    const countedCache = { ...store, scan(...args: Parameters<typeof store.scan>) { upgradeScans++; return store.scan(...args) } }
+    content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: countedCache })
     retrieval = createPdfRetrieval(workspaces, pages, createMemoryEvidenceReferenceStore(), {
       settings: () => settings, embeddings, content, cache: store,
     })
@@ -259,6 +263,7 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
       'persistent identity is independent of the new registration, which still fences in-flight operations')
     if (privateBackend) {
       await assert.rejects(retrieval.prepare(authorizedSession, { documentId }, signal), { code: 'pdf/retrieval-incomplete' })
+      assert.equal(upgradeScans, 0, 'a private producer cannot acquire new sharing rights from the upgrade')
       assert.equal(llm.calls, 0)
       assert.equal(documentVectors, firstVectors)
       return
@@ -266,6 +271,10 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     let restoredPhase: string | undefined
     await retrieval.prepare('new-session', { documentId }, signal, value => { restoredPhase = value.phase })
     assert.equal(restoredPhase, 'ready')
+    assert.equal(upgradeScans > 0, legacy, 'only an old default model needs a one-time scan after upgrading')
+    const scans = upgradeScans
+    await content.prepare('new-session', signal, documentId)
+    assert.equal(upgradeScans, scans, 'the completion marker is durable for this path and policy')
     assert.equal(llm.calls, 0, 'Host recreation cannot rerun completed OCR or visual descriptions')
     assert.equal(nativeReads, firstReads, 'restoring completed pages does not re-extract them')
     assert.equal(documentVectors, firstVectors, 'restoring completed pages does not recompute document vectors')

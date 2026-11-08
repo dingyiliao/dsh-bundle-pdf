@@ -29,6 +29,80 @@ test('accepts native snapshots without transferring PDF bytes or inventing a Med
   assert.equal(snapshot.document.annotations[0].editable, true)
 })
 
+test('explicit unlock uses the tab reference once and never replays a password after a transport failure', async () => {
+  const address = 'dsh-resource://file/session/s/book.pdf'
+  const calls: Array<{ method: string; payload: Record<string, unknown> }> = []
+  let fail = false
+  let revision = 3
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    calls.push({ method, payload: request })
+    if (fail) throw new Error('transport disconnected')
+    return { ok: true, value: {
+      id: 'protected', path: '/book.pdf', sourceVersion: 'source', contentVersion: 'content',
+      revision, dirty: false, canUndo: false, canRedo: false, conflict: false,
+      reader: { bytesHash: `sha256:${'a'.repeat(64)}`, generation: 1, protocolVersion: 1 },
+      document: { pageCount: 1, signed: false, encrypted: true, readOnly: true,
+        readOnlyReason: 'encrypted-document', pages: [{ page: 1, cropBox: [0, 0, 100, 100], rotation: 0, userUnit: 1 }],
+        annotations: [] },
+    } }
+  } } }, new AbortController().signal)
+  const unlocked = await api.unlock('s', address, '  secret  ', undefined, 'tab-1')
+  assert.equal(unlocked.document.encrypted, true)
+  assert.deepEqual(calls[0], { method: 'pdf.dispatch.v2', payload: {
+    action: 'unlock', sessionId: 's', address, referenceId: 'tab-1', password: '  secret  ',
+  } })
+  revision = 0
+  assert.equal((await api.unlock('s', address, 'entered again', undefined, 'tab-1')).revision, 0,
+    'a fresh unlock after a Host restart must replace an older local revision')
+  await api.release('s', unlocked.id, 'tab-1')
+  assert.deepEqual(calls[2]?.payload, { action: 'release', sessionId: 's', id: 'protected', referenceId: 'tab-1' })
+  fail = true
+  await assert.rejects(api.unlock('s', address, 'another', undefined, 'tab-2'), /transport disconnected/)
+  assert.equal(calls.filter(call => call.payload.action === 'unlock').length, 3)
+  await assert.rejects(api.unlock('s', address, 'x\0y', undefined, 'tab-3'), /Invalid PDF password/)
+  assert.equal(calls.length, 4)
+})
+
+test('a late unlock from a closed tab cannot replace a surviving tab’s snapshot', async () => {
+  const lifetime = new AbortController()
+  const address = 'dsh-resource://file/session/s/document.pdf'
+  const snapshot = (revision: number) => {
+    const wire = recoveryWire('protected', revision)
+    return { ...wire, value: { ...wire.value,
+      document: { ...wire.value.document, encrypted: true, readOnly: true, readOnlyReason: 'encrypted-document' } } }
+  }
+  let deliver!: (value: unknown) => void
+  let knownRevision: number | undefined
+  let unlockCalls = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as { action: string; knownRevision?: number }
+    if (method === 'pdf.watch') return new Promise(() => {})
+    if (request.action === 'release') return { ok: true, value: { released: true } }
+    if (request.action === 'unlock') {
+      unlockCalls++
+      return new Promise(resolve => { deliver = resolve })
+    }
+    if (request.action === 'refresh') knownRevision = request.knownRevision
+    return snapshot(7)
+  } } }, lifetime.signal)
+  try {
+    const opened = await api.open('s', address, undefined, 'surviving-tab')
+    const seen: number[] = []
+    api.subscribe(opened.id, value => { seen.push(value.revision) })
+    const pending = api.unlock('s', address, 'test-password', undefined, 'closing-tab')
+    await api.release('s', undefined, 'closing-tab')
+    deliver(snapshot(0))
+    await assert.rejects(pending, { name: 'AbortError' })
+    await assert.rejects(api.unlock('s', address, 'test-password', undefined, 'closing-tab'), { name: 'AbortError' })
+    assert.equal(unlockCalls, 1)
+    assert.deepEqual(seen, [])
+    await api.refresh('s', opened.id)
+    assert.equal(knownRevision, 7)
+    assert.deepEqual(seen, [7])
+  } finally { lifetime.abort() }
+})
+
 test('the reading-position API sends only the stored shape and reports staleness', async () => {
   const calls: { method: string; payload: Record<string, unknown> }[] = []
   const position = { page: 3, x: 12, y: 34, scale: 1.25, fit: 'custom' as const, viewportAnchor: { x: 0.5, y: 0 } }

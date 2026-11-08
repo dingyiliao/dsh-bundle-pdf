@@ -51,7 +51,7 @@ await packVerified(root, metadata, async stage => {
       if (!files.some(file => file.startsWith(start) && file.endsWith(end))) throw new Error(`Missing exported files: ${target}`)
     } else if (!files.includes(path)) throw new Error(`Missing exported file: ${target}`)
   }
-  for (const required of ['dist/index.js', 'dist/client.js', 'dist/THIRD_PARTY_NOTICES.md']) {
+  for (const required of ['dist/index.js', 'dist/client.js', 'dist/pdf-document-worker.mjs', 'dist/THIRD_PARTY_NOTICES.md']) {
     if (!files.includes(required)) throw new Error(`The main package is missing ${required}`)
   }
   for (const path of files.filter(path => path.startsWith('locale/') && path.endsWith('.json'))) {

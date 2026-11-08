@@ -10,6 +10,7 @@ export type ReadingSidebarSection = typeof readingSidebarSections[number]
 
 export interface ReadingSidebarProps {
   activeSection: ReadingSidebarSection
+  sections?: readonly ReadingSidebarSection[]
   onSectionChange: (section: ReadingSidebarSection) => void
   expanded: boolean
   onExpandedChange: (expanded: boolean) => void
@@ -28,7 +29,6 @@ export interface ReadingSidebarProps {
   t: (key: string) => string
 }
 
-const sections = readingSidebarSections
 const railWidth = 56
 
 function SidebarIcon({ section }: { section: ReadingSidebarSection }) {
@@ -128,7 +128,7 @@ function PageNavigation({ pdf, currentPage, pageInput, navigating, onPageInputCh
 
 /** A persistent panel keeps in-flight translation and results alive across section changes. */
 export function ReadingSidebar({ activeSection, onSectionChange, expanded, onExpandedChange, panels,
-  pdf, currentPage, pageInput, navigating, onPageInputChange, onPageInputSubmit, onPageInputReset,
+  sections = readingSidebarSections, pdf, currentPage, pageInput, navigating, onPageInputChange, onPageInputSubmit, onPageInputReset,
   onNavigatePage, onStepPage, onNavigateDestination, outlineAccess, t }: ReadingSidebarProps) {
   const root = useRef<HTMLElement>(null)
   const divider = useRef<HTMLDivElement>(null)

@@ -46,7 +46,7 @@
 
 ## 安装
 
-已验证 DSH `0.2.1-rc.5`，其他支持版本见 [package.json](package.json)。
+已验证 DSH `0.2.2-rc.1`。支持的版本见 [package.json](package.json)。
 
 请使用下方 npm 包名安装，不要使用 GitHub 链接。源码仓库不含 `dist/`，直接安装会因缺少入口文件而无法启用插件。
 

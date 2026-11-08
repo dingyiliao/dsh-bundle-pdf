@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { pdfLibDocumentAdapter } from '../../../src/adapters/host/pdf-lib/document-adapter.ts'
+import { inProcessPdfDocument } from '../../fixtures/working-copy-service.ts'
 import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
 import { digestPdfBytes } from '../../../src/modules/document/index.ts'
 import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
@@ -26,7 +26,7 @@ test('embedded outline drafts recover after restart and ordinary save commits th
       return { path, version: digestPdfBytes(current), fsVersion: 'saved', size: current.length }
     },
   }
-  let service = createWorkingCopyService(files, drafts, pdfLibDocumentAdapter)
+  let service = createWorkingCopyService(files, drafts, inProcessPdfDocument)
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('bytes' in opened)
@@ -38,7 +38,7 @@ test('embedded outline drafts recover after restart and ordinary save commits th
     assert.deepEqual(current, original)
     assert.ok(records.size > 0)
     await service.dispose()
-    service = createWorkingCopyService(files, drafts, pdfLibDocumentAdapter)
+    service = createWorkingCopyService(files, drafts, inProcessPdfDocument)
     const recovered = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('bytes' in recovered)
     assert.equal(recovered.document.outline?.[0].title, 'Embedded chapter')

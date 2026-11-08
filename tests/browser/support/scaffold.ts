@@ -15,15 +15,15 @@ export const SESSION = join(DSH_ROOT, 'snapshots', 'web', 'seeded-history', 'ses
 
 export const EXPECTED = join(ROOT, 'tests', 'expected', 'web-pdf')
 
-/** The released SDK dispatches one call; newer source test hosts dispatch batches. */
-export async function executeScaffoldTool(tools: Context['tools'], input: ToolExecutionInput): Promise<ToolExecutionResult> {
-  if (!('setExecutor' in tools)) return tools.execute(input)
-  const batchTools = tools as unknown as {
-    execute(input: { signal: AbortSignal; agent?: ToolExecutionInput['agent'];
-      calls: Array<{ type: 'tool-call'; id: ToolExecutionInput['callId']; name: string; arguments: string }> }):
-      Promise<{ results: Array<{ callId: ToolExecutionInput['callId']; result: ToolExecutionResult }> }>
-  }
-  const batch = await batchTools.execute({ signal: input.signal, agent: input.agent,
+type ScaffoldToolRuntime = Pick<Context['tools'], 'execute' | 'setExecutor'> | {
+  setExecutor?: undefined
+  execute(input: ToolExecutionInput): Promise<ToolExecutionResult>
+}
+
+/** The pinned CI host dispatches one call. Newer DSH hosts dispatch batches. */
+export async function executeScaffoldTool(tools: ScaffoldToolRuntime, input: ToolExecutionInput): Promise<ToolExecutionResult> {
+  if (tools.setExecutor === undefined) return tools.execute(input)
+  const batch = await tools.execute({ signal: input.signal, agent: input.agent,
     calls: [{ type: 'tool-call', id: input.callId, name: input.name, arguments: JSON.stringify(input.arguments) }] })
   expect(batch.results).toHaveLength(1)
   expect(batch.results[0]!.callId).toBe(input.callId)

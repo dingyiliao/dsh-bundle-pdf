@@ -25,7 +25,7 @@ import { createPdfModelOptions, type PdfModelOptionsController } from '../adapte
 import { PDF_MODEL_OPTIONS_METHOD } from '../contracts/model-options.js'
 import { retainPdfDocument } from '../adapters/host/dsh/transport.js'
 import { createLocalFiles } from '../adapters/host/filesystem/local-files.js'
-import { pdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter.js'
+import { createPdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter.js'
 import { createV1DraftRepository } from '../adapters/host/storage/v1-drafts.js'
 import { createV1NavigationStore } from '../adapters/host/storage/v1-navigation.js'
 import { createWorkingCopyService, draftSchema } from '../modules/working-copy/index.js'
@@ -40,6 +40,7 @@ import { createPageOcrArtifacts } from '../adapters/host/ocr/page-ocr-artifacts.
 import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../modules/engines/index.js'
 import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildRequestSchema } from '../contracts/retrieval-index.js'
 import { defaultSettings } from '../shared/contracts.js'
+import type { PdfDocumentInfo } from '../core/pdf-types.js'
 
 export { Config }
 export const name = 'pdf-reader'
@@ -115,7 +116,11 @@ export async function apply(
     key: path => createHash('sha256').update(process.platform === 'win32' ? path.toLowerCase() : path).digest('hex'),
   }, () => readConfig(config))
   const referenceStore = createEvidenceReferenceStore(evidenceDomain.table('references'))
-  const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfLibDocumentAdapter)
+  const pdfDocument = createPdfLibDocumentAdapter()
+  const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfDocument, {
+    inspect: (bytes, password, signal): Promise<PdfDocumentInfo | undefined> => pdfService.inspectEncrypted(bytes, password, signal),
+    release: (id): void => { void pdfService.releaseDocument(id).catch(() => undefined) },
+  })
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))
   const capabilities = new CapabilityRegistry()
   const readerContexts = createReaderContexts(workspaces)
@@ -133,6 +138,7 @@ export async function apply(
     textRecovery: createLocalTextRecovery(),
     ocrArtifacts: createPageOcrArtifacts({ cache: retrievalCache }),
   })
+  const stopProtectedSession = ctx.on?.('session/disposed', session => workspaces.releaseProtectedSession(session.id))
   const pendingRequests = new Set<Promise<unknown>>()
   const track = (dispatch: Parameters<typeof retainPdfDocument>[0]): typeof dispatch => async (sessionId, input, agent, signal) => {
     const requestSignal = AbortSignal.any([signal, transportLifetime.signal])
@@ -193,6 +199,9 @@ export async function apply(
       }
       const release = await workspaces.acquire(sessionId, documentId, resolved.agent, signal)
       try {
+        if (workspaces.readSnapshot(sessionId, documentId).document.encrypted) {
+          throw new ImageUnderstandingError('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
+        }
         const task = createPdfImageEvidenceResolver(workspaces, referenceStore, attachments,
           freshSourceReader(files, resolved.agent)).resolve(sessionId, documentId, refId, signal)
         pendingRequests.add(task)
@@ -207,6 +216,7 @@ export async function apply(
     // Close operation admission synchronously, then release transports. Domain
     // writes remain available until every already-admitted operation settles.
     transportLifetime.abort(new DOMException('PDF reader is unloading', 'AbortError'))
+    stopProtectedSession?.()
     stopPrefetchConfig?.()
     stopPrefetchEngines()
     stopIndexingDocuments()
@@ -215,6 +225,7 @@ export async function apply(
     const prefetchDrain = prefetch.dispose()
     const retrievalDrain = retrieval.dispose()
     const drain = workspaces.dispose()
+    const documentDrain = pdfDocument.dispose()
     translations.registry.dispose()
     embeddings.dispose()
     stopEmbeddings()
@@ -224,7 +235,7 @@ export async function apply(
     readerContexts.dispose()
     agentNavigation.dispose()
     disposed = (async () => {
-      const results = await Promise.allSettled(disposers.splice(0).reverse().map(close => close()))
+      const results = await Promise.allSettled([documentDrain, ...disposers.splice(0).reverse().map(close => close())])
       const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       // Each resource still closes if managed-process teardown reports an
       // observation failure; otherwise one failed wait would retain both stores.

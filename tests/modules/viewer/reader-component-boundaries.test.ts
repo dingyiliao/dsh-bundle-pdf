@@ -233,12 +233,12 @@ test('Reader dirty-document actions confirm reload, expose Save As, and route ke
   })
 })
 
-test('Reader keeps encrypted documents readable while disabling edits and reports capability failures', async () => {
+test('Reader keeps encrypted documents readable while disabling outbound and editing actions', async () => {
   await withReader(async ({ container, render, props, api }) => {
     const encrypted = fixtureSnapshot({ document: { ...fixtureSnapshot().document,
       encrypted: true, readOnly: true, readOnlyReason: 'encrypted-document' } })
     const calls: string[] = []
-    api.open = async () => encrypted
+    api.open = async () => { calls.push('open'); return encrypted }
     api.reload = async () => { calls.push('reload'); return encrypted }
     const input = { ...props,
       hostOcr: { ...props.hostOcr, async availability() { throw new Error('OCR backend is offline') } },
@@ -249,17 +249,68 @@ test('Reader keeps encrypted documents readable while disabling edits and report
     await render(input)
     await act(async () => { await Promise.resolve() })
     assert.match(container.textContent ?? '', /reader.encryptedReadOnly/)
-    assert.match(readerCommand(container, 'reader.ocrPage').title, /OCR backend is offline/)
+    assert.equal(readerCommand(container, 'reader.ocrPage').disabled, true)
+    assert.equal(readerCommand(container, 'reader.regionScreenshot').disabled, true)
+    assert.equal(readerCommand(container, 'reader.explain.start').disabled, true)
+    assert.equal(container.querySelector('[aria-label="reader.sidebar.translation"]'), null)
+    assert.equal(container.querySelector('[aria-label="reader.sidebar.ocr"]'), null)
+    assert.equal(container.querySelector('[aria-label="reader.sidebar.search"]'), null)
     assert.equal(container.querySelector<HTMLButtonElement>('.dsh-pdf-toolbar-save')?.disabled, true)
     assert.equal(readerCommand(container, 'reader.saveAs').disabled, true)
 
     await clickReaderCommand(container, 'reader.reload')
-    assert.deepEqual(calls, ['reload'], 'clean read-only PDFs reload without a discard confirmation')
-    await clickReaderCommand(container, 'reader.explain.start')
-    assert.match(container.querySelector('.dsh-pdf-explanation-status-area')?.parentElement?.getAttribute('data-tooltip') ?? '',
-      /Vision backend is offline/)
-    await clickReaderCommand(container, 'reader.explain.exit')
+    assert.deepEqual(calls, ['open', 'open'], 'protected PDFs reload through the open and password workflow')
     assert.equal(container.querySelector('.dsh-pdf-explanation-status'), null)
+  })
+})
+
+test('Reader unlocks from its file view, clears wrong passwords and cancels without retaining input', async () => {
+  await withReader(async ({ container, render, props, api, dom, loaded, failed }) => {
+    const protectedSnapshot = fixtureSnapshot({ document: { ...fixtureSnapshot().document,
+      encrypted: true, readOnly: true, readOnlyReason: 'encrypted-document' } })
+    const passwords: string[] = []
+    api.open = async () => { throw Object.assign(new Error('password needed'), { code: 'pdf/password-required' }) }
+    api.unlock = async (_session, _address, password) => {
+      passwords.push(password)
+      if (password === 'wrong') throw Object.assign(new Error('wrong password'), { code: 'pdf/password-incorrect' })
+      return protectedSnapshot
+    }
+    await render(props)
+    assert.ok(container.querySelector('.dsh-pdf-password-prompt'))
+    assert.deepEqual(failed, [])
+    const enter = async (value: string) => {
+      const input = container.querySelector<HTMLInputElement>('.dsh-pdf-password-prompt input')!
+      const setter = Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!
+      await act(async () => {
+        setter.call(input, value)
+        input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      })
+      await act(async () => {
+        input.closest('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
+        await Promise.resolve()
+      })
+    }
+    await enter('wrong')
+    assert.match(container.textContent ?? '', /reader.passwordIncorrect/)
+    assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-password-prompt input')?.value, '')
+    await enter('correct')
+    await waitForReader(() => !!container.querySelector('.dsh-pdf-windowed-pages'), 'unlocked PDF should render')
+    assert.deepEqual(passwords, ['wrong', 'correct'])
+    assert.ok(loaded.includes('source-1'))
+    assert.equal(container.querySelector('.dsh-pdf-password-prompt'), null)
+    assert.match(container.textContent ?? '', /reader.encryptedReadOnly/)
+
+    await render({ ...props, resourceAddress: 'file:///tmp/another-protected.pdf',
+      content: { ...props.content, revision: 2 } })
+    assert.ok(container.querySelector('.dsh-pdf-password-prompt'))
+    const input = container.querySelector<HTMLInputElement>('.dsh-pdf-password-prompt input')!
+    const setter = Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, 'value')!.set!
+    await act(async () => { setter.call(input, 'unsent'); input.dispatchEvent(new dom.Event('input', { bubbles: true })) })
+    await act(async () => { container.querySelector<HTMLButtonElement>('.dsh-pdf-password-actions button[type="button"]')!.click() })
+    assert.equal(container.querySelector('.dsh-pdf-password-prompt input'), null)
+    assert.deepEqual(failed, ['failed'])
+    await act(async () => { container.querySelector<HTMLButtonElement>('.dsh-pdf-password-prompt button')!.click() })
+    assert.equal(container.querySelector<HTMLInputElement>('.dsh-pdf-password-prompt input')?.value, '')
   })
 })
 

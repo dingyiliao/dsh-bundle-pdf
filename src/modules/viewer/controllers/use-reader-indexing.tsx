@@ -48,6 +48,9 @@ function IndexTaskContent({ task, connected, t }: { task: PdfIndexingTask; conne
     {connected && progress && task.state !== 'ready' && <>
       <span className="dsh-pdf-indexing-progress-label">{t('reader.indexing.pages')} <span>{progress.indexedPages}/{progress.totalPages}</span></span>
       <progress aria-label={`${t('reader.indexing.pages')}: ${task.title}`} max={progress.totalPages} value={progress.indexedPages} />
+      {progress.failedPages !== undefined && <span className="dsh-pdf-indexing-progress-label">
+        {t('reader.indexing.failedPages')} <span>{progress.failedPages}</span>
+      </span>}
       <span className="dsh-pdf-indexing-progress-label">{t('reader.indexing.chunks')} <span>{progress.embeddedChunks}/{progress.totalChunks}</span></span>
       <progress aria-label={`${t('reader.indexing.chunks')}: ${task.title}`} max={Math.max(1, progress.totalChunks)}
         value={task.state !== 'running' || progress.indexedPages === progress.totalPages ? progress.embeddedChunks : undefined} />

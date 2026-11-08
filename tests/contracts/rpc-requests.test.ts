@@ -28,3 +28,15 @@ test('save request preserves explicit compare-and-swap and overwrite intent', ()
   assert.equal(requestSchema.safeParse({ action: 'save', sessionId: 's', id: 'd', revision: 3,
     options: { expectedTargetVersion: 'not-a-digest' } }).success, false)
 })
+
+test('unlock is a strict, reference-bound password request', () => {
+  const valid = { action: 'unlock', sessionId: 's', address: 'dsh-resource://file/session/s/book.pdf',
+    referenceId: 'tab-1', password: ' a secret ' }
+  assert.deepEqual(requestSchema.parse(valid), valid)
+  for (const invalid of [
+    { ...valid, password: '' }, { ...valid, password: 'x'.repeat(1025) },
+    { ...valid, password: 'bad\0password' }, { ...valid, referenceId: '' },
+    { ...valid, owner: 'ui' }, { ...valid, knownBytesHash: digest },
+  ]) assert.equal(requestSchema.safeParse(invalid).success, false)
+  assert.equal(requestSchema.safeParse({ ...valid, password: 'x'.repeat(1024) }).success, true)
+})

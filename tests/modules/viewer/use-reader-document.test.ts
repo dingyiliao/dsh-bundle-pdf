@@ -63,6 +63,93 @@ test('document owner publishes a native handle and reports its source version', 
   })
 })
 
+test('password prompt retries a wrong password without failing the content lease', async () => {
+  await withDocument(async ({ options, state, render, loaded, failed }) => {
+    options.api.open = async () => { throw Object.assign(new Error('required'), { code: 'pdf/password-required' }) }
+    const passwords: string[] = []
+    options.api.unlock = async (_sessionId, _address, password) => {
+      passwords.push(password)
+      if (password === 'wrong') throw Object.assign(new Error('incorrect'), { code: 'pdf/password-incorrect' })
+      return makeSnapshot('protected')
+    }
+    await render(options)
+    assert.equal(state().passwordPrompt, 'required')
+    assert.deepEqual(failed, [])
+    await act(async () => { await state().unlock('wrong') })
+    assert.equal(state().passwordPrompt, 'incorrect')
+    assert.deepEqual(failed, [])
+    await act(async () => { await state().unlock('correct') })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    assert.equal(state().passwordPrompt, null)
+    assert.equal(state().snapshot?.id, 'protected')
+    assert.ok(loaded.includes('source-1'))
+    assert.deepEqual(passwords, ['wrong', 'correct'])
+  })
+})
+
+test('an unlock transport failure releases pending Reader commands and reports the failed lease', async () => {
+  await withDocument(async ({ options, state, render, loaded, failed }) => {
+    options.api.open = async () => { throw Object.assign(new Error('required'), { code: 'pdf/password-required' }) }
+    let disconnect!: (error: Error) => void
+    options.api.unlock = () => new Promise((_resolve, reject) => { disconnect = reject })
+    await render(options)
+    assert.equal(state().passwordPrompt, 'required')
+    const ready = state().waitForReady()
+    let unlocking!: Promise<void>
+    await act(async () => { unlocking = state().unlock('test-password') })
+    assert.equal(state().unlocking, true)
+    await act(async () => {
+      disconnect(new Error('transport disconnected'))
+      await unlocking
+    })
+    assert.equal(await ready, false)
+    assert.equal(state().passwordPrompt, null)
+    assert.equal(state().unlocking, false)
+    assert.equal(state().snapshot, null)
+    assert.deepEqual(loaded, [])
+    assert.deepEqual(failed, ['Error: transport disconnected', 'failed'])
+  })
+})
+
+test('cancelled unlock fails the current lease and a resource switch clears the prompt', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    options.api.open = async (_sessionId, address) => {
+      if (address === options.resourceAddress) throw Object.assign(new Error('required'), { code: 'pdf/password-required' })
+      return makeSnapshot('next')
+    }
+    await render(options)
+    await act(async () => { state().cancelUnlock() })
+    assert.equal(state().passwordPrompt, 'cancelled')
+    assert.deepEqual(failed, ['failed'])
+    await render({ ...options, resourceAddress: 'file:///tmp/next.pdf',
+      content: { ...options.content, revision: 2 } })
+    assert.equal(state().passwordPrompt, null)
+    assert.equal(state().snapshot?.id, 'next')
+  })
+})
+
+test('a protected Host restart prompts again without replaying the earlier password', async () => {
+  await withDocument(async ({ options, state, render, failed }) => {
+    options.api.native.text = async () => { throw Object.assign(new Error('old baseline'), { code: 'pdf/stale-reader' }) }
+    options.api.refresh = async () => { throw Object.assign(new Error('required'), { code: 'pdf/password-required' }) }
+    const passwords: string[] = []
+    options.api.unlock = async (_sessionId, _address, password) => {
+      passwords.push(password)
+      return { ...makeSnapshot('after-restart'), reader: { bytesHash: 'new-bytes', generation: 1, protocolVersion: 1 } }
+    }
+    await render(options)
+    await act(async () => { await assert.rejects(state().pdf!.text(1), { name: 'AbortError' }) })
+    assert.equal(state().passwordPrompt, 'required')
+    assert.equal(state().pdf, null)
+    assert.deepEqual(passwords, [])
+    await act(async () => { await state().unlock('entered-again') })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    assert.equal(state().snapshot?.id, 'after-restart')
+    assert.deepEqual(passwords, ['entered-again'])
+    assert.deepEqual(failed, [])
+  })
+})
+
 test('a restarted Host can replace the document ID while preserving the current resource owner', async () => {
   await withDocument(async ({ options, state, render, failed }) => {
     options.api.native.text = async (_sessionId, id) => {

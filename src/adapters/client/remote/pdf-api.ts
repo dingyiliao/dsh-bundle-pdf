@@ -114,7 +114,8 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       controller.signal.removeEventListener('abort', stop)
     }
   }
-  const snapshot = async (payload: object, signal?: AbortSignal): Promise<WorkspaceSnapshot> => {
+  const snapshot = async (payload: object, signal?: AbortSignal,
+    beforePublish?: (snapshot: WorkspaceSnapshot) => void): Promise<WorkspaceSnapshot> => {
     const requestedId = 'id' in payload && typeof payload.id === 'string' ? payload.id : undefined
     const retained = requestedId ? latest.get(requestedId) : undefined
     const request = { ...payload, ...(retained ? { knownBytesHash: retained.reader.bytesHash, knownRevision: retained.revision } : {}),
@@ -127,7 +128,10 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     }
     const wire = wireSnapshotSchema.parse(reply)
     lifetime.throwIfAborted(); signal?.throwIfAborted()
-    const previous = latest.get(wire.id) ?? (wire.id === requestedId ? retained : undefined)
+    // An explicit unlock may be the first acquisition after a Host restart;
+    // an old in-memory revision must not suppress its fresh native baseline.
+    const previous = 'action' in payload && payload.action === 'unlock' ? undefined
+      : latest.get(wire.id) ?? (wire.id === requestedId ? retained : undefined)
     if (previous && previous.revision > wire.revision) return previous
     // Annotation operations can change the projected metadata while retaining the
     // same native document. Never discard fresh metadata from the Host.
@@ -146,6 +150,7 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     if (!wire.baselineAnnotations && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineAnnotations = previous.baselineAnnotations
     if (!wire.baselineOutline && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineOutline = previous.baselineOutline
     if (!wire.baselineFormFields && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineFormFields = previous.baselineFormFields
+    beforePublish?.(value)
     latest.set(value.id, value)
     for (const listener of listeners.get(value.id) ?? []) listener.callback(value)
     return value
@@ -339,6 +344,28 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       const source = sourceAddresses.get(value.id) ?? { sessionId, address, references: new Set<string>() }
       source.references.add(referenceId ?? 'legacy')
       sourceAddresses.set(value.id, source)
+      return value
+    },
+    async unlock(sessionId, address, password, signal, referenceId) {
+      const addressed = sessionFile(address)
+      if (addressed.sessionId !== sessionId) throw new Error('The PDF address belongs to another session')
+      if (!password || password.length > 1024 || password.includes('\0')) throw new Error('Invalid PDF password')
+      if (!referenceId) throw new Error('A PDF view reference is required to unlock')
+      const key = referenceKey(sessionId, referenceId)
+      const assertViewOpen = () => {
+        if (closedReferences.has(key)) throw viewEnded()
+      }
+      assertViewOpen()
+      const value = await snapshot({ action: 'unlock', sessionId, address, referenceId, password }, signal, next => {
+        // Fence late replies before they can replace another view's snapshot.
+        assertViewOpen()
+        const source = sourceAddresses.get(next.id) ?? { sessionId, address, references: new Set<string>() }
+        source.references.add(referenceId)
+        sourceAddresses.set(next.id, source)
+      })
+      assertViewOpen()
+      failedWatchRecoveries.delete(value.id)
+      if (listeners.get(value.id)?.size) watch(value.id)
       return value
     },
     async refresh(sessionId, id, signal) {

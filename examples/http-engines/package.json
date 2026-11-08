@@ -19,8 +19,8 @@
     "@dylanl1/dsh-plugin-pdf": "^0.1.5"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.5",
-    "@dylanl1/dsh-plugin-pdf": "^0.1.5",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@dylanl1/dsh-plugin-pdf": "^0.1.7",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3"
   }

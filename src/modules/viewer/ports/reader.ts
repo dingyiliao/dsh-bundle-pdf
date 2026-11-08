@@ -1,6 +1,7 @@
 import type { PromptContentPart } from '../../explanation/index.js'
 import type { PdfRect } from '../../../core/pdf-types.js'
 import type { AgentNavigationRequest } from '../../../contracts/navigation.js'
+import type { SelectionRevalidationRequest, SelectionRevalidationResult } from '../../../contracts/selection.js'
 
 /** The DSH document slot provides this lease; Viewer needs no Slot runtime. */
 export interface ReaderContentLease {
@@ -68,4 +69,6 @@ export interface PdfTextSelectionEvidenceApi {
     expectedContentVersion: string; quote: string;
     fragments: readonly { page: number; rect: PdfRect; quadPoints: readonly number[] }[] },
   signal?: AbortSignal): Promise<PdfTextSelectionEvidence>
+  revalidate(request: Omit<SelectionRevalidationRequest, 'action'>,
+    signal?: AbortSignal): Promise<SelectionRevalidationResult>
 }

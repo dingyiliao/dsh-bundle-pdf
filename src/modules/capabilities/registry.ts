@@ -6,6 +6,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const pdfCapabilities = {
+  unlockDocument: 'pdf.document.unlock',
   renderPage: 'pdf.page.render',
   renderAcroForm: 'pdf.form.acroform.render',
   renderXfa: 'pdf.form.xfa.render',

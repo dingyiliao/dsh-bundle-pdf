@@ -81,6 +81,21 @@ export async function readCachedPage(cache: RetrievalCache | undefined, key: str
   } catch (error) { if (storageFailure(error)) throw error; return undefined }
 }
 
+export const MAX_PAGE_CACHE_SOURCE_PAGES = 10_000
+const pageCacheSourceSchema = z.object({ version: z.literal(1), sourceDigest: z.string().min(1).max(512),
+  indexContentDigest: digestSchema.optional(), indexPageDigests: z.array(digestSchema.nullable()).max(MAX_PAGE_CACHE_SOURCE_PAGES) }).strict()
+export type PageCacheSource = z.infer<typeof pageCacheSourceSchema>
+
+export const pageCacheSourceKey = (path: string, extractionIdentity: string) => retrievalCacheKey(
+  'page-cache-source', RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, path, extractionIdentity)
+
+/** A migration hint for legacy whole-source page keys. A caller must compare
+ * each saved page digest with its current authorized page before using it. */
+export async function readPageCacheSource(cache: RetrievalCache, key: string): Promise<PageCacheSource | undefined> {
+  const result = pageCacheSourceSchema.safeParse(await cache.get(key).catch(() => undefined))
+  return result.success ? result.data : undefined
+}
+
 /** Derived caches are disposable; an unavailable cache must not break reading. */
 export async function cacheDerived(cache: RetrievalCache | undefined, key: string, value: unknown): Promise<void> {
   try { await cache?.set(key, value) } catch (error) { if (storageFailure(error)) throw error }

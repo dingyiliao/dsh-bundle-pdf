@@ -24,7 +24,7 @@ Cordis as peer dependencies and development dependencies; its
 For a package using the same SDK versions:
 
 ```sh
-npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.5 @deepseek-ai/cordis@4.0.5
+npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.7 @deepseek-ai/cordis@4.1.0
 ```
 
 Build the entry before installing a local or Git package. Load it in the same

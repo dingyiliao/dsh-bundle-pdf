@@ -42,6 +42,7 @@ export const wireSnapshotSchema = z.object({
   baselineFormFields: z.array(wireFormFieldSchema).optional(),
   document: z.object({
     pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
+    allowTextExtraction: z.boolean().optional(),
     formKind: z.enum(['acroform', 'xfa']).optional(),
     outline: z.array(wireOutlineItemSchema).optional(), outlineReadOnlyReason: z.string().optional(),
     formFields: z.array(wireFormFieldSchema).optional(),

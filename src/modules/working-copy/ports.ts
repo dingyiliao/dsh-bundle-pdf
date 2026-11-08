@@ -28,6 +28,8 @@ export interface OpenWorkingCopyDocument {
   path?: string
   contentVersion: string
   sourceDigest: string
+  /** Complete verified page-content identity, independent of annotation-only saves. */
+  indexContentDigest?: string
   conflict: boolean
   title?: string
 }

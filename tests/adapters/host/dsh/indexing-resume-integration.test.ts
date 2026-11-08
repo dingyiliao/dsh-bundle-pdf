@@ -36,7 +36,7 @@ function pause() {
   } }
 }
 
-async function fixture(t: TestContext, options: { scan?: boolean } = {}) {
+async function fixture(t: TestContext, options: { scan?: boolean; failOcr?: number[] } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'pdf-host-index-resume-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const settings: PdfSettings = { ...defaultSettings, embeddingEngine: 'test-embedding', ocrEngine: 'test-ocr',
@@ -44,7 +44,8 @@ async function fixture(t: TestContext, options: { scan?: boolean } = {}) {
   const state = { native: [] as number[], ocr: [] as number[], image: [] as number[], embeddings: [] as string[],
     attemptedEmbeddings: [] as string[], plans: [] as ResolvedIndexPlan[],
     preparations: [] as { plan: ResolvedIndexPlan; input: { documentId: string; rebuild?: boolean; rebuildToken?: string } }[],
-    embedPause: undefined as ReturnType<typeof pause> | undefined, failEmbedding: false, pins: 0 }
+    embedPause: undefined as ReturnType<typeof pause> | undefined, failEmbedding: false,
+    failOcr: new Set(options.failOcr), pins: 0 }
   const bytes = new Uint8Array([1, 2, 3])
   const documents: OpenWorkingCopyDocument[] = [{ sessionId: 'a', id: 'doc-a', title: 'Resume.pdf',
     path: '/synthetic/resume.pdf', contentVersion: 'content-v1', sourceDigest: evidenceSha256(bytes), conflict: false }]
@@ -82,6 +83,7 @@ async function fixture(t: TestContext, options: { scan?: boolean } = {}) {
       request.signal?.throwIfAborted()
       const page = (request.image as Uint8Array)[24]!
       state.ocr.push(page)
+      if (state.failOcr.has(page)) throw new Error('Simulated OCR failure')
       return { text: pageText(page), status: 'complete', blocks: [], lines: [], words: [],
         confidence: null, coverage: [], warnings: [] }
     } })
@@ -140,9 +142,9 @@ async function fixture(t: TestContext, options: { scan?: boolean } = {}) {
             return () => { state.pins-- }
           },
         })
-        return { ...retrieval, prepareSlice(sessionId, input, active, progress) {
+        return { ...retrieval, prepareSlice(sessionId, input, active, progress, occurrence) {
           state.preparations.push({ plan: structuredClone(plan), input: { ...input } })
-          return retrieval.prepareSlice!(sessionId, input, active, progress)
+          return retrieval.prepareSlice!(sessionId, input, active, progress, occurrence)
         }, async dispose() { await retrieval.dispose(); content.dispose() } }
       } })
     const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: document => indexes.selection(document),
@@ -180,6 +182,33 @@ function assertNoRepeatedCompletedWork(state: Awaited<ReturnType<typeof fixture>
   for (const page of [1, 2, 3]) assert.equal(state.embeddings.filter(text => text === pageText(page)).length, 1,
     `the completed vector for page ${page} is reused across old/new plans and restart`)
 }
+
+test('one retry visits later failed OCR pages across scheduler slices and retains successful work', { timeout: 10_000 }, async t => {
+  const f = await fixture(t, { failOcr: [2, 3] })
+  try {
+    await f.waitFor(() => f.task()?.state === 'failed', 'initial indexing did not report incomplete OCR')
+    assert.equal(f.task()!.progress!.indexedPages, 1, 'empty scanned pages have no usable content until OCR succeeds')
+    assert.equal(f.task()!.progress!.failedPages, 2)
+
+    const first = f.task()!.occurrence
+    const previousCalls = f.state.ocr.length
+    f.state.failOcr.delete(3)
+    await f.dispatch('resume')
+    await f.waitFor(() => f.task()?.state === 'failed' && f.task()!.occurrence !== first,
+      'retry did not finish the failed-page pass')
+    assert.deepEqual(f.state.ocr.slice(previousCalls), [2, 3])
+    assert.equal(f.task()!.progress!.failedPages, 1)
+    assert.deepEqual(f.state.embeddings, [pageText(1), pageText(3)])
+
+    f.state.failOcr.delete(2)
+    await f.dispatch('resume')
+    await f.waitFor(() => f.task()?.state === 'ready', 'second retry did not finish indexing')
+    assert.deepEqual(f.state.ocr.slice(previousCalls), [2, 3, 2])
+    assert.equal(f.task()!.progress!.failedPages, undefined)
+    assert.deepEqual([...f.state.native].sort(), [1, 2, 3])
+    assert.deepEqual(f.state.embeddings, [pageText(1), pageText(3), pageText(2)])
+  } finally { await f.dispose() }
+})
 
 test('real Host resume preserves an OCR-only plan after desired changes, then explicit start adds images using durable layers and vectors', { timeout: 10_000 }, async t => {
   const f = await fixture(t)

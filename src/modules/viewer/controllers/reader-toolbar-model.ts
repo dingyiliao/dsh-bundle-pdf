@@ -15,6 +15,7 @@ export interface ReaderToolbarModelOptions {
   editable: boolean
   formPending?: boolean
   readOnly?: boolean
+  protectedDocument?: boolean
   saveFeedback?: ReaderToolbarState['saveFeedback']
   runCommand?(operation: () => void): void
   colorPending: boolean
@@ -57,6 +58,7 @@ export interface ReaderToolbarModelOptions {
     setMode(value: 'text' | 'note'): void
     closeMenu(): void
     confirmReload(): void
+    reopenProtected?(): void
     beginSaveAs(): void
     discardChanges(): void
     save(): void
@@ -77,6 +79,7 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
     screenshotActive: screenshot.active, screenshotPreparing: screenshot.preparing,
     busy, editable, ocrBusy: ocr.busy, ocrAvailability: ocr.availability,
     readOnly: options.readOnly ?? !!snapshot?.document?.readOnly, formPending: options.formPending,
+    protectedDocument: !!options.protectedDocument,
     saveFeedback: options.saveFeedback,
     dirty: !!snapshot?.dirty, canUndo: !!snapshot?.canUndo, canRedo: !!snapshot?.canRedo,
     conflict: !!snapshot?.conflict, colorPending, saveAsPicking, hasUnappliedAnnotation,
@@ -94,7 +97,8 @@ export function readerToolbarModel(options: ReaderToolbarModelOptions): {
     }),
     onOcr: () => run(() => { commands.setMode('text'); ocr.recognize(); commands.closeMenu() }),
     onReload: () => {
-      if (snapshot?.dirty || snapshot?.canRedo || options.formPending) commands.confirmReload()
+      if (options.protectedDocument) commands.reopenProtected?.()
+      else if (snapshot?.dirty || snapshot?.canRedo || options.formPending) commands.confirmReload()
       else void act(current => api.reload(sessionId, current.id, current.revision, signal))
       commands.closeMenu()
     },

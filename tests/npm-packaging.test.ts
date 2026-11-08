@@ -38,7 +38,7 @@ async function fixture(parent = tmpdir()) {
     await copyFile(new URL(`scripts/${script}`, repository), join(root, 'scripts', script))
   }
   await write('package.json', JSON.stringify(manifest))
-  for (const path of ['dist/index.js', 'dist/native-provider.js', 'dist/client.js', 'dist/embedding.js']) {
+  for (const path of ['dist/index.js', 'dist/native-provider.js', 'dist/client.js', 'dist/embedding.js', 'dist/pdf-document-worker.mjs']) {
     await write(path, 'export const ready = true\n')
   }
   await write('dist/types/embedding/index.d.ts', 'export interface Engine { id: string }\n')
@@ -95,6 +95,7 @@ test('main npm package retains its SDK and exact platform dependencies without s
     const paths = entries(archive)
     assert.ok(paths.includes('package/dist/types/embedding/index.d.ts'))
     assert.ok(paths.includes('package/dist/client.js'))
+    assert.ok(paths.includes('package/dist/pdf-document-worker.mjs'))
     for (const path of ['docs/engine-extensions.md', 'spec.md', 'performance.md', 'native-pdf.md']) {
       assert.ok(paths.includes(`package/${path}`))
     }

@@ -16,10 +16,12 @@ export const documentIndexSettingsSchema = z.object({
 export type PdfDocumentIndexSettings = z.infer<typeof documentIndexSettingsSchema>
 export const indexingProgressSchema = z.object({
   indexedPages: z.number().int().nonnegative(), totalPages: z.number().int().positive(),
+  failedPages: z.number().int().positive().optional(),
   embeddedChunks: z.number().int().nonnegative(), totalChunks: z.number().int().nonnegative(),
   phase: z.enum(['restoring', 'extracting', 'embedding', 'ready']).optional(),
   reusedChunks: z.number().int().nonnegative().optional(), computedChunks: z.number().int().nonnegative().optional(),
-}).strict().refine(value => value.indexedPages <= value.totalPages && value.embeddedChunks <= value.totalChunks,
+}).strict().refine(value => value.indexedPages <= value.totalPages && (value.failedPages ?? 0) <= value.totalPages
+  && value.embeddedChunks <= value.totalChunks,
   'Invalid indexing progress').refine(value => value.reusedChunks === undefined && value.computedChunks === undefined
     || value.reusedChunks !== undefined && value.computedChunks !== undefined
       && value.reusedChunks + value.computedChunks === value.embeddedChunks, 'Invalid vector work counts')

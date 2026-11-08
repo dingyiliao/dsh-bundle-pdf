@@ -38,8 +38,9 @@ export function Reader(props: ReaderProps) {
   const callbacks = useRef(props)
   callbacks.current = props
   const notifyError = useCallback((value: unknown) => {
-    const needsPassword = value instanceof Error && (('code' in value && value.code === 'password-required') || value.name === 'PasswordException')
-    const message = needsPassword ? callbacks.current.t('reader.passwordRequired') : value instanceof Error ? value.message : String(value)
+    const code = value && typeof value === 'object' && 'code' in value ? value.code : undefined
+    const message = code === 'pdf/security-unsupported' ? callbacks.current.t('reader.securityUnsupported')
+      : value instanceof Error ? value.message : String(value)
     staleReaderError.current = value && typeof value === 'object' && 'code' in value && value.code === 'pdf/stale-reader' ? message : null
     setError(message)
   }, [])
@@ -66,8 +67,13 @@ export function Reader(props: ReaderProps) {
       explanation.captureController.current?.abort()
       return explanation.captureTask.current
     } })
-  const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, ownerSequence, documentReady, waitForReady } = documentState
-  const indexing = useReaderIndexing({ api: props.indexingApi, sessionId, documentId: snapshot?.id,
+  const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, passwordPrompt, unlocking,
+    unlock, cancelUnlock, retryUnlock, ownerSequence, documentReady, waitForReady } = documentState
+  const protectedDocument = !!snapshot?.document.encrypted
+  const protectedSections = protectedDocument ? snapshot.document.allowTextExtraction
+    ? ['pages', 'bookmarks', 'search'] as const : ['pages', 'bookmarks'] as const : undefined
+  const indexing = useReaderIndexing({ api: protectedDocument ? undefined : props.indexingApi,
+    sessionId, documentId: protectedDocument ? undefined : snapshot?.id,
     signal: tab.signal, t, onError: notifyError })
   const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
     views, registerView, scrollRef, updateScrolledPage } = useReaderPageTracking({ snapshot,
@@ -139,7 +145,7 @@ export function Reader(props: ReaderProps) {
     })) ?? 'unavailable', [api, jump, tab.signal, runAfterFormFlush])
   const evidenceReady = documentReady()
   useLayoutEffect(() => {
-    if (!props.evidenceNavigation || !tab.visible || !snapshot || !pdf || !evidenceReady) return
+    if (!props.evidenceNavigation || protectedDocument || !tab.visible || !snapshot || !pdf || !evidenceReady) return
     return props.evidenceNavigation.register({ sessionId, snapshot,
       current: () => !tab.signal.aborted && state.current.snapshot === snapshot ? snapshot : null,
       readPageText: async (page, signal, options) => joinPageText((await pdf.text(page, signal, options)).items),
@@ -147,20 +153,20 @@ export function Reader(props: ReaderProps) {
       navigateTarget: (page, target, signal) => navigateEvidence({ requestId: crypto.randomUUID(),
         page, documentId: snapshot.id, contentVersion: snapshot.contentVersion, target }, signal),
     })
-  }, [props.evidenceNavigation, tab.visible, tab.signal, sessionId, snapshot, pdf, jump, navigateEvidence, evidenceReady])
+  }, [props.evidenceNavigation, protectedDocument, tab.visible, tab.signal, sessionId, snapshot, pdf, jump, navigateEvidence, evidenceReady])
   const sidebar = useReaderSidebarLayout({ bodyRef: readerBody, navigationLock, navigating,
     resourceAddress: props.resourceAddress, visible: tab.visible })
   const { section: sidebarSection, expanded: sidebarExpanded,
     changeExpanded: changeSidebarExpanded, show: showSidebar } = sidebar
   const translation = useReaderTranslation({ translation: props.translation, sessionId,
-    tabSignal: tab.signal, snapshot, displayOwnerToken: displayOwner?.token ?? null,
+    tabSignal: tab.signal, snapshot: protectedDocument ? null : snapshot, displayOwnerToken: displayOwner?.token ?? null,
     ownerSequence, currentSnapshot: () => state.current.snapshot, selection,
     targetLanguage: settings.translationTargetLanguage, engine: settings.translationEngine,
     timeoutMs: settings.translationTimeoutMs, showSidebar: () => showSidebar('translation') })
   const { begin: beginTranslation, close: closeTranslation } = translation
   useReaderContextLease({ sessionId, tabId: tab.id, visible: tab.visible, tabSignal: tab.signal,
     snapshot, currentPage, documentReady: documentReady(),
-    enabled: !!props.allowReadingContext, report: props.reportReadingContext,
+    enabled: !!props.allowReadingContext && !protectedDocument, report: props.reportReadingContext,
     agentNavigation: props.agentNavigation,
     onAgentNavigate: navigateEvidence })
   useLayoutEffect(() => () => {
@@ -206,7 +212,8 @@ export function Reader(props: ReaderProps) {
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs } = saveFlow
   const beginSaveAsAfterFormFlush = () => { void runAfterFormFlush(beginSaveAs) }
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
-  const screenshotCtl = useReaderScreenshot({ pdf, snapshot,
+  const screenshotCtl = useReaderScreenshot({ pdf: protectedDocument ? null : pdf,
+    snapshot: protectedDocument ? null : snapshot,
     tabSignal: tab.signal, displayOwnerToken: displayOwner?.token ?? null, ownerSequence,
     regionPurpose, currentSnapshot: () => state.current.snapshot,
     documentReady,
@@ -215,25 +222,31 @@ export function Reader(props: ReaderProps) {
     clearError: () => setError(''), onError: notifyError, t })
   const { screenshot, phase: screenshotPhase, controller: screenshotController,
     takeRegion: takeScreenshot } = screenshotCtl
-  const ocr = useReaderOcr({ api: props.hostOcr, sessionId, visible: tab.visible, tabSignal: tab.signal,
-    snapshot, currentPage, lifetime, screenshot, t, currentSnapshot: () => state.current.snapshot,
+  const ocr = useReaderOcr({ api: props.hostOcr, sessionId, visible: tab.visible && !protectedDocument,
+    tabSignal: tab.signal, snapshot: protectedDocument ? null : snapshot,
+    currentPage, lifetime, screenshot, t, currentSnapshot: () => protectedDocument ? null : state.current.snapshot,
     onError: notifyError, onRecognized: () => { showSidebar('ocr'); setSelection(null) } })
   const { ocrPages, ocrAvailability, ocrTranscript, ocrProgress } = ocr
-  const search = useReaderSearch({ document: pdf, pages: snapshot?.document.pages ?? [], ocrPages,
+  const protectedOcrPages = useRef(new Map())
+  const visibleOcrPages = protectedDocument ? protectedOcrPages.current : ocrPages
+  const search = useReaderSearch({ document: pdf, pages: snapshot?.document.pages ?? [], ocrPages: visibleOcrPages,
     tabSignal: tab.signal, onError: notifyError })
   const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {
-    if (!pdf) return
+    if (!pdf || protectedDocument) return
     setError('')
     await ocr.recognize(requestedRegion)
   }
   const cancelOcr = ocr.cancel
   const explanation = useReaderExplanation({ sessionId, tabSignal: tab.signal, visible: tab.visible,
-    snapshot, pdf, promptExplanation: props.promptExplanation,
+    snapshot: protectedDocument ? null : snapshot, pdf: protectedDocument ? null : pdf,
+    promptExplanation: protectedDocument ? undefined : props.promptExplanation,
     promptTemplate: settings.explanationPromptTemplate,
     promptGuidance: { general: settings.explanationGeneralInstruction,
       text: settings.explanationTextInstruction, image: settings.explanationImageInstruction },
-    regionEvidence: props.regionEvidence, textSelectionEvidence: props.textSelectionEvidence,
-    imageUnderstanding: props.imageUnderstanding, allowReadingContext: props.allowReadingContext !== false,
+    regionEvidence: protectedDocument ? undefined : props.regionEvidence,
+    textSelectionEvidence: protectedDocument ? undefined : props.textSelectionEvidence,
+    imageUnderstanding: props.imageUnderstanding,
+    allowReadingContext: !protectedDocument && props.allowReadingContext !== false,
     screenshotBusy: !!screenshotController.current || !!screenshotPhase || !!screenshot,
     displayReady: !!displayOwner && displayOwner.token === ownerSequence.current,
     mode, regionPurpose, ownerSequence, currentSnapshot: () => state.current.snapshot,
@@ -265,7 +278,7 @@ export function Reader(props: ReaderProps) {
     if (next) { showSaveFeedback(null); dismissContext(); annotations.clearPending(); closeSaveAs(); setReloadConfirm(false); screenshotCtl.reset() }
   }
   const cancelScreenshot = screenshotCtl.cancel
-  const beginScreenshot = () => screenshotCtl.begin(!!activeExplanation)
+  const beginScreenshot = () => { if (!protectedDocument) screenshotCtl.begin(!!activeExplanation) }
   const contextualAnchor = () => fragmentAnchor(activeExplanationEditor?.kind === 'new' ? activeExplanationEditor.selection.fragments
     : hasTextSelection ? selection!.fragments
       : selected?.rect ? [{ page: selected.page, rect: selected.rect, quadPoints: selected.quadPoints ?? [] }] : [])
@@ -386,10 +399,11 @@ export function Reader(props: ReaderProps) {
 
   const pageElements = useReaderPages({ PageComponent: ReaderPage, pdf, snapshot, selection,
     selectedAnnotation: selected, annotationsByPage, renderedAnnotationsByPage, activeExplanation,
-    draftExplanationSelection, draggingPage, navigationTarget, ocrPages, zoom, fit, size,
+    draftExplanationSelection, draggingPage, navigationTarget, ocrPages: visibleOcrPages, zoom, fit, size,
     scrollRoot, mode, t, pageScale, registerView, destination, jump,
     currentPageCount: () => state.current.snapshot?.document.pageCount, beginNote,
-    takeScreenshot, selectExplanationRegion, editExplanationQuestion: explanation.editQuestion,
+    takeScreenshot: protectedDocument ? () => {} : takeScreenshot,
+    selectExplanationRegion, editExplanationQuestion: explanation.editQuestion,
     selectAnnotation, moveNoteMarker, dismissContext, notifyError, onFormChange: changeFormField })
 
   const wheelScale = useCallback((page: number) => {
@@ -403,9 +417,11 @@ export function Reader(props: ReaderProps) {
     ownerKey: `${snapshot?.id}:${snapshot?.contentVersion}:${fit}` })
   const sidebarPanels = readerSidebarPanels({ snapshot, pdf, annotations: annotationItems,
     selectedAnnotation, clearAnnotation, selectAnnotation,
-    jump: (page, point) => { void jump(page, point) }, ocrTranscript, search, translation,
+    jump: (page, point) => { void jump(page, point) }, ocrTranscript: protectedDocument ? null : ocrTranscript,
+    search, translation,
     rememberTargetLanguage: props.rememberTranslationTargetLanguage,
-    translationEngine: settings.translationEngine, translationRegistry: props.translation, indexing: indexing.control,
+    translationEngine: settings.translationEngine, translationRegistry: props.translation,
+    indexing: protectedDocument ? undefined : indexing.control,
     onReturnToOcr: () => showSidebar('ocr'),
     t })
   const goBack = () => navigateHistory()
@@ -414,10 +430,11 @@ export function Reader(props: ReaderProps) {
   const toolbar = readerToolbarModel({
     snapshot, sessionId, signal: tab.signal, api, act: actAfterFormFlush, busy, editable, colorPending,
     formPending: formCommits.pending, readOnly: !!snapshot?.document.readOnly,
+    protectedDocument,
     runCommand: operation => { void runAfterFormFlush(operation) },
     saveAsPicking, hasUnappliedAnnotation, saveFeedback,
     explanation: {
-      allowed: !!props.promptExplanation && props.allowReadingContext !== false,
+      allowed: !protectedDocument && !!props.promptExplanation && props.allowReadingContext !== false,
       active: !!activeExplanation, sending: explanationSending,
       start: () => startExplanation(), cancel: cancelExplanation,
     },
@@ -427,7 +444,8 @@ export function Reader(props: ReaderProps) {
       clearRegionPurpose: () => { regionPurpose.current = null },
     },
     ocr: {
-      busy: !!ocrProgress, availability: ocrAvailability, refresh: ocr.refreshAvailability,
+      busy: !!ocrProgress, availability: protectedDocument ? null : ocrAvailability,
+      refresh: protectedDocument ? () => {} : ocr.refreshAvailability,
       recognize: () => { void recognize() },
     },
     navigation: {
@@ -438,6 +456,7 @@ export function Reader(props: ReaderProps) {
     commands: {
       clearSelection, clearAnnotation, setMode, closeMenu: closeToolsMenu,
       confirmReload: () => setReloadConfirm(true),
+      reopenProtected: documentState.reopen,
       beginSaveAs: beginSaveAsAfterFormFlush,
       discardChanges: () => { void discardChanges() },
       save: () => { void save() },
@@ -473,8 +492,8 @@ export function Reader(props: ReaderProps) {
     toolbar={toolbar}
     selectionBar={{
       viewport: scrollRoot, getAnchor: contextualAnchor,
-      active: !activeExplanation && hasTextSelection && mode === 'text', selection,
-      textCopied, canExplain: !!props.promptExplanation && props.allowReadingContext !== false,
+      active: !protectedDocument && !activeExplanation && hasTextSelection && mode === 'text', selection,
+      textCopied, canExplain: !protectedDocument && !!props.promptExplanation && props.allowReadingContext !== false,
       explanationSending, editable, color, setColor,
       copyText: () => { void copyText() }, explain: startExplanation, translate: beginTranslation,
       mark: (subtype, hex) => { void mark(subtype, hex) }, beginNote, clearSelection, t,
@@ -487,6 +506,9 @@ export function Reader(props: ReaderProps) {
     }}
     alerts={{
       snapshot, error, positionNotice, editable, reloadConfirm, setError, setPositionNotice, setReloadConfirm,
+      password: passwordPrompt ? { identity: `${sessionId}:${props.resourceAddress}:${ownerSequence.current}`,
+        status: passwordPrompt, busy: unlocking, unlock: password => { setError(''); void unlock(password) },
+        cancel: cancelUnlock, retry: retryUnlock } : undefined,
       saveAs: saveAsOpen ? {
         name: saveName, directory: saveDirectory, pickerAvailable: !!props.pickSaveDirectory,
         picking: saveAsPicking, busy, target, targetChecking, replaceConfirm, error,
@@ -507,7 +529,9 @@ export function Reader(props: ReaderProps) {
       captureSelection, hasDocument: !!pdf, error, elements: pageElements,
     }}
     sidebar={{
-      activeSection: sidebarSection, onSectionChange: showSidebar, expanded: sidebarExpanded,
+      activeSection: protectedSections && !protectedSections.some(section => section === sidebarSection) ? 'pages' : sidebarSection,
+      onSectionChange: showSidebar, expanded: sidebarExpanded,
+      sections: protectedSections,
       pdf, currentPage, pageInput, navigating, onPageInputChange: editPageInput,
       onPageInputSubmit: value => {
         const page = Number(value)
@@ -528,7 +552,7 @@ export function Reader(props: ReaderProps) {
         }) } : undefined,
       onExpandedChange: changeSidebarExpanded, t, panels: sidebarPanels,
     }}
-    screenshot={screenshot ? {
+    screenshot={!protectedDocument && screenshot ? {
       image: screenshot, t, onError: notifyError, onClose: screenshotCtl.close,
       onOcr: ocrAvailability?.status === 'available' && !ocrProgress
         ? () => { void recognize({ page: screenshot.page, rect: screenshot.region }) } : undefined,

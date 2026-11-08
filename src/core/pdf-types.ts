@@ -89,11 +89,15 @@ export interface PdfDocumentInfo {
   pageCount: number
   /** Stable page-program identity for derived indexes; excludes annotations and file metadata. */
   indexContentDigest?: string
+  /** In page order, with null where the clean page program could not be verified. */
+  indexPageDigests?: readonly (string | null)[]
   pages: PdfPageInfo[]
   annotations: PdfAnnotation[]
   title?: string
   signed: boolean
   encrypted: boolean
+  /** Copy/extract permission reported by the native security handler for a protected Reader. */
+  allowTextExtraction?: boolean
   formKind?: 'acroform' | 'xfa'
   formFields?: PdfFormField[]
   /** An empty array is an editable empty outline; absence means inspection is unavailable. */

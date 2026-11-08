@@ -110,6 +110,12 @@ function requireSession(exec: ToolRunContext): string {
   return sessionId
 }
 
+function assertModelDocument(document: { encrypted: boolean }): void {
+  if (document.encrypted) throw Object.assign(
+    new Error('Password-protected PDFs are available in the Reader only; model tools cannot access them'),
+    { code: 'pdf/protected-document' })
+}
+
 /** Model-facing PDF reads. Every document access is fenced by exec.agent.session.id. */
 export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on?: Context['on'] }, workspaces: Workspaces,
   pdfService: PdfService, readerContexts: ReaderContexts,
@@ -118,6 +124,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
   const textSearches = createSearchSessions<z.infer<typeof startSearchArgs>>({ prefix: 'txt_' })
   const relatedSearches = createSearchSessions<z.infer<typeof startRelatedArgs>>({ prefix: 'rel_' })
   const toolContext = createDocumentToolContext(ctx, workspaces, {
+    assertDocument(sessionId, id) { assertModelDocument(workspaces.readSnapshot(sessionId, id).document) },
     resolveDocumentId(name, raw, sessionId) {
       if (name === 'pdf_keyword_search') {
         const input = searchArgs.parse(raw)
@@ -197,6 +204,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
       if (!/\.pdf$/i.test(path)) throw Object.assign(new Error('Only PDF files can be inspected'), { code: 'pdf/invalid-address' })
       const info = await workspaces.inspectFile(sessionId, path, exec.agent!, exec.signal)
       const document = info.document
+      assertModelDocument(document)
       const title = document.title === undefined ? undefined : windowPageText(document.title, 0, 512)
       return { path: info.path.slice(0, 512), pathTruncated: info.path.length > 512,
         size: info.size, sourceDigest: info.sourceDigest, sourceVersion: info.sourceVersion,
@@ -259,6 +267,7 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
       const documents = readerContexts.current(sessionId).flatMap(context => {
         try {
           const snapshot = workspaces.readSnapshot(sessionId, context.documentId)
+          if (snapshot.document.encrypted) return []
           if (snapshot.contentVersion !== context.contentVersion || context.page > snapshot.document.pageCount) return []
           return [{ documentId: snapshot.id, tabId: context.tabId, path: snapshot.path, page: context.page,
             pageCount: snapshot.document.pageCount, revision: snapshot.revision,

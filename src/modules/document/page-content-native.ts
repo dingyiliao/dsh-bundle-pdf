@@ -74,6 +74,7 @@ export function buildNativePageContent(input: BuildNativePageContentInput): Page
       ? 'partial' : 'complete', warnings: [...warnings] })
   return PageContentSchema.parse({ version: 1, sourceDigest: input.sourceDigest, page: input.page,
     ...(input.indexContentDigest ? { indexContentDigest: input.indexContentDigest } : {}),
+    ...(input.indexPageDigest === undefined ? {} : { indexPageDigest: input.indexPageDigest }),
     extractionIdentity: input.extractionIdentity, pageRect: [...input.pageRect],
     nativeText: { ...nativeText, digest: pageContentDigest(nativeText.text) }, warnings,
     blocks: [{ id: textBlockId, kind: 'text', rectPdf: [...input.pageRect],

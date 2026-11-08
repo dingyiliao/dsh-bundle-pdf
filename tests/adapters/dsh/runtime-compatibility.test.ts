@@ -3,6 +3,7 @@ import test from 'node:test'
 import { PDFDocument } from 'pdf-lib'
 import { Context } from '@deepseek-ai/cordis'
 import ToolsService, { type ToolExecutionInput } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import Storage, { type KvUnit } from '@deepseek-ai/dsh-storage'
@@ -39,7 +40,8 @@ test('published DSH native tool pipeline dispatches PDF tools and removes their 
   })
   try {
     await ctx.plugin(SystemPrompt)
-    await ctx.plugin(ToolsService, { mode: 'native' })
+    await ctx.plugin(ToolsService)
+    await ctx.plugin(NativeToolExecutor)
     const owner = ctx.plugin({
       name: 'pdf-runtime-compatibility', inject: ['tools'],
       apply(scoped: Context) {
@@ -60,8 +62,16 @@ test('published DSH native tool pipeline dispatches PDF tools and removes their 
     // The real executor treats Agent as an opaque scope; this fixture supplies
     // only the session identity consumed by these PDF metadata tools.
     const toolAgent = agent as unknown as NonNullable<ToolExecutionInput['agent']>
-    const run = (name: string, args: object) => ctx.tools.execute({ agent: toolAgent, signal,
-      callId: ToolCallId(`call-${name}`), name, arguments: args })
+    const run = async (name: string, args: object) => {
+      const id = ToolCallId(`call-${name}`)
+      const batch = await ctx.tools.execute({ agent: toolAgent, signal,
+        calls: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }] })
+      assert.equal(batch.results.length, 1)
+      const [call] = batch.results
+      assert.ok(call)
+      assert.equal(call.callId, id)
+      return call.result
+    }
     const result = await run('pdf_current', {})
     assert.ok(result && !result.isError, JSON.stringify(result))
     assert.deepEqual(result.value, { status: 'active', documents: [{ documentId: opened.id,
@@ -98,6 +108,7 @@ test('a rejected DSH storage write does not advance the PDF draft and a durable 
       records.set(key, structuredClone(value))
     },
     async deleteRecord(_table, key) { records.delete(key) },
+    async deleteRecords(_table, keys) { for (const key of keys) records.delete(key) },
     async setGlobal() { throw new Error('PDF drafts have no global record') },
     async close() { unitClosed = true },
   }

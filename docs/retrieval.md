@@ -71,17 +71,28 @@ work. Background preparation and foreground search share page content, vectors
 and build jobs; authorization is still checked for each Session. An index is
 derived data, never an access grant or a second PDF working copy.
 
+Background slices check the source before and after each batch. An unchanged
+local file version can reuse its verified content digest after a fresh path,
+metadata and read-access check. A changed version requires a full read and
+digest comparison against the current working copy.
+
 The durable index is SQLite under
 `<DSH_HOME>/storages/dsh-plugin-pdf/<profile>/<namespace-hash>/retrieval-v1`.
 It stores immutable page content, provenance and vectors; checkpoints point to
-those records. Source layers (native text, OCR, descriptions) and compatible
-document vectors can be reused independently. A canonical path and an
-annotation-independent page-content identity let annotation, comment and
-outline-only edits reuse indexed content. Page programs, resources, geometry or
-order changes invalidate the affected content. Raw file/source versions still
-fence evidence, authorization and active searches. Unverifiable page structure
-uses the raw file digest conservatively; the identity check does not prove
-arbitrary PDF graphics-program equivalence.
+those records. Within the same canonical path and page number, an unchanged
+page fingerprint reuses native text, OCR and image descriptions. The fingerprint
+includes the page program, resources, geometry and shared rendering dependencies.
+An annotation, comment or bookmark save keeps a verified ready index ready.
+Content edits build a new index for the current page order, reusing unchanged
+page layers and compatible vectors. A page without a verified fingerprint uses
+the exact file digest for reuse. Raw source versions still fence evidence,
+authorization and in-flight searches.
+
+Existing caches can be adopted when their exact source or unchanged body can be
+verified. Opening a compatible ready index records its page fingerprints for
+later edits without rewriting every cached page. Older data whose source can no
+longer be verified may require page extraction again. Identical text can still
+reuse compatible vectors.
 
 New built-in Tesseract extraction shares its raw OCR artifact with automatic
 read-page character-mapping repair. Both use the same clean page image with a

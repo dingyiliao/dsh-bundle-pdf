@@ -57,6 +57,9 @@ export function createReaderContexts(workspaces: WorkingCopyReadPort,
       return { ok: true }
     }
     const snapshot = workspaces.readSnapshot(sessionId, input.documentId)
+    if (snapshot.document.encrypted) {
+      throw Object.assign(new Error('Protected PDFs can only be viewed in the Reader'), { code: 'pdf/protected-document' })
+    }
     if (snapshot.contentVersion !== input.contentVersion) {
       throw Object.assign(new Error('PDF working copy changed; refresh the reader'), { code: 'pdf/stale-reader' })
     }

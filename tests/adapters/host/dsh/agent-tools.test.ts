@@ -49,7 +49,8 @@ function captureTools(services: Record<string, unknown> = {}) {
 
 /** Metadata-only tool fixtures do not construct a document registry. */
 function metadataWorkspaces() {
-  return { async acquire() { return () => {} }, onIdle() { return () => {} }, listDocuments() { return [] } } as never
+  return { async acquire() { return () => {} }, readSnapshot() { return { document: { encrypted: false } } },
+    onIdle() { return () => {} }, listDocuments() { return [] } } as never
 }
 
 function readTool(definitions: Map<string, CapturedTool>, name: string, args: unknown, sessionId?: string) {
@@ -250,6 +251,22 @@ test('pdf_info reads the source without owning a document or persisting a draft'
     await readTool(definitions, 'pdf_close', { documentId: first.documentId }, sessionId)
     assert.equal(state.workspaces.listDocuments().some(item => item.modelOwned), false)
     await assert.rejects(readTool(definitions, 'pdf_info', { path: '/fixtures/native.pdf' }), /session/i)
+  } finally { await dispose(); await state.workspaces.dispose() }
+})
+
+test('pdf_info does not disclose metadata from a protected source', async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'protected-metadata'
+  const { ctx, definitions } = captureTools()
+  const workspaces = { ...state.workspaces,
+    async inspectFile(...args: Parameters<typeof state.workspaces.inspectFile>) {
+      const info = await state.workspaces.inspectFile(...args)
+      return { ...info, document: { ...info.document, encrypted: true } }
+    } }
+  const dispose = registerPdfAgentTools(ctx, workspaces, {} as never, { current: () => [] })
+  try {
+    await assert.rejects(readTool(definitions, 'pdf_info', { path: '/fixtures/native.pdf' }, sessionId),
+      { code: 'pdf/protected-document' })
+    assert.deepEqual(state.workspaces.listDocuments(), [])
   } finally { await dispose(); await state.workspaces.dispose() }
 })
 
@@ -1374,10 +1391,15 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
     address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf`,
   }, agent(sessionId), signal)
   assert.ok('bytes' in opened)
-  let now = 0
-  const readerContexts = createReaderContexts(state.workspaces, 90, () => now)
+  let now = 0, protectedReader = false
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      return protectedReader ? { ...snapshot, document: { ...snapshot.document, encrypted: true } } : snapshot
+    } }
+  const readerContexts = createReaderContexts(workspaces, 90, () => now)
   const { ctx, definitions } = captureTools()
-  registerPdfAgentTools(ctx, state.workspaces, {} as never, readerContexts)
+  registerPdfAgentTools(ctx, workspaces, {} as never, readerContexts)
   try {
     const initial = await readTool(definitions, 'pdf_current', {}, sessionId) as Record<string, unknown>
     assert.equal(initial.status, 'none')
@@ -1394,6 +1416,19 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
       documentId: opened.id, tabId: 'reader-a', path: opened.path, page: 3, pageCount: 4,
       revision: opened.revision, contentVersion: opened.contentVersion,
     }])
+    protectedReader = true
+    const hidden = await readTool(definitions, 'pdf_current', {}, sessionId) as Record<string, unknown>
+    assert.deepEqual(hidden, { status: 'none', documents: [] }, 'Reader presence must not expose a protected document ID or path')
+    for (const [name, args] of [
+      ['pdf_status', { documentId: opened.id }],
+      ['pdf_bookmark_list', { documentId: opened.id }],
+      ['pdf_annotation_list', { documentId: opened.id, page: 1 }],
+      ['pdf_page_read', { documentId: opened.id, page: 1 }],
+      ['pdf_page_render', { documentId: opened.id, page: 1 }],
+    ] as const) {
+      await assert.rejects(readTool(definitions, name, args, sessionId), { code: 'pdf/protected-document' }, name)
+    }
+    protectedReader = false
     const otherSession = await readTool(definitions, 'pdf_current', {}, 'pdf-current-other') as Record<string, unknown>
     assert.equal(otherSession.status, 'none')
     assert.deepEqual(otherSession.documents, [])

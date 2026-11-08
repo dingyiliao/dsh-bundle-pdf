@@ -39,6 +39,7 @@ export interface PdfSessionOwner {
 
 interface LifecycleApi {
   open: PdfClientApi['open']
+  unlock: PdfClientApi['unlock']
   release: PdfClientApi['release']
 }
 
@@ -61,6 +62,8 @@ export interface PdfSessionLifecycle {
   register(owner: PdfSessionOwner): void
   /** Admit an open after previous switch cleanup and retain its eventual workspace identity. */
   open(owner: PdfSessionOwner, sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  /** Use the occurrence's existing reference for one explicit password submission. */
+  unlock(owner: PdfSessionOwner, sessionId: string, address: string, password: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Retry an earlier failed cleanup before admitting further opens. */
   drain(): Promise<void>
   dispose(): Promise<void>
@@ -306,9 +309,8 @@ export function createPdfSessionLifecycle(options: {
   options.signal.addEventListener('abort', dispose, { once: true })
   if (options.signal.aborted) dispose()
 
-  return {
-    register(owner) { recordFor(owner) },
-    async open(owner, sessionId, address, signal) {
+  async function admit(owner: PdfSessionOwner, sessionId: string, address: string, signal: AbortSignal | undefined,
+    request: (referenceId: string) => Promise<WorkspaceSnapshot>): Promise<WorkspaceSnapshot> {
       if (sessionId !== owner.resourceSessionId) throw new Error('PDF resource Session mismatch')
       const record = recordFor(owner, false)
       const generation = record.generation
@@ -327,7 +329,7 @@ export function createPdfSessionLifecycle(options: {
       record.pendingOpens++
       record.navigationSettled = false
       try {
-        const snapshot = await options.api.open(sessionId, address, options.signal, record.referenceId)
+        const snapshot = await request(record.referenceId)
         const key = documentKey(sessionId, snapshot.id)
         record.documents.set(key, { sessionId, id: snapshot.id })
         assertLive()
@@ -346,6 +348,17 @@ export function createPdfSessionLifecycle(options: {
         }
         retirePreviousDocuments(record)
       }
+  }
+
+  return {
+    register(owner) { recordFor(owner) },
+    open(owner, sessionId, address, signal) {
+      return admit(owner, sessionId, address, signal,
+        referenceId => options.api.open(sessionId, address, options.signal, referenceId))
+    },
+    unlock(owner, sessionId, address, password, signal) {
+      return admit(owner, sessionId, address, signal,
+        referenceId => options.api.unlock(sessionId, address, password, options.signal, referenceId))
     },
     drain,
     dispose,

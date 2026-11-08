@@ -24,12 +24,13 @@ function deferred() {
   return { promise, resolve }
 }
 function fixture(options: { native?: string; scan?: boolean; describe?: boolean; attested?: boolean; cache?: Map<string, unknown>;
-  imageEngine?: string; invalidImageOutput?: boolean;
+  imageEngine?: string; invalidImageOutput?: boolean; pageCount?: number;
   onActivity?: NonNullable<Parameters<typeof createPdfPageContent>[2]['onActivity']> } = {}) {
   const data = options.cache ?? new Map<string, unknown>()
   const state = { native: options.native ?? '', text: 'needle recognized', description: 'A needle labels the upward chart.',
     model: 'revision-one', bytes: new Uint8Array([1, 2, 3]), version: 'content-one', denied: false,
     indexContentDigest: undefined as string | undefined,
+    indexPageDigests: undefined as readonly (string | null)[] | undefined,
     reads: 0, renders: 0, recognitions: 0, descriptions: 0, words: true, imageFailure: false, ocrAvailable: true, unmappedCharacters: 0,
     imageModel: undefined as string | undefined, imageInputs: [] as Uint8Array[], ocrInputs: [] as Uint8Array[],
     imageIdentityResolutions: 0, ocrIdentityResolutions: 0, cacheWriteFailure: false,
@@ -45,10 +46,14 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
       image: { 'fixture-image': { variant: 'first' }, 'fixture-image-two': { variant: 'second' } } } }
   const snapshot = (session: string, id: string): HostWorkspaceSnapshot => {
     if (state.denied || id !== `doc-${session}`) throw Object.assign(new Error('PDF source access denied'), { code: 'pdf/access-denied' })
+    const pageCount = options.pageCount ?? 1
     return { id, path: '/indexed.pdf', bytes: state.bytes, sourceVersion: 'disk-one', contentVersion: state.version,
       revision: session === 'b' ? 2 : 0, dirty: false, conflict: false, canUndo: false, canRedo: false,
-      document: { pageCount: 1, pages: [{ ...geometry, mediaBox: [...geometry.mediaBox], cropBox: [...geometry.cropBox] }],
+      document: { pageCount, pages: Array.from({ length: pageCount }, (_, index) => ({
+        ...geometry, page: index + 1, mediaBox: [...geometry.mediaBox], cropBox: [...geometry.cropBox],
+      })),
         ...(state.indexContentDigest ? { indexContentDigest: state.indexContentDigest } : {}),
+        ...(state.indexPageDigests ? { indexPageDigests: state.indexPageDigests } : {}),
         annotations: [], signed: false, encrypted: false, readOnly: false } }
   }
   const pages: Parameters<typeof createPdfPageContent>[1] = {
@@ -59,7 +64,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
       return { snapshot: original, content: { ...layer(state.native), ...(state.unmappedCharacters ? { quality: { unmappedCharacters: state.unmappedCharacters } } : {}) } }
     },
     async renderOcrImage(session, id, page, region, maxEdge, _active, forms) {
-      assert.equal(page, 1); assert.equal(region, undefined); assert.equal(maxEdge, 1024)
+      assert.ok(page >= 1 && page <= (options.pageCount ?? 1)); assert.equal(region, undefined); assert.equal(maxEdge, 1024)
       assert.equal(forms, false, 'the clean OCR renderer already omits annotations and must also omit form values')
       state.renders++; await state.onRender?.()
       const png = Buffer.alloc(24 + state.bytes.length)
@@ -153,12 +158,139 @@ test('annotation-only source changes reuse aggregates and independent layers whi
   } finally { reopened?.dispose(); f.dispose() }
 })
 
+test('a verified unchanged page retains all producer layers after another page changes', async () => {
+  const f = fixture({ describe: true, pageCount: 2 })
+  const firstDigest = pageContentDigest('page one'), secondDigest = pageContentDigest('page two')
+  f.state.indexPageDigests = [firstDigest, secondDigest]
+  f.state.indexContentDigest = pageContentDigest('old document')
+  const calls = () => [f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions]
+  let reopened: ReturnType<typeof f.create> | undefined
+  try {
+    const first = await f.content.read('a', 'doc-a', 1, signal)
+    const second = await f.content.read('a', 'doc-a', 2, signal)
+    assert.deepEqual(calls(), [2, 2, 2, 2])
+
+    f.state.bytes = new Uint8Array([4, 5, 6]); f.state.version = 'content-two'
+    f.state.indexPageDigests = [firstDigest, pageContentDigest('new page two')]
+    f.state.indexContentDigest = pageContentDigest('new document')
+    f.state.text = 'new second-page OCR'; f.state.description = 'new second-page description'
+    f.content.dispose(); reopened = f.create()
+    const retained = await reopened.read('b', 'doc-b', 1, signal)
+    assert.equal(retained.sourceDigest, pageContentDigestBytes(f.state.bytes))
+    assert.equal(retained.indexContentDigest, f.state.indexContentDigest)
+    assert.equal(retained.indexPageDigest, firstDigest)
+    assert.deepEqual(retained.blocks, first.blocks)
+    assert.deepEqual(calls(), [2, 2, 2, 2])
+
+    // A missing aggregate exercises the three independent page-bound layers.
+    for (const [key, value] of f.data) {
+      const cached = parsePageContent(value)
+      if (cached?.page === 1 && cached.extractionIdentity === reopened.identity('b')) f.data.delete(key)
+    }
+    assert.deepEqual((await reopened.read('b', 'doc-b', 1, signal)).blocks, first.blocks)
+    assert.deepEqual(calls(), [2, 2, 2, 2])
+    const changed = await reopened.read('b', 'doc-b', 2, signal)
+    assert.equal(changed.indexPageDigest, f.state.indexPageDigests[1])
+    assert.notEqual(changed.blocks[0]!.id, second.blocks[0]!.id)
+    assert.deepEqual(representations(changed).map(rep => rep.text), ['', f.state.text, f.state.description])
+    assert.deepEqual(calls(), [3, 3, 3, 3])
+  } finally { reopened?.dispose(); f.dispose() }
+})
+
+test('an explicitly unverifiable page only reuses identical source bytes', async () => {
+  const f = fixture({ describe: true })
+  f.state.indexContentDigest = pageContentDigest('the legacy whole document identity')
+  f.state.indexPageDigests = [null]
+  try {
+    const first = await f.content.read('a', 'doc-a', 1, signal)
+    const same = await f.content.read('b', 'doc-b', 1, signal)
+    assert.equal(first.indexPageDigest, null)
+    assert.deepEqual(same.blocks, first.blocks)
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 1, 1])
+    f.state.bytes = new Uint8Array([4, 5, 6]); f.state.version = 'content-two'
+    const changed = await f.content.read('a', 'doc-a', 1, signal)
+    assert.notEqual(changed.blocks[0]!.id, first.blocks[0]!.id)
+    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [2, 2, 2])
+  } finally { f.dispose() }
+})
+
+test('verified pages lazily adopt only compatible legacy aggregate and producer keys', async t => {
+  for (const legacyKey of ['document', 'source']) for (const reuse of ['aggregate', 'layers']) {
+    await t.test(`${legacyKey} ${reuse}`, async () => {
+      const f = fixture({ describe: true })
+      if (legacyKey === 'document') f.state.indexContentDigest = pageContentDigest('stable whole document')
+      let reopened: ReturnType<typeof f.create> | undefined
+      try {
+        const old = await f.content.read('a', 'doc-a', 1, signal)
+        if (reuse === 'aggregate') {
+          const key = aggregateKey(f)
+          for (const entry of f.data.keys()) if (entry !== key) f.data.delete(entry)
+        } else f.data.delete(aggregateKey(f))
+        const legacyKeys = new Set(f.data.keys())
+        // Whole-document attestations also cover a different serialization.
+        if (legacyKey === 'document') f.state.bytes = new Uint8Array([4, 5, 6])
+        f.state.indexPageDigests = [pageContentDigest('verified page')]
+        f.content.dispose(); reopened = f.create()
+        f.state.onScan = async () => { assert.fail('preparing verified pages must not scan the legacy cache') }
+        await reopened.prepare('b', signal, 'doc-b')
+        assert.deepEqual(new Set(f.data.keys()), legacyKeys)
+
+        const adopted = await reopened.read('b', 'doc-b', 1, signal)
+        assert.equal(adopted.sourceDigest, pageContentDigestBytes(f.state.bytes))
+        assert.equal(adopted.indexPageDigest, f.state.indexPageDigests[0])
+        assert.notEqual(adopted.blocks[0]!.id, old.blocks[0]!.id)
+        assert.deepEqual(representations(adopted), representations(old))
+        assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
+
+        for (const key of legacyKeys) f.data.delete(key)
+        f.state.bytes = new Uint8Array([7, 8, 9]); f.state.indexContentDigest = pageContentDigest('another whole document')
+        f.updateSettings({ indexScanPages: false }); await reopened.prepare('b', signal)
+        const reconfigured = await reopened.read('b', 'doc-b', 1, signal)
+        assert.deepEqual(representations(reconfigured).map(rep => rep.kind), ['native-text', 'image-description'])
+        assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
+      } finally { reopened?.dispose(); f.dispose() }
+    })
+  }
+})
+
+test('a verified page cannot adopt legacy results from a different file identity', async () => {
+  const f = fixture({ describe: true })
+  f.state.indexContentDigest = pageContentDigest('old document')
+  try {
+    await f.content.read('a', 'doc-a', 1, signal)
+    f.state.bytes = new Uint8Array([4, 5, 6]); f.state.version = 'content-two'
+    f.state.indexContentDigest = pageContentDigest('changed document')
+    f.state.indexPageDigests = [pageContentDigest('verified page')]
+    await f.content.read('a', 'doc-a', 1, signal)
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [2, 2, 2, 2])
+  } finally { f.dispose() }
+})
+
 test('equal content identity never permits a file to change during an authorized extraction', async () => {
   const f = fixture()
   f.state.indexContentDigest = pageContentDigest('stable printed page')
+  f.state.indexPageDigests = [pageContentDigest('verified unchanged page')]
   f.state.onNative = async () => { f.state.bytes = new Uint8Array([9, 8, 7]) }
   try { await assert.rejects(f.content.read('a', 'doc-a', 1, signal), { code: 'pdf/stale-reader' }) }
   finally { f.dispose() }
+})
+
+test('a verified cache hit is rejected if its source changes during lookup', async () => {
+  const f = fixture({ describe: true })
+  f.state.indexPageDigests = [pageContentDigest('verified unchanged page')]
+  try {
+    await f.content.read('a', 'doc-a', 1, signal)
+    const cacheKeys = new Set(f.data.keys())
+    f.state.onGet = () => {
+      f.state.bytes = new Uint8Array([4, 5, 6]); f.state.version = 'content-two'
+      f.state.onGet = undefined
+    }
+    await assert.rejects(f.content.read('a', 'doc-a', 1, signal), { code: 'pdf/stale-reader' })
+    assert.deepEqual(new Set(f.data.keys()), cacheKeys)
+    const retried = await f.content.read('a', 'doc-a', 1, signal)
+    assert.equal(retried.sourceDigest, pageContentDigestBytes(f.state.bytes))
+    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
+  } finally { f.dispose() }
 })
 
 test('a source replaced during legacy-cache discovery aborts before marker writes or model work', async () => {

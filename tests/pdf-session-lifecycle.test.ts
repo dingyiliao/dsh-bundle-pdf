@@ -23,10 +23,12 @@ function fixture(initialTabs: Tab[] = []) {
   const tabs = observable<readonly Tab[]>(initialTabs)
   const plugin = new AbortController()
   const opened: Array<{ sessionId: string; address: string; signal?: AbortSignal; referenceId?: string }> = []
+  const unlocked: Array<{ sessionId: string; address: string; password: string; referenceId?: string }> = []
   const closedTabs: string[] = []
   const released: Released[] = []
   const errors: unknown[] = []
   let openImpl = async (_sessionId: string, _address: string) => snapshot(`workspace-${opened.length}`)
+  let unlockImpl = async (_sessionId: string, _address: string, _password: string) => snapshot('unlocked-workspace')
   let releaseImpl = async (_sessionId: string, _id: string | undefined, _referenceId: string) => {}
   let closeImpl = (tabId: string) => {
     closedTabs.push(tabId)
@@ -40,6 +42,10 @@ function fixture(initialTabs: Tab[] = []) {
         opened.push({ sessionId, address: requestedAddress, signal, referenceId })
         return openImpl(sessionId, requestedAddress)
       },
+      unlock(sessionId, requestedAddress, password, _signal, referenceId) {
+        unlocked.push({ sessionId, address: requestedAddress, password, referenceId })
+        return unlockImpl(sessionId, requestedAddress, password)
+      },
       async release(sessionId, id, referenceId) {
         released.push({ sessionId, id, referenceId })
         await releaseImpl(sessionId, id, referenceId)
@@ -48,8 +54,9 @@ function fixture(initialTabs: Tab[] = []) {
     signal: plugin.signal,
     onError(error) { errors.push(error) },
   })
-  return { session, mounted, tabs, plugin, lifecycle, opened, closedTabs, released, errors,
-    setOpen(fn: typeof openImpl) { openImpl = fn }, setRelease(fn: typeof releaseImpl) { releaseImpl = fn },
+  return { session, mounted, tabs, plugin, lifecycle, opened, unlocked, closedTabs, released, errors,
+    setOpen(fn: typeof openImpl) { openImpl = fn }, setUnlock(fn: typeof unlockImpl) { unlockImpl = fn },
+    setRelease(fn: typeof releaseImpl) { releaseImpl = fn },
     setClose(fn: typeof closeImpl) { closeImpl = fn }, switchTo(key: string | undefined) { session.set({ key }) } }
 }
 function occurrence(containerSessionId = 'container-a', tabId = 'tab-1', resourceSessionId = containerSessionId,
@@ -100,6 +107,23 @@ test('rerendering keeps an idempotent reference until the actual tab occurrence 
   await f.lifecycle.drain()
   assert.deepEqual(f.released, [{ sessionId: 'container-a', id: undefined, referenceId: f.opened[0]!.referenceId! }])
   f.lifecycle.dispose()
+})
+
+test('a failed protected open can unlock with the same occurrence reference and release on close', async () => {
+  const f = fixture()
+  const tab = occurrence()
+  f.lifecycle.register(tab.owner)
+  f.setOpen(async () => { throw Object.assign(new Error('Password required'), { code: 'pdf/password-required' }) })
+  await assert.rejects(f.lifecycle.open(tab.owner, 'container-a', tab.owner.resourceAddress),
+    { code: 'pdf/password-required' })
+  const value = await f.lifecycle.unlock(tab.owner, 'container-a', tab.owner.resourceAddress, 'user password')
+  assert.equal(value.id, 'unlocked-workspace')
+  assert.equal(f.unlocked.length, 1)
+  assert.equal(f.unlocked[0]?.referenceId, f.opened[0]?.referenceId)
+  tab.controller.abort()
+  await f.lifecycle.drain()
+  assert.deepEqual(f.released, [{ sessionId: 'container-a', id: undefined, referenceId: f.opened[0]!.referenceId! }])
+  await f.lifecycle.dispose()
 })
 
 test('closing a pending UI adoption releases its token before the delayed reply', async () => {

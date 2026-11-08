@@ -4,7 +4,7 @@ import { indexingProgressSchema } from '../../../contracts/indexing.js'
 import type { PrefetchDiagnosticEvent, IndexingCancellationReason } from './indexing-diagnostics.js'
 
 export interface RetrievalPrefetchDocument extends Pick<OpenWorkingCopyDocument,
-  'sessionId' | 'id' | 'path' | 'contentVersion' | 'sourceDigest' | 'conflict'> {}
+  'sessionId' | 'id' | 'path' | 'contentVersion' | 'sourceDigest' | 'indexContentDigest' | 'conflict'> {}
 export interface RetrievalPrefetchStatus {
   revision: string
   state: 'idle' | 'running' | 'suspended' | 'disposed'
@@ -17,6 +17,7 @@ export interface RetrievalPrefetchStatus {
 interface Entry {
   document: RetrievalPrefetchDocument
   signature: string
+  selectionIdentity: string
   occurrence: number
   state: 'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
   progress?: RetrievalProgress
@@ -37,7 +38,7 @@ interface Ports {
     onProgress?: (progress: RetrievalProgress) => void): Promise<void>
   /** A cooperative quantum: false preserves this occurrence and requeues it. */
   prepareSlice?(sessionId: string, input: { documentId: string; rebuild?: boolean; indexPlanId?: string }, signal: AbortSignal,
-    onProgress?: (progress: RetrievalProgress) => void): Promise<boolean>
+    onProgress?: (progress: RetrievalProgress) => void, occurrence?: object): Promise<boolean>
   subscribe?(listener: () => void): () => void
   onChange?(status: RetrievalPrefetchStatus): void
   onDiagnostic?(event: PrefetchDiagnosticEvent): void
@@ -46,7 +47,7 @@ interface Ports {
 
 const documentKey = (document: RetrievalPrefetchDocument) => JSON.stringify([document.sessionId, document.id])
 const signatureFor = (identity: string, document: RetrievalPrefetchDocument) => JSON.stringify([
-  identity, document.sessionId, document.id, document.contentVersion, document.sourceDigest,
+  identity, document.sessionId, document.id, document.path, document.contentVersion, document.sourceDigest, document.indexContentDigest,
 ])
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }) }
 const failureCode = (error: unknown): string => {
@@ -145,7 +146,7 @@ export function createRetrievalPrefetch(ports: Ports) {
         notify()
       }
       const complete = ports.prepareSlice
-        ? await ports.prepareSlice(entry.document.sessionId, input, controller.signal, progress)
+        ? await ports.prepareSlice(entry.document.sessionId, input, controller.signal, progress, entry)
         : await ports.prepare(entry.document.sessionId, input, controller.signal, progress).then(() => true)
       controller.signal.throwIfAborted()
       if (entries.get(documentKey(entry.document)) === entry) {
@@ -170,7 +171,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     notify()
   }
   function reconcile(): void {
-    const desired = new Map<string, { document: RetrievalPrefetchDocument; signature: string; planId?: string }>()
+    const desired = new Map<string, Pick<Entry, 'document' | 'signature' | 'selectionIdentity' | 'planId'>>()
     let skipped = 0
     const owned = new Map(ports.documents().map(document => [documentKey(document), document]))
     {
@@ -182,14 +183,24 @@ export function createRetrievalPrefetch(ports: Ports) {
         const selection = ports.selection(document)
         if (!selection) continue
         if (desired.size >= maximum) { skipped++; continue }
-        desired.set(key, { document: { ...document }, signature: signatureFor(selection.identity, document),
+        desired.set(key, { document: { ...document }, signature: signatureFor(selection.identity, document), selectionIdentity: selection.identity,
           ...(selection.planId ? { planId: selection.planId } : {}) })
       }
     }
     skippedDocuments = skipped; lastFailure = undefined
     for (const [key, entry] of entries) {
-      if (desired.get(key)?.signature === entry.signature) continue
-      cancelEntry(entry, desired.has(key) ? 'replaced' : owned.has(key) ? 'configuration' : 'closed')
+      const next = desired.get(key)
+      if (next?.signature === entry.signature) continue
+      // A completed index depends on the verified page content and plan. Only
+      // in-flight work is bound to the exact saved bytes it started reading.
+      if (entry.state === 'ready' && next && entry.document.path && entry.document.path === next.document.path
+        && entry.document.contentVersion === next.document.contentVersion && entry.selectionIdentity === next.selectionIdentity
+        && entry.document.indexContentDigest && entry.document.indexContentDigest === next.document.indexContentDigest) {
+        entry.document = next.document
+        entry.signature = next.signature
+        continue
+      }
+      cancelEntry(entry, next ? 'replaced' : owned.has(key) ? 'configuration' : 'closed')
       entries.delete(key)
       if (running?.entry === entry) running.controller.abort()
     }
@@ -251,7 +262,8 @@ export function createRetrievalPrefetch(ports: Ports) {
     const interrupted = resume ? previous : undefined
     const restoredProgress: RetrievalProgress | undefined = interrupted?.progress ? { ...interrupted.progress, phase: 'restoring',
       ...(interrupted.progress.computedChunks !== undefined ? { computedChunks: 0, reusedChunks: interrupted.progress.embeddedChunks } : {}) } : undefined
-    const entry: Entry = { document: { ...document }, signature, occurrence: ++occurrence, state: 'queued', boost: true,
+    const entry: Entry = { document: { ...document }, signature, selectionIdentity: selection.identity,
+      occurrence: ++occurrence, state: 'queued', boost: true,
       ...(selection.planId ? { planId: selection.planId } : {}),
       ...(rebuild || interrupted?.rebuild ? { rebuild: true } : {}),
       ...(restoredProgress ? { progress: restoredProgress } : {}) }

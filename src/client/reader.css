@@ -305,8 +305,7 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
   box-shadow: 0 1px 5px rgb(0 0 0 / .12); cursor: pointer; pointer-events: auto;
 }
 .dsh-pdf-reader .dsh-pdf-comment-marker .dsh-pdf-toolbar-icon { display: block; width: 16px; height: 16px; }
-.dsh-pdf-reader .dsh-pdf-comment-marker:hover,
-.dsh-pdf-reader .dsh-pdf-comment-marker.is-selected {
+.dsh-pdf-reader button.dsh-pdf-comment-marker:is(:hover, :active, .is-selected) {
   border-color: var(--pdf-accent); background: color-mix(in srgb, var(--pdf-accent) 18%, white);
 }
 .dsh-pdf-reader .dsh-pdf-comment-marker:focus-visible { outline: 2px solid var(--pdf-accent); outline-offset: 2px; }
@@ -850,6 +849,12 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
 .dsh-pdf-dialog label { display: flex; gap: 7px; align-items: center; width: 100%; }
 .dsh-pdf-dialog label input:not([type="checkbox"]) { flex: 1; }
 .dsh-pdf-dialog p { margin: 0; width: 100%; }
+.dsh-pdf-password-prompt { display: grid; gap: 8px; padding: 14px; background: var(--pdf-panel); border-bottom: 1px solid var(--pdf-border); }
+.dsh-pdf-password-prompt p { margin: 0; }
+.dsh-pdf-password-prompt label { display: grid; gap: 4px; max-width: 360px; }
+.dsh-pdf-password-prompt input { min-width: 0; padding: 6px 8px; }
+.dsh-pdf-password-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dsh-pdf-password-error { color: var(--dsw-alias-text-danger, #b42318); }
 .dsh-pdf-reader .dsh-pdf-screenshot-dialog { width: min(960px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); margin: auto; padding: 0; border: 1px solid var(--pdf-border); border-radius: var(--pdf-radius); background: var(--pdf-panel); color: var(--pdf-text); box-shadow: var(--dsw-elevation-prominent); }
 .dsh-pdf-screenshot-dialog[open] { display: flex; flex-direction: column; }
 .dsh-pdf-screenshot-dialog::backdrop { background: #0008; }

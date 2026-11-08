@@ -62,3 +62,74 @@ test('malformed content and persistent-policy identities are rejected before pag
     assert.equal(f.state.reads, 0)
   } finally { await f.service.dispose() }
 })
+
+test('invalid and inconsistent page digests fail before reading any page', async () => {
+  const f = fixture(), input = { documentId: f.document.id }
+  try {
+    for (const pageDigests of [[], ['not-a-digest'], [null]]) {
+      f.document.indexPageDigests = pageDigests
+      await assert.rejects(f.service.prepare('first', input), { code: 'pdf/retrieval-extraction-failed' })
+      assert.equal(f.state.reads, 0)
+    }
+    delete f.document.indexContentDigest
+    await f.service.prepare('first', input)
+    assert.equal(f.state.reads, 1, 'a partial page digest vector is usable without a whole-document proof')
+  } finally { await f.service.dispose() }
+})
+
+test('exact-source legacy pages are reused and seeded for the next partial PDF edit', async () => {
+  const sha = (part: string) => `sha256:${part.repeat(64)}`
+  const document: RetrievalDocument = { id: 'doc', path: '/fixture/legacy.pdf', sourceDigest: sha('1'),
+    contentVersion: 'open-1', pageCount: 2 }
+  const records = new Map<string, unknown>(), reads: number[] = []
+  const service = createRetrievalService({ documents: { snapshot: () => ({ ...document }) },
+    cache: { async get(key) { return records.get(key) }, async set(key, value) { records.set(key, value) } },
+    pages: { async read(_session, _id, page) {
+      reads.push(page)
+      return { source: 'pdf-text', text: `Content of page ${page}.` }
+    } } })
+  try {
+    const input = { documentId: document.id, query: 'content', mode: 'lexical' as const }
+    await service.search('session', input)
+    assert.deepEqual(reads, [1, 2])
+    document.indexContentDigest = sha('a')
+    document.indexPageDigests = [sha('b'), sha('c')]
+    await service.search('session', input)
+    assert.deepEqual(reads, [1, 2], 'an old byte-key index can seed page keys without extraction')
+    Object.assign(document, { sourceDigest: sha('2'), contentVersion: 'open-2', indexContentDigest: sha('d'),
+      indexPageDigests: [sha('b'), sha('e')] })
+    await service.search('session', input)
+    assert.deepEqual(reads, [1, 2, 2], 'unchanged page key survives the whole-document version change')
+  } finally { await service.dispose() }
+})
+
+test('restoring a legacy ready index records page proof for a later edit without rewriting the old pages', async () => {
+  const sha = (part: string) => `sha256:${part.repeat(64)}`
+  const document: RetrievalDocument = { id: 'doc', path: '/fixture/ready.pdf', sourceDigest: sha('1'),
+    indexContentDigest: sha('a'), contentVersion: 'open-1', pageCount: 2 }
+  const records = new Map<string, unknown>(), reads: number[] = []
+  const ports: RetrievalPorts = { documents: { snapshot: () => ({ ...document }) },
+    cache: { async get(key) { return records.get(key) }, async set(key, value) { records.set(key, value) } },
+    pages: { async read(_session, _id, page) {
+      reads.push(page)
+      return { source: 'pdf-text', text: `Content of page ${page} (${document.contentVersion}).` }
+    } } }
+  const input = { documentId: document.id, query: 'content', mode: 'lexical' as const }
+  async function search() {
+    const service = createRetrievalService(ports)
+    try { return await service.search('session', input) }
+    finally { await service.dispose() }
+  }
+  const old = await search(), stored = records.size
+  document.indexPageDigests = [sha('b'), sha('c')]
+  const restored = await search()
+  assert.equal(restored.indexGeneration, old.indexGeneration)
+  assert.deepEqual(reads, [1, 2])
+  assert.equal(records.size, stored + 1, 'restoring adds one small manifest, not rewritten content records')
+  Object.assign(document, { sourceDigest: sha('2'), contentVersion: 'open-2', indexContentDigest: sha('d'),
+    indexPageDigests: [sha('b'), sha('e')] })
+  const updated = await search()
+  assert.notEqual(updated.indexGeneration, old.indexGeneration)
+  assert.deepEqual(reads, [1, 2, 2])
+  assert.ok(updated.chunks.some(chunk => chunk.page === 2 && chunk.text.includes('open-2')))
+})
