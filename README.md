@@ -15,7 +15,34 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 - **Save and recover**: undo/redo, draft recovery, save/save as, and source-file conflict detection.
 - **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts and annotation-only saves.
 
-![AI-assisted PDF reading, navigation and annotation](docs/screenshots/reader-overview.png)
+## Screenshots
+
+Click a screenshot to open it at full resolution.
+
+- **Find passages by meaning**\
+  If you only remember the gist or aren't sure the book covers a topic, enable semantic search and ask in your own words. The model can find related passages, mark them, and take you there.
+
+  [![Chat beside the highlighted exam analogy and its comment marker on page 47](docs/screenshots/reader-overview.png)](docs/screenshots/reader-overview.png)
+
+- **Ask about multiple passages**\
+  When several passages or figures leave you with questions, add a question to each text selection or cropped screenshot in Explanation mode and send them together to the current chat.
+
+  [![Two numbered PDF selections and their questions in the explanation list](docs/screenshots/explanation-mode.png)](docs/screenshots/explanation-mode.png)
+
+- **Jump back through your history**\
+  Lost your place after several jumps? Pick an earlier reading position from the back menu and go straight there.
+
+  [![Back history showing four earlier reading positions while page 156 is open](docs/screenshots/navigation-history.png)](docs/screenshots/navigation-history.png)
+
+- **Create bookmarks from a scanned table of contents**\
+  When a scanned book has no bookmarks, the model reads its table of contents, matches the page numbers, and creates a clickable bookmark tree.
+
+  [![Scanned textbook with the generated chapter and section bookmarks in the sidebar](docs/screenshots/scanned-pdf-bookmarks.png)](docs/screenshots/scanned-pdf-bookmarks.png)
+
+- **Translate scanned text**\
+  Can't select text on a scanned page? Draw a box around the passage. The reader recognizes the text first, then shows the translation in the sidebar. You can also ask the model to translate directly in chat, and it will use the appropriate tools.
+
+  [![Scanned textbook beside the recognized Chinese text and English translation](docs/screenshots/scanned-pdf-translation.png)](docs/screenshots/scanned-pdf-translation.png)
 
 ## Install
 

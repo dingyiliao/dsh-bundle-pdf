@@ -15,7 +15,34 @@
 - **保存与恢复**：撤销／重做、草稿恢复、保存／另存为和源文件冲突检测。
 - **OCR 与检索**：区域截图、文字识别，以及基于自配 embedding 模型的语义搜索（实验功能）。索引持久化到磁盘，支持扫描页文字、图像描述、失败续建，重启或仅保存标注后继续复用。
 
-![AI 辅助阅读、定位与标注](docs/screenshots/reader-overview.png)
+## 功能演示
+
+点击截图查看原尺寸。
+
+- **按语义找原文**\
+  只记得大意，或不确定书里有没有讲过？启用语义检索后，用自己的话问模型，它会按意思查找相关段落，还能帮你标记并跳转。
+
+  [![左侧是对话，右侧是第 47 页被高亮的考试类比和批注标记](docs/screenshots/reader-overview.png)](docs/screenshots/reader-overview.png)
+
+- **多处疑问一起问**\
+  读到几处不懂的内容时，可以在解释模式里给每段选文或区域截图分别写下问题，再一起发到当前会话。
+
+  [![带编号的 PDF 选段及解释材料列表中的两个问题](docs/screenshots/explanation-mode.png)](docs/screenshots/explanation-mode.png)
+
+- **多级回退**\
+  跳了几次页，想回到刚才读的地方？打开回退菜单，选中之前的位置就能直接回去。
+
+  [![第 156 页打开的回退菜单，列出了四个历史阅读位置](docs/screenshots/navigation-history.png)](docs/screenshots/navigation-history.png)
+
+- **扫描目录转书签**\
+  扫描版的书没有书签时，可以让模型读取目录、校准页码，生成可点击跳转的多级书签。
+
+  [![扫描版教材及侧栏中自动生成的章节书签](docs/screenshots/scanned-pdf-bookmarks.png)](docs/screenshots/scanned-pdf-bookmarks.png)
+
+- **翻译扫描页文字**\
+  扫描页的文字选不中？框住要翻译的段落，插件会先识别文字，再在侧栏显示译文。也可以直接在会话里要求模型进行翻译，模型会调用相应的工具进行处理。
+
+  [![扫描版教材及翻译侧栏中的中文原文和英文译文](docs/screenshots/scanned-pdf-translation.png)](docs/screenshots/scanned-pdf-translation.png)
 
 ## 安装
 
