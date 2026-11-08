@@ -11,6 +11,7 @@ type Context = Parameters<typeof createLocalFiles>[0]
 type Options = NonNullable<Parameters<typeof createLocalFiles>[1]>
 const bytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55])
 const revised = new Uint8Array([37, 80, 68, 70, 45, 50, 46, 48])
+const longer = new Uint8Array([...revised, 10])
 
 function fileContext(root: string, mapHostPath: (path: string) => string | undefined): Context {
   return {
@@ -122,11 +123,12 @@ test('index source checks reuse a verified digest and detect replacements and sa
     return bytes.subarray(0, 1)
   }
   const files = createLocalFiles(ctx)
+  const canReuseProof = process.platform !== 'win32'
   const active = new AbortController().signal
   const verify = () => files.readIndexSourceVersion(agent(root), 'example.pdf', active)
   const first = await verify()
   assert.deepEqual(await verify(), first)
-  assert.deepEqual({ full, ranges }, { full: 1, ranges: 1 })
+  assert.deepEqual({ full, ranges }, canReuseProof ? { full: 1, ranges: 1 } : { full: 2, ranges: 0 })
 
   const target = await ctx.fs.resolve(path)
   const unchangedProviderVersion = (await ctx.fs.stat(target))!.version
@@ -136,15 +138,40 @@ test('index source checks reuse a verified digest and detect replacements and sa
   const second = await verify()
   assert.notEqual(second.digest, first.digest)
   assert.deepEqual(await verify(), second)
-  assert.deepEqual({ full, ranges }, { full: 2, ranges: 2 })
+  assert.deepEqual({ full, ranges }, canReuseProof ? { full: 2, ranges: 2 } : { full: 4, ranges: 0 })
 
   await writeFile(replacement, bytes)
   await utimes(replacement, time, time)
   await rename(replacement, path)
   assert.deepEqual(await verify(), first)
-  assert.deepEqual({ full, ranges }, { full: 3, ranges: 2 })
+  assert.deepEqual({ full, ranges }, canReuseProof ? { full: 3, ranges: 2 } : { full: 5, ranges: 0 })
   await unlink(path)
   await assert.rejects(verify(), expectCode('PDF_NOT_FOUND'))
+}))
+
+test('Windows indexing requires an authorized full read even if its stat version and leading byte are unchanged', async () => withRoot(async root => {
+  const path = join(root, 'example.pdf')
+  const time = new Date('2024-01-01T00:00:00Z')
+  await writeFile(path, bytes)
+  await utimes(path, time, time)
+  const ctx = localContext(root), read = ctx.fs.readBytes.bind(ctx.fs)
+  const denied = new Error('Read access was revoked')
+  let mayRead = true
+  ctx.fs.readBytes = (...args) => { if (!mayRead) throw denied; return read(...args) }
+  ctx.fs.readByteRange = async () => assert.fail('Windows must not use the range proof')
+  const files = createLocalFiles(ctx, { platform: 'win32' })
+  const signal = new AbortController().signal
+  const first = await files.readIndexSourceVersion(agent(root), path, signal)
+  const target = await ctx.fs.resolve(path)
+  const originalInfo = await ctx.fs.stat(target)
+  await writeFile(path, revised)
+  await utimes(path, time, time)
+  assert.deepEqual(await ctx.fs.stat(target), originalInfo)
+  const current = await files.readIndexSourceVersion(agent(root), path, signal)
+  assert.notEqual(current.digest, first.digest)
+  assert.equal(current.digest, (await files.read(agent(root), path, signal)).version)
+  mayRead = false
+  await assert.rejects(files.readIndexSourceVersion(agent(root), path, signal), error => error === denied)
 }))
 
 test('cached indexing checks still exercise read authorization and fence mutations during the range probe', async () => withRoot(async root => {
@@ -155,10 +182,10 @@ test('cached indexing checks still exercise read authorization and fence mutatio
   const deniedError = new Error('Read access was revoked')
   ctx.fs.readByteRange = async () => {
     if (denied) throw deniedError
-    if (modified) await writeFile(path, revised)
+    if (modified) await writeFile(path, longer)
     return bytes.subarray(0, 1)
   }
-  const files = createLocalFiles(ctx)
+  const files = createLocalFiles(ctx, { platform: 'linux' })
   const active = new AbortController().signal
   const verify = () => files.readIndexSourceVersion(agent(root), path, active)
   await verify()
@@ -185,11 +212,11 @@ test('indexing rejects an initial full read that becomes stale before recording 
   let observations = 0, ranges = 0
   ctx.fs.stat = async (...args) => {
     // A new revision arrives after the full read's internal consistency check.
-    if (++observations === 4) await writeFile(path, revised)
+    if (++observations === 4) await writeFile(path, longer)
     return observe(...args)
   }
   ctx.fs.readByteRange = async () => { ranges++; return revised.subarray(0, 1) }
-  const files = createLocalFiles(ctx)
+  const files = createLocalFiles(ctx, { platform: 'linux' })
   const signal = new AbortController().signal
   await assert.rejects(files.readIndexSourceVersion(agent(root), path, signal), expectCode('PDF_STALE_VERSION'))
   const result = await files.readIndexSourceVersion(agent(root), path, signal)

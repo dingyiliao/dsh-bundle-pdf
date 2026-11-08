@@ -38,6 +38,7 @@ interface FileOptions {
   /** Current Host configuration; one adapter and its path queues survive changes. */
   getMaxBytes?: () => number
   /** Trusted composition/test dependencies; never supplied by a wire request. */
+  platform?: NodeJS.Platform
   isLocalProvider?: (provider: FsProvider) => boolean | Promise<boolean>
   writableRoots?: (policy: PdfFilePolicy) => readonly string[] | Promise<readonly string[]>
 }
@@ -52,6 +53,7 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
   maxBytes()
   const queues = new Map<string, Promise<unknown>>()
   const indexSourceProofs = new Map<string, IndexSourceProof>()
+  const platform = options.platform ?? process.platform
   const local = options.isLocalProvider
   const roots = options.writableRoots ?? defaultWritableRoots
 
@@ -103,7 +105,9 @@ export function createLocalFiles(ctx: FileContext, options: FileOptions = {}) {
   async function readIndexSourceVersion(agent: PdfAgent, path: string, signal: AbortSignal): Promise<{ path: string; digest: string }> {
     const { target, hostPath } = await locate(agent, path, signal)
     const limit = maxBytes()
-    if (!ctx.fs.readByteRange) {
+    // Windows may report the same change timestamp for consecutive writes.
+    // A metadata hit cannot establish that a same-size PDF is unchanged.
+    if (platform === 'win32' || !ctx.fs.readByteRange) {
       const source = await snapshot(target, hostPath, signal, limit)
       return { path: source.path, digest: source.version }
     }
