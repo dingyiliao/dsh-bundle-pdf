@@ -62,8 +62,9 @@ it('edits embedded bookmark titles, targets and hierarchy through save and reope
     const parentRow = reader.locator('.dsh-pdf-bookmark-row').filter({ hasText: 'Opening chapter' })
     const parentTitle = parentRow.locator('.dsh-pdf-bookmark-title')
     const childTitle = reader.locator('.dsh-pdf-bookmark-title').filter({ hasText: 'Nested section' })
+    // Measure the outline inside its content area, after the shared scrollbar gutter.
     const inset = await parentTitle.evaluate(element => element.getBoundingClientRect().left
-      - element.closest('.dsh-pdf-bookmark-panel')!.getBoundingClientRect().left)
+      - element.closest('.dsh-pdf-bookmark-virtual')!.getBoundingClientRect().left)
     expect(inset).toBeGreaterThanOrEqual(30)
     expect(inset).toBeLessThanOrEqual(34)
     const parentBox = (await parentTitle.boundingBox())!, childBox = (await childTitle.boundingBox())!

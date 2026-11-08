@@ -136,8 +136,8 @@ test('Reader text rechecks its requested bytes after handle admission, even for 
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 
-async function sharedFixture(directory: string, onRecognize?: (signal: AbortSignal) => Promise<void>) {
-  const state = memoryWorkspace(await brokenTextMappingFixture()), store = createRetrievalStore({ directory, maxMemoryBytes: 0 })
+function sharedFixture(directory: string, bytes: Uint8Array, onRecognize?: (signal: AbortSignal) => Promise<void>) {
+  const state = memoryWorkspace(bytes), store = createRetrievalStore({ directory, maxMemoryBytes: 0 })
   const counts = { recognition: 0 }, dimensions: [number, number][] = []
   const recovery = { producer: BUNDLED_LOCAL_OCR_PRODUCER, async recognize(_png: Uint8Array, width: number, height: number, active: AbortSignal) {
     counts.recognition++; dimensions.push([width, height]); await onRecognize?.(active); active.throwIfAborted()
@@ -168,8 +168,9 @@ async function storedRecords(store: ReturnType<typeof createRetrievalStore>, pre
 }
 
 test('index OCR and read-page recovery share a durable raw artifact in both directions, including a new Host/session/document', { skip }, async () => {
+  const bytes = await brokenTextMappingFixture()
   const directory = await mkdtemp(join(tmpdir(), 'pdf-shared-page-ocr-'))
-  let f = await sharedFixture(directory)
+  let f = sharedFixture(directory, bytes)
   const originalRequest = NativeWorker.prototype.request
   let renders = 0
   NativeWorker.prototype.request = function(command, ...args) {
@@ -191,7 +192,7 @@ test('index OCR and read-page recovery share a durable raw artifact in both dire
     const artifactRecords = await storedRecords(f.store, 'pageocr_')
     assert.equal(artifactRecords.entries.length, 1)
     await f.dispose()
-    f = await sharedFixture(directory)
+    f = sharedFixture(directory, bytes)
     const reopenedId = await f.open('reader-after-restart')
     assert.notEqual(reopenedId, id)
     const restored = await f.service.readPageText('reader-after-restart', reopenedId, 1, signal)
@@ -210,7 +211,7 @@ test('an index subscriber can cancel while another session completes the same lo
   const directory = await mkdtemp(join(tmpdir(), 'pdf-shared-ocr-cancel-'))
   let entered!: () => void, finish!: () => void, producing!: AbortSignal
   const started = new Promise<void>(yes => { entered = yes }), gate = new Promise<void>(yes => { finish = yes })
-  const f = await sharedFixture(directory, async active => { producing = active; entered(); await gate })
+  const f = sharedFixture(directory, await brokenTextMappingFixture(), async active => { producing = active; entered(); await gate })
   const abortIndex = new AbortController()
   try {
     const indexId = await f.open('cancel-index'), readerId = await f.open('keep-reader')
@@ -229,7 +230,7 @@ test('an index subscriber can cancel while another session completes the same lo
 })
 
 test('existing 1024px OCR index representations retain provenance and remain readable without masquerading as a 2048px raw artifact', { skip }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pdf-legacy-page-ocr-')), f = await sharedFixture(directory)
+  const directory = await mkdtemp(join(tmpdir(), 'pdf-legacy-page-ocr-')), f = sharedFixture(directory, await brokenTextMappingFixture())
   const legacy = createPdfPageContent(f.state.workspaces,
     { readPageText: f.service.readPageText, renderOcrImage: f.service.renderOcrImage },
     { settings: f.settings, ocr: () => f.ocr, image: () => undefined, cache: f.store })
@@ -247,7 +248,7 @@ test('existing 1024px OCR index representations retain provenance and remain rea
 })
 
 test('third-party OCR keeps its own input/producer and shares one clean raster with image descriptions', { skip }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pdf-external-page-ocr-')), f = await sharedFixture(directory)
+  const directory = await mkdtemp(join(tmpdir(), 'pdf-external-page-ocr-')), f = sharedFixture(directory, await brokenTextMappingFixture())
   let externalCalls = 0, imageCalls = 0, renders = 0
   f.ocr.register({ descriptor: { id: 'fixture-external', name: 'External OCR', version: 'fixture/1', execution: 'local',
     geometry: [], confidence: false }, async availability() { return { status: 'available' } },
