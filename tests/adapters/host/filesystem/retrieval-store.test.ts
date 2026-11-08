@@ -129,6 +129,19 @@ test('a rejected conditional repair rolls back and a corrupt checkpoint is never
   await assert.rejects(store.get('checkpoint'), { code: 'pdf/index-storage-corrupt' })
 })
 
+test('conditional repair rejects an externally changed row identity without overwriting it', async t => {
+  const f = await fixture(t), store = f.store(), original = { generation: 1 }
+  await store.set('checkpoint', original)
+  f.sql(db => { db.prepare('UPDATE records SET key=? WHERE id=?').run('different-key', hash('checkpoint')) })
+
+  await assert.rejects(store.compareAndSet('checkpoint', original, { generation: 2 }), { code: 'pdf/index-storage-corrupt' })
+  f.sql(db => {
+    const row = db.prepare('SELECT key, envelope FROM records WHERE id=?').get(hash('checkpoint'))!
+    assert.equal(row.key, 'different-key')
+    assert.equal(row.envelope, envelope('checkpoint', original))
+  })
+})
+
 test('failed SQLite batch transactions roll back all records and never publish partial hot entries', async t => {
   const f = await fixture(t), store = f.store()
   await store.setMany([['first', 'previous'], ['second', 'previous']])

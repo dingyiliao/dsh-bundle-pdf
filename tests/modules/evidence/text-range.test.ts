@@ -142,6 +142,58 @@ test('local OCR can narrow and navigate its attested page while legacy precision
     { code: 'pdf/stale-reader' })
 })
 
+test('page-only navigation rejects native references and identifies mixed native/OCR ranges', async () => {
+  const native = fixture(['native text'])
+  const nativeRead = await readPageWindow(native.workspaces, native.pages, 'alice', 'doc-1', 1,
+    0, 8000, signal, native.references)
+  const nativeSource = async () => ({ path: '/paper.pdf', digest: evidenceSha256(native.current().bytes) })
+  await assert.rejects(native.resolver.resolvePage('alice', 'doc-1', nativeRead.evidence!.refId,
+    signal, nativeSource), { code: 'pdf/invalid-evidence' })
+
+  const mixed = fixture(['START native text', 'OCR text END'])
+  const parent = await mixed.ranges.capture('alice', 'doc-1',
+    { start: { page: 1, quote: 'START' }, end: { page: 2, quote: 'END' } }, signal)
+  const stored = mixed.references.get(parent.refId)!
+  if (stored.evidence.source !== 'pdf-text-range') assert.fail('Expected a multi-page text reference')
+  const second = stored.evidence.pages[1]!.evidence
+  second.extraction = 'local-ocr'
+  second.precision = 'page-only'
+  delete second.locator.rectsPdf
+  const pages = { async readPageText(owner: string, id: string, page: number, abort: AbortSignal) {
+    const read = await mixed.pages.readPageText(owner, id, page, abort)
+    return page === 2 ? { ...read, content: { ...read.content, extraction: 'local-ocr' as const } } : read
+  } }
+  const resolver = createTextReferenceResolver(mixed.workspaces, pages, mixed.references)
+  const mixedSource = async () => ({ path: '/paper.pdf', digest: evidenceSha256(mixed.current().bytes) })
+  const target = await resolver.resolvePage('alice', 'doc-1', parent.refId, signal, mixedSource)
+  assert.equal(target.page, 1)
+  assert.equal(target.precision, 'page-only')
+  assert.equal(target.capabilities.source, 'mixed-text')
+  assert.equal(target.capabilities.exactAnnotate, false)
+})
+
+test('page-only navigation rejects a draft edit after the final source check', async () => {
+  const f = fixture(['OCR passage'])
+  f.extraction('local-ocr')
+  const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1,
+    0, 8000, signal, f.references)
+  const originalRead = f.workspaces.readSnapshot
+  let sourceChecks = 0, afterFinalSource = false, snapshotChecks = 0
+  const workspaces = { readSnapshot(owner: string, id: string) {
+    const snapshot = originalRead(owner, id)
+    return afterFinalSource && ++snapshotChecks === 2 ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot
+  } }
+  const resolver = createTextReferenceResolver(workspaces, f.pages, f.references)
+  const freshSource = async () => {
+    if (++sourceChecks === 2) afterFinalSource = true
+    return { path: '/paper.pdf', digest: evidenceSha256(f.current().bytes) }
+  }
+  await assert.rejects(resolver.resolvePage('alice', 'doc-1', read.evidence!.refId, signal, freshSource),
+    { code: 'pdf/stale-reader', message: 'PDF changed after checking the OCR reference; locate it again' })
+  assert.equal(sourceChecks, 2)
+  assert.equal(snapshotChecks, 2)
+})
+
 test('normalized derivation rejects ambiguous, changed-provenance, cross-session and Unicode-half requests', async () => {
   const f = fixture(['A😀\tB A😀 B'])
   const parent = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 0, 8000, signal, f.references)
@@ -283,6 +335,18 @@ test('deriving half an emoji is rejected while a complete Unicode scalar and its
   assert.deepEqual(scalar.pages[0]?.locator.startUtf16, 1)
   assert.deepEqual(scalar.pages[0]?.locator.endUtf16, 3)
   assert.equal((await f.ranges.readEvidence('alice', 'doc-1', refId, signal)).pages[0]?.snapshot.text, 'A😀B')
+})
+
+test('cross-page derivation rejects Unicode halves while its parent remains readable', async () => {
+  const f = fixture(['START A😀', 'B END'])
+  const parent = await f.ranges.capture('alice', 'doc-1',
+    { start: { page: 1, quote: 'START' }, end: { page: 2, quote: 'END' } }, signal)
+  for (const quote of [`A${'😀'.slice(0, 1)}`, `${'😀'.slice(1)}\nB`]) {
+    await assert.rejects(f.ranges.derive('alice', 'doc-1', parent.refId, quote, signal),
+      { code: 'pdf/invalid-text-range' })
+  }
+  assert.deepEqual((await f.ranges.readEvidence('alice', 'doc-1', parent.refId, signal))
+    .pages.map(page => page.snapshot.text), ['START A😀', 'B END'])
 })
 
 test('a combined range exceeding the shared budget fails before persistence even when each page fits', async () => {

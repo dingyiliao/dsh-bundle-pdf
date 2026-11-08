@@ -173,6 +173,37 @@ async function within<T>(promise: Promise<T>, milliseconds = 4000): Promise<T> {
   } finally { clearTimeout(timer) }
 }
 
+test('a watch transport failure retries the same document and refreshes it without reopening', async () => {
+  const lifetime = new AbortController()
+  let opens = 0, watches = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    if (method === 'pdf.watch') {
+      assert.equal(request.id, 'document')
+      if (++watches === 1) throw new Error('Temporary transport failure')
+      if (watches === 2) return { ok: true, value: { revision: 1 } }
+      return new Promise(() => {})
+    }
+    if (request.action === 'open') {
+      opens++
+      return recoveryWire('document', 0)
+    }
+    if (request.action === 'refresh') {
+      assert.equal(request.id, 'document')
+      return recoveryWire('document', 1)
+    }
+    throw new Error(`Unexpected action ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    const updated = new Promise<void>(resolve => {
+      api.subscribe('document', snapshot => { if (snapshot.revision === 1) resolve() })
+    })
+    await within(updated)
+    assert.equal(opens, 1)
+  } finally { lifetime.abort() }
+})
+
 test('a mounted Reader reacquires a new Host ID from an unknown watch and migrates its UI references', async () => {
   const lifetime = new AbortController()
   const calls: Array<{ method: string; request: Record<string, unknown> }> = []
@@ -500,6 +531,35 @@ test('reacquisition rejects a changed source path and releases the new reference
     })
     stop()
     await api.release('session', 'old', 'view-a')
+  } finally { lifetime.abort() }
+})
+
+test('reacquisition rejects an ID already owned by another session even when the source path matches', async () => {
+  const lifetime = new AbortController()
+  const releases: Record<string, unknown>[] = []
+  let opens = 0
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    const request = payload as Record<string, unknown>
+    if (method === 'pdf.watch') return new Promise(() => {})
+    if (request.action === 'open') return recoveryWire(++opens === 1 ? 'old' : 'other', 0)
+    if (request.action === 'refresh') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    if (request.action === 'release') {
+      releases.push(request)
+      return { ok: true, value: { status: 'released' } }
+    }
+    throw new Error(`Unexpected action ${String(request.action)}`)
+  } } }, lifetime.signal)
+  try {
+    await api.open('session', 'dsh-resource://file/session/session/document.pdf', undefined, 'view-a')
+    await api.open('other-session', 'dsh-resource://file/session/other-session/document.pdf', undefined, 'view-b')
+    const received: string[] = []
+    const stop = api.subscribe('old', value => received.push(value.id))
+    await assert.rejects(api.refresh('session', 'old'), /crossed source ownership/)
+    assert.ok(received.every(id => id === 'old'))
+    assert.deepEqual(releases, [{ action: 'release', sessionId: 'session', id: 'other', referenceId: 'view-a' }])
+    stop()
+    await api.release('other-session', 'other', 'view-b')
+    assert.deepEqual(releases.at(-1), { action: 'release', sessionId: 'other-session', id: 'other', referenceId: 'view-b' })
   } finally { lifetime.abort() }
 })
 

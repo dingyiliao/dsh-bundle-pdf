@@ -703,3 +703,14 @@ test('volatile fallback bounds total storage, reclaims overwrites and clear, and
   await cache.delete!('absent')
   await cache.set('third', 'c'.repeat(70))
 })
+
+test('volatile fallback compare-and-set publishes only matching checkpoints', async () => {
+  const cache = createVolatileIndexStore(64)
+  assert.equal(await cache.compareAndSet!('checkpoint', undefined, { generation: 1 }), true)
+  assert.equal(await cache.compareAndSet!('checkpoint', undefined, { generation: 2 }), false)
+  assert.equal(await cache.compareAndSet!('checkpoint', { generation: 1 }, { generation: 2 }), true)
+  assert.deepEqual(await cache.get('checkpoint'), { generation: 2 })
+  await assert.rejects(cache.compareAndSet!('checkpoint', { generation: 2 }, { text: 'x'.repeat(100) }),
+    { code: 'pdf/index-storage-limit' })
+  assert.deepEqual(await cache.get('checkpoint'), { generation: 2 }, 'a rejected repair preserves the prior checkpoint')
+})

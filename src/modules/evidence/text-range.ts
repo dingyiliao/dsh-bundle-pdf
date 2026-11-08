@@ -188,10 +188,9 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
         if (!same(identity(initial), identity(read.snapshot))) fail('pdf/stale-reader', 'PDF changed while narrowing evidence')
         const fullText = joinPageText(read.content.items)
         if (evidenceSha256(fullText) !== page.pageTextDigest) fail('pdf/stale-reader', 'Page text changed while narrowing evidence')
+        // The parent and quote matcher have already checked scalar boundaries;
+        // the page digest ties both sets of offsets to this same text.
         const from = page.locator.startUtf16 + start, through = page.locator.startUtf16 + end
-        if (splitsScalar(fullText, from) || splitsScalar(fullText, through)) {
-          fail('pdf/invalid-text-range', 'A subquote must span whole Unicode characters')
-        }
         children.push(createTextEvidence(initial, page.page, fullText, from, through, read.content))
       }
       cursor += page.snapshot.text.length + 1

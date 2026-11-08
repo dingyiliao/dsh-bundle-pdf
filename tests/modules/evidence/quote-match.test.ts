@@ -37,3 +37,8 @@ test('normalization maps only within the provided parent and rejects split Unico
   }
   assert.throws(() => matchEvidenceQuote(parent, '\t\n', 'whitespace-normalized'), { code: 'pdf/invalid-text-range' })
 })
+
+test('the quote matcher rejects an unsupported mode even when the wording is exact', () => {
+  assert.throws(() => matchEvidenceQuote('exact wording', 'exact wording', 'case-insensitive' as never),
+    { code: 'pdf/invalid-text-range', message: 'quoteMatch must be exact or whitespace-normalized' })
+})

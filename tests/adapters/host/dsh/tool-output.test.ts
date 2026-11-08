@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { projectPdfToolOutput, evidenceMatchError, annotationBatchError,
+import { projectEvidence, projectPdfToolOutput, evidenceMatchError, annotationBatchError,
   formatPdfToolData, pdfReadResultContainsContent } from '../../../../src/adapters/host/dsh/tool-output.ts'
 import { readPagePresentationMeta, evidenceReadPresentationMeta } from '../../../../src/adapters/host/dsh/pdf-evidence-meta.ts'
 import { evidenceSha256, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
@@ -68,6 +68,23 @@ test('page output sends one text copy while retaining a usable handle, provenanc
   assert.deepEqual(value, before, 'the Host object and durable evidence are never slimmed in place')
   assert.ok(JSON.stringify(projected).length < JSON.stringify(value).length * 0.75)
   assert.equal(readPagePresentationMeta(value).snapshot.text, text, 'tool cards keep the full bounded replay text')
+})
+
+test('derived evidence exposes its OCR or vision backend without repeating the source snapshot', () => {
+  const { pageTextDigest, ...ref } = evidence()
+  for (const [source, version, model] of [
+    ['ocr-text', undefined, undefined],
+    ['auxiliary-vision', '2', 'vision-model'],
+  ] as const) {
+    const projected = projectEvidence({ ...ref, source, renderedImageSha256: evidenceSha256('PNG'),
+      locator: { kind: 'page-only' }, precision: 'page-only',
+      snapshot: { kind: 'derived-text', text, sha256: evidenceSha256(text),
+        backendId: 'fixture-backend', backendVersion: version, model } })
+    assert.deepEqual(projected.backend, version
+      ? { id: 'fixture-backend', version, model } : { id: 'fixture-backend' })
+    assert.equal('snapshot' in projected, false)
+    assert.equal(projected.capabilities.exactAnnotate, false)
+  }
 })
 
 test('semantic output summarizes page sets and removes duplicate snapshots without hiding failure or quality information', () => {

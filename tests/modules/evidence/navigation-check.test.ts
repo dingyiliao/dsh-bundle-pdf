@@ -118,6 +118,27 @@ test('text navigation rejects a concurrent external overwrite and respects cance
     }), /abort/i)
 })
 
+test('OCR card replay checks the working copy once more after source validation', async () => {
+  const state = snapshot([9, 8, 7], 4)
+  const h = harness(state, { ...content, extraction: 'local-ocr' as const })
+  const originalRead = h.workspaces.readSnapshot
+  let sourceChecks = 0, afterFinalSource = false, snapshotChecks = 0
+  h.workspaces.readSnapshot = (caller, id) => {
+    if (afterFinalSource && ++snapshotChecks === 2) h.set({ ...state, revision: 5 })
+    return originalRead(caller, id)
+  }
+  const readSource: typeof h.readSource = async (...args) => {
+    const result = await h.readSource(...args)
+    if (++sourceChecks === 2) afterFinalSource = true
+    return result
+  }
+  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages,
+    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, readSource),
+  { code: 'pdf/stale-reader', message: 'PDF changed while preparing the reference; retry' })
+  assert.equal(sourceChecks, 2)
+  assert.equal(snapshotChecks, 2)
+})
+
 test('navigation request bounds the excerpt and requires exact UTF-16 span', () => {
   assert.equal(evidenceNavigationRequestSchema.safeParse({ ...request, endUtf16: 900 }).success, false)
   assert.equal(evidenceNavigationRequestSchema.safeParse({ ...request, excerpt: 'x'.repeat(8001) }).success, false)

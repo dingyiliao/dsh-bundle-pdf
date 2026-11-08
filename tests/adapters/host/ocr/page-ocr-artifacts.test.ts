@@ -154,6 +154,35 @@ test('mismatched persisted provenance and invalid image-space coordinates are mi
   try { await assert.rejects(artifacts.read(request()), failure) } finally { await artifacts.dispose() }
 })
 
+test('oversized raw OCR output is rejected before it can be persisted', async () => {
+  const storage = cache(), artifacts = createPageOcrArtifacts({ cache: storage })
+  const largeText = 'x'.repeat(200_000)
+  try {
+    await assert.rejects(artifacts.read(request({ async produce() {
+      return { inputDigest: digest, output: { ...output,
+        blocks: Array.from({ length: 22 }, (_, index) => ({ id: String(index), text: largeText, box: null, confidence: null })) } }
+    } })), /OCR artifact exceeds the output budget/)
+    assert.equal(storage.data.size, 0)
+  } finally { await artifacts.dispose() }
+})
+
+test('disposing during OCR production rejects subscribers and aborts the producer', async () => {
+  const storage = cache(), artifacts = createPageOcrArtifacts({ cache: storage }), started = deferred()
+  let producerSignal!: AbortSignal
+  const pending = artifacts.read(request({ produce(signal) {
+    producerSignal = signal
+    started.resolve()
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+  } }))
+  const rejected = assert.rejects(pending, /PDF OCR artifacts are unloading/)
+  await started.promise
+  await artifacts.dispose()
+  await rejected
+  assert.equal(producerSignal.aborted, true)
+  assert.equal(storage.data.size, 0)
+  await assert.rejects(artifacts.read(request()), /PDF OCR artifacts are unloading/)
+})
+
 test('unattested producer outputs stay in bounded runtime memory and never gain restart reuse', async () => {
   const storage = cache(), privateProducer = { ...producer, reusable: false }
   let productions = 0

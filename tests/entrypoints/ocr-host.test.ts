@@ -159,3 +159,22 @@ test('generic OCR capability checks match the returned implementation and ignore
     await fiber.dispose()
   } finally { await root.fiber.dispose(); capabilities.dispose() }
 })
+
+test('OCR capability explains a selected backend that reports unavailable without a reason', async () => {
+  const root = new Context(), capabilities = new CapabilityRegistry()
+  root.reflect.provide('tools', { register() { return () => undefined } })
+  root.reflect.provide('pdfCapabilities', capabilities)
+  try {
+    const fiber = root.plugin({ name, provide, inject, Config, apply }, Config.parse({ backend: 'fixture.unavailable' }))
+    await fiber
+    const service = root.get('ocr')!
+    service.register({ descriptor: { id: 'fixture.unavailable', name: 'Unavailable OCR', version: '1',
+      execution: 'local', geometry: [], confidence: false },
+      async availability() { return { status: 'unavailable' } },
+      async recognize() { assert.fail('an unavailable backend must not recognize') },
+    })
+    assert.match((await capabilities.resolve(pdfCapabilities.recognizeImage, { sessionId: 'fixture-session' })).reason ?? '',
+      /OCR is unavailable/)
+    await fiber.dispose()
+  } finally { await root.fiber.dispose(); capabilities.dispose() }
+})

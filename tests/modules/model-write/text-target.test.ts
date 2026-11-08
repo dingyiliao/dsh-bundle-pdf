@@ -69,6 +69,14 @@ test('strict offset targets reject line-interleaved columns but preserve ordinar
   }
 })
 
+test('strict offset targets reject bounds and Unicode halves before trusting glyph geometry', () => {
+  const content = page([run('A𝑅B', 72, 380)])
+  for (const [start, end] of [[-1, 1], [0, 0], [0, 5], [0, 2], [2, 4], [Number.NaN, 4]]) {
+    assert.throws(() => locateTextOffsetRange(content, start, end), { code: 'pdf/invalid-text-range' })
+  }
+  assert.equal(locateTextOffsetRange(content, 1, 3).text, '𝑅')
+})
+
 test('text targeting fails closed on an absent or ambiguous quote and missing glyph positions', () => {
   const duplicate = page([run('MMFAR', 72, 380, true), run('MMFAR', 72, 300)])
   assert.throws(() => locateTextRange(duplicate, 'missing', 'missing', true), { code: 'pdf/text-not-found' })

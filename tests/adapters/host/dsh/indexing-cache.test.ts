@@ -75,3 +75,17 @@ test('a failed migration remains a read barrier and can be retried without clear
   assert.equal(await index.cache.get('existing'), 'retained result')
   assert.equal(opens, 2)
 })
+
+test('index cache exposes atomic checkpoint repair after the migration barrier', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pdf-index-cache-repair-'))
+  const lifetime = new AbortController()
+  const storage = { async open() {
+    return { table: () => ({ entries: () => new Map().entries() }), async close() {} }
+  } } as unknown as Parameters<typeof createIndexingCache>[0]
+  const index = createIndexingCache(storage, { directory, suffix: 'test', lifetime: lifetime.signal })
+  t.after(async () => { lifetime.abort(); await index.dispose(); await rm(directory, { recursive: true, force: true }) })
+
+  assert.equal(await index.cache.compareAndSet('checkpoint', undefined, { generation: 1 }), true)
+  assert.equal(await index.cache.compareAndSet('checkpoint', undefined, { generation: 2 }), false)
+  assert.deepEqual(await index.cache.get('checkpoint'), { generation: 1 })
+})

@@ -267,3 +267,13 @@ test('OCR translation aborts immediately when its display owner changes or its t
     }, () => new Promise(() => {}))
   }
 })
+
+test('an unmounted translation hook cannot use its previously captured OCR transcript', async () => {
+  await withTranslation(async ({ state, unmount }) => {
+    await act(async () => { assert.equal(state().beginOcr(transcript), true) })
+    await unmount()
+    await assert.rejects(state().translate({ text: transcript.text, targetLanguage: 'zh' }), {
+      code: 'stale-result', message: 'The OCR transcript is no longer current.',
+    })
+  })
+})
