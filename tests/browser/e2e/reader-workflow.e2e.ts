@@ -596,9 +596,8 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
       const body = request.postDataJSON()
       if (body.payload?.action === 'tile') cropRequests.push(body.payload.tile)
     })
-    // The action stays discoverable, but this keyless fixture has no OCR-capable
-    // session model, so the Host reports it unavailable.
-    expect(await toolbar.getByRole('button', { name: 'OCR page' }).isDisabled()).toBe(true)
+    // The bundled OCR engine is available even without a session model.
+    await expect.poll(() => toolbar.getByRole('button', { name: 'OCR page' }).isEnabled()).toBe(true)
     // The click above completes after the replacement is published, without
     // requiring a second click. Keep exercising capture and all later actions.
     await reader.locator('.dsh-pdf-mode-region').first().waitFor({ state: 'visible' })
@@ -647,7 +646,7 @@ it('loads the installed PDF plugin and saves a browser-created note into the rea
         status: await screenshotStatus.innerText(), cropRequests,
         toolbar: await toolbar.boundingBox(), page: await reader.locator('[data-pdf-page="1"]').boundingBox() })}\nReader ARIA:\n${await reader.ariaSnapshot()}\nPage errors:\n${tripwire.pageErrors.join('\n')}`)
     })
-    expect(await preview.getByRole('button', { name: 'Recognize region' }).count()).toBe(0)
+    await expect.poll(() => preview.getByRole('button', { name: 'Recognize region' }).isEnabled()).toBe(true)
     const screenshotInk = await preview.getByRole('img').evaluate(async element => {
       const image = element as HTMLImageElement
       await image.decode()
