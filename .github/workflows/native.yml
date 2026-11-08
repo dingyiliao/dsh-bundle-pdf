@@ -27,9 +27,31 @@ jobs:
       - name: Decide whether this commit requests a stable npm release
         id: release
         run: node scripts/release-gate.mjs
+  native-sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: native/.deps
+          key: pinned-native-sdk-${{ hashFiles('native/dependencies.json') }}
+      - name: Download and verify the pinned SDKs
+        run: node scripts/build-native.mjs --download-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-native-sdk
+          path: |
+            native/.deps/pdfium-*.tgz
+            native/.deps/json/
+          include-hidden-files: true
+          if-no-files-found: error
   web-and-project-coverage:
     # The Node 24 matrix below proves platform packaging. This lane also
     # exercises the real DSH Web composition and all project-owned source.
+    needs: native-sdk
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +73,14 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
           pnpm run build:artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-native-sdk
+          path: dsh-bundle-pdf/native/.deps
       - name: Install PDF bundle and pinned native SDK
         working-directory: dsh-bundle-pdf
+        env:
+          DSH_PDF_NATIVE_OFFLINE: '1'
         run: |
           npm ci
           npm run native:build
@@ -98,6 +126,7 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
   native:
+    needs: native-sdk
     strategy:
       fail-fast: false
       matrix:
@@ -123,7 +152,13 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
       - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-native-sdk
+          path: native/.deps
       - run: npm run native:build
+        env:
+          DSH_PDF_NATIVE_OFFLINE: '1'
       - name: Check standalone Windows runtime dependencies
         if: matrix.target == 'win32-x64'
         shell: pwsh

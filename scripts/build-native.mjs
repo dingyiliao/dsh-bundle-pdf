@@ -8,13 +8,10 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const lock = JSON.parse(await readFile(join(root, 'native/dependencies.json'), 'utf8'))
 const platform = `${process.platform}-${process.arch}`
-const checksum = lock.pdfium.assets[platform]
-if (!checksum) throw new Error(`No pinned PDFium SDK for ${platform}; native PDF reading is unavailable on this platform`)
 const cache = join(root, 'native/.deps')
 const sdk = process.env.DSH_PDFIUM_ROOT ? resolve(process.env.DSH_PDFIUM_ROOT) : join(cache, 'pdfium')
 const jsonDir = process.env.DSH_PDF_JSON_DIR ? resolve(process.env.DSH_PDF_JSON_DIR) : join(cache, 'json')
 const out = join(root, 'dist/native')
-await mkdir(cache, { recursive: true }); await mkdir(jsonDir, { recursive: true }); await mkdir(out, { recursive: true })
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 async function exists(file) { return stat(file).then(() => true, () => false) }
 async function fetchDependency(url, headers) {
@@ -43,17 +40,39 @@ async function download(file, expected, fetchBytes) {
     const bytes = await readFile(file)
     if (digest(bytes) === expected) return
   }
+  if (process.env.DSH_PDF_NATIVE_OFFLINE === '1') throw new Error(`Missing or invalid offline native dependency: ${file}`)
   const bytes = await fetchBytes()
   if (digest(bytes) !== expected) throw new Error(`Dependency checksum mismatch for ${file}`)
   await mkdir(dirname(file), { recursive: true }); await writeFile(file, bytes)
 }
+let pdfiumRelease
 async function fetchPdfiumAsset(name) {
   const releases = 'https://api.github.com/repos/bblanchon/pdfium-binaries/releases'
   const tag = lock.pdfium.tag
-  const release = JSON.parse(await fetchDependency(`${releases}/tags/${encodeURIComponent(tag)}`))
+  pdfiumRelease ??= fetchDependency(`${releases}/tags/${encodeURIComponent(tag)}`).then(bytes => JSON.parse(bytes))
+  const release = await pdfiumRelease
   const asset = release.assets.find(candidate => candidate.name === name)
   if (release.tag_name !== tag || !Number.isSafeInteger(asset?.id)) throw new Error(`Missing PDFium asset ${name} for ${tag}`)
   return fetchDependency(`${releases}/assets/${asset.id}`, { Accept: 'application/octet-stream' })
+}
+async function preparePdfium(target) {
+  const [os, arch] = target.split('-')
+  const assetPlatform = { linux: 'linux', darwin: 'mac', win32: 'win' }[os]
+  const name = `pdfium-${assetPlatform}-${arch}.tgz`
+  const archive = join(cache, `pdfium-${target}.tgz`)
+  await download(archive, lock.pdfium.assets[target], async () => {
+    try { return await fetchPdfiumAsset(name) }
+    catch (error) {
+      console.warn(`PDFium Release API could not fetch ${name} (${error.message}); trying the release download.`)
+      return fetchDependency(`https://github.com/bblanchon/pdfium-binaries/releases/download/${lock.pdfium.tag}/${name}`)
+    }
+  })
+  return archive
+}
+async function prepareJson(directory) {
+  const prefix = `https://raw.githubusercontent.com/nlohmann/json/v${lock.json.version}`
+  await download(join(directory, 'json.hpp'), lock.json.headerSha256, () => fetchDependency(`${prefix}/single_include/nlohmann/json.hpp`))
+  await download(join(directory, 'json-LICENSE.MIT'), lock.json.licenseSha256, () => fetchDependency(`${prefix}/LICENSE.MIT`))
 }
 async function run(executable, args) {
   await new Promise((done, reject) => {
@@ -62,10 +81,16 @@ async function run(executable, args) {
     child.once('close', code => code === 0 ? done() : reject(new Error(`${executable} exited ${code}`)))
   })
 }
+if (process.argv.includes('--download-only')) {
+  await Promise.all([...Object.keys(lock.pdfium.assets).map(preparePdfium), prepareJson(join(cache, 'json'))])
+  console.log(`Verified pinned native dependencies in ${cache}`)
+  process.exit(0)
+}
+const checksum = lock.pdfium.assets[platform]
+if (!checksum) throw new Error(`No pinned PDFium SDK for ${platform}; native PDF reading is unavailable on this platform`)
+await mkdir(out, { recursive: true })
 if (!process.env.DSH_PDFIUM_ROOT) {
-  const assetPlatform = { linux: 'linux', darwin: 'mac', win32: 'win' }[process.platform]
-  const archive = join(cache, `pdfium-${platform}.tgz`)
-  await download(archive, checksum, () => fetchPdfiumAsset(`pdfium-${assetPlatform}-${process.arch}.tgz`))
+  const archive = await preparePdfium(platform)
   await mkdir(sdk, { recursive: true })
   await run('tar', ['-xzf', archive, '-C', sdk])
 }
@@ -73,11 +98,7 @@ const versionText = await readFile(join(sdk, 'VERSION'), 'utf8')
 const sdkVersion = Object.fromEntries([...versionText.matchAll(/^(MAJOR|MINOR|BUILD|PATCH)=(\d+)\s*$/gm)].map(m => [m[1], m[2]]))
 const foundVersion = ['MAJOR', 'MINOR', 'BUILD', 'PATCH'].map(k => sdkVersion[k]).join('.')
 if (foundVersion !== lock.pdfium.version) throw new Error(`SDK version ${foundVersion} differs from pinned ${lock.pdfium.version}`)
-if (!process.env.DSH_PDF_JSON_DIR) {
-  const prefix = `https://raw.githubusercontent.com/nlohmann/json/v${lock.json.version}`
-  await download(join(jsonDir, 'json.hpp'), lock.json.headerSha256, () => fetchDependency(`${prefix}/single_include/nlohmann/json.hpp`))
-  await download(join(jsonDir, 'json-LICENSE.MIT'), lock.json.licenseSha256, () => fetchDependency(`${prefix}/LICENSE.MIT`))
-}
+if (!process.env.DSH_PDF_JSON_DIR) await prepareJson(jsonDir)
 for (const [file, expected] of [['json.hpp', lock.json.headerSha256], ['json-LICENSE.MIT', lock.json.licenseSha256]]) {
   if (digest(await readFile(join(jsonDir, file))) !== expected) throw new Error(`Unexpected JSON dependency ${file}`)
 }
