@@ -56,6 +56,7 @@ it('keeps the last complete PDF frame through consecutive in-flight zoom renders
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
     const tripwire = watchConsole(page)
+    onTestFailed(() => saveFailureShot(page, 'pdf-consecutive-zoom'))
     let blockTiles = false, requestedTiles = 0
     let blocked = new Promise<void>(resolve => { releaseTiles = resolve })
     await page.route('**/api/pdf.native', async route => {
@@ -77,19 +78,20 @@ it('keeps the last complete PDF frame through consecutive in-flight zoom renders
     await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
     const reader = page.locator('.dsh-pdf-reader')
     const surface = reader.locator('[data-pdf-page="1"] .dsh-pdf-tile-surface')
-    // Establish a fixed-scale frame before taking the baseline: the initial
-    // Fit-width frame can still be replaced as the Files column opens.
-    await chooseZoom(reader, '100%')
+    // The toolbar mounts before the PDF owns a working copy. Wait for a real
+    // frame so the first zoom command belongs to the opened document.
     await surface.locator('canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible', timeout: 20_000 })
-    await expect.poll(() => surface.getAttribute('data-pdf-ready-epoch'), { timeout: 20_000 }).not.toBeNull()
     await expect.poll(() => reader.locator('[data-pdf-page="1"] .dsh-pdf-text-layer span').count()).toBeGreaterThan(0)
+    await chooseZoom(reader, '100%')
+    await reader.locator('.dsh-pdf-toolbar-zoom summary[aria-label="Zoom: 100%"]').waitFor({ state: 'visible' })
     await expect.poll(() => surface.evaluate(host => {
       const ready = (host as HTMLElement).dataset.pdfReadyEpoch
       const canvases = [...host.querySelectorAll<HTMLCanvasElement>('canvas[data-pdf-raster-ready="true"]')]
-      return host.getBoundingClientRect().width === 400 && canvases.length > 0 && canvases.every(canvas =>
-        canvas.dataset.tileEpoch === ready && Number(canvas.dataset.pdfRasterScale) === window.devicePixelRatio
-          && canvas.width > 0 && canvas.height > 0)
-    }), { timeout: 20_000 }).toBe(true)
+      const rasterScale = Math.min(window.devicePixelRatio || 1, 2)
+      return { width: host.getBoundingClientRect().width, complete: !!ready && canvases.length > 0 && canvases.every(canvas =>
+        canvas.dataset.tileEpoch === ready && Number(canvas.dataset.pdfRasterScale) === rasterScale
+          && canvas.width > 0 && canvas.height > 0) }
+    }), { timeout: 20_000 }).toEqual({ width: 400, complete: true })
     const initialEpoch = await surface.getAttribute('data-pdf-ready-epoch')
     expect(initialEpoch).not.toBeNull()
 
