@@ -1,8 +1,8 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AnnotationList } from '../../../src/modules/viewer/components/AnnotationList.js'
+import { AnnotationList } from '../../../src/client/viewer/components/AnnotationList.js'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.js'
-import type { NativeDocument } from '../../../src/modules/viewer/index.js'
+import type { NativeDocument } from '../../../src/client/viewer/index.js'
 
 const notes: PdfAnnotation[] = Array.from({ length: 1000 }, (_, index) => ({
   id: `note-${index}`, page: 1, subtype: 'Text', flags: 4, supported: true, editable: true,

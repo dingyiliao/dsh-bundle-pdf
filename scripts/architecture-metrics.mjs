@@ -57,7 +57,6 @@ const isHost = path => path.startsWith(join(sourceRoot, 'host') + sep)
     .some(name => path === join(sourceRoot, 'entrypoints', name))
 const isClient = path => path.startsWith(join(sourceRoot, 'client') + sep)
   || path.startsWith(join(sourceRoot, 'adapters', 'client') + sep)
-  || path.startsWith(join(sourceRoot, 'modules', 'viewer') + sep)
   || path === join(sourceRoot, 'entrypoints', 'reader-client.tsx')
 
 for (const path of paths) {

@@ -5,7 +5,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfReadingContextUpdate } from '../../../src/client/contracts.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderContextLease, type ReaderContextLeaseOptions } from '../../../src/modules/viewer/index.ts'
+import { useReaderContextLease, type ReaderContextLeaseOptions } from '../../../src/client/viewer/index.ts'
 import { createReaderContexts } from '../../../src/modules/navigation/reader-contexts.ts'
 
 async function withReadingLease(run: (fixture: {

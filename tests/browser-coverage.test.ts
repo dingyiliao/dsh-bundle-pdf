@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const source = join(root, 'src/client/Reader.tsx')
+const engineSource = join(root, 'src/engine/client/selection.ts')
 const converter = join(root, 'scripts/report-browser-coverage.mjs')
 
 test('browser coverage maps V8 ranges to source lines and rejects stale source maps', async () => {
@@ -15,19 +16,20 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
   const output = join(directory, 'output.lcov')
   const artifact = join(directory, 'browser-fixture.json')
   const authored = await readFile(source, 'utf8')
+  const engineAuthored = await readFile(engineSource, 'utf8')
   const data = {
     version: 1,
     packageId: '@dylanl1/dsh-plugin-pdf',
     entries: [{
       url: 'http://127.0.0.1/plugins/??@dylanl1/dsh-plugin-pdf/client.js&rev=test',
-      generatedSource: 'a();\nb();\n',
+      generatedSource: 'a();\nb();\nc();\n',
       sourceMap: {
-        version: 3, sources: ['/plugins/@dylanl1/src/client/Reader.tsx'], sourcesContent: [authored],
-        names: [], mappings: 'AAAA;AACA',
+        version: 3, sources: ['/plugins/@dylanl1/src/client/Reader.tsx', '/plugins/@dylanl1/src/engine/client/selection.ts'],
+        sourcesContent: [authored, engineAuthored], names: [], mappings: 'AAAA;AACA;ACDA',
       },
       functions: [
         { functionName: '', isBlockCoverage: true,
-          ranges: [{ startOffset: 0, endOffset: 10, count: 1 }, { startOffset: 5, endOffset: 10, count: 0 }] },
+          ranges: [{ startOffset: 0, endOffset: 15, count: 1 }, { startOffset: 5, endOffset: 10, count: 0 }] },
       ],
     }],
   }
@@ -40,8 +42,11 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
     assert.ok(section, 'the PDF Client source appears in the browser LCOV report')
     assert.match(section, /^DA:1,1$/m)
     assert.match(section, /^DA:2,0$/m)
+    const engine = report.split(`SF:${engineSource}\n`)[1]?.split('end_of_record')[0]
+    assert.ok(engine, 'the engine Client source appears in the Browser lane')
+    assert.match(engine, /^DA:1,1$/m)
     for (const relative of [
-      'src/modules/viewer/controllers/search-controller.ts',
+      'src/client/viewer/controllers/search-controller.ts',
       'src/adapters/client/remote/pdf-api.ts',
       'src/entrypoints/reader-client.tsx',
     ]) {

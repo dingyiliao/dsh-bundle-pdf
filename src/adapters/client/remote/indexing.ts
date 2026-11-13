@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { PDF_INDEXING_METHOD, indexingSnapshotSchema, type indexingRequestSchema, type PdfDocumentIndexPolicy,
   type PdfIndexingSnapshot } from '../../../contracts/indexing.js'
 import type { PdfConnection } from './pdf-api.js'
-import type { PdfIndexingClientSnapshot } from '../../../modules/viewer/index.js'
+import type { PdfIndexingClientSnapshot } from '../../../client/viewer/index.js'
 import { PDF_INDEXING_DIAGNOSTICS_METHOD, indexingDiagnosticsResultSchema } from '../../../contracts/indexing-diagnostics.js'
 interface SessionStore {
   value: PdfIndexingClientSnapshot; listeners: Set<() => void>; watch?: AbortController; sequence: number

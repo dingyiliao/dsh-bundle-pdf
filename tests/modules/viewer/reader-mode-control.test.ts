@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ReaderModeControl } from '../../../src/modules/viewer/components/ReaderModeControl.tsx'
+import { ReaderModeControl } from '../../../src/client/viewer/components/ReaderModeControl.tsx'
 
 const t = (key: string) => key
 

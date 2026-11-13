@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf } from '../../fixtures/plain-pdf.ts'
 import { createModelWriteService, modelOutlineEditSchema } from '../../../src/modules/model-write/index.ts'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 
@@ -11,9 +11,7 @@ const agent = { session: { id: sessionId, header: {} } }
 const signal = new AbortController().signal
 
 async function fixture() {
-  const pdf = await PDFDocument.create()
-  for (let page = 0; page < 3; page++) pdf.addPage([300, 400])
-  const source = new Uint8Array(await pdf.save())
+  const source = blankPdf(3, [300, 400])
   const state = memoryWorkspace(source)
   const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
     address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
@@ -86,7 +84,7 @@ test('model outline edits are atomic undoable drafts; only approved save seriali
     assert.equal(saved.status, 'saved')
     assert.equal(saved.dirty, false)
     assert.equal(state.writes(), 1)
-    const reloaded = await loadPdfDocument(state.current())
+    const reloaded = await inspectFixturePdf(state.current())
     assert.equal(reloaded.outline?.[0].title, '第一章')
     assert.deepEqual(reloaded.outline?.[0].children.map(item => [item.id, item.title, item.page]), [
       ['chapter-two', '第二章', 2], ['section', '附录', 3],

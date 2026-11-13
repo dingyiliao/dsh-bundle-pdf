@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TranslationPanel } from '../../../src/modules/viewer/components/TranslationPanel.js'
-import { readerLocales } from '../../../src/modules/viewer/locales.js'
+import { TranslationPanel } from '../../../src/client/viewer/components/TranslationPanel.js'
+import { readerLocales } from '../../../src/client/viewer/locales.js'
 import { TranslationRegistry } from '../../../src/translation/registry.js'
 import { createDshModelTranslationEngine } from '../../../src/adapters/host/dsh/translation-model.js'
 

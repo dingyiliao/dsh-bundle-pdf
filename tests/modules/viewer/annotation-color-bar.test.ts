@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
-import { DEFAULT_HIGHLIGHT_QUICK_COLORS } from '../../../src/modules/viewer/model/highlight-colors.ts'
-import { readerLocales } from '../../../src/modules/viewer/index.js'
+import { AnnotationColorBar } from '../../../src/client/viewer/components/AnnotationColorBar.tsx'
+import { DEFAULT_HIGHLIGHT_QUICK_COLORS } from '../../../src/client/viewer/model/highlight-colors.ts'
+import { readerLocales } from '../../../src/client/viewer/index.js'
 
 const t = (key: string) => (readerLocales.en as Record<string, string>)[key] ?? key
 

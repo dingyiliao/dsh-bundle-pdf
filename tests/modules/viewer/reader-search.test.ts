@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { joinSearchText, searchItemAtOffset, searchOffsetMap, searchResultExcerpt,
-  SearchProgressPacer, SearchTextIndex } from '../../../src/modules/viewer/model/reader-search.ts'
+  SearchProgressPacer, SearchTextIndex } from '../../../src/client/viewer/model/reader-search.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 
 test('cached search misses yield by elapsed time without publishing unchanged hits', async () => {

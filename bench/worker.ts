@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { performance, monitorEventLoopDelay } from 'node:perf_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
-import { loadPdfDocument, applyPdfOperations } from '../src/adapters/host/pdf-lib/pdf-document.ts'
+import { benchmarkDocumentPort } from './fixtures.ts'
 import { projectPdfOperations } from '../src/modules/annotations/index.ts'
 import type { PdfAnnotationOperation, PdfDocumentInfo } from '../src/core/pdf-types.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
@@ -15,11 +15,12 @@ const stages: PdfPerformanceEvent[] = []
 const metrics: Record<string, number | null> = {}
 let qualityPassed = false
 let status = 'ok', error: string | null = null
+const documentPort = benchmarkDocumentPort()
 try {
   const bytes = new Uint8Array(await readFile(file))
   assert.equal(sha256(bytes), expectedHash, 'corpus digest changed')
   let document: PdfDocumentInfo | undefined
-  if (scenario !== 'host.inspect') document = await loadPdfDocument(bytes)
+  if (scenario !== 'host.inspect') document = await documentPort.inspect(bytes)
   const operations: PdfAnnotationOperation[] = Array.from({ length: scenario === 'host.history-replay' ? 100 : 1 }, (_, i) => ({
     type: 'add', annotation: { id: `bench-added-${i}`, page: 1, subtype: 'Text', rect: [80, 80, 98, 98], contents: 'benchmark note' },
   }))
@@ -30,9 +31,9 @@ try {
   const cpu = process.cpuUsage(), start = performance.now()
   let result: PdfDocumentInfo, saved: Uint8Array | undefined
   try {
-    if (scenario === 'host.inspect') result = await loadPdfDocument(bytes)
+    if (scenario === 'host.inspect') result = await documentPort.inspect(bytes)
     else if (scenario === 'host.project' || scenario === 'host.history-replay') result = projectPdfOperations(document!, operations, FIXED_DATE)
-    else if (scenario === 'host.materialize') { const value = await applyPdfOperations(bytes, operations, operations.map(() => FIXED_DATE)); result = value.document; saved = value.bytes }
+    else if (scenario === 'host.materialize') { const value = await documentPort.materialize(bytes, operations, operations.map(() => FIXED_DATE)); result = value.document; saved = value.bytes }
     else throw new Error('Unknown benchmark scenario')
     metrics.durationMs = performance.now() - start
     const cpuDelta = process.cpuUsage(cpu)
@@ -48,7 +49,7 @@ try {
     assert.equal(result.annotations.length, Number(expectedAnnotations) + (scenario === 'host.inspect' ? 0 : operations.length), 'annotation count differs from corpus manifest')
     if (document) assert.equal(result.annotations.filter(x => x.id.startsWith('bench-added-')).length, operations.length)
     if (saved) {
-      const reopened = await loadPdfDocument(saved)
+      const reopened = await documentPort.inspect(new Uint8Array(saved))
       assert.equal(reopened.pageCount, result.pageCount)
       assert.equal(reopened.annotations.filter(x => x.id.startsWith('bench-added-')).length, operations.length)
     }
@@ -59,6 +60,6 @@ try {
 } catch (failure) {
   status = 'error'
   error = failure instanceof Error ? failure.message.slice(0, 200) : 'unknown benchmark failure'
-}
+} finally { await documentPort.dispose() }
 // Parent process envelopes this payload with environment/source/corpus/run metadata.
 process.stdout.write(`${JSON.stringify({ status, error, qualityPassed, metrics, stages })}\n`)

@@ -5,14 +5,15 @@ import type { AgentNavigationRequest } from '../contracts/navigation.js'
 import type { WorkspaceSnapshot } from '../shared/contracts.js'
 import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReaderExplanation, useReaderNavigation, useReaderOcr,
   useReaderAnnotations, useReaderScreenshot, useReaderSearch, useReaderSave, useReaderSidebarLayout, useReaderPages,
-  useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking,
+  useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking, useReaderScrollPreview,
   usePdfWheelZoom, usePdfViewportSize, useReaderIndexing, useReaderFormCommits, ReaderFormCommitProvider,
   clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition, pdfRectToViewport, NativeViewport, readingViewportBounds,
-  readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels,
+  readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels, textFidelityForScale,
   navigateAgentRequest,
   type ReaderSelection,
-  } from '../modules/viewer/index.js'
+  } from '../client/viewer/index.js'
 import { joinPageText } from '../shared/page-text.js'
+import { useNativeSelection } from '../engine/client/use-native-selection.js'
 
 const formCommitIdentity = (sessionId: string, snapshot: WorkspaceSnapshot | null) =>
   JSON.stringify([sessionId, snapshot?.id, snapshot?.contentVersion, snapshot?.document.readOnly])
@@ -29,6 +30,8 @@ export function Reader(props: ReaderProps) {
   const [fit, setFit] = useState<'custom' | 'width' | 'page'>('width')
   const [mode, setMode] = useState<'text' | 'region' | 'note'>('text')
   const [draggingPage, setDraggingPage] = useState<number | null>(null)
+  const [resizingSidebar, setResizingSidebar] = useState(false)
+  const [scrubbingPages, setScrubbingPages] = useState(false)
   const toolsMenu = useRef<HTMLDetailsElement>(null)
   const readerElement = useRef<HTMLDivElement>(null)
   const readerBody = useRef<HTMLDivElement>(null)
@@ -40,7 +43,8 @@ export function Reader(props: ReaderProps) {
   const notifyError = useCallback((value: unknown) => {
     const code = value && typeof value === 'object' && 'code' in value ? value.code : undefined
     const message = code === 'pdf/security-unsupported' ? callbacks.current.t('reader.securityUnsupported')
-      : value instanceof Error ? value.message : String(value)
+      : code === 'pdf/protected-save-as-required' ? callbacks.current.t('reader.encryptedSaveAsOnly')
+        : value instanceof Error ? value.message : String(value)
     staleReaderError.current = value && typeof value === 'object' && 'code' in value && value.code === 'pdf/stale-reader' ? message : null
     setError(message)
   }, [])
@@ -68,15 +72,19 @@ export function Reader(props: ReaderProps) {
       return explanation.captureTask.current
     } })
   const { snapshot, setSnapshot, displayOwner, pdf, pdfAnnotations, passwordPrompt, unlocking,
-    unlock, cancelUnlock, retryUnlock, ownerSequence, documentReady, waitForReady } = documentState
+    unlock, cancelUnlock, retryUnlock, editPasswordPrompt, beginEditUnlock, cancelEditUnlock, unlockEditing,
+    ownerSequence, documentReady, waitForReady } = documentState
   const protectedDocument = !!snapshot?.document.encrypted
-  const protectedSections = protectedDocument ? snapshot.document.allowTextExtraction
-    ? ['pages', 'bookmarks', 'search'] as const : ['pages', 'bookmarks'] as const : undefined
+  const canEditProtectedAnnotations = snapshot?.document.annotationEditing === 'allowed'
+  const protectedSections = protectedDocument ? [
+    'pages', 'bookmarks', ...(canEditProtectedAnnotations ? ['annotations'] as const : []),
+    ...(snapshot.document.allowTextExtraction ? ['search'] as const : []),
+  ] as const : undefined
   const indexing = useReaderIndexing({ api: protectedDocument ? undefined : props.indexingApi,
     sessionId, documentId: protectedDocument ? undefined : snapshot?.id,
     signal: tab.signal, t, onError: notifyError })
   const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
-    views, registerView, scrollRef, updateScrolledPage } = useReaderPageTracking({ snapshot,
+    views, registerView, scrollRef, updateScrolledPage, revealSelectionPage } = useReaderPageTracking({ snapshot,
     readerElement, scrollportRef: props.scrollportRef })
   const readerSelection = useReaderSelection({ mode, scrollRoot, snapshot, views, ownerSequence,
     currentSnapshot: () => state.current.snapshot, tabSignal: tab.signal, setDraggingPage,
@@ -98,7 +106,7 @@ export function Reader(props: ReaderProps) {
   const formIdentity = formCommitIdentity(sessionId, snapshot)
   const changeFormField = useCallback(async (fieldId: string, value: string | boolean | string[]) => {
     const current = state.current.snapshot
-    if (!current || current.document.readOnly || tab.signal.aborted
+    if (!current || current.document.readOnly || current.document.encrypted || tab.signal.aborted
       || displayOwner?.token !== ownerSequence.current
       || formCommitIdentity(callbacks.current.sessionId, current) !== formIdentity) return false
     return !!await change([{ type: 'set-field', fieldId, value }])
@@ -127,6 +135,14 @@ export function Reader(props: ReaderProps) {
   const { pageScale, jump: jumpWithoutFormFlush, destination: destinationWithoutFormFlush,
     navigateHistory: navigateHistoryWithoutFormFlush, navigationLock,
     navigationTarget, navigating, historySnapshot } = navigation
+  const fastScroll = useReaderScrollPreview(scrollRoot,
+    !!pdf && tab.visible && !navigating && !resizingSidebar && !scrubbingPages && draggingPage === null, navigationLock)
+  const scrollPreview = scrubbingPages || fastScroll
+  const selectionPage = snapshot?.document.pages[currentPage - 1]
+  const textSelectionEnabled = !!selectionPage && textFidelityForScale(pageScale(selectionPage)) !== 'none'
+  useEffect(() => {
+    if (selectionPage && !textSelectionEnabled) clearSelection()
+  }, [selectionPage, textSelectionEnabled, clearSelection])
   const jump = useCallback(async (...args: Parameters<typeof jumpWithoutFormFlush>) =>
     !!await runAfterFormFlush(() => jumpWithoutFormFlush(...args)), [jumpWithoutFormFlush, runAfterFormFlush])
   const destination = useCallback((value: unknown) =>
@@ -229,6 +245,20 @@ export function Reader(props: ReaderProps) {
   const { ocrPages, ocrAvailability, ocrTranscript, ocrProgress } = ocr
   const protectedOcrPages = useRef(new Map())
   const visibleOcrPages = protectedDocument ? protectedOcrPages.current : ocrPages
+  // Keep the native current-page text source available below the selection
+  // threshold so the mounted page can expose one bounded semantic document to
+  // assistive technology. Selection itself remains disabled by canSelect/pages.
+  const semanticSelectionPages = pdf?.selectionPages
+  const nativeSelectionPages = settings.nativeSelectionPreview && textSelectionEnabled ? semanticSelectionPages : undefined
+  // Below the selection threshold, keep geometry only for the one-page
+  // semantic fallback. At readable zoom, native selection owns the geometry.
+  const semanticPages = !scrollPreview && !textSelectionEnabled ? semanticSelectionPages : undefined
+  const nativeSelection = useNativeSelection({ pages: textSelectionEnabled ? nativeSelectionPages : semanticPages, views,
+    revision: snapshot?.revision, visiblePage: currentPage, pageCount: snapshot?.document.pageCount,
+    hasMappedOcr: Array.from(visibleOcrPages.values()).some(page => page.words.length > 0), active: tab.visible && mode === 'text',
+    // The old raster can remain visible while its replacement acquires a handle.
+    canSelect: revision => !!nativeSelectionPages && state.current.snapshot?.revision === revision && documentReady(),
+    onRevealPage: revealSelectionPage, onSelect: readerSelection.accept, onError: notifyError })
   const search = useReaderSearch({ document: pdf, pages: snapshot?.document.pages ?? [], ocrPages: visibleOcrPages,
     tabSignal: tab.signal, onError: notifyError })
   const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {
@@ -273,9 +303,10 @@ export function Reader(props: ReaderProps) {
     return () => document.removeEventListener('pointerdown', dismissOutside)
   }, [dismissContext])
   const discardChanges = async () => {
-    if (operationLock.current) return
+    if (operationLock.current) return false
     const next = await actAfterFormFlush(current => api.discard(sessionId, current.id, current.revision, tab.signal))
     if (next) { showSaveFeedback(null); dismissContext(); annotations.clearPending(); closeSaveAs(); setReloadConfirm(false); screenshotCtl.reset() }
+    return !!next
   }
   const cancelScreenshot = screenshotCtl.cancel
   const beginScreenshot = () => { if (!protectedDocument) screenshotCtl.begin(!!activeExplanation) }
@@ -283,11 +314,11 @@ export function Reader(props: ReaderProps) {
     : hasTextSelection ? selection!.fragments
       : selected?.rect ? [{ page: selected.page, rect: selected.rect, quadPoints: selected.quadPoints ?? [] }] : [])
   const commentAnchor = () => {
-    const annotation = selected && !selectedNote ? selected : undefined
+    const annotation = selected && !selectedNote ? thread?.root ?? selected : undefined
     return annotation?.rect ? fragmentAnchor([{ page: annotation.page, rect: annotation.rect, quadPoints: annotation.quadPoints ?? [] }]) : null
   }
   const commentPosition = () => {
-    const annotation = selected && !selectedNote ? selected : undefined
+    const annotation = selected && !selectedNote ? thread?.root ?? selected : undefined
     const view = annotation && views.current.get(annotation.page)
     const pageBounds = view?.element.getBoundingClientRect()
     if (!annotation?.commentPosition || !view || !pageBounds) return null
@@ -296,7 +327,7 @@ export function Reader(props: ReaderProps) {
       pageBounds.top + y * pageBounds.height / view.viewport.height, 0, 0)
   }
   const moveCommentCard = async (_delta: { x: number; y: number }, position: { left: number; top: number }) => {
-    const annotation = selected && !selectedNote ? selected : undefined
+    const annotation = selected && !selectedNote ? thread?.root ?? selected : undefined
     const view = annotation && views.current.get(annotation.page)
     const pageBounds = view?.element.getBoundingClientRect()
     if (!annotation || !view || !pageBounds) return false
@@ -400,7 +431,9 @@ export function Reader(props: ReaderProps) {
   const pageElements = useReaderPages({ PageComponent: ReaderPage, pdf, snapshot, selection,
     selectedAnnotation: selected, annotationsByPage, renderedAnnotationsByPage, activeExplanation,
     draftExplanationSelection, draggingPage, navigationTarget, ocrPages: visibleOcrPages, zoom, fit, size,
-    scrollRoot, mode, t, pageScale, registerView, destination, jump,
+    scrollRoot, resizePreview: resizingSidebar && fit !== 'custom', scrollPreview,
+    nativeSelection: nativeSelection.enabled, selectionPreview: nativeSelection.preview, semanticText: nativeSelection.semantic,
+    mode, t, pageScale, registerView, destination, jump,
     currentPageCount: () => state.current.snapshot?.document.pageCount, beginNote,
     takeScreenshot: protectedDocument ? () => {} : takeScreenshot,
     selectExplanationRegion, editExplanationQuestion: explanation.editQuestion,
@@ -484,7 +517,10 @@ export function Reader(props: ReaderProps) {
   return <ReaderFormCommitProvider value={formCommits.owner}><ReaderView t={t} readerElement={readerElement} readerBody={readerBody} scrollRoot={scrollRoot}
     menuRef={toolsMenu} editable={editable} selected={selected} onDismissContext={dismissContext}
     onCloseTranslation={closeTranslation} onCancelScreenshot={cancelScreenshot}
-    onSave={() => { void save() }}
+    onSave={() => {
+      if (protectedDocument) { if (!hasUnappliedAnnotation) beginSaveAsAfterFormFlush() }
+      else void save()
+    }}
     onUndoRedo={redo => { void actAfterFormFlush(current => redo
       ? api.redo(sessionId, current.id, current.revision, tab.signal)
       : api.undo(sessionId, current.id, current.revision, tab.signal)) }}
@@ -492,10 +528,11 @@ export function Reader(props: ReaderProps) {
     toolbar={toolbar}
     selectionBar={{
       viewport: scrollRoot, getAnchor: contextualAnchor,
-      active: !protectedDocument && !activeExplanation && hasTextSelection && mode === 'text', selection,
+      active: (!protectedDocument || canEditProtectedAnnotations && !!snapshot?.document.allowTextExtraction)
+        && !activeExplanation && hasTextSelection && mode === 'text', selection,
       textCopied, canExplain: !protectedDocument && !!props.promptExplanation && props.allowReadingContext !== false,
       explanationSending, editable, color, setColor,
-      copyText: () => { void copyText() }, explain: startExplanation, translate: beginTranslation,
+      copyText: () => { void copyText() }, explain: startExplanation, translate: protectedDocument ? undefined : beginTranslation,
       mark: (subtype, hex) => { void mark(subtype, hex) }, beginNote, clearSelection, t,
     }}
     annotationBar={{
@@ -509,28 +546,40 @@ export function Reader(props: ReaderProps) {
       password: passwordPrompt ? { identity: `${sessionId}:${props.resourceAddress}:${ownerSequence.current}`,
         status: passwordPrompt, busy: unlocking, unlock: password => { setError(''); void unlock(password) },
         cancel: cancelUnlock, retry: retryUnlock } : undefined,
+      editPassword: snapshot?.document.annotationEditing === 'owner-password-required' ? {
+        begin: beginEditUnlock,
+        prompt: editPasswordPrompt ? { identity: `${snapshot.id}:edit`, status: editPasswordPrompt, busy: unlocking,
+          unlock: password => { setError(''); void unlockEditing(password) }, cancel: cancelEditUnlock } : undefined,
+      } : undefined,
       saveAs: saveAsOpen ? {
         name: saveName, directory: saveDirectory, pickerAvailable: !!props.pickSaveDirectory,
         picking: saveAsPicking, busy, target, targetChecking, replaceConfirm, error,
-        nameError: locationError === 'name' ? t('reader.saveNameInvalid') : undefined,
+        nameError: locationError === 'name' ? t('reader.saveNameInvalid')
+          : locationError === 'protected-source' ? t('reader.encryptedSaveAsOnly') : undefined,
         directoryError: locationError === 'directory' ? t('reader.saveDirectoryInvalid') : undefined,
         onNameChange: setSaveName, onDirectoryChange: setSaveDirectory,
         onChooseDirectory: () => { void chooseSaveDirectory() }, onSubmit: () => { void submitSaveAs() },
         onCancel: closeSaveAs, onBack: backToSaveAs, t,
       } : undefined,
       beginSaveAs: beginSaveAsAfterFormFlush,
-      reload: () => { void actAfterFormFlush(current => api.reload(sessionId, current.id, current.revision, tab.signal)) }, t,
+      reload: () => {
+        if (protectedDocument) void discardChanges().then(discarded => { if (discarded) documentState.reopen() })
+        else void actAfterFormFlush(current => api.reload(sessionId, current.id, current.revision, tab.signal))
+      }, t,
     }}
     floating={{ statuses: floatingStatuses, mode: activeModeStatus, explanation: overlays.explanationStatus }}
     question={overlays.question} comment={overlays.comment} note={overlays.note}
     pages={{
-      scrollRef, onScroll: updateScrolledPage, mode, setDraggingPage,
+      scrollRef, onScroll: updateScrolledPage, onScrollbarDragChange: setScrubbingPages, mode, setDraggingPage,
       setSelection, clearSelection, clearAnnotation, scheduleCaptureSelection,
       captureSelection, hasDocument: !!pdf, error, elements: pageElements,
+      nativeSelection: nativeSelection.enabled ? nativeSelection : undefined,
+      copyNativeSelection: hasTextSelection ? copyText : undefined,
     }}
     sidebar={{
       activeSection: protectedSections && !protectedSections.some(section => section === sidebarSection) ? 'pages' : sidebarSection,
       onSectionChange: showSidebar, expanded: sidebarExpanded,
+      onResizeActiveChange: setResizingSidebar, scrollPreview,
       sections: protectedSections,
       pdf, currentPage, pageInput, navigating, onPageInputChange: editPageInput,
       onPageInputSubmit: value => {
@@ -545,7 +594,7 @@ export function Reader(props: ReaderProps) {
       onStepPage: page => { void jump(page, {}, false) },
       onNavigateDestination: value => { void destination(value) },
       outlineAccess: snapshot ? { documentId: snapshot.id, revision: snapshot.revision, items: snapshot.document.outline,
-        readOnlyReason: snapshot.document.outlineReadOnlyReason, editable, busy,
+        readOnlyReason: snapshot.document.outlineReadOnlyReason, editable: editable && !protectedDocument, busy,
         change: async (operations, expectedRevision) => !!await act(current => {
           if (current.id !== snapshot.id || current.revision !== expectedRevision) throw new Error(t('reader.sidebar.outlineChanged'))
           return api.change(sessionId, current.id, expectedRevision, operations, tab.signal)

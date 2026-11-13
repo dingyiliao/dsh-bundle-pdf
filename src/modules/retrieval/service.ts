@@ -1,22 +1,23 @@
-import { measureIndexOperation, recordIndexPerformance } from './performance.js'
+import { measureIndexOperation } from './performance.js'
 import { randomUUID } from 'node:crypto'
-import { z } from 'zod'
-import { fatalContentError, pageContentCacheIdentity } from '../document/index.js'
-import { cacheDerived, digest, encodeCachedVector, pageCacheKey, pageCacheSourceKey, readCachedPage,
-  readCachedVectorRecord, readPageCacheSource, retrievalCacheKey, validVector, validateRetrievalPage,
+import { fatalContentError } from '../document/index.js'
+import { digest, pageCacheSourceKey,
+  readPageCacheSource, validVector,
   MAX_PAGE_CACHE_SOURCE_PAGES, RETRIEVAL_EXTRACTION_VERSION, type PageCacheSource } from './cache.js'
-import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION, tokenizeRetrievalText, type RetrievalChunk } from './text.js'
+import { RETRIEVAL_TEXT_VERSION, type RetrievalChunk } from './text.js'
 import { collapseRepresentations, hybridCandidates } from './ranking.js'
 import { encodeRetrievalCursor, parseRetrievalCursor, retrievalPrepareSchema, retrievalQuerySchema,
   type RetrievalPrepareScope, type RetrievalQuery } from './request.js'
 import { searchStoredIndex, type SearchPage } from './streaming-search.js'
 import { openIndexHead, promoteIndexHead } from './index-head.js'
-import { buildIndexPageEntries, createVolatileIndexStore, readIndexPage, readIndexSummary,
+import { createVolatileIndexStore, readIndexPage, readIndexSummary,
   summarizeIndexPage, type StoredIndexHead, type StoredIndexPage, type IndexPageSummary } from './stored-index.js'
 import { createSharedRetrievalSource, type RetrievalBinding, type SharedRetrievalSource } from './shared-source.js'
+import { indexContentDigest, invalidDocumentIdentity, isContentDigest, providerIdentity, sameDocument } from './identity.js'
+import { readIndexPagePipeline } from './page-pipeline.js'
+import { embedIndexStep } from './embedding-pipeline.js'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalPrepareInput, RetrievalProgress, RetrievalResult, RetrievalService } from './types.js'
 
-const pageFailureSchema = z.object({ code: z.string().min(1).max(100) }).strict()
 interface Index {
   key: string; contentDigest: string; sourcePath?: string; pageCount: number; fromPage: number; toPage: number
   generation: string; provider?: Pick<RetrievalEmbedding, 'dimensions' | 'maxBatchSize' | 'maxInputCharacters'>; selectionIdentity: string; extractionIdentity: string
@@ -44,19 +45,6 @@ const stale = (message = 'PDF search snapshot is no longer current; start a new 
   fail('pdf/stale-reader', message)
 const codeOf = (error: unknown): string => error && typeof error === 'object' && 'code' in error
   && typeof error.code === 'string' ? error.code.slice(0, 100) : 'pdf/retrieval-extraction-failed'
-const isContentDigest = (value: unknown): value is string => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
-const samePageDigests = (a: RetrievalDocument['indexPageDigests'], b: RetrievalDocument['indexPageDigests']) =>
-  a === b || (!!a && !!b && a.length === b.length && a.every((value, index) => value === b[index]))
-const sameDocument = (a: RetrievalDocument, b: RetrievalDocument) => a.id === b.id && a.path === b.path
-  && a.sourceDigest === b.sourceDigest && a.contentVersion === b.contentVersion && a.pageCount === b.pageCount
-  && a.indexContentDigest === b.indexContentDigest && samePageDigests(a.indexPageDigests, b.indexPageDigests)
-const indexContentDigest = (document: RetrievalDocument) => document.indexContentDigest ?? document.sourceDigest
-const providerIdentity = (provider: RetrievalEmbedding | undefined) => provider
-  ? JSON.stringify([provider.fingerprint, provider.generation ?? '', provider.configurationIdentity ?? '',
-    provider.dimensions, provider.maxBatchSize, provider.maxInputCharacters ?? null,
-    ...(provider.documentFingerprint === undefined ? [] : [provider.documentFingerprint])]) : 'none'
-const invalidDocumentIdentity = (provider: RetrievalEmbedding) => provider.documentFingerprint !== undefined
-  && (typeof provider.documentFingerprint !== 'string' || !provider.documentFingerprint || provider.documentFingerprint.length > 512)
 
 /** A bounded index owns derived text only; working-copy access and pinning belong to its caller. */
 export function createRetrievalService(ports: RetrievalPorts): RetrievalService {
@@ -236,96 +224,21 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   }
 
   async function readPage(index: Index, page: number, source: SharedRetrievalSource): Promise<void> {
-    source.check(); phase(index, 'restoring')
-    let stored: Awaited<ReturnType<typeof loadPage>>
-    try { stored = await loadPage(index, page) }
-    catch (error) { if (codeOf(error) !== 'pdf/index-storage-missing') throw error }
-    source.check()
-    if (!stored) for (const seed of index.head.seeds ?? (index.head.active ? [index.head.active] : [])) {
-      if (seed.id === index.generation) continue
-      let previous: Awaited<ReturnType<typeof readIndexPage>>
-      try { previous = await readIndexPage(storage, index.persistentKey, seed.id, page, index.provider?.dimensions, characters(index)) }
-      catch (error) { if (!['pdf/index-storage-corrupt', 'pdf/index-storage-missing'].includes(codeOf(error))) throw error; continue }
-      source.check()
-      if (!previous) continue
-      stored = { ...previous, record: { ...previous.record, generation: index.generation } }
-      await writeMany(buildIndexPageEntries(index.persistentKey, index.generation, stored.record, stored.chunks, stored.location).entries)
-      source.check(); break
-    }
-    if (stored && !stored.record.failure) {
-      recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: true })
-      summarize(index, stored.record, stored.chunks, stored.vectors.size)
-      return
-    }
-    const document = source.current().document
-    const pageDigest = document.indexPageDigests?.[page - 1]
-    const cacheKey = (content: string) => pageCacheKey(document.path, content, page, index.extractionIdentity)
-    const key = cacheKey(pageContentCacheIdentity({ ...document, indexPageDigest: pageDigest }))
-    let cached = stored?.record.failure ? undefined : await readCachedPage(ports.cache, key)
-    source.check()
-    if (!cached && pageDigest && !stored?.record.failure) {
-      // Older installations keyed pages by the exact whole source or its
-      // verified complete body. Both attest this page of the current document.
-      const keys = new Set([index.contentDigest, document.sourceDigest])
-      const previous = index.previousPageCacheSource
-      if (previous?.indexPageDigests[page - 1] === pageDigest) {
-        if (previous.indexContentDigest) keys.add(previous.indexContentDigest)
-        keys.add(previous.sourceDigest)
-      }
-      for (const legacy of keys) {
-        try { cached = await readCachedPage(ports.cache, cacheKey(legacy)) }
-        catch (error) {
-          if (!['pdf/index-storage-corrupt', 'pdf/index-storage-missing'].includes(codeOf(error))) throw error
-        }
-        source.check()
-        if (!cached) continue
-        await cacheDerived(ports.cache, key, cached)
-        source.check()
-        break
-      }
-    }
-    recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: !!cached })
-    let pageFailure: z.infer<typeof pageFailureSchema> | undefined
-    if (!cached) {
-      phase(index, 'extracting')
-      const result = await measureIndexOperation('page-extraction', () => source.read(page), { records: 1 })
-      source.check()
-      const length = Math.max(result.text.length, (result.units ?? []).reduce((sum, unit) => sum + unit.text.length, 0))
-      if (length > 500_000) throw Object.assign(fail('pdf/retrieval-page-budget', 'PDF page content exceeds its processing budget.'),
-        { budget: { kind: 'page', limit: 500_000, used: 0, requested: length } })
-      const { failure, ...content } = result
-      if (failure !== undefined) {
-        const parsed = pageFailureSchema.safeParse(failure)
-        if (!parsed.success) throw fail('pdf/retrieval-extraction-failed', 'PDF extraction returned invalid partial failure metadata')
-        if (fatalContentError(parsed.data) !== undefined) throw fail(parsed.data.code, 'PDF extraction lost its source authority or was cancelled')
-        pageFailure = parsed.data
-      }
-      cached = validateRetrievalPage({ version: 1, ...content,
-        ...(result.warnings?.length ? { warnings: result.warnings.slice(0, 20).map(value => value.slice(0, 500)) } : {}) })
-      if (!cached) throw fail('pdf/retrieval-extraction-failed', 'PDF extraction returned invalid content representations or offsets')
-      if (!pageFailure) await cacheDerived(ports.cache, key, cached)
-      source.check()
-    }
-    const chunks = chunkRetrievalPage(page, cached, { maxCharacters: characters(index) })
-    const previous = index.pages.get(page)
-    if (index.chunkCount - (previous?.chunks ?? 0) + chunks.length > limits.maxChunks) {
-      throw Object.assign(fail('pdf/retrieval-chunks-budget', 'PDF index exceeds its configured chunk count limit.'),
-        { budget: { kind: 'chunks', limit: limits.maxChunks, used: index.chunkCount - (previous?.chunks ?? 0), requested: chunks.length } })
-    }
-    // Only this page is resident. Geometry is saved once with its representation,
-    // and expanded into chunk-local evidence only while building or querying it.
-    const workingBytes = Buffer.byteLength(JSON.stringify(cached)) * 2 + chunks.reduce((sum, chunk) => sum
-      + chunk.text.length * 2 + 320 + (chunk.representation ? JSON.stringify(chunk.representation).length * 2 : 0)
-      + new Set(tokenizeRetrievalText(chunk.text)).size * 16, 0)
-    reserve(index, workingBytes)
-    const vectors = Object.create(null) as StoredIndexPage['vectors']
-    for (const chunk of chunks) if (stored?.record.vectors[chunk.id]) vectors[chunk.id] = stored.record.vectors[chunk.id]
-    const record: StoredIndexPage = { version: 1, page, generation: index.generation, content: cached, vectors,
-      ...(pageFailure ? { failure: { code: pageFailure.code, attempts: (stored?.record.failure?.attempts ?? 0) + 1 } } : {}) }
-    await writeMany(buildIndexPageEntries(index.persistentKey, index.generation, record, chunks).entries)
-    source.check()
-    summarize(index, record, chunks, Object.keys(vectors).length)
-    notifyProgress(index)
+    await readIndexPagePipeline(index, page, source, {
+      storage,
+      cache: ports.cache,
+      limits,
+      fail,
+      codeOf,
+      isContentDigest,
+      characters,
+      phase,
+      reserve,
+      summarize,
+      notifyProgress,
+      loadPage,
+      writeMany,
+    })
   }
 
   async function writeMany(entries: readonly (readonly [string, unknown])[]): Promise<void> {
@@ -341,100 +254,20 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
   }
 
   async function embedStep(index: Index, source: SharedRetrievalSource, deadline = Infinity): Promise<void> {
-    if (!index.provider) return
-    const batchSize = Math.min(16, index.provider.maxBatchSize,
-      Math.max(1, Math.floor(Math.max(0, limits.maxMemoryBytes - index.bytes) / (index.provider.dimensions * 16))))
-    type Frame = NonNullable<Awaited<ReturnType<typeof loadPage>>> & { changed: boolean; computed: number; memoryBytes: number; vectorKeys: Record<string, string> }
-    const frames = new Map<number, Frame>()
-    const rows = new Map<string, { text: string; targets: Array<{ frame: Frame; chunk: RetrievalChunk }> }>()
-    let batches = 0, bytes = 0
-    const assign = (frame: Frame, chunk: RetrievalChunk, encoded: StoredIndexPage['vectors'][string], key?: string, computed = false) => {
-      frame.record.vectors[chunk.id] = encoded
-      if (key) frame.vectorKeys[chunk.id] = key
-      else delete frame.vectorKeys[chunk.id]
-      frame.changed = true
-      if (computed) frame.computed++
-    }
-    const commit = async () => {
-      const changed = [...frames.values()].filter(frame => frame.changed)
-      const publications = changed.map(frame => ({ frame,
-        ...buildIndexPageEntries(index.persistentKey, index.generation, frame.record, frame.chunks, frame.location, frame.vectorKeys) }))
-      // At most 16 loaded pages. Headers publish only after all referenced
-      // vectors are already durable; immutable geometry is not rewritten.
-      await writeMany(publications.flatMap(publication => publication.entries))
-      source.check()
-      for (const { frame, location } of publications) {
-        frame.location = location; frame.vectorKeys = Object.create(null)
-        summarize(index, frame.record, frame.chunks, Object.keys(frame.record.vectors).length)
-        index.computedChunks += frame.computed
-        frame.changed = false; frame.computed = 0
-        if (Object.keys(frame.record.vectors).length === frame.chunks.length) {
-          frames.delete(frame.record.page); bytes -= frame.memoryBytes
-        }
-      }
-      notifyProgress(index)
-    }
-    const flush = async () => {
-      if (!rows.size) { await commit(); return }
-      phase(index, 'embedding')
-      const batch = [...rows]
-      reserve(index, bytes + batch.length * index.provider!.dimensions * 8)
-      const vectors = await measureIndexOperation('embedding-batch', () => source.embed(batch.map(([, row]) => row.text)), { records: batch.length })
-      source.check()
-      if (vectors.length !== batch.length || vectors.some(vector => !validVector(vector, index.provider!.dimensions))) {
-        throw fail('pdf/retrieval-invalid-vector', 'Embedding provider returned invalid vectors')
-      }
-      const encoded = vectors.map(vector => encodeCachedVector(vector))
-      // Commit reusable model/text vectors before publishing page progress. A
-      // failed checkpoint can reuse this completed inference after restart.
-      await writeMany(batch.map(([key], i) => [key, encoded[i]!] as const))
-      source.check()
-      for (const [i, [key, row]] of batch.entries()) for (const target of row.targets) assign(target.frame, target.chunk, encoded[i]!, key, true)
-      await commit()
-      batches++; rows.clear()
-    }
-    const exhausted = () => batches >= limits.embeddingBatchesPerStep || batches > 0 && performance.now() >= deadline
-    for (const [page, summary] of index.pages) {
-      if (summary.embedded === summary.chunks) continue
-      const loaded = await loadPage(index, page)
-      source.check()
-      if (!loaded) {
-        invalidatePage(index, page)
-        throw fail('pdf/index-storage-missing', 'A PDF index checkpoint is missing. Resume indexing to repair it.')
-      }
-      const size = Buffer.byteLength(JSON.stringify(loaded.record)) * 2
-        + loaded.chunks.reduce((sum, chunk) => sum + chunk.text.length * 2 + 320, 0)
-      // Cross-page batches keep a small working window, never a whole corpus.
-      const remaining = limits.maxMemoryBytes - [...indexes.values()].reduce((sum, entry) => sum + entry.bytes, 0)
-      const windowBytes = Math.min(8 * 1024 * 1024, Math.max(0, remaining - batchSize * index.provider.dimensions * 8))
-      if (frames.size && (frames.size >= 16 || bytes + size > windowBytes)) {
-        await flush(); frames.clear(); bytes = 0
-        if (exhausted()) return
-      }
-      reserve(index, bytes + size)
-      const frame: Frame = { ...loaded, changed: false, computed: 0, memoryBytes: size, vectorKeys: Object.create(null) }
-      frames.set(page, frame); bytes += size
-      summarize(index, frame.record, frame.chunks, frame.vectors.size)
-      phase(index, 'restoring')
-      for (const chunk of frame.chunks) {
-        if (frame.vectors.has(chunk.id)) continue
-        if (exhausted()) { await commit(); return }
-        source.check()
-        const provider = source.current().provider!
-        const modelKey = provider.documentFingerprint ?? (provider.configurationIdentity === undefined ? provider.fingerprint
-          : digest(JSON.stringify([provider.fingerprint, provider.configurationIdentity])))
-        const key = retrievalCacheKey('vector', modelKey, 'document', digest(chunk.text))
-        const equivalent = rows.get(key)
-        if (equivalent) { equivalent.targets.push({ frame, chunk }); continue }
-        const cached = await readCachedVectorRecord(ports.cache ?? storage, key, provider.dimensions)
-        source.check()
-        recordIndexPerformance({ stage: 'vector-cache', durationMs: 0, records: 1, cacheHit: !!cached })
-        if (cached) assign(frame, chunk, cached.record, cached.persisted ? key : undefined)
-        else rows.set(key, { text: chunk.text, targets: [{ frame, chunk }] })
-        if (rows.size === batchSize) await flush()
-      }
-    }
-    await flush()
+    await embedIndexStep(index, source, {
+      storage,
+      cache: ports.cache,
+      indexes: indexes.values(),
+      limits,
+      loadPage,
+      invalidatePage,
+      reserve,
+      summarize,
+      phase,
+      notifyProgress,
+      writeMany,
+      fail,
+    }, deadline)
   }
 
   function nextIncompletePage(index: Index, fromPage: number, includePartial = true): number {

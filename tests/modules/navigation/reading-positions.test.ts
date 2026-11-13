@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf } from '../../fixtures/plain-pdf.ts'
 import { createReadingPositionService, createWorkspaces, type ReadingPositionRecord,
   type HostWorkspaceSnapshot } from '../../fixtures/working-copy-service.ts'
 import type { DraftRecord } from '../../../src/modules/working-copy/index.ts'
@@ -106,18 +106,14 @@ test('a position taken from other source bytes is reported, never replayed', asy
     await reader.invoke('before', { action: 'set', id: before.id, position: { ...START, page: 3 } })
 
     // A rewrite that still has page 3: different bytes, same page number.
-    const rewritten = await PDFDocument.create()
-    for (let index = 0; index < 4; index++) rewritten.addPage([300, 400])
-    bytes = await rewritten.save({ useObjectStreams: false })
+    bytes = blankPdf(4, [300, 400])
     const after = await reader.open('after')
     const changed = await reader.get('after', after.id)
     assert.equal(changed.position?.stale, 'content-changed')
     assert.equal(changed.position?.position.page, 3)
 
     // A shortened rewrite: the page itself is gone, which is the reason to act on.
-    const shorter = await PDFDocument.create()
-    shorter.addPage([300, 400])
-    bytes = await shorter.save({ useObjectStreams: false })
+    bytes = blankPdf(1, [300, 400])
     const third = await reader.open('third')
     assert.equal((await reader.get('third', third.id)).position?.stale, 'page-missing')
   } finally {

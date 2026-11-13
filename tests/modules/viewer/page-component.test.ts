@@ -2,9 +2,9 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { Page, type PageProps } from '../../../src/modules/viewer/rendering/Page.tsx'
+import { Page, type PageProps } from '../../../src/client/viewer/rendering/Page.tsx'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import type { NativeDocument, NativePage } from '../../../src/modules/viewer/rendering/document.ts'
+import type { NativeDocument, NativePage } from '../../../src/client/viewer/rendering/document.ts'
 import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { PdfOcrTextPart } from '../../../src/ocr/mapping.ts'
 
@@ -123,6 +123,19 @@ async function withPage(run: (env: {
 
   }
 }
+
+test('page skips the text layer below the selection threshold and builds one above it', async () => {
+  await withPage(async ({ render, mount, pointer }) => {
+    await render({ textFidelity: 'none' })
+    assert.equal(mount.querySelector('[data-pdf-run]'), null)
+    assert.equal(mount.querySelector('.dsh-pdf-text-layer')?.getAttribute('data-pdf-text-fidelity'), 'none')
+    await pointer(mount.querySelector('[data-pdf-page]')!, 'pointerdown', 10, 10)
+    assert.equal(mount.querySelector('[data-pdf-run]'), null, 'a click must not create a low-zoom text layer')
+    await render({ textFidelity: 'run' })
+    assert.ok(mount.querySelector('[data-pdf-run]'))
+    assert.equal(mount.querySelector('.dsh-pdf-text-layer')?.getAttribute('data-pdf-text-fidelity'), 'run')
+  })
+})
 
 test('page reuses its cached native text layer after leaving and re-entering the viewport', async () => {
   await withPage(async ({ render, setPageVisible, pageLoads, mount }) => {

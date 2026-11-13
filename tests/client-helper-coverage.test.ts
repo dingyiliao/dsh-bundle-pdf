@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
-import { DEFAULT_HIGHLIGHT_QUICK_COLORS, readHighlightQuickColors } from '../src/modules/viewer/model/highlight-colors.ts'
-import { openNativeDocument, NativeViewport } from '../src/modules/viewer/index.ts'
-import { waitForReaderState } from '../src/modules/viewer/controllers/wait-for-reader-state.ts'
+import { DEFAULT_HIGHLIGHT_QUICK_COLORS, readHighlightQuickColors } from '../src/client/viewer/model/highlight-colors.ts'
+import { openNativeDocument, NativeViewport } from '../src/client/viewer/index.ts'
+import { waitForReaderState } from '../src/client/viewer/controllers/wait-for-reader-state.ts'
 import type { WorkspaceSnapshot } from '../src/shared/contracts.ts'
 import type { NativeReaderApi } from '../src/shared/native.ts'
 

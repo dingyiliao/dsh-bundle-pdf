@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { NativeWorker, type NativeProcessRuntime } from './native-worker.js'
+import { NativeWorker, type NativeProcessRuntime } from '../../../engine/host/native-worker.js'
+import type { NativePdfPort } from '../../../engine/host/native-port.js'
+import type { nativeOpenProbeSchema, nativeSecuritySchema } from '../../../engine/protocol/commands.js'
+import { createNativeHandleLease } from '../../../engine/host/handle-lease.js'
 import { encodePng } from './png.js'
+import { readEncryptedAnnotations, saveEncryptedAnnotations, verifyEncryptedSave } from './encrypted-annotations.js'
 import { encryptedDocumentInfo } from './encrypted-document.js'
 import { ByteCache } from '../../../shared/cache/index.js'
 import { ocrRegionRenderPlan, pageRenderPlan, recoveredPageText } from '../../../modules/document/index.js'
@@ -22,7 +26,9 @@ import type { PdfDocumentInfo } from '../../../core/pdf-types.js'
 const id = z.string().min(1).max(512)
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const integer = z.number().int()
-const openProbe = z.object({ pageCount: integer.min(1).max(100000), formType: integer, signatureCount: integer })
+type OpenProbe = z.infer<typeof nativeOpenProbeSchema>
+type ProtectedNativeSecurity = z.infer<typeof nativeSecuritySchema>
+const permitsAnnotations = (security: ProtectedNativeSecurity) => (security.permissions & 0x20) !== 0
 const common = { sessionId: id, id, bytesHash: hash }
 const nativeRequest = z.discriminatedUnion('action', [
   z.object({ ...common, action: z.literal('tile'), tile: z.object({
@@ -32,6 +38,7 @@ const nativeRequest = z.discriminatedUnion('action', [
   }).strict().refine(t => t.x + t.width <= t.rasterWidth + 2 && t.y + t.height <= t.rasterHeight + 2) }).strict(),
   z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000), recover: z.boolean().optional() }).strict(),
   z.object({ ...common, action: z.literal('links'), page: integer.min(1).max(100000) }).strict(),
+  z.object({ ...common, action: z.literal('selectionGeometry'), page: integer.min(1).max(100000), offset: integer.min(0).max(200000) }).strict(),
   z.object({ ...common, action: z.literal('outline') }).strict(),
   z.object({ ...common, action: z.literal('destination'), name: z.string().min(1).max(32768) }).strict(),
   z.object({ ...common, action: z.literal('inspect'), page: integer.min(1).max(100000), offset: integer.min(0), limit: integer.min(1).max(100) }).strict(),
@@ -59,7 +66,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   /** Internal encoder port for controlled compression and native-lease tests. */
   encodeOcrPng?: typeof encodePng
 }) {
-  const worker = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
+  const worker: NativePdfPort = new NativeWorker(options.executable, options.subprocess, options.timeoutMs)
   const capabilities = options.capabilities ?? new CapabilityRegistry()
   const unregisterNative = capabilities.register({ id: 'pdfium.native',
     capabilities: [pdfCapabilities.renderPage, pdfCapabilities.renderAcroForm, pdfCapabilities.previewSigned,
@@ -77,17 +84,12 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   const mutations = new Map<string, { digest: string; task: Promise<string | undefined> }>()
   let handlesBytes = 0, closed = false
   let admission: Promise<unknown> = Promise.resolve()
-  let handleLease: Promise<unknown> = Promise.resolve()
   let localRecognition: Promise<unknown> = Promise.resolve()
 
   // The native worker addresses a mutable document ID. Keep an ensure/read
   // pair atomic with respect to other opens, closes and cache evictions.
-  function withHandleLease<T>(task: () => Promise<T>): Promise<T> {
-    const run = handleLease.catch(() => undefined).then(task)
-    // Keep only completion, not a possibly large tile or text reply.
-    handleLease = run.then(() => undefined, () => undefined)
-    return run
-  }
+  const handleLease = createNativeHandleLease()
+  const withHandleLease = handleLease.run
 
   async function admitBytes(bytes: number): Promise<void> {
     const limit = 128 * 1024 * 1024
@@ -100,46 +102,89 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (key === undefined) break
       const old = handles.get(key)!
       handles.delete(key); handlesBytes -= old.bytes
-      await worker.request({ command: 'close', documentId: key })
+      await worker.closeDocument(key)
     }
+  }
+
+  /** Caller owns the handle lease. Open itself cannot be cancelled before its result is known. */
+  async function withTemporaryDocument<T>(bytes: Uint8Array, password: string | undefined, signal: AbortSignal,
+    use: (documentId: string, probe: OpenProbe, security: ProtectedNativeSecurity) => Promise<T>): Promise<T> {
+    await admitBytes(bytes.byteLength)
+    signal.throwIfAborted()
+    const documentId = randomUUID()
+    const generation = worker.generation
+    const reply = await worker.openDocument(documentId, bytes, password !== undefined ? { password } : {})
+    try {
+      const { value: security } = await worker.inspectSecurity({ documentId }, signal)
+      return await use(documentId, reply.value, security)
+    } finally {
+      if (!closed && generation === worker.generation) {
+        await worker.closeDocument(documentId).catch(() => undefined)
+      }
+    }
+  }
+
+  async function inspectProtectedDocument(documentId: string, probe: OpenProbe, security: ProtectedNativeSecurity,
+    signal: AbortSignal): Promise<PdfDocumentInfo> {
+    const plan = await capabilities.plan(requiredPdfOpenCapabilities(probe, undefined, true), { signal }, 'pdfium.native')
+    if (!plan.supported) {
+      fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
+    }
+    const document = await encryptedDocumentInfo(probe, async (offset, limit) =>
+      (await worker.inspectDocument({ documentId, offset, limit }, signal)).value)
+    if (!worker.encryptedAnnotationEdit || security.userPermissions === undefined || document.signed) return document
+    const allowed = permitsAnnotations(security)
+    const annotations = await readEncryptedAnnotations(worker, documentId, document.pageCount, allowed, signal)
+    if (!annotations) return document
+    return { ...document, annotations, readOnly: !allowed, readOnlyReason: allowed ? undefined : document.readOnlyReason,
+      annotationEditing: allowed ? 'allowed' : 'owner-password-required' }
   }
 
   function inspectEncrypted(bytes: Uint8Array, password: string | undefined, signal: AbortSignal): Promise<PdfDocumentInfo | undefined> {
     return withHandleLease(async () => {
-      signal.throwIfAborted()
       if (closed) fail('pdf/unavailable', 'PDF service is unloading')
       await worker.ready()
       if (!worker.encryptedOpen) {
         if (password !== undefined) fail('pdf/security-unsupported', 'Update the native PDF plugin to open protected PDFs')
         return undefined
       }
-      await admitBytes(bytes.byteLength)
-      signal.throwIfAborted()
-      const documentId = randomUUID()
-      const generation = worker.generation
-      let opened = false
       try {
-        const reply = await worker.request({ command: 'open', documentId, ...(password !== undefined ? { password } : {}) }, bytes)
-        opened = true
-        const value = openProbe.parse(reply.value)
-        const security = await worker.request({ command: 'security', documentId }, undefined, signal)
-        const { securityRevision } = z.object({ securityRevision: integer }).parse(security.value)
-        if (securityRevision < 0) return undefined
-        const plan = await capabilities.plan(requiredPdfOpenCapabilities(value, undefined, true), { signal }, 'pdfium.native')
-        if (!plan.supported) {
-          fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
-        }
-        return await encryptedDocumentInfo(value, async (offset, limit) =>
-          (await worker.request({ command: 'documentInfo', documentId, offset, limit }, undefined, signal)).value)
+        return await withTemporaryDocument(bytes, password, signal, async (id, probe, security) =>
+          security.securityRevision < 0 ? undefined : inspectProtectedDocument(id, probe, security, signal))
       } catch (error) {
         if (error instanceof Error && 'code' in error && error.code === 'pdf/native-open' && password === undefined) return undefined
         throw error
-      } finally {
-        if (opened && !closed && generation === worker.generation) {
-          await worker.request({ command: 'close', documentId }).catch(() => undefined)
-        }
       }
-    })
+    }, signal)
+  }
+
+  function materializeEncryptedAnnotations(snapshot: HostWorkspaceSnapshot, baseline: PdfDocumentInfo,
+    password: string | undefined, signal: AbortSignal): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }> {
+    return withHandleLease(async () => {
+      if (closed) fail('pdf/unavailable', 'PDF service is unloading')
+      await worker.ready()
+      if (!worker.encryptedAnnotationEdit || !snapshot.document.encrypted || baseline.annotationEditing !== 'allowed') {
+        fail('pdf/read-only', 'The PDF does not support protected annotation editing')
+      }
+      const source = await withTemporaryDocument(snapshot.bytes, password, signal, async (id, probe, security) => {
+        if (security.securityRevision < 0 || security.userPermissions === undefined || !permitsAnnotations(security)
+          || probe.signatureCount !== 0 || probe.pageCount !== baseline.pageCount) {
+          fail('pdf/read-only', 'The PDF does not allow protected annotation editing')
+        }
+        return { security, bytes: await saveEncryptedAnnotations(worker, id, baseline, snapshot.document, signal) }
+      })
+      const document = await withTemporaryDocument(source.bytes, password, signal, async (id, probe, security) => {
+        if (security.securityRevision !== source.security.securityRevision || security.userPermissions !== source.security.userPermissions
+          || security.permissions !== source.security.permissions || probe.pageCount !== baseline.pageCount || probe.signatureCount !== 0) {
+          fail('pdf/protected-save-verification', 'The saved PDF did not preserve its encryption and permissions')
+        }
+        const verified = await inspectProtectedDocument(id, probe, security, signal)
+        if (verified.annotationEditing !== 'allowed') fail('pdf/protected-save-verification', 'The saved PDF annotations could not be verified')
+        verifyEncryptedSave(snapshot.document, verified)
+        return verified
+      })
+      return { bytes: source.bytes, document }
+    }, signal)
   }
 
   async function ensure(snapshot: HostWorkspaceSnapshot, signal?: AbortSignal): Promise<void> {
@@ -158,10 +203,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (existing) { handles.delete(snapshot.id); handlesBytes -= existing.bytes }
       await admitBytes(snapshot.bytes.byteLength)
       const password = snapshot.document.encrypted ? workspaces.passwordFor(snapshot.id, bytesHash) : undefined
-      const reply = await worker.request({ command: 'open', documentId: snapshot.id,
-        ...(password !== undefined ? { password } : {}) }, snapshot.bytes)
+      const reply = await worker.openDocument(snapshot.id, snapshot.bytes,
+        password !== undefined ? { password } : {})
       try {
-        const value = openProbe.parse(reply.value)
+        const { value } = reply
         if (value.pageCount !== snapshot.document.pageCount) {
           fail('pdf/native-unsupported', 'PDF page counts differ between the parser and native reader')
         }
@@ -175,7 +220,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
           fail('pdf/native-unsupported', `PDF requires unavailable capabilities: ${plan.missing.map(item => item.capability).join(', ')}`)
         }
       } catch (error) {
-        await worker.request({ command: 'close', documentId: snapshot.id }).catch(() => undefined)
+        await worker.closeDocument(snapshot.id).catch(() => undefined)
         throw error
       }
       handles.set(snapshot.id, { hash: bytesHash, generation: worker.generation, bytes: snapshot.bytes.byteLength })
@@ -190,11 +235,12 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   async function descriptor(snapshot: HostWorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
     await ensure(snapshot, signal)
-    return { bytesHash, protocolVersion: 1, generation: worker.generation }
+    return { bytesHash, protocolVersion: 1, generation: worker.generation,
+      ...(worker.selectionGeometry ? { selectionGeometry: true as const } : {}) }
   }
 
   async function wire(snapshot: HostWorkspaceSnapshot, raw: Record<string, unknown>, signal: AbortSignal) {
-    const reader = await withHandleLease(() => descriptor(snapshot, signal))
+    const reader = await withHandleLease(() => descriptor(snapshot, signal), signal)
     const previous = histories.get(snapshot.id)
     const continuous = raw.knownBytesHash === reader.bytesHash && previous !== undefined && previous.revision === raw.knownRevision && previous.contentVersion === snapshot.contentVersion
       && workspaces.bytesHash(previous.bytes) === reader.bytesHash
@@ -204,7 +250,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     // the complete document when their projected values change.
     if (continuous && JSON.stringify(previous.document.formFields) === JSON.stringify(document.formFields)
       && JSON.stringify(previous.document.outline) === JSON.stringify(document.outline)
-      && previous.document.outlineReadOnlyReason === document.outlineReadOnlyReason) {
+      && previous.document.outlineReadOnlyReason === document.outlineReadOnlyReason
+      && previous.document.annotationEditing === document.annotationEditing
+      && previous.document.readOnly === document.readOnly && previous.document.readOnlyReason === document.readOnlyReason
+      && previous.document.allowTextExtraction === document.allowTextExtraction) {
       const before = new Map(previous.document.annotations.map(a => [a.id, a]))
       value.annotationDelta = { fromRevision: previous.revision,
         remove: [...before.keys()].filter(key => !document.annotations.some(a => a.id === key)),
@@ -236,7 +285,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       let entry = mutations.get(key)
       if (entry && entry.digest !== digest) fail('pdf/mutation-mismatch', 'A mutation ID was reused with different content')
       if (!entry) {
-        const task = workspaces.execute(sessionId, input, agent, signal).then(value => 'bytes' in value ? value.id : undefined)
+        const task = workspaces.execute(sessionId, input, agent, signal, 'reader').then(value => 'bytes' in value ? value.id : undefined)
         entry = { digest, task }; mutations.set(key, entry)
         void task.catch(() => { if (mutations.get(key) === entry) mutations.delete(key) })
         while (mutations.size > 256) mutations.delete(mutations.keys().next().value!)
@@ -244,13 +293,9 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       const documentId = await entry.task
       if (!documentId) fail('pdf/invalid-request', 'Idempotent request did not identify a document')
       result = workspaces.readSnapshot(sessionId, documentId)
-    } else result = await workspaces.execute(sessionId, input, agent, signal)
+    } else result = await workspaces.execute(sessionId, input, agent, signal, 'reader')
     if (!('bytes' in result)) {
-      if ('discarded' in result && result.discarded) for (const key of result.discarded) {
-        histories.delete(key)
-        const handle = handles.get(key)
-        if (handle) { handles.delete(key); handlesBytes -= handle.bytes; await worker.request({ command: 'close', documentId: key }).catch(() => undefined) }
-      }
+      if ('discarded' in result && result.discarded) for (const key of result.discarded) await releaseDocument(key)
       return result
     }
     // Open may have finished before a concurrent view close was admitted.
@@ -267,12 +312,9 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     try { return await dispatchRequest(sessionId, raw, agent, signal) } finally { release() }
   }
 
-  const nativeRequestDispatch: PdfDispatch = async (sessionId, raw, agent, signal) => {
+  const nativeRequestDispatch = async (sessionId: string, input: z.infer<typeof nativeRequest>, signal: AbortSignal) => {
     // A local OCR pass must not hold the native handle lease or block tiles.
-    if (raw.action === 'text') {
-      const input = nativeRequest.parse(raw)
-      if (input.action !== 'text') fail('pdf/invalid-request', 'Expected a text request')
-      if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
+    if (input.action === 'text') {
       const snapshot = workspaces.readSnapshot(sessionId, input.id)
       if (workspaces.bytesHash(snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF baseline changed; use the latest reader snapshot')
       const read = await readPageText(sessionId, input.id, input.page, signal, { recover: input.recover, reader: true })
@@ -281,20 +323,18 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     }
     return withHandleLease(async () => {
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
-    const input = nativeRequest.parse(raw)
-    if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
     const snapshot = workspaces.readSnapshot(sessionId, input.id)
     if (workspaces.bytesHash(snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF baseline changed; use the latest reader snapshot')
     if ('page' in input && input.page > snapshot.document.pageCount || 'tile' in input && input.tile.page > snapshot.document.pageCount) fail('pdf/invalid-page', 'Page is outside the document')
     await ensure(snapshot, signal)
     if (input.action === 'tile') {
       const encrypted = snapshot.document.encrypted
-      const t = encrypted ? { ...input.tile, annotations: true } : input.tile
+      const t = encrypted && snapshot.document.annotationEditing === undefined ? { ...input.tile, annotations: true } : input.tile
       const key = JSON.stringify([input.bytesHash, t])
       let png = encrypted ? undefined : tiles.get(key)
       if (!png) {
-        const reply = await worker.request({ command: 'render', documentId: input.id, ...t, pageIndex: t.page - 1 }, undefined, signal, 10)
-        const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
+        const reply = await worker.renderPage({ documentId: input.id, ...t, pageIndex: t.page - 1 }, signal, 10)
+        const { value } = reply
         if (value.width !== t.width || value.height !== t.height) fail('pdf/native-protocol', 'Native tile dimensions do not match')
         png = await encodePng(reply.bytes, t.width, t.height)
         signal.throwIfAborted()
@@ -307,20 +347,42 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     if (snapshot.document.encrypted && input.action === 'inspect') {
       fail('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
     }
-    const command = input.action === 'outline' ? { command: 'outline' }
-      : input.action === 'destination' ? { command: 'destination', name: input.name }
-      : { command: input.action, pageIndex: input.page - 1, ...(input.action === 'inspect' ? { offset: input.offset, limit: input.limit } : {}) }
-    const reply = await worker.request({ ...command, documentId: input.id }, undefined, signal, -5)
-    return input.action === 'outline'
-      ? projectedReaderOutline(snapshot.document, snapshot.baselineOutline, reply.value as NativeOutlineItem[] | null)
-      : reply.value
-    })
+    const documentId = input.id
+    switch (input.action) {
+      case 'outline': {
+        const reply = await worker.readOutlineTree({ documentId }, signal, -5)
+        return projectedReaderOutline(snapshot.document, snapshot.baselineOutline, reply.value)
+      }
+      case 'destination':
+        return (await worker.resolveDestination({ documentId, name: input.name }, signal, -5)).value
+      case 'links':
+        return (await worker.readLinks({ documentId, pageIndex: input.page - 1 }, signal, -5)).value
+      case 'inspect':
+        return (await worker.inspectPage({ documentId, pageIndex: input.page - 1,
+          offset: input.offset, limit: input.limit }, signal, -5)).value
+      case 'selectionGeometry': {
+        if (snapshot.document.encrypted && !snapshot.document.allowTextExtraction) {
+          fail('pdf/protected-text', 'This PDF restricts text extraction')
+        }
+        if (!worker.selectionGeometry) fail('pdf/native-selection-unavailable', 'The native PDF helper does not provide selection geometry')
+        const reply = await worker.readSelectionGeometry({ documentId, pageIndex: input.page - 1,
+          offset: input.offset }, signal, 5)
+        signal.throwIfAborted()
+        const current = workspaces.readSnapshot(sessionId, input.id)
+        if (workspaces.bytesHash(current.bytes) !== input.bytesHash
+          || current.document.encrypted && !current.document.allowTextExtraction) {
+          fail('pdf/stale-reader', 'PDF changed while reading selection geometry')
+        }
+        return reply.value
+      }
+    }
+    }, signal, input.action === 'tile')
   }
   const native: PdfDispatch = async (sessionId, raw, agent, signal) => {
     const input = nativeRequest.parse(raw)
     if (input.sessionId !== sessionId || agent.session.id !== sessionId) fail('pdf/session-mismatch', 'Session identity mismatch')
     const release = await workspaces.acquire(sessionId, input.id, agent, signal)
-    try { return await nativeRequestDispatch(sessionId, raw, agent, signal) } finally { release() }
+    try { return await nativeRequestDispatch(sessionId, input, signal) } finally { release() }
   }
   async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
     readOptions?: { recover?: boolean; reader?: boolean }): Promise<{
@@ -337,15 +399,10 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       if (!snapshot.document.allowTextExtraction) return { snapshot, content: { items: [], styles: {}, lang: null } }
     }
     await descriptor(snapshot, signal)
-    const reply = await worker.request({ command: 'text', documentId, pageIndex: page - 1 }, undefined, signal, -5)
+    const reply = await worker.readText({ documentId, pageIndex: page - 1 }, signal, -5)
     signal.throwIfAborted()
-    const content = z.object({ items: z.array(z.object({ str: z.string(), transform: z.array(z.number()),
-      width: z.number(), height: z.number(), dir: z.string(), fontName: z.string(), hasEOL: z.boolean(),
-      glyphs: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite().positive()])).max(200000).optional() })),
-      styles: z.record(z.string(), z.object({ fontFamily: z.string(), ascent: z.number(), descent: z.number(), vertical: z.boolean() })),
-      lang: z.string().nullable(), quality: z.object({ unmappedCharacters: integer.min(0) }).optional() }).parse(reply.value)
-    return { snapshot, content }
-    })
+    return { snapshot, content: reply.value as NativeTextContent }
+    }, signal)
     if (read.snapshot.document.encrypted || readOptions?.recover === false
       || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
     const { snapshot, artifact } = await readOcrArtifact(sessionId, documentId, page, signal, undefined, read.snapshot)
@@ -404,11 +461,11 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
                 producerSignal.throwIfAborted()
                 await descriptor(snapshot, producerSignal)
                 const started = performance.now()
-                try { return await worker.request({ command: 'render', documentId: snapshot.id, pageIndex: page - 1, rotation: 0,
+                try { return await worker.renderPage({ documentId: snapshot.id, pageIndex: page - 1, rotation: 0,
                   rasterWidth: plan.rasterWidth, rasterHeight: plan.rasterHeight, x: plan.x + x, y: plan.y + y,
-                  width: w, height: h, annotations: false, forms: false }, undefined, producerSignal) }
+                  width: w, height: h, annotations: false, forms: false }, producerSignal) }
                 finally { recordIndexPerformance({ stage: 'native-render', durationMs: performance.now() - started, records: 1 }) }
-              })
+              }, producerSignal)
               const shape = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(tile.value)
               if (shape.width !== w || shape.height !== h || tile.bytes.length !== w * h * 4) fail('pdf/native-protocol', 'Invalid OCR artifact tile')
               for (let row = 0; row < h; row++) rgba.set(tile.bytes.subarray(row * w * 4, (row + 1) * w * 4), ((y + row) * width + x) * 4)
@@ -442,7 +499,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
     rejectProtected(snapshot)
     await descriptor(snapshot, signal)
-    const reply = await worker.request({ command: 'outline', documentId }, undefined, signal, -5)
+    const reply = await worker.readOutlineTree({ documentId }, signal, -5)
     signal.throwIfAborted()
     const itemSchema: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({
       title: z.string().max(8191), dest: z.unknown().optional(), url: z.string().max(32768).optional(),
@@ -450,7 +507,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     }))
     return { snapshot, items: projectedReaderOutline(snapshot.document, snapshot.baselineOutline,
       z.array(itemSchema).nullable().parse(reply.value)) }
-  }) }
+  }, signal) }
   /** Inspection reads base-page ink, not widget appearances; values come from the same draft snapshot. */
   async function renderPageImage(sessionId: string, documentId: string, page: number, maxEdge: number,
     signal: AbortSignal, form?: { includeValues: boolean }) {
@@ -480,9 +537,9 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       // Keep the native per-tile bound even for a high-resolution inspection page.
       for (let y = 0; y < height; y += 1024) for (let x = 0; x < width; x += 1024) {
         const tileWidth = Math.min(1024, width - x), tileHeight = Math.min(1024, height - y)
-        const reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
+        const reply = await worker.renderPage({ documentId, pageIndex: page - 1,
           rotation: 0, rasterWidth: width, rasterHeight: height, x, y, width: tileWidth, height: tileHeight,
-          annotations: !form, forms: !form }, undefined, signal, 10)
+          annotations: !form, forms: !form }, signal, 10)
         const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
         if (value.width !== tileWidth || value.height !== tileHeight || reply.bytes.length !== tileWidth * tileHeight * 4) {
           fail('pdf/native-protocol', 'Native page dimensions do not match')
@@ -499,7 +556,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
         fail('pdf/stale-reader', 'PDF changed during page render; retry')
       }
       return { snapshot, png, width, height, formInspection }
-    })
+    }, signal)
   }
   function renderPage(sessionId: string, documentId: string, page: number, maxEdge: number, signal: AbortSignal) {
     return renderPageImage(sessionId, documentId, page, maxEdge, signal)
@@ -528,17 +585,17 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       const { width, height } = render
       const { bytesHash } = await descriptor(snapshot, signal)
       const started = performance.now()
-      let reply: Awaited<ReturnType<NativeWorker['request']>>
+      let reply: Awaited<ReturnType<NativePdfPort['renderPage']>>
       try {
-        reply = await worker.request({ command: 'render', documentId, pageIndex: page - 1,
-          rotation: 0, ...render, annotations: false, forms }, undefined, signal, 10)
+        reply = await worker.renderPage({ documentId, pageIndex: page - 1,
+          rotation: 0, ...render, annotations: false, forms }, signal, 10)
       } finally { recordIndexPerformance({ stage: 'native-render', durationMs: performance.now() - started, records: 1 }) }
       const value = z.object({ width: integer, height: integer, format: z.literal('rgba') }).parse(reply.value)
       if (value.width !== width || value.height !== height || reply.bytes.length !== width * height * 4) {
         fail('pdf/native-protocol', 'Native OCR image dimensions do not match')
       }
       return { snapshot, rgba: reply.bytes, bytesHash, width, height, pdfRegion }
-    })
+    }, signal)
     // The reply owns its pixels. Compression no longer holds the mutable native
     // document lease, so queued UI/native reads may proceed while zlib works.
     signal.throwIfAborted()
@@ -559,6 +616,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
   }
   /** Reclaim render state; the registry keeps the document ID and durable draft. */
   async function releaseDocument(documentId: string): Promise<void> {
+    if (closed) return
     await withHandleLease(async () => {
       histories.delete(documentId)
       const handle = handles.get(documentId)
@@ -566,15 +624,16 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
       handles.delete(documentId)
       handlesBytes -= handle.bytes
       if (!closed && handle.generation === worker.generation) {
-        await worker.request({ command: 'close', documentId }).catch(() => undefined)
+        await worker.closeDocument(documentId).catch(() => undefined)
       }
-    })
+    }).catch(error => { if (!closed) throw error })
   }
-  return { dispatch, native, inspectEncrypted, readPageText, readOutline, readOcrArtifact,
+  return { dispatch, native, inspectEncrypted, materializeEncryptedAnnotations, readPageText, readOutline, readOcrArtifact,
     localOcrIdentity: () => options.textRecovery?.producer,
     renderPage, renderFormPage, renderOcrImage, releaseDocument, diagnostics: () => ({ generation: worker.generation, documents: handles.size, documentBytes: handlesBytes,
     tileCacheBytes: tiles.bytes, tileCacheEntries: tiles.size }),
     async dispose() { closed = true; recoveryLifetime.abort(); tiles.clear(); handles.clear(); histories.clear(); mutations.clear(); handlesBytes = 0
+      handleLease.close(Object.assign(new Error('PDF service is unloading'), { code: 'pdf/unavailable' }))
       unregisterNative()
       if (!options.capabilities) capabilities.dispose()
       // Stop producers while draining subscribers: an adapter may need its

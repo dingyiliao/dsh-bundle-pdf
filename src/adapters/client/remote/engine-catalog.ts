@@ -1,12 +1,11 @@
+import { z } from 'zod'
 import { pauseRemotePoll } from './request.js'
 import { engineCatalogSchema, type EngineCatalogSnapshot } from '../../../modules/engines/index.js'
+import { rpcResponseSchema } from '../../../contracts/rpc/index.js'
 import type { PdfConnection } from './pdf-api.js'
-import { z } from 'zod'
 
-const response = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: engineCatalogSchema }),
-  z.object({ ok: z.literal(false), error: z.object({ message: z.string() }) }),
-])
+// Older DSH versions omit an error code from the long-poll response.
+const response = rpcResponseSchema(engineCatalogSchema, z.object({ message: z.string() }))
 
 /** One connection-scoped long poll, retained only while there are subscribers. */
 export function createEngineCatalogStore(connection: PdfConnection, lifetime: AbortSignal, initial: EngineCatalogSnapshot) {

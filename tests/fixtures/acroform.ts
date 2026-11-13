@@ -1,76 +1,108 @@
-import { PDFDocument, StandardFonts, degrees } from 'pdf-lib'
+import { classicPdf, pdfArray, pdfDict, pdfHex, pdfName, pdfStream, pdfString, ref } from './pdf-fixture-kit.ts'
 
-/** Synthetic fields and values only; no personal documents in tool tests. */
-export async function acroformFixture() {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([400, 600]), rotated = pdf.addPage([400, 600])
-  rotated.setCropBox(10, 20, 380, 560)
-  rotated.setRotation(degrees(90))
-  const font = await pdf.embedFont(StandardFonts.Helvetica)
-  page.drawText('Applicant name', { x: 30, y: 550, size: 12, font })
-  page.drawText('Accept conditions', { x: 60, y: 465, size: 12, font })
-  page.drawText('Email', { x: 60, y: 425, size: 12, font })
-  page.drawText('Phone', { x: 180, y: 425, size: 12, font })
-  const form = pdf.getForm()
-  const text = form.createTextField('Text1')
-  text.setMaxLength(6); text.enableRequired(); text.setText('Demo')
-  text.addToPage(page, { x: 30, y: 510, width: 200, height: 24 })
-  text.addToPage(rotated, { x: 50, y: 300, width: 180, height: 24 })
-  form.createCheckBox('accepted').addToPage(page, { x: 30, y: 460, width: 20, height: 20 })
-  const radio = form.createRadioGroup('contact')
-  radio.addOptionToPage('email', page, { x: 30, y: 420, width: 20, height: 20 })
-  radio.addOptionToPage('phone', page, { x: 150, y: 420, width: 20, height: 20 })
-  const choice = form.createDropdown('choice')
-  choice.addOptions(['first', 'second'])
-  choice.addToPage(page, { x: 30, y: 350, width: 180, height: 24 })
-  const list = form.createOptionList('list')
-  list.addOptions(['one', 'two']); list.disableMultiselect()
-  list.addToPage(page, { x: 30, y: 270, width: 180, height: 40 })
-  const locked = form.createTextField('locked')
-  locked.addToPage(page, { x: 30, y: 210, width: 180, height: 24 }); locked.enableReadOnly()
-  const hidden = form.createTextField('hidden')
-  hidden.addToPage(page, { x: 30, y: 150, width: 180, height: 24 })
-  hidden.acroField.getWidgets()[0].setFlags(2)
-  return new Uint8Array(await pdf.save())
+function page(content: number, annotations: readonly number[], pageNumber: number): string {
+  return pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 400 600]',
+    Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(content),
+    ...(annotations.length ? { Annots: pdfArray(annotations.map(ref)) } : {}),
+    ...(pageNumber === 2 ? { CropBox: '[10 20 390 580]', Rotate: '90' } : {}) })
 }
 
-/** Matches a common imported-form shape: distinct checkbox objects share /T. */
-export async function duplicateFieldNamesFixture() {
-  const pdf = await PDFDocument.create(), page = pdf.addPage([300, 400]), second = pdf.addPage([300, 400])
-  const form = pdf.getForm(), font = await pdf.embedFont(StandardFonts.Helvetica)
-  const text = form.createTextField('unique-text')
-  text.addToPage(page, { x: 30, y: 330, width: 150, height: 24 })
-  const shared = form.createTextField('repeated-widget')
-  shared.addToPage(page, { x: 30, y: 90, width: 150, height: 24 })
-  shared.addToPage(second, { x: 30, y: 90, width: 150, height: 24 })
-  for (let index = 0; index < 3; index++) {
-    const checkbox = form.createCheckBox(`original-${index}`)
-    checkbox.addToPage(page, { x: 30, y: 270 - index * 60, width: 24, height: 24 })
-    checkbox.acroField.setPartialName('same-name')
-    page.drawText(`Independent option ${index + 1}`, { x: 65, y: 276 - index * 60, font, size: 12 })
-  }
-  return new Uint8Array(await pdf.save())
+function textWidget(parent: number, pageNumber: number, rect: string, flags = 0): string {
+  return pdfDict({ Type: '/Annot', Subtype: '/Widget', Rect: rect, Parent: ref(parent), P: ref(pageNumber),
+    F: String(flags), FT: '/Tx', DA: pdfString('/Helv 10 Tf 0 g') })
+}
+
+/** Synthetic fields and values only; no personal documents in tool tests. */
+export async function acroformFixture(): Promise<Uint8Array> {
+  const objects = [
+    pdfDict({ Type: '/Catalog', Pages: ref(2), AcroForm: ref(9) }),
+    pdfDict({ Type: '/Pages', Kids: pdfArray([ref(5), ref(7)]), Count: '2' }),
+    pdfDict({ Type: '/Font', Subtype: '/Type1', BaseFont: '/Helvetica', Encoding: '/WinAnsiEncoding' }),
+    pdfDict({ CreationDate: pdfString('D:20000101000000Z'), Producer: pdfString('DSH PDF test fixture') }),
+    page(6, [11, 14, 16, 17, 19, 21, 23, 25, 27], 1),
+    pdfStream('BT /F1 12 Tf 30 550 Td (Applicant name) Tj 60 465 Td (Accept conditions) Tj 60 425 Td (Email) Tj 180 425 Td (Phone) Tj ET'),
+    page(8, [12], 2),
+    pdfStream(''),
+    pdfDict({ Type: '/AcroForm', Fields: pdfArray([ref(10), ref(13), ref(15), ref(18), ref(20), ref(22), ref(24), ref(26)]), NeedAppearances: 'true' }),
+    pdfDict({ FT: '/Tx', T: pdfString('Text1'), V: pdfHex('Demo'), DV: pdfHex('Demo'), MaxLen: '6', Ff: '2', Kids: pdfArray([ref(11), ref(12)]) }),
+    textWidget(10, 5, '[30 510 230 534]'),
+    textWidget(10, 7, '[50 300 230 324]'),
+    pdfDict({ FT: '/Btn', T: pdfString('accepted'), V: '/Off', Kids: pdfArray([ref(14)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(13), Rect: '[30 460 50 480]', P: ref(5), AP: pdfDict({ N: pdfDict({ Off: ref(27), Yes: ref(28) }) }), AS: '/Off' }),
+    pdfDict({ FT: '/Btn', T: pdfString('contact'), Ff: '32768', V: pdfName('Off'), Kids: pdfArray([ref(16), ref(17)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(15), Rect: '[30 420 50 440]', P: ref(5), AP: pdfDict({ N: pdfDict({ Off: ref(27), email: ref(28) }) }), AS: '/Off' }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(15), Rect: '[150 420 170 440]', P: ref(5), AP: pdfDict({ N: pdfDict({ Off: ref(27), phone: ref(28) }) }), AS: '/Off' }),
+    pdfDict({ FT: '/Ch', T: pdfString('choice'), Ff: '131072', Opt: pdfArray([pdfString('first'), pdfString('second')]), V: pdfString(''), Kids: pdfArray([ref(19)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Ch', Parent: ref(18), Rect: '[30 350 210 374]', P: ref(5) }),
+    pdfDict({ FT: '/Ch', T: pdfString('list'), Ff: '0', Opt: pdfArray([pdfString('one'), pdfString('two')]), V: '[]', Kids: pdfArray([ref(21)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Ch', Parent: ref(20), Rect: '[30 270 210 310]', P: ref(5) }),
+    pdfDict({ FT: '/Tx', T: pdfString('locked'), Ff: '1', Kids: pdfArray([ref(23)]) }),
+    textWidget(22, 5, '[30 210 210 234]'),
+    pdfDict({ FT: '/Tx', T: pdfString('hidden'), Kids: pdfArray([ref(25)]) }),
+    textWidget(24, 5, '[30 150 210 174]', 2),
+    pdfDict({ FT: '/Btn', T: pdfString('action'), Ff: '65536', Kids: pdfArray([ref(27)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(26), Rect: '[35 35 125 59]', P: ref(5) }),
+    pdfStream('q 0 g 0 0 1 1 re f Q', { Type: '/XObject', Subtype: '/Form', BBox: '[0 0 1 1]' }),
+    pdfStream('q 1 g 0 0 1 1 re f Q', { Type: '/XObject', Subtype: '/Form', BBox: '[0 0 1 1]' }),
+  ]
+  return classicPdf(objects, 4)
+}
+
+/** Matches a common imported-form shape: distinct widgets share /T. */
+export async function duplicateFieldNamesFixture(): Promise<Uint8Array> {
+  const objects = [
+    pdfDict({ Type: '/Catalog', Pages: ref(2), AcroForm: ref(9) }),
+    pdfDict({ Type: '/Pages', Kids: pdfArray([ref(5), ref(7)]), Count: '2' }),
+    pdfDict({ Type: '/Font', Subtype: '/Type1', BaseFont: '/Helvetica', Encoding: '/WinAnsiEncoding' }),
+    pdfDict({ Producer: pdfString('DSH PDF test fixture') }),
+    pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 300 400]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6), Annots: pdfArray([ref(11), ref(13), ref(15), ref(17), ref(20)]) }),
+    pdfStream('BT /F1 12 Tf 65 276 Td (Independent option 1) Tj 65 216 Td (Independent option 2) Tj 65 156 Td (Independent option 3) Tj ET'),
+    pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 300 400]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(8), Annots: pdfArray([ref(19)]) }),
+    pdfStream(''),
+    pdfDict({ Type: '/AcroForm', Fields: pdfArray([ref(10), ref(12), ref(14), ref(16), ref(18)]) }),
+    pdfDict({ FT: '/Tx', T: pdfString('unique-text'), Kids: pdfArray([ref(11)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Tx', Parent: ref(10), Rect: '[30 330 180 354]', P: ref(5) }),
+    pdfDict({ FT: '/Btn', T: pdfString('same-name'), Kids: pdfArray([ref(13)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(12), Rect: '[30 270 54 294]', P: ref(5), AS: '/Off', AP: pdfDict({ N: pdfDict({ Off: ref(21), Yes: ref(22) }) }) }),
+    pdfDict({ FT: '/Btn', T: pdfString('same-name'), Kids: pdfArray([ref(15)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(14), Rect: '[30 210 54 234]', P: ref(5), AS: '/Off', AP: pdfDict({ N: pdfDict({ Off: ref(21), Yes: ref(22) }) }) }),
+    pdfDict({ FT: '/Btn', T: pdfString('same-name'), Kids: pdfArray([ref(17)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(16), Rect: '[30 150 54 174]', P: ref(5), AS: '/Off', AP: pdfDict({ N: pdfDict({ Off: ref(21), Yes: ref(22) }) }) }),
+    pdfDict({ FT: '/Tx', T: pdfString('repeated-widget'), Kids: pdfArray([ref(19), ref(20)]) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Tx', Parent: ref(18), Rect: '[30 90 180 114]', P: ref(7) }),
+    pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Tx', Parent: ref(18), Rect: '[30 30 180 54]', P: ref(5) }),
+    pdfStream('q 0 g 0 0 1 1 re f Q', { Type: '/XObject', Subtype: '/Form', BBox: '[0 0 1 1]' }),
+    pdfStream('q 1 g 0 0 1 1 re f Q', { Type: '/XObject', Subtype: '/Form', BBox: '[0 0 1 1]' }),
+  ]
+  return classicPdf(objects, 4)
 }
 
 /** Dense printed labels above fields reproduce the old number-over-text obstruction. */
-export async function denseFormFixture() {
-  const pdf = await PDFDocument.create(), page = pdf.addPage([600, 840])
-  const form = pdf.getForm(), font = await pdf.embedFont(StandardFonts.Helvetica)
-  page.drawText('SAMPLE FORM - printed content must stay readable', { x: 20, y: 815, font, size: 14 })
-  page.drawText('Select applicable options. Complete details only when Yes is selected.', { x: 20, y: 795, font, size: 10 })
+export async function denseFormFixture(): Promise<Uint8Array> {
+  const fields: string[] = [], annotations: number[] = []
+  const objects: string[] = [
+    pdfDict({ Type: '/Catalog', Pages: ref(2), AcroForm: ref(7) }),
+    pdfDict({ Type: '/Pages', Kids: pdfArray([ref(5)]), Count: '1' }),
+    pdfDict({ Type: '/Font', Subtype: '/Type1', BaseFont: '/Helvetica', Encoding: '/WinAnsiEncoding' }),
+    pdfDict({ Producer: pdfString('DSH PDF test fixture') }),
+    pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 600 840]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6) }),
+    pdfStream('BT /F1 10 Tf 20 815 Td (SAMPLE FORM - printed content must stay readable) Tj 20 795 Td (Select applicable options. Complete details only when Yes is selected.) Tj ET'),
+    pdfDict({ Type: '/AcroForm', Fields: '[]', NeedAppearances: 'true' }),
+  ]
+  let next = 8
   for (let index = 0; index < 24; index++) {
-    const x = 20 + index % 3 * 190, y = 760 - Math.floor(index / 3) * 17
-    page.drawText(`Printed option ${index + 1}`, { x: x + 18, y: y + 2, font, size: 10 })
-    const checkbox = form.createCheckBox(`option-${index}`)
-    checkbox.addToPage(page, { x, y, width: 12, height: 12 })
-    if (index % 4 === 0) checkbox.check()
+    const field = next++, widget = next++
+    fields.push(ref(field)); annotations.push(widget)
+    objects.push(pdfDict({ FT: '/Btn', T: pdfString(`option-${index}`), V: index % 4 === 0 ? '/Yes' : '/Off', Kids: pdfArray([ref(widget)]) }))
+    objects.push(pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Btn', Parent: ref(field), Rect: `[${20 + index % 3 * 190} ${760 - Math.floor(index / 3) * 17} ${32 + index % 3 * 190} ${772 - Math.floor(index / 3) * 17}]`, P: ref(5), AS: index % 4 === 0 ? '/Yes' : '/Off' }))
   }
   for (let index = 0; index < 18; index++) {
-    const x = 20 + index % 3 * 190, y = 580 - Math.floor(index / 3) * 65
-    page.drawText(`Printed field ${index + 1}`, { x, y: y + 22, font, size: 10 })
-    const field = form.createTextField(`details-${index}`)
-    field.addToPage(page, { x, y, width: 165, height: 18 })
-    field.setText(`Sample value ${index + 1}`)
+    const field = next++, widget = next++
+    fields.push(ref(field)); annotations.push(widget)
+    objects.push(pdfDict({ FT: '/Tx', T: pdfString(`details-${index}`), V: pdfString(`Sample value ${index + 1}`), Kids: pdfArray([ref(widget)]) }))
+    objects.push(pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Tx', Parent: ref(field), Rect: `[${20 + index % 3 * 190} ${580 - Math.floor(index / 3) * 65} ${185 + index % 3 * 190} ${598 - Math.floor(index / 3) * 65}]`, P: ref(5) }))
   }
-  return new Uint8Array(await pdf.save())
+  objects[4] = pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 600 840]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6), Annots: pdfArray(annotations.map(ref)) })
+  objects[6] = pdfDict({ Type: '/AcroForm', Fields: pdfArray(fields), NeedAppearances: 'true' })
+  return classicPdf(objects, 4)
 }

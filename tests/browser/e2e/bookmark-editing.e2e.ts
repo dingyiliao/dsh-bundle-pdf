@@ -4,7 +4,7 @@ import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { launchPdfBrowser as browser } from '../launch.ts'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 import { FILE_NAME, documentBytes, openReader } from '../support/panels.ts'
 import { openSidebarSection } from '../support/toolbar.ts'
@@ -96,8 +96,8 @@ it('edits embedded bookmark titles, targets and hierarchy through save and reope
     const save = reader.locator('.dsh-pdf-toolbar-save')
     await expect.poll(() => save.isEnabled()).toBe(true)
     await save.click()
-    await expect.poll(async () => (await loadPdfDocument(await readFile(path))).outline?.[0]?.title).toBe('Opening chapter')
-    const saved = await loadPdfDocument(await readFile(path))
+    await expect.poll(async () => (await inspectFixturePdf(await readFile(path))).outline?.[0]?.title).toBe('Opening chapter')
+    const saved = await inspectFixturePdf(await readFile(path))
     expect(saved.outline?.[0]?.page).toBe(2)
     expect(saved.outline?.[0]?.children[0]?.title).toBe('Nested section')
     expect(saved.outline?.[0]?.children[0]?.page).toBe(3)
@@ -136,7 +136,9 @@ it('edits recoverable imported bookmarks and creates children without a read-onl
     await more('Imported chapter').waitFor()
     expect(await reader.getByRole('button', { name: 'Add PDF bookmark', exact: true }).isEnabled()).toBe(true)
     expect(await reader.locator('.dsh-pdf-bookmark-panel').textContent()).not.toMatch(/inconsistent|missing.*forward tree/)
-    expect(new Uint8Array(await readFile(path))).toEqual(source)
+    // `readFile` returns a Node Buffer while the fixture is a Uint8Array;
+    // compare the bytes, not their runtime container prototypes.
+    expect(Buffer.from(await readFile(path))).toEqual(Buffer.from(source))
     await more('Imported chapter').click()
     await reader.getByRole('menuitem', { name: 'Rename bookmark', exact: false }).click()
     let form = reader.getByRole('form', { name: 'Rename bookmark', exact: true })
@@ -146,7 +148,7 @@ it('edits recoverable imported bookmarks and creates children without a read-onl
     const save = reader.locator('.dsh-pdf-toolbar-save')
     await expect.poll(() => save.isEnabled()).toBe(true)
     await save.click()
-    await expect.poll(async () => (await loadPdfDocument(await readFile(path))).outline?.[0]?.title).toBe('Recovered chapter')
+    await expect.poll(async () => (await inspectFixturePdf(await readFile(path))).outline?.[0]?.title).toBe('Recovered chapter')
     await expect.poll(() => save.isDisabled()).toBe(true)
 
     await more('Recovered chapter').click()
@@ -159,10 +161,10 @@ it('edits recoverable imported bookmarks and creates children without a read-onl
     expect(await reader.locator('.dsh-pdf-bookmark-row').filter({ hasText: 'New nested bookmark' }).getAttribute('aria-level')).toBe('2')
     await expect.poll(() => save.isEnabled()).toBe(true)
     await save.click()
-    await expect.poll(async () => (await loadPdfDocument(await readFile(path))).outline?.[0]?.children.map(item => item.title))
+    await expect.poll(async () => (await inspectFixturePdf(await readFile(path))).outline?.[0]?.children.map(item => item.title))
       .toEqual(['Imported section', 'New nested bookmark'])
     await expect.poll(() => save.isDisabled()).toBe(true)
-    const saved = await loadPdfDocument(await readFile(path))
+    const saved = await inspectFixturePdf(await readFile(path))
     expect(saved.outlineReadOnlyReason).toBeUndefined()
     expect(saved.outline![0].children.map(item => item.title)).toEqual(['Imported section', 'New nested bookmark'])
     reader = await openReader(page, scaffold.authenticatedUrl, title)

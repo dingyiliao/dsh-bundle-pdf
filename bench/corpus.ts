@@ -1,9 +1,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
-import { applyPdfOperations } from '../src/adapters/host/pdf-lib/pdf-document.ts'
-import type { PdfAnnotationOperation } from '../src/core/pdf-types.ts'
+import { benchmarkPdf } from './fixtures.ts'
 import { corpusSchema, type Corpus } from './schema.ts'
 import { ROOT, sha256 } from './metadata.ts'
 
@@ -16,24 +14,22 @@ export async function createCorpus(directory = join(ROOT, 'bench', '.generated')
     { id: 'text-1000', pages: 1000, annotations: 0 },
     { id: 'annotations-1000', pages: 12, annotations: 1000 },
   ]) {
-    const pdf = await PDFDocument.create()
-    pdf.setCreationDate(new Date(FIXED_DATE)); pdf.setModificationDate(new Date(FIXED_DATE))
-    pdf.setProducer('DSH PDF deterministic corpus v1'); pdf.setCreator('DSH PDF M0 benchmark')
-    const font = await pdf.embedFont(StandardFonts.Helvetica)
-    for (let number = 1; number <= spec.pages; number++) {
-      const page = pdf.addPage(number % 7 === 0 ? [640, 860] : [595, 842])
-      page.drawText(`PDF benchmark page ${number} / ${spec.pages}`, { x: 40, y: 790, size: 16, font })
-      for (let line = 0; line < 32; line++) page.drawText(`Lifestyle viewpoint test sentence ${line + 1}. Search target ${number}.`,
-        { x: 40, y: 750 - line * 19, size: 10, font, color: rgb(0.1, 0.1, 0.1) })
+    const pageNotes = Array.from({ length: spec.pages }, () => [] as string[])
+    for (let index = 0; index < spec.annotations; index++) {
+      const rect = [42 + index % 20, 50 + index % 500, 60 + index % 20, 68 + index % 500]
+      pageNotes[index % spec.pages]!.push(`<< /Type /Annot /Subtype /Text /Rect [${rect.join(' ')}] /F 4 /NM (corpus-note-${index}) /Contents (Synthetic note ${index}) /M (D:20000101000000Z) >>`)
     }
-    let bytes: Uint8Array = await pdf.save({ useObjectStreams: false })
-    if (spec.annotations) {
-      const operations: PdfAnnotationOperation[] = Array.from({ length: spec.annotations }, (_, index) => ({
-        type: 'add', annotation: { id: `corpus-note-${index}`, page: index % spec.pages + 1, subtype: 'Text',
-          rect: [42 + index % 20, 50 + index % 500, 60 + index % 20, 68 + index % 500], contents: `Synthetic note ${index}` },
-      }))
-      bytes = (await applyPdfOperations(bytes, operations, operations.map(() => FIXED_DATE))).bytes
-    }
+    const bytes = benchmarkPdf(Array.from({ length: spec.pages }, (_, index) => ({
+      size: (index + 1) % 7 === 0 ? [640, 860] : [595, 842],
+      annotationObjects: pageNotes[index],
+      lines: [
+        { text: `PDF benchmark page ${index + 1} / ${spec.pages}`, x: 40, y: 790, size: 16 },
+        ...Array.from({ length: 32 }, (_, line) => ({
+          text: `Lifestyle viewpoint test sentence ${line + 1}. Search target ${index + 1}.`,
+          x: 40, y: 750 - line * 19, size: 10,
+        })),
+      ],
+    })))
     const file = `${spec.id}.pdf`
     await writeFile(join(directory, file), bytes)
     manifest.documents.push({ ...spec, file, sha256: sha256(bytes), bytes: bytes.byteLength,

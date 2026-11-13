@@ -1,12 +1,12 @@
 import React, { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.js'
-import { ReaderToolbar } from '../../../src/modules/viewer/components/ReaderToolbar.js'
-import { readerFloatingStatuses } from '../../../src/modules/viewer/controllers/reader-floating-statuses.js'
-import { readerToolbarModel } from '../../../src/modules/viewer/controllers/reader-toolbar-model.js'
-import { useReaderMutations } from '../../../src/modules/viewer/controllers/use-reader-mutations.js'
-import { useReaderSave } from '../../../src/modules/viewer/controllers/use-reader-save.js'
-import { readerLocales } from '../../../src/modules/viewer/locales.js'
+import { ReaderToolbar } from '../../../src/client/viewer/components/ReaderToolbar.js'
+import { readerFloatingStatuses } from '../../../src/client/viewer/controllers/reader-floating-statuses.js'
+import { readerToolbarModel } from '../../../src/client/viewer/controllers/reader-toolbar-model.js'
+import { useReaderMutations } from '../../../src/client/viewer/controllers/use-reader-mutations.js'
+import { useReaderSave } from '../../../src/client/viewer/controllers/use-reader-save.js'
+import { readerLocales } from '../../../src/client/viewer/locales.js'
 
 export interface ReaderSaveFixtureInput {
   dirty?: boolean

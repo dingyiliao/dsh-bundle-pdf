@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { blankPdf } from '../../fixtures/plain-pdf.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import type { NewPdfAnnotation } from '../../../src/core/pdf-types.ts'
 import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
 import type { DraftRecord } from '../../../src/modules/working-copy/index.ts'
@@ -21,15 +21,12 @@ function hash(bytes: Uint8Array): string {
 }
 
 async function fixture(): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  return pdf.save({ useObjectStreams: false })
+  return blankPdf(1, [300, 400])
 }
 
 async function changedSource(initial: Uint8Array): Promise<Uint8Array> {
-  const pdf = await PDFDocument.load(initial)
-  pdf.addPage([300, 400])
-  return pdf.save({ useObjectStreams: false })
+  const { pageCount } = await inspectFixturePdf(initial)
+  return blankPdf(pageCount + 1, [300, 400])
 }
 
 function note(id: string): NewPdfAnnotation {
@@ -281,7 +278,7 @@ test('save materializes valid PDF bytes and a failed write retains the draft', a
     assert.deepEqual(state.file.bytes, bytes)
     assert.equal(state.records.size, 2)
     assert.ok([...state.records.values()].some(record => record.groups.length === 1 && record.original === undefined))
-    assert.deepEqual((await loadPdfDocument(state.file.saveAttempts[0])).annotations.map(item => item.id), ['saved-note'])
+    assert.deepEqual((await inspectFixturePdf(state.file.saveAttempts[0])).annotations.map(item => item.id), ['saved-note'])
   } finally { await workspaces.dispose() }
   const recoveredWorkspaces = createWorkspaces(state.files, state.drafts)
   try {
@@ -296,7 +293,7 @@ test('save materializes valid PDF bytes and a failed write retains the draft', a
     assert.equal(saved.document.annotations[0].id, 'saved-note')
     assert.equal(saved.baselineAnnotations?.[0].id, 'saved-note')
     assert.notDeepEqual(state.file.bytes, bytes)
-    assert.deepEqual((await loadPdfDocument(state.file.bytes)).annotations.map(item => item.id), ['saved-note'])
+    assert.deepEqual((await inspectFixturePdf(state.file.bytes)).annotations.map(item => item.id), ['saved-note'])
     assert.equal(state.records.size, 0)
   } finally { await recoveredWorkspaces.dispose() }
 })
@@ -362,7 +359,7 @@ test('explicit Save As can recreate a deleted source without allowing plain Save
     })
     assert.equal(saved.dirty, false)
     assert.equal(state.file.exists, true)
-    assert.deepEqual((await loadPdfDocument(state.file.bytes)).annotations.map(item => item.id), ['restored-note'])
+    assert.deepEqual((await inspectFixturePdf(state.file.bytes)).annotations.map(item => item.id), ['restored-note'])
     assert.equal(state.records.size, 0)
   } finally { await workspaces.dispose() }
 })
@@ -402,7 +399,7 @@ test('same-path Save As replaces an observed version only with explicit confirma
     })
     assert.equal(saved.conflict, false)
     assert.equal(saved.dirty, false)
-    assert.deepEqual((await loadPdfDocument(state.file.bytes)).annotations.map(item => item.id), ['kept-note'])
+    assert.deepEqual((await inspectFixturePdf(state.file.bytes)).annotations.map(item => item.id), ['kept-note'])
     assert.equal(state.records.size, 0)
   } finally { await workspaces.dispose() }
 })

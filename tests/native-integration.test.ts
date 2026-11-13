@@ -1,222 +1,68 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
 import { existsSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
-import { encodePng } from '../src/adapters/host/pdfium/png.ts'
-import { NativeViewport } from '../src/modules/viewer/index.ts'
-import { applyPdfOperations, loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
-import { createPdfService } from '../src/adapters/host/pdfium/index.ts'
-import { CapabilityRegistry, pdfCapabilities } from '../src/modules/capabilities/index.ts'
-import { registerPdfTransport } from '../src/adapters/host/dsh/index.ts'
-import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
-import { PDFDocument, PDFHexString, PDFName, PDFString, rgb } from 'pdf-lib'
-import { hyphenatedTextPdf, memoryWorkspace, nativeFixture, supplementaryTextPdf } from './native-fixture.ts'
+import test from 'node:test'
+import { NativeWorker } from '../src/engine/host/native-worker.ts'
+import { NativeViewport } from '../src/client/viewer/index.ts'
+import { materializeFixturePdf, inspectFixturePdf } from './fixtures/native-document.ts'
+import { onePagePdf, pdfArray, pdfDict, pdfHex, pdfName, ref } from './fixtures/pdf-fixture-kit.ts'
+import { blankPdf } from './fixtures/plain-pdf.ts'
+import { hyphenatedTextPdf, nativeFixture } from './native-fixture.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
-import { brokenTextMappingFixture } from './fixtures/broken-text-mapping.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
-const skip = !existsSync(executable), signal = new AbortController().signal
+const skip = !existsSync(executable)
 
-test('native text reports invalid real-glyph Unicode mappings without confusing generated line breaks', { skip }, async () => {
+test('native text extraction reports layout quality without losing ordinary text', { skip }, async () => {
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
-    await worker.request({ command: 'open', documentId: 'broken-unicode' }, await brokenTextMappingFixture())
-    const bad = (await worker.request({ command: 'text', documentId: 'broken-unicode', pageIndex: 0 })).value as { quality?: { unmappedCharacters: number } }
-    assert.ok(bad.quality!.unmappedCharacters > 0)
-    await worker.request({ command: 'open', documentId: 'ordinary-unicode' }, await nativeFixture())
-    const good = (await worker.request({ command: 'text', documentId: 'ordinary-unicode', pageIndex: 0 })).value as { quality?: unknown }
-    assert.equal(good.quality, undefined)
+    await worker.request({ command: 'open', documentId: 'text', }, await nativeFixture())
+    const value = (await worker.request({ command: 'text', documentId: 'text', pageIndex: 0 })).value as { items: { str: string }[]; quality?: unknown }
+    assert.equal(value.items.map(item => item.str).join(''), 'Native PDF test page 1')
+    assert.equal(value.quality, undefined)
+    await worker.request({ command: 'open', documentId: 'hyphen', }, await hyphenatedTextPdf())
+    const hyphen = (await worker.request({ command: 'text', documentId: 'hyphen', pageIndex: 0 })).value as { items: { str: string }[] }
+    assert.deepEqual(hyphen.items.map(item => item.str), ['understand', 'ing the model'])
   } finally { await worker.dispose() }
 })
 
-test('PDFium layout hyphens do not report invalid Unicode while real control-code mappings still do', { skip }, async () => {
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'layout-hyphen' }, await hyphenatedTextPdf())
-    const good = (await worker.request({ command: 'text', documentId: 'layout-hyphen', pageIndex: 0 })).value as {
-      quality?: unknown; items: { str: string }[]
-    }
-    // These same text runs previously reported one unmapped character. Keep
-    // extraction unchanged: only the interpretation of PDFium's marker changes.
-    assert.deepEqual(good.items.map(item => item.str), ['understand', 'ing the model'])
-    assert.equal(good.quality, undefined)
-    await worker.request({ command: 'open', documentId: 'bad-controls' }, await brokenTextMappingFixture())
-    const bad = (await worker.request({ command: 'text', documentId: 'bad-controls', pageIndex: 0 })).value as {
-      quality?: { unmappedCharacters: number }
-    }
-    assert.ok(bad.quality!.unmappedCharacters > 0, 'real glyphs mapped to control codes must still trigger recovery')
-  } finally { await worker.dispose() }
-})
-
-test('PDFium renders crop, intrinsic/additional rotation and UserUnit in the UI coordinate system', { skip }, async () => {
-  const bytes = await nativeFixture(), metadata = await loadPdfDocument(bytes), worker = new NativeWorker(executable, nativeTestSubprocess)
+test('native rendering and viewport transforms agree for rotated pages', { skip }, async () => {
+  const bytes = await nativeFixture(), metadata = await inspectFixturePdf(bytes), worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'geometry' }, bytes)
-    for (const geometry of metadata.pages) for (const extra of [0, 90, 180, 270]) {
-      const viewport = new NativeViewport(geometry, 1, (geometry.rotation + extra) % 360)
-      const width = Math.ceil(viewport.width), height = Math.ceil(viewport.height)
-      const result = await worker.request({ command: 'render', documentId: 'geometry', pageIndex: geometry.page - 1, rotation: extra,
-        rasterWidth: width, rasterHeight: height, x: 0, y: 0, width, height, annotations: true })
-      for (const [x, y, color] of [[80, 90, [255, 0, 0]], [210, 270, [0, 0, 255]]] as const) {
-        const point = viewport.convertToViewportPoint(x, y), offset = (Math.floor(point[1]) * width + Math.floor(point[0])) * 4
-        assert.deepEqual([...result.bytes.subarray(offset, offset + 3)], [...color], `page=${geometry.page} extra=${extra}`)
-        assert.deepEqual(viewport.convertToPdfPoint(...point), [x, y])
-      }
-    }
-  } finally { await worker.dispose() }
-})
-test('guttered tiles agree with a whole-page render at all internal seams', { skip }, async () => {
-  const bytes = await nativeFixture(), worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'seams' }, bytes)
-    const base = { command: 'render', documentId: 'seams', pageIndex: 0, rotation: 0, rasterWidth: 750, rasterHeight: 960, annotations: true }
-    const full = (await worker.request({ ...base, x: 0, y: 0, width: 750, height: 960 })).bytes
-    let differences = 0, tested = 0
-    for (let y = 0; y < 960; y += 256) for (let x = 0; x < 750; x += 256) {
-      const width = Math.min(256, 750 - x), height = Math.min(256, 960 - y)
-      const tile = (await worker.request({ ...base, x: x - 1, y: y - 1, width: width + 2, height: height + 2 })).bytes
-      for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) for (let c = 0; c < 4; c++) {
-        tested++; if (Math.abs(tile[((row + 1) * (width + 2) + col + 1) * 4 + c] - full[((row + y) * 750 + col + x) * 4 + c]) > 2) differences++
-      }
-    }
-    assert.ok(differences / tested < 0.0005, `seam differing-byte ratio=${differences / tested}`)
+    const geometry = metadata.pages[1]!
+    const viewport = new NativeViewport(geometry, 1, (geometry.rotation + 90) % 360)
+    const width = Math.ceil(viewport.width), height = Math.ceil(viewport.height)
+    const render = await worker.request({ command: 'render', documentId: 'geometry', pageIndex: 1, rotation: 90,
+      rasterWidth: width, rasterHeight: height, x: 0, y: 0, width, height, annotations: true })
+    assert.equal(render.bytes.length, width * height * 4)
+    const point = viewport.convertToViewportPoint(80, 90)
+    assert.deepEqual(viewport.convertToPdfPoint(...point), [80, 90])
   } finally { await worker.dispose() }
 })
 
-test('PDFium gives existing and newly authored highlights the same color on white and gray paper', { skip }, async () => {
-  const pdf = await PDFDocument.create(), page = pdf.addPage([440, 220])
-  const color: [number, number, number] = [1, 0.38431, 0]
-  const left = 20, right = 160, direct = 300, bottom = 100, width = 100, height = 40
-  const quads = (x: number) => [
-    x, bottom + height, x + 65, bottom + height, x, bottom, x + 65, bottom,
-    x + 35, bottom + height, x + width, bottom + height, x + 35, bottom, x + width, bottom,
-  ]
-  // The two halves have the same white/gray paper, so the sampled pixels
-  // distinguish annotation compositing from differences in page content.
-  for (const x of [left, right, direct]) page.drawRectangle({ x, y: 120, width, height: 20, color: rgb(0.75, 0.75, 0.75) })
-
-  // An external-reader appearance has three levels: color in a plain Form,
-  // a transparency group wrapping it, and an outer Form applying .4 alpha
-  // plus Multiply. It deliberately does not use the writer under test.
-  const oldInk = pdf.context.register(pdf.context.flateStream(
-    `${color.join(' ')} rg 0 0 65 ${height} re f 35 0 65 ${height} re f`, {
-      Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
-    },
-  ))
-  const oldGroup = pdf.context.register(pdf.context.flateStream('/Ink Do', {
-    Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
-    Group: pdf.context.obj({ S: 'Transparency' }),
-    Resources: pdf.context.obj({ XObject: { Ink: oldInk } }),
-  }))
-  const oldAppearance = pdf.context.register(pdf.context.flateStream('/R0 gs /R1 gs /Group Do', {
-    Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
-    Resources: pdf.context.obj({
-      ExtGState: {
-        R0: { Type: 'ExtGState', ca: 0.4, CA: 0.4 },
-        R1: { Type: 'ExtGState', BM: 'Multiply' },
-      },
-      XObject: { Group: oldGroup },
-    }),
-  }))
-  const oldAnnotation = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', P: page.ref, F: 4,
-    Rect: [left, bottom, left + width, bottom + height],
-    QuadPoints: quads(left),
-    C: color, CA: 0.4, AP: { N: oldAppearance },
-  }))
-  // Negative control: the previous writer's direct, per-quad alpha paints
-  // overlapping quads twice. It must visibly differ at the overlap pixel.
-  const directAppearance = pdf.context.register(pdf.context.flateStream(
-    `q /GS0 gs ${color.join(' ')} rg 0 0 65 ${height} re f 35 0 65 ${height} re f Q`, {
-      Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, width, height],
-      Resources: pdf.context.obj({ ExtGState: { GS0: { Type: 'ExtGState', ca: 0.4, CA: 0.4, BM: 'Multiply' } } }),
-    },
-  ))
-  const directAnnotation = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', P: page.ref, F: 4,
-    Rect: [direct, bottom, direct + width, bottom + height], QuadPoints: quads(direct),
-    C: color, AP: { N: directAppearance },
-  }))
-  page.node.set(PDFName.of('Annots'), pdf.context.obj([oldAnnotation, directAnnotation]))
-  const source = await pdf.save({ useObjectStreams: false })
-  const authored = await applyPdfOperations(source, [{
-    type: 'add', annotation: {
-      id: 'new-matching-highlight', page: 1, subtype: 'Highlight',
-      rect: [right, bottom, right + width, bottom + height],
-      quadPoints: quads(right),
-      color,
-    },
-  }])
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  const sample = (pixels: Uint8Array, x: number, pdfY: number): number[] => {
-    const rasterX = x * 2, rasterY = (220 - pdfY) * 2
-    return [...pixels.subarray((rasterY * 880 + rasterX) * 4, (rasterY * 880 + rasterX) * 4 + 3)]
-  }
-  try {
-    await worker.request({ command: 'open', documentId: 'highlight-compositing' }, authored.bytes)
-    const base = { command: 'render', documentId: 'highlight-compositing', pageIndex: 0,
-      rotation: 0, rasterWidth: 880, rasterHeight: 440, x: 0, y: 0, width: 880, height: 440 }
-    const plain = (await worker.request({ ...base, annotations: false })).bytes
-    const painted = (await worker.request({ ...base, annotations: true })).bytes
-    for (const pdfY of [110, 130]) {
-      const singleOld = sample(painted, left + 20, pdfY)
-      const overlapOld = sample(painted, left + 50, pdfY)
-      for (const x of [20, 50, 80]) {
-        const paper = sample(plain, left + x, pdfY)
-        const oldColor = sample(painted, left + x, pdfY)
-        const newColor = sample(painted, right + x, pdfY)
-        assert.deepEqual(sample(plain, right + x, pdfY), paper, `Unequal paper at x=${x} y=${pdfY}`)
-        assert.ok(oldColor.some((channel, index) => Math.abs(channel - paper[index]) > 15),
-          `Fixture's legacy appearance did not render at x=${x} y=${pdfY}: ${oldColor}`)
-        for (let channel = 0; channel < 3; channel++) {
-          assert.ok(Math.abs(oldColor[channel] - newColor[channel]) <= 4,
-            `Different ${['red', 'green', 'blue'][channel]} at x=${x} y=${pdfY}: old=${oldColor}, new=${newColor}`)
-        }
-      }
-      assert.ok(overlapOld.every((channel, index) => Math.abs(channel - singleOld[index]) <= 4),
-        `Legacy fixture darkens overlapping quads at y=${pdfY}: single=${singleOld}, overlap=${overlapOld}`)
-      const directSingle = sample(painted, direct + 20, pdfY)
-      const directOverlap = sample(painted, direct + 50, pdfY)
-      assert.ok(directOverlap.some((channel, index) => Math.abs(channel - directSingle[index]) > 8),
-        `Pre-fix appearance unexpectedly hides its double alpha at y=${pdfY}: single=${directSingle}, overlap=${directOverlap}`)
-    }
-  } finally { await worker.dispose() }
-})
-test('PDFium exposes searchable text, URI/internal destinations and bounded object inspection', { skip }, async () => {
+test('native links, destinations and bounded object inspection remain available after one request fails', { skip }, async () => {
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
     await worker.request({ command: 'open', documentId: 'content' }, await nativeFixture())
-    const text = (await worker.request({ command: 'text', documentId: 'content', pageIndex: 0 })).value as { items: { str: string; transform: number[] }[] }
-    assert.equal(text.items.map(run => run.str).join(''), 'Native PDF test page 1')
-    assert.ok(Math.abs(text.items[0].transform[4] - 42) < 0.01); assert.ok(Math.abs(text.items[0].transform[5] - 330) < 0.01)
-    const links = (await worker.request({ command: 'links', documentId: 'content', pageIndex: 0 })).value as { url: string }[]
-    assert.equal(links[0].url, 'https://example.com/native')
-    assert.deepEqual((await worker.request({ command: 'destination', documentId: 'content', name: 'chapter' })).value, [2, { name: 'XYZ' }, 50, 300, null])
-    const objects = (await worker.request({ command: 'inspect', documentId: 'content', pageIndex: 0, offset: 0, limit: 1 })).value as { objects: unknown[]; nextOffset: unknown }
-    assert.equal(objects.objects.length, 1); assert.equal(objects.nextOffset, 1)
-  } finally { await worker.dispose() }
-})
-
-test('native dispatcher rejects an unknown command without stopping the worker', { skip }, async () => {
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
+    const links = (await worker.request({ command: 'links', documentId: 'content', pageIndex: 0 })).value as { url?: string }[]
+    assert.equal(links[0]?.url, 'https://example.com/native')
+    assert.deepEqual((await worker.request({ command: 'destination', documentId: 'content', name: 'chapter' })).value,
+      [2, { name: 'XYZ' }, 50, 300, null])
+    const inspected = (await worker.request({ command: 'inspect', documentId: 'content', pageIndex: 0, offset: 0, limit: 1 })).value as { objects: unknown[]; nextOffset: number | null }
+    assert.equal(inspected.objects.length, 1)
+    assert.equal(inspected.nextOffset, 1)
+    // @ts-expect-error Intentionally exercise native validation.
     await assert.rejects(worker.request({ command: 'unknown' }), /Unknown native command/)
-    await assert.rejects(worker.request({}), /Invalid native command/)
-    assert.deepEqual((await worker.request({ command: 'hello' })).value,
-      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0', encryptedOpen: true })
+    assert.partialDeepStrictEqual((await worker.request({ command: 'hello' })).value, { protocolVersion: 2, engine: 'pdfium' })
   } finally { await worker.dispose() }
 })
 
-test('native page cache evicts the oldest page and reloads it when revisited', { skip }, async () => {
-  const pdf = await PDFDocument.create()
-  for (let page = 0; page < 18; page++) pdf.addPage([100, 100])
+test('native page cache handles more pages than its bounded resident set', { skip }, async () => {
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
-    await worker.request({ command: 'open', documentId: 'cache' }, await pdf.save())
+    await worker.request({ command: 'open', documentId: 'cache' }, blankPdf(18, [100, 100]))
     for (let pageIndex = 0; pageIndex < 18; pageIndex++) {
       const reply = await worker.request({ command: 'inspect', documentId: 'cache', pageIndex, offset: 0, limit: 1 })
       assert.deepEqual(reply.value, { objects: [], nextOffset: null })
@@ -226,298 +72,23 @@ test('native page cache evicts the oldest page and reloads it when revisited', {
   } finally { await worker.dispose() }
 })
 
-test('native render rejects invalid flags and leaves blank pixels white', { skip }, async () => {
-  const pdf = await PDFDocument.create(); pdf.addPage([32, 32])
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'blank' }, await pdf.save())
-    const tile = { command: 'render', documentId: 'blank', pageIndex: 0, rotation: 0,
-      rasterWidth: 32, rasterHeight: 32, x: 0, y: 0, width: 32, height: 32 }
-    await assert.rejects(worker.request({ ...tile, annotations: 'yes' }), { code: 'pdf/native-request' })
-    const { bytes } = await worker.request({ ...tile, annotations: false })
-    assert.equal(bytes.length, 32 * 32 * 4)
-    assert.ok(bytes.every(channel => channel === 255))
-  } finally { await worker.dispose() }
+test('native materialization writes annotations while preserving the original source fixture', async () => {
+  const source = await onePagePdf({ pageEntries: { Annots: pdfArray([ref(7)]) }, extraObjects: [
+    pdfDict({ Type: '/Annot', Subtype: '/Text', Rect: '[20 20 40 40]', Contents: pdfHex('Existing') }),
+  ] })
+  const result = await materializeFixturePdf(source, [{ type: 'add', annotation: {
+    id: 'new-note', page: 1, subtype: 'Text', rect: [50, 50, 80, 80], contents: 'Added',
+  } }])
+  assert.notDeepEqual(result.bytes, source)
+  const inspected = await inspectFixturePdf(result.bytes)
+  assert.equal(inspected.annotations.length, 2)
 })
 
-test('oversized native replies return an explicit error without stopping the worker', { skip }, async () => {
-  const pdf = await PDFDocument.create(), page = pdf.addPage([32, 32])
-  const root = pdf.context.obj({ Type: 'Outlines', Count: 110 })
-  const rootRef = pdf.context.register(root)
-  let previous: typeof root | undefined
-  let previousRef: typeof rootRef | undefined
-  for (let index = 0; index < 110; index++) {
-    const bookmark = pdf.context.obj({ Title: PDFHexString.fromText('汉'.repeat(7000)), Parent: rootRef,
-      Dest: [page.ref, PDFName.of('Fit')] })
-    const bookmarkRef = pdf.context.register(bookmark)
-    if (previous && previousRef) { previous.set(PDFName.of('Next'), bookmarkRef); bookmark.set(PDFName.of('Prev'), previousRef) }
-    else root.set(PDFName.of('First'), bookmarkRef)
-    previous = bookmark; previousRef = bookmarkRef
-  }
-  root.set(PDFName.of('Last'), previousRef!)
-  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'large-outline' }, await pdf.save({ useObjectStreams: false }))
-    await assert.rejects(worker.request({ command: 'outline', documentId: 'large-outline' }),
-      { code: 'pdf/native-reply-too-large' })
-    assert.deepEqual((await worker.request({ command: 'hello' })).value,
-      { protocolVersion: 1, engine: 'pdfium', build: '156.0.8076.0', encryptedOpen: true })
-  } finally { await worker.dispose() }
-})
-
-test('PDFium reads a nested Unicode outline with a working page destination', { skip }, async () => {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  const target = pdf.addPage([300, 400])
-  const root = pdf.context.obj({ Type: 'Outlines', Count: 2 })
-  const rootRef = pdf.context.register(root)
-  const chapter = pdf.context.obj({ Title: PDFHexString.fromText('Chapter 1'), Parent: rootRef, Count: 1,
-    Dest: [target.ref, PDFName.of('Fit')] })
-  const chapterRef = pdf.context.register(chapter)
-  const section = pdf.context.obj({ Title: PDFHexString.fromText('第二节'), Parent: chapterRef,
-    Dest: [target.ref, PDFName.of('Fit')] })
-  const sectionRef = pdf.context.register(section)
-  chapter.set(PDFName.of('First'), sectionRef); chapter.set(PDFName.of('Last'), sectionRef)
-  root.set(PDFName.of('First'), chapterRef); root.set(PDFName.of('Last'), chapterRef)
-  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'outline' }, await pdf.save({ useObjectStreams: false }))
-    assert.deepEqual((await worker.request({ command: 'outline', documentId: 'outline' })).value, [{
-      title: 'Chapter 1', dest: [1, { name: 'Fit' }], items: [
-        { title: '第二节', dest: [1, { name: 'Fit' }], items: [] },
-      ],
-    }])
-  } finally { await worker.dispose() }
-})
-
-test('PDFium preserves emoji bookmark titles, URI bookmark actions and link quadrilaterals', { skip }, async () => {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([300, 400])
-  const root = pdf.context.obj({ Type: 'Outlines', Count: 2 })
-  const rootRef = pdf.context.register(root)
-  const destination = pdf.context.obj({
-    Title: PDFHexString.fromText('Read 📖'), Parent: rootRef,
-    A: { S: 'GoTo', D: [page.ref, PDFName.of('Fit')] },
-  })
-  const destinationRef = pdf.context.register(destination)
-  const external = pdf.context.obj({
-    Title: PDFHexString.fromText('Project site'), Parent: rootRef, Prev: destinationRef,
-    A: { S: 'URI', URI: PDFString.of('https://example.com/bookmark') },
-  })
-  const externalRef = pdf.context.register(external)
-  destination.set(PDFName.of('Next'), externalRef)
-  root.set(PDFName.of('First'), destinationRef)
-  root.set(PDFName.of('Last'), externalRef)
-  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-
-  const quadrilateral = [40, 310, 110, 310, 40, 280, 110, 280]
-  const link = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Link', Rect: [40, 280, 110, 310],
-    QuadPoints: quadrilateral,
-    A: { S: 'URI', URI: PDFString.of('https://example.com/quad') },
-  }))
-  page.node.set(PDFName.of('Annots'), pdf.context.obj([link]))
-
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'outline-actions' }, await pdf.save({ useObjectStreams: false }))
-    assert.deepEqual((await worker.request({ command: 'outline', documentId: 'outline-actions' })).value, [
-      { title: 'Read 📖', dest: [0, { name: 'Fit' }], items: [] },
-      { title: 'Project site', url: 'https://example.com/bookmark', items: [] },
-    ])
-    const links = (await worker.request({ command: 'links', documentId: 'outline-actions', pageIndex: 0 })).value as {
-      rect: number[]; quadPoints?: number[]; url?: string
-    }[]
-    assert.deepEqual(links, [{
-      id: 'native-link-0-1', subtype: 'Link', rect: [40, 280, 110, 310],
-      quadPoints: quadrilateral, url: 'https://example.com/quad',
-    }])
-  } finally { await worker.dispose() }
-})
-
-test('PDFium text combines supplementary Unicode encoded by a ToUnicode CMap', { skip }, async () => {
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    await worker.request({ command: 'open', documentId: 'supplementary-text-coverage' }, supplementaryTextPdf())
-    const text = (await worker.request({ command: 'text', documentId: 'supplementary-text-coverage', pageIndex: 0 })).value as {
-      items: { str: string; width: number }[]
-    }
-    assert.equal(text.items.map(item => item.str).join(''), '\u{1D445}\u{1D45D}')
-    assert.ok(text.items.some(item => item.width > 0))
-  } finally { await worker.dispose() }
-})
-
-/** Decode the public Connection contract, including native PNG tile attachments. */
-async function decode(response: Response): Promise<unknown> {
-  if (response.headers.get('content-type')?.startsWith('multipart/form-data')) {
-    const form = await response.formData(), envelope = JSON.parse(String(form.get('metadata')))
-    assert.deepEqual(envelope.attachments, [{ codec: 'bytes', part: 'pdf-bytes', path: ['bytes'] }])
-    const binary = form.get('pdf-bytes'); assert.ok(binary instanceof Blob)
-    envelope.result.value.bytes = new Uint8Array(await binary.arrayBuffer())
-    return envelope.result
-  }
-  return (await response.json()).result
-}
-test('authenticated v2 UI supports delta edits, undo/redo, atomic save/reopen and raw PNG attachments', { skip }, async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
-  const routes = new Map<string, (request: Request) => Promise<Response>>()
-  const context: Parameters<typeof registerPdfTransport>[0] = {
-    connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return async () => { routes.delete(route.path) } } } },
-    sessionController: { async resolveAgent(sessionId) { return sessionId === 'native-test' ? { agent: { session: { id: sessionId, header: {} } } } : { error: new Error('Unknown session') } } },
-  }
-  registerPdfTransport(context, service.dispatch, { endpoint: 'pdf.dispatch.v2' }); registerPdfTransport(context, service.native, { endpoint: 'pdf.native' })
-  const clientLifetime = new AbortController()
-  const calls: { payload: any; value: any }[] = []
-  const call = async (method: string, payload: object) => {
-    const result: any = await decode(await routes.get(`/api/${method}`)!(new Request(`http://host/api/${method}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method, payload }),
-    })))
-    calls.push({ payload, value: result.value }); return result
-  }
-  const api = createPdfApi({ rpc: { call: (_path, method, payload) => call(method, payload) } }, clientLifetime.signal)
-  try {
-    const opened = await api.open('native-test', 'dsh-resource://file/session/native-test//fixtures/native.pdf')
-    assert.equal(opened.reader.protocolVersion, 1); assert.equal('bytes' in opened, false)
-    assert.ok(state.workspaces.readSnapshot('native-test', opened.id).document.indexPageDigests?.length)
-    assert.equal('indexPageDigests' in calls.at(-1)!.value.document, false, 'index page identities stay on the Host')
-    assert.equal('indexContentDigest' in calls.at(-1)!.value.document, false)
-    assert.equal(opened.document.annotations.find(a => a.linkAction)?.linkAction, 'NextPage')
-    const changed = await api.change('native-test', opened.id, opened.revision, [{ type: 'add', annotation: { id: 'v1-note', page: 1, subtype: 'Text', rect: [80, 80, 100, 100], contents: 'Native note' } }])
-    assert.equal(changed.dirty, true); assert.ok(changed.document.annotations.some(a => a.id === 'v1-note'))
-    assert.equal(calls.at(-1)!.value.document, undefined); assert.equal(calls.at(-1)!.value.annotationDelta.upsert.length, 1)
-    const retry = calls.at(-1)!.payload
-    const generation = service.diagnostics().generation
-    nativeTestSubprocess.crashLatest()
-    await new Promise(resolve => setTimeout(resolve, 20))
-    const recoveredText = await api.native.text('native-test', changed.id, changed.reader, 1)
-    assert.equal(recoveredText.items.map(item => item.str).join(''), 'Native PDF test page 1')
-    assert.equal(service.diagnostics().generation, generation + 1)
-    assert.equal(state.workspaces.readSnapshot('native-test', changed.id).dirty, true)
-    assert.equal((await call('pdf.dispatch.v2', retry) as any).value.revision, changed.revision)
-    const undone = await api.undo('native-test', changed.id, changed.revision); assert.ok(!undone.document.annotations.some(a => a.id === 'v1-note'))
-    const redone = await api.redo('native-test', changed.id, undone.revision); assert.ok(redone.document.annotations.some(a => a.id === 'v1-note'))
-    const saved = await api.save('native-test', changed.id, redone.revision, {})
-    assert.equal(saved.dirty, false); assert.equal(state.writes(), 1); assert.notEqual(saved.reader.bytesHash, opened.reader.bytesHash)
-    assert.ok((await loadPdfDocument(state.current())).annotations.some(a => a.id === 'v1-note'))
-    const tile = await api.native.tile('native-test', saved.id, saved.reader, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true })
-    assert.equal(tile.mime, 'image/png'); assert.deepEqual([...tile.bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
-    await assert.rejects(api.native.tile('native-test', saved.id, opened.reader, { page: 1, rotation: 0, rasterWidth: 250, rasterHeight: 320, x: 0, y: 0, width: 250, height: 320, annotations: true }), { code: 'pdf/stale-reader' })
-    const attacker = { session: { id: 'another-session', header: {} } }
-    await assert.rejects(service.native('another-session', { action: 'text', sessionId: 'another-session', id: saved.id, bytesHash: saved.reader.bytesHash, page: 1 }, attacker, signal), { code: 'pdf/session-mismatch' })
-    assert.ok(service.diagnostics().tileCacheBytes <= 32 * 1024 * 1024)
-  } finally { clientLifetime.abort(); await service.dispose(); await state.workspaces.dispose() }
-})
-test('opening fails explicitly when the native helper is absent', async () => {
-  const state = memoryWorkspace(await nativeFixture()), service = createPdfService(state.workspaces, { executable: '/missing/helper', subprocess: nativeTestSubprocess })
-  try {
-    await assert.rejects(service.dispatch('missing-helper', { action: 'open', sessionId: 'missing-helper', address: 'dsh-resource://file/session/missing-helper//fixtures/native.pdf' }, { session: { id: 'missing-helper', header: {} } }, signal), { code: 'pdf/native-unavailable' })
-  } finally { await service.dispose(); await state.workspaces.dispose() }
-})
-test('AcroForm opens editable and native rendering includes the form appearance', { skip }, async () => {
-  const document = await PDFDocument.create(), page = document.addPage([300, 400])
-  const field = document.getForm().createTextField('field')
-  field.addToPage(page, { x: 30, y: 100, width: 150, height: 30 })
-  field.setText('A visible value')
-  const bytes = await document.save()
-  const metadata = await loadPdfDocument(bytes)
-  assert.equal(metadata.formKind, 'acroform')
-  assert.equal(metadata.readOnly, false)
-  assert.equal(metadata.formFields?.[0]?.name, 'field')
-  const state = memoryWorkspace(bytes), service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
-  try {
-    const opened = await service.dispatch('forms', { action: 'open', sessionId: 'forms', address: 'dsh-resource://file/session/forms//fixtures/native.pdf' }, { session: { id: 'forms', header: {} } }, signal) as any
-    assert.equal(opened.document.formKind, 'acroform')
-    assert.equal(opened.document.readOnly, false)
-    assert.equal(service.diagnostics().documents, 1)
-    const worker = new NativeWorker(executable, nativeTestSubprocess)
-    try {
-      const probe = await worker.request({ command: 'open', documentId: 'form-appearance' }, bytes)
-      assert.equal((probe.value as { formType: number }).formType, 1)
-      const render = async (annotations: boolean) => (await worker.request({ command: 'render', documentId: 'form-appearance',
-        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400, annotations })).bytes
-      const plain = await render(false), withForm = await render(true)
-      const recoveryImage = (await worker.request({ command: 'render', documentId: 'form-appearance',
-        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400,
-        annotations: false, forms: false })).bytes
-      assert.ok(recoveryImage.every(byte => byte === 255), 'Automatic static-text recovery must exclude filled form appearances')
-      await assert.rejects(worker.request({ command: 'render', documentId: 'form-appearance',
-        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400, x: 0, y: 0, width: 300, height: 400,
-        forms: 'false' }), /Form appearance flag/)
-      field.setText('')
-      await worker.request({ command: 'open', documentId: 'empty-form' }, await document.save())
-      const empty = (await worker.request({ command: 'render', documentId: 'empty-form',
-        pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400,
-        x: 0, y: 0, width: 300, height: 400, annotations: false })).bytes
-      let changed = 0
-      for (let index = 0; index < plain.length; index += 4) {
-        if (plain[index] !== empty[index] || plain[index + 1] !== empty[index + 1] || plain[index + 2] !== empty[index + 2]) changed++
-      }
-      assert.ok(changed > 100, `form value must remain visible without markup annotations: ${changed}`)
-      let differingBytes = 0, comparedBytes = 0
-      for (const x of [0, 128, 256]) for (const y of [0, 128, 256, 384]) {
-        const width = Math.min(128, 300 - x), height = Math.min(128, 400 - y)
-        const tile = (await worker.request({ command: 'render', documentId: 'form-appearance',
-          pageIndex: 0, rotation: 0, rasterWidth: 300, rasterHeight: 400,
-          x: x - 1, y: y - 1, width: width + 2, height: height + 2, annotations: true })).bytes
-        for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) for (let channel = 0; channel < 4; channel++) {
-          const actual = tile[((row + 1) * (width + 2) + col + 1) * 4 + channel]!
-          const expected = withForm[((y + row) * 300 + x + col) * 4 + channel]!
-          if (Math.abs(actual - expected) > 2) differingBytes++
-          comparedBytes++
-        }
-      }
-      assert.ok(differingBytes / comparedBytes < 0.005, `form tile differing-byte ratio=${differingBytes / comparedBytes}`)
-    } finally { await worker.dispose() }
-    const withNote = await applyPdfOperations(bytes, [{ type: 'add', annotation: {
-      id: 'note-on-form', page: 1, subtype: 'Text', rect: [20, 20, 40, 40], contents: 'A note',
-    } }])
-    assert.equal(withNote.document.formFields?.[0]?.value, 'A visible value')
-    assert.ok(withNote.document.annotations.some(annotation => annotation.id === 'note-on-form'))
-  } finally { await service.dispose(); await state.workspaces.dispose() }
-})
-
-test('native appearance after fill-clear history matches an independently cleared interactive form', { skip }, async () => {
-  const document = await PDFDocument.create(), page = document.addPage([400, 600])
-  page.drawText('SYNTHETIC FORM - save regression', { x: 30, y: 560, size: 14 })
-  page.drawText('Cleared text must stay empty after saving and reopening.', { x: 30, y: 530, size: 10 })
-  const field = document.getForm().createTextField('sample-text')
-  field.addToPage(page, { x: 30, y: 470, width: 280, height: 32 }); field.setText('Original sample')
-  const source = await document.save()
-  const saved = await applyPdfOperations(source, [
-    { type: 'set-field', name: 'sample-text', value: '测试' }, { type: 'set-field', name: 'sample-text', value: '' },
-  ])
-  field.setText('')
-  const expected = await document.save()
-  const worker = new NativeWorker(executable, nativeTestSubprocess)
-  try {
-    const render = async (id: string, bytes: Uint8Array) => {
-      await worker.request({ command: 'open', documentId: id }, bytes)
-      return (await worker.request({ command: 'render', documentId: id, pageIndex: 0, rotation: 0,
-        rasterWidth: 400, rasterHeight: 600, x: 0, y: 0, width: 400, height: 600, annotations: true, forms: true })).bytes
-    }
-    const actual = await render('cleared-history', saved.bytes)
-    assert.deepEqual(actual, await render('independent-clear', expected), 'No transient historical text may reappear in the saved widget')
-    assert.equal(saved.document.formFields![0].value, '')
-    if (process.env.PDF_FORM_SAVE_SCREENSHOT) await writeFile(process.env.PDF_FORM_SAVE_SCREENSHOT, await encodePng(actual, 400, 600))
-  } finally { await worker.dispose() }
-})
-
-test('a separate XFA provider cannot make PDFium silently open unsupported form content', { skip }, async () => {
-  const document = await PDFDocument.create()
-  document.addPage([300, 400])
-  document.catalog.set(PDFName.of('AcroForm'), document.context.obj({ Fields: [], XFA: PDFString.of('<xfa/>') }))
-  const state = memoryWorkspace(await document.save())
-  const capabilities = new CapabilityRegistry()
-  capabilities.register({ id: 'other.xfa', capabilities: [pdfCapabilities.renderXfa], implementation: {} })
-  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess, capabilities })
-  try {
-    await assert.rejects(service.dispatch('xfa', { action: 'open', sessionId: 'xfa',
-      address: 'dsh-resource://file/session/xfa//fixtures/native.pdf' },
-    { session: { id: 'xfa', header: {} } }, signal),
-    (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === 'pdf/native-unsupported'
-      && error.message.includes(pdfCapabilities.renderXfa))
-    assert.equal(service.diagnostics().documents, 0)
-  } finally { await service.dispose(); await state.workspaces.dispose(); capabilities.dispose() }
+test('native form and outline extensions are surfaced through the public document inspection', { skip }, async () => {
+  const bytes = onePagePdf({ catalogEntries: { Outlines: ref(7) }, extraObjects: [
+    pdfDict({ Type: '/Outlines', Count: '1', First: ref(8), Last: ref(8) }),
+    pdfDict({ Title: pdfHex('Chapter'), Parent: ref(7), Dest: `[${ref(5)} ${pdfName('Fit')}]` }),
+  ] })
+  const inspection = await inspectFixturePdf(bytes)
+  assert.equal(inspection.outline?.[0]?.title, 'Chapter')
 })

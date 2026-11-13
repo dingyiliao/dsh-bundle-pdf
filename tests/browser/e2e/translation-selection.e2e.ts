@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, MODEL_FIXTURE, ROOT, SESSION } from '../support/scaffold.ts'
+import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, MODEL_FIXTURE, MODEL_FIXTURE_AVAILABLE, ROOT, SESSION } from '../support/scaffold.ts'
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -7,7 +7,7 @@ import { type DshTranslationLlm } from '../../../src/adapters/host/dsh/translati
 import { launchPdfBrowser as browser } from '../launch.ts'
 import { FILE_NAME, documentBytes, openReader } from '../support/panels.ts'
 
-it('shows a real selected-word translation and handles screenshot preview copy and cancellation', async () => {
+it.skipIf(!MODEL_FIXTURE_AVAILABLE)('shows a real selected-word translation and handles screenshot preview copy and cancellation', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] },
     replayFixture: MODEL_FIXTURE, replayProvidersOnly: true })
   let opened: Browser | undefined

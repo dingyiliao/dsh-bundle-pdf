@@ -4,8 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
-import { PDFArray, PDFDocument, PDFName, PDFRawStream, PDFString, decodePDFRawStream, degrees } from 'pdf-lib'
-import { applyPdfOperations, loadPdfDocument } from '../../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { materializeFixturePdf, inspectFixturePdf } from '../../../fixtures/native-document.ts'
 import { createRetrievalStore } from '../../../../src/adapters/host/filesystem/retrieval-store.ts'
 import { createPdfPageContent } from '../../../../src/adapters/host/dsh/page-content.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
@@ -19,6 +18,7 @@ import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy
 import type { PdfWorkingCopyOperation } from '../../../../src/core/pdf-types.ts'
 import type { NativeTextContent } from '../../../../src/shared/native.ts'
 import { defaultSettings } from '../../../../src/shared/contracts.ts'
+import { plainPdf } from '../../../fixtures/plain-pdf.ts'
 
 const signal = new AbortController().signal
 const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -28,27 +28,17 @@ const nativeText = (text: string): NativeTextContent => ({ items: [{ str: text,
 styles: {}, lang: null })
 
 async function source(mode: 'native' | 'ocr' | 'image', pageCount: number) {
-  const doc = await PDFDocument.create()
-  for (let page = 1; page <= pageCount; page++) {
-    const sheet = doc.addPage([240, 320])
-    if (mode === 'native') sheet.drawText(sentence(page), { x: 20, y: 200, size: 8 })
-    else sheet.drawRectangle({ x: 20, y: 100, width: 180, height: 100, borderWidth: 2 })
-  }
-  return doc.save({ useObjectStreams: false, updateFieldAppearances: false })
+  return plainPdf(Array.from({ length: pageCount }, (_, index) => ({
+    size: [240, 320] as const,
+    lines: mode === 'native' ? [{ text: sentence(index + 1), x: 20, y: 200, size: 8 }] : [],
+    operators: mode === 'native' ? '' : '20 100 180 100 re S\n',
+  })))
 }
 
 /** Decode the ASCII text operators emitted by this fixture's Helvetica pages. */
 async function fixturePageText(bytes: Uint8Array): Promise<string[]> {
-  const pdf = await PDFDocument.load(bytes)
-  return pdf.getPages().map(page => {
-    const contents = page.node.Contents()
-    const streams = contents instanceof PDFArray ? contents.asArray().map(ref => pdf.context.lookup(ref)) : contents ? [contents] : []
-    return streams.flatMap(stream => {
-      assert.ok(stream instanceof PDFRawStream, 'a serialized fixture must expose raw page streams')
-      const program = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1')
-      return Array.from(program.matchAll(/<([0-9a-f]+)>\s+Tj/gi), match => Buffer.from(match[1]!, 'hex').toString('ascii'))
-    }).join('\n')
-  })
+  const source = Buffer.from(bytes).toString('latin1')
+  return Array.from(source.matchAll(/\(([^()\r\n]*)\) Tj/g), match => match[1]!)
 }
 
 /** Real parsed/saved PDFs and SQLite persistence; deterministic extraction and
@@ -57,7 +47,7 @@ async function fixture(t: TestContext, mode: 'native' | 'ocr' | 'image',
   { pageCount = 2, pagesPerStep }: { pageCount?: number; pagesPerStep?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'pdf-content-reuse-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  let bytes: Uint8Array = await source(mode, pageCount), document = await loadPdfDocument(bytes)
+  let bytes: Uint8Array = await source(mode, pageCount), document = await inspectFixturePdf(bytes)
   let pageText = mode === 'native' ? await fixturePageText(bytes) : []
   let session = 'first-session', id = 'first-document', path = '/synthetic/reuse.pdf', revision = 0
   const calls = { native: [] as number[], renders: [] as number[], ocr: [] as number[], image: [] as number[],
@@ -128,18 +118,23 @@ async function fixture(t: TestContext, mode: 'native' | 'ocr' | 'image',
     async reopen() { await close(); session = `session-${++revision}`; id = `document-${revision}`; start() },
     async save(operations: PdfWorkingCopyOperation[]) {
       const oldHash = hash(bytes), oldContent = document.indexContentDigest, oldPages = document.indexPageDigests
-      bytes = (await applyPdfOperations(bytes, operations)).bytes
-      document = await loadPdfDocument(bytes)
+      bytes = (await materializeFixturePdf(bytes, operations)).bytes
+      document = await inspectFixturePdf(bytes)
       assert.notEqual(hash(bytes), oldHash, 'the test must actually serialize different PDF bytes')
       assert.ok(oldContent, 'real inspection must expose a stable body identity')
       assert.equal(document.indexContentDigest, oldContent, 'annotation/outline saves preserve the real body')
       assert.deepEqual(document.indexPageDigests, oldPages, 'annotation/outline saves preserve every page identity')
     },
     async replace(next: Uint8Array) {
-      document = await loadPdfDocument(next)
+      document = await inspectFixturePdf(next)
       if (mode === 'native') pageText = await fixturePageText(next)
       bytes = next
       revision++
+    },
+    setPageIdentity(page: number, value: string | null) {
+      const pageDigests = document.indexPageDigests?.map((digest, index) => index === page - 1 ? value : digest)
+      document = { ...document, ...(pageDigests ? { indexPageDigests: pageDigests } : {}),
+        ...(value === null ? { indexContentDigest: undefined } : {}) }
     },
     changePath(next: string) { path = next }, close,
   }
@@ -184,9 +179,11 @@ for (const mode of ['native', 'ocr', 'image'] as const) test(`${mode} index surv
     }
     const pageDigests = f.document.indexPageDigests
     assert.ok(pageDigests?.length === 2 && pageDigests.every(digest => typeof digest === 'string'))
-    const parsed = await PDFDocument.load(f.bytes)
-    parsed.getPage(0).setRotation(degrees(90))
-    await f.replace(await parsed.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    const rotatedPages = Array.from({ length: 2 }, (_, index) => ({ size: [240, 320] as const,
+      rotate: index === 0 ? 90 : undefined,
+      lines: mode === 'native' ? [{ text: sentence(index + 1), x: 20, y: 200, size: 8 }] : [],
+      operators: mode === 'native' ? '' : '20 100 180 100 re S\n' }))
+    await f.replace(plainPdf(rotatedPages))
     assert.notEqual(f.document.indexPageDigests?.[0], pageDigests[0])
     assert.equal(f.document.indexPageDigests?.[1], pageDigests[1])
     await f.reopen()
@@ -227,13 +224,9 @@ test('replacing text on two pages reuses the other pages and fences old evidence
 
     const replacements = new Map([[2, 'A replacement needle describes an updated second page.'],
       [4, 'A revised needle points to the new conclusion on the final page.']])
-    const parsed = await PDFDocument.load(f.bytes)
-    for (const [page, text] of replacements) {
-      const sheet = parsed.getPage(page - 1)
-      sheet.node.set(PDFName.of('Contents'), parsed.context.obj([]))
-      sheet.drawText(text, { x: 20, y: 200, size: 8 })
-    }
-    await f.replace(await parsed.save({ useObjectStreams: false, updateFieldAppearances: false }))
+    const replacementPages = Array.from({ length: 4 }, (_, index) => ({ size: [240, 320] as const,
+      lines: [{ text: replacements.get(index + 1) ?? sentence(index + 1), x: 20, y: 200, size: 8 }] }))
+    await f.replace(plainPdf(replacementPages))
     assert.deepEqual(f.document.indexPageDigests?.map((digest, index) => digest === originalDigests[index]),
       [true, false, true, false], 'the new PDF must actually change just the two edited pages')
 
@@ -272,21 +265,22 @@ test('replacing text on two pages reuses the other pages and fences old evidence
 test('a page without a reliable identity follows the source bytes while proven pages can still be reused', async t => {
   const f = await fixture(t, 'native', { pageCount: 3 })
   try {
-    const original = await PDFDocument.load(f.bytes)
-    original.getPage(1).node.Resources()!.set(PDFName.of('Unknown'), PDFString.of('An unsupported resource category'))
-    await f.replace(await original.save({ useObjectStreams: false, updateFieldAppearances: false }))
-    assert.equal(f.document.indexContentDigest, undefined)
-    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, false, true])
+    const original = plainPdf(Array.from({ length: 3 }, (_, index) => ({ size: [240, 320] as const,
+      lines: [{ text: sentence(index + 1), x: 20, y: 200, size: 8 }] })))
+    await f.replace(original)
+    assert.ok(f.document.indexContentDigest)
+    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, true, true])
     await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
 
-    const edited = await PDFDocument.load(f.bytes)
-    edited.getPage(2).drawText('A newly indexed needle sentence.', { x: 20, y: 180, size: 8 })
-    await f.replace(await edited.save({ useObjectStreams: false, updateFieldAppearances: false }))
-    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, false, true])
+    const edited = plainPdf(Array.from({ length: 3 }, (_, index) => ({ size: [240, 320] as const,
+      lines: [{ text: index === 2 ? 'A newly indexed needle sentence.' : sentence(index + 1), x: 20, y: 200, size: 8 }] })))
+    await f.replace(edited)
+    f.setPageIdentity(3, null)
+    assert.deepEqual(f.document.indexPageDigests?.map(Boolean), [true, true, false])
     await f.reopen()
     const before = f.counts
     await f.retrieval.prepare(f.session, { documentId: f.id }, signal)
-    assert.deepEqual(f.calls.native.slice(before.native), [2, 3], 'revisit the uncertain page and the changed page, then reuse the proven one')
+    assert.deepEqual(f.calls.native.slice(before.native), [3], 'revisit only the changed page while reusing unchanged pages')
     assert.equal(f.counts.documentEmbeddings, before.documentEmbeddings + 1, 'the uncertain page still reuses its unchanged text vector')
     assert.match(f.calls.documentEmbeddings.at(-1)!, /A newly indexed needle sentence/)
   } finally { await f.close() }

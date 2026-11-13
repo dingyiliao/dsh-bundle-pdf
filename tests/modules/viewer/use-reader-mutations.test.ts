@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act as reactAct } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderMutations, type ReaderMutationsOptions } from '../../../src/modules/viewer/controllers/use-reader-mutations.ts'
+import { useReaderMutations, type ReaderMutationsOptions } from '../../../src/client/viewer/controllers/use-reader-mutations.ts'
 
 async function withMutations(run: (fixture: {
   state(): ReturnType<typeof useReaderMutations>

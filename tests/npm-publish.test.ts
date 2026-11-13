@@ -50,7 +50,7 @@ async function fixture() {
   }
   await writeFile(join(root, 'package.json'), JSON.stringify(manifest))
   await writeFile(join(root, 'native/dependencies.json'), JSON.stringify({
-    pdfium: { version: '1.2.3', assets: Object.fromEntries(targets.map(target => [target, digest(target)])) },
+    pdfium: { version: '1.2.3', sourceRevision: 'a'.repeat(40), assets: Object.fromEntries(targets.map(target => [target, digest(target)])) },
   }))
   const packages = new Map<string, Entry[]>()
   packages.set(name, [
@@ -69,8 +69,8 @@ async function fixture() {
       { path: 'package/LICENSE', data: 'license' },
       { path: `package/bin/${executable}`, data: `worker-${target}`, mode: 0o755 },
       { path: `package/bin/${library}`, data: `library-${target}` },
-      { path: 'package/bin/manifest.json', data: JSON.stringify({ protocolVersion: 1, platform: target,
-        pdfiumVersion: '1.2.3', sdkArchiveSha256: digest(target), executableSha256: digest(`worker-${target}`),
+      { path: 'package/bin/manifest.json', data: JSON.stringify({ protocolVersion: 2, platform: target,
+        pdfiumVersion: '1.2.3', pdfiumSourceRevision: 'a'.repeat(40), executableSha256: digest(`worker-${target}`),
         librarySha256: digest(`library-${target}`) }) },
       ...['PDFIUM_LICENSE', 'JSON_LICENSE.MIT', 'licenses/third-party.txt'].map(path => ({ path: `package/bin/${path}`, data: 'license' })),
     ])

@@ -24,6 +24,7 @@ function fixture(initialTabs: Tab[] = []) {
   const plugin = new AbortController()
   const opened: Array<{ sessionId: string; address: string; signal?: AbortSignal; referenceId?: string }> = []
   const unlocked: Array<{ sessionId: string; address: string; password: string; referenceId?: string }> = []
+  const editingUnlocks: Array<{ sessionId: string; id: string; revision: number; password: string; referenceId?: string }> = []
   const closedTabs: string[] = []
   const released: Released[] = []
   const errors: unknown[] = []
@@ -46,6 +47,10 @@ function fixture(initialTabs: Tab[] = []) {
         unlocked.push({ sessionId, address: requestedAddress, password, referenceId })
         return unlockImpl(sessionId, requestedAddress, password)
       },
+      async unlockEdit(sessionId, id, revision, password, _signal, referenceId) {
+        editingUnlocks.push({ sessionId, id, revision, password, referenceId })
+        return snapshot(id)
+      },
       async release(sessionId, id, referenceId) {
         released.push({ sessionId, id, referenceId })
         await releaseImpl(sessionId, id, referenceId)
@@ -54,7 +59,7 @@ function fixture(initialTabs: Tab[] = []) {
     signal: plugin.signal,
     onError(error) { errors.push(error) },
   })
-  return { session, mounted, tabs, plugin, lifecycle, opened, unlocked, closedTabs, released, errors,
+  return { session, mounted, tabs, plugin, lifecycle, opened, unlocked, editingUnlocks, closedTabs, released, errors,
     setOpen(fn: typeof openImpl) { openImpl = fn }, setUnlock(fn: typeof unlockImpl) { unlockImpl = fn },
     setRelease(fn: typeof releaseImpl) { releaseImpl = fn },
     setClose(fn: typeof closeImpl) { closeImpl = fn }, switchTo(key: string | undefined) { session.set({ key }) } }
@@ -73,6 +78,23 @@ function deferred<Value>() {
   return { promise, resolve }
 }
 const tick = async () => { await new Promise<void>(resolve => setImmediate(resolve)) }
+
+test('editing unlock uses the live tab occurrence and never acquires another PDF', async () => {
+  const f = fixture()
+  const { owner, controller } = occurrence()
+  try {
+    const { id } = await f.lifecycle.open(owner, 'container-a', owner.resourceAddress)
+    await assert.rejects(f.lifecycle.unlockEdit(owner, 'container-a', 'other-copy', 1, 'owner-password'), { name: 'AbortError' })
+    assert.equal((await f.lifecycle.unlockEdit(owner, 'container-a', id, 1, 'owner-password')).id, id)
+    assert.deepEqual(f.editingUnlocks, [{
+      sessionId: 'container-a', id, revision: 1, password: 'owner-password', referenceId: f.opened[0]?.referenceId,
+    }])
+    assert.equal(f.opened.length, 1)
+    controller.abort()
+    await assert.rejects(f.lifecycle.unlockEdit(owner, 'container-a', id, 2, 'owner-password'), { name: 'AbortError' })
+    assert.equal(f.editingUnlocks.length, 1)
+  } finally { await f.lifecycle.dispose() }
+})
 
 test('Session switches release each view reference of one shared draft, never discard it', async () => {
   const f = fixture()

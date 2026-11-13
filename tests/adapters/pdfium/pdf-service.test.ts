@@ -3,11 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { PDFDocument, PDFHexString, PDFName } from 'pdf-lib'
 import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
-import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
+import { CapabilityRegistry, pdfCapabilities } from '../../../src/modules/capabilities/index.ts'
+import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
+import { selectionGeometryChunkSchema } from '../../../src/engine/protocol/selection.ts'
 import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
+import { classicPdf, pdfDict, pdfHex, pdfStream, plainPdf, ref } from '../../fixtures/pdf-fixture-kit.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
@@ -34,6 +36,57 @@ async function open(service: ReturnType<typeof createPdfService>, sessionId: str
     id: string; revision: number; reader: { bytesHash: string }
   }
 }
+
+test('a visible tile overtakes queued indexing text and rasters at the native handle boundary', { skip }, async t => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'pdf-service-foreground-lease'
+  const request = NativeWorker.prototype.request, hold = deferred(), active = deferred(), commands: string[] = []
+  t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker, ...args: Parameters<NativeWorker['request']>) {
+    const { command, pageIndex, annotations } = args[0] as { command: string; pageIndex?: number; annotations?: boolean }
+    if (command === 'text' || command === 'render') {
+      commands.push(`${command === 'render' && annotations ? 'tile' : command}:${pageIndex}`)
+    }
+    const reply = await request.apply(this, args)
+    if (command === 'text' && pageIndex === 0) { active.resolve(); await hold.promise }
+    return reply
+  })
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const outstanding: Promise<unknown>[] = []
+  try {
+    const opened = await open(service, sessionId)
+    const first = service.readPageText(sessionId, opened.id, 1, signal, { recover: false })
+    outstanding.push(first)
+    await active.promise
+
+    const backgroundText = service.readPageText(sessionId, opened.id, 2, signal, { recover: false })
+    const metrics: IndexPerformanceMetric[] = []
+    const backgroundImage = withIndexPerformance(metric => metrics.push(metric), () =>
+      service.renderOcrImage(sessionId, opened.id, 3, undefined, 512, signal, false))
+    const cancelled = new AbortController()
+    const obsolete = assert.rejects(service.readPageText(sessionId, opened.id, 4, cancelled.signal), { name: 'AbortError' })
+    cancelled.abort()
+    outstanding.push(backgroundText, backgroundImage, obsolete)
+    await obsolete
+
+    const foreground = service.native(sessionId, { action: 'tile', sessionId, id: opened.id, bytesHash: opened.reader.bytesHash,
+      tile: { page: 4, rotation: 0, rasterWidth: 220, rasterHeight: 280, x: 0, y: 0, width: 220, height: 280, annotations: true },
+    }, agent(sessionId), signal) as Promise<{ bytes: Uint8Array }>
+    outstanding.push(foreground)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(commands, ['text:0'])
+    hold.resolve()
+
+    const [text, queuedText, rendered, tile] = await Promise.all([first, backgroundText, backgroundImage, foreground])
+    assert.deepEqual(commands, ['text:0', 'tile:3', 'text:1', 'render:2'])
+    assert.equal(text.content.items[0]?.str, 'Native PDF test page 1')
+    assert.equal(queuedText.content.items[0]?.str, 'Native PDF test page 2')
+    assert.deepEqual(tile.bytes.subarray(0, 8), rendered.png.subarray(0, 8))
+    assert.deepEqual(metrics.map(metric => metric.stage), ['native-render', 'png-encode'])
+    assert.equal(service.diagnostics().documents, 1)
+  } finally {
+    hold.resolve(); await Promise.allSettled(outstanding)
+    await service.dispose(); await state.workspaces.dispose()
+  }
+})
 
 test('native reads, tile cache, and explicit release share the same live PDF handle', { skip }, async () => {
   const state = memoryWorkspace(await nativeFixture())
@@ -65,6 +118,64 @@ test('native reads, tile cache, and explicit release share the same live PDF han
     await service.releaseDocument(opened.id)
     assert.equal((await service.readPageText(sessionId, opened.id, 1, signal)).content.items.length, 1)
     assert.equal(service.diagnostics().documents, 1)
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('reader selection delivers native glyphs and rejects a result overtaken by save', { skip }, async t => {
+  const state = memoryWorkspace(await nativeFixture())
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-selection-save-race'
+  const request = NativeWorker.prototype.request
+  const arrived = deferred(), release = deferred()
+  let hold = false, pending: Promise<unknown> | undefined
+  t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker, ...args: Parameters<NativeWorker['request']>) {
+    const reply = await request.apply(this, args)
+    if (hold && args[0].command === 'selectionGeometry') { arrived.resolve(); await release.promise }
+    return reply
+  })
+  try {
+    const opened = await open(service, sessionId)
+    const selection = { action: 'selectionGeometry', sessionId, id: opened.id, bytesHash: opened.reader.bytesHash, page: 1, offset: 1 }
+    const chunk = selectionGeometryChunkSchema.parse(await service.native(sessionId, selection, agent(sessionId), signal))
+    assert.equal(chunk.offset, 1)
+    assert.equal(chunk.glyphs.map(glyph => glyph.text).join(''), 'ative PDF test page 1')
+    assert.ok(chunk.glyphs.some(glyph => glyph.quad !== null))
+
+    hold = true
+    pending = assert.rejects(service.native(sessionId, selection, agent(sessionId), signal), { code: 'pdf/stale-reader' })
+    await Promise.race([arrived.promise, pending.then(() => { throw new Error('Selection completed before the save race') })])
+    await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id, revision: opened.revision,
+      operations: [{ type: 'add', annotation: { id: 'saved-during-selection', page: 1, subtype: 'Text', rect: [20, 20, 40, 40] } }],
+    }, agent(sessionId), signal)
+    const edited = state.workspaces.readSnapshot(sessionId, opened.id)
+    await state.workspaces.execute(sessionId, { action: 'save', sessionId, id: opened.id, revision: edited.revision, options: {} },
+      agent(sessionId), signal)
+    assert.notEqual(state.workspaces.bytesHash(state.current()), selection.bytesHash)
+    release.resolve()
+    await pending
+  } finally {
+    release.resolve()
+    if (pending) await Promise.allSettled([pending])
+    await service.dispose(); await state.workspaces.dispose()
+  }
+})
+
+test('reader selection reports an older helper without native glyph geometry', { skip }, async t => {
+  const state = memoryWorkspace(await nativeFixture())
+  const ready = NativeWorker.prototype.ready
+  t.mock.method(NativeWorker.prototype, 'ready', async function(this: NativeWorker) {
+    await ready.call(this)
+    this.selectionGeometry = false
+  })
+  const request = t.mock.method(NativeWorker.prototype, 'request')
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-selection-legacy-helper'
+  try {
+    const opened = await open(service, sessionId)
+    await assert.rejects(service.native(sessionId, { action: 'selectionGeometry', sessionId, id: opened.id,
+      bytesHash: opened.reader.bytesHash, page: 1, offset: 0 }, agent(sessionId), signal),
+    { code: 'pdf/native-selection-unavailable' })
+    assert.equal(request.mock.calls.some(call => call.arguments[0].command === 'selectionGeometry'), false)
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 
@@ -166,12 +277,10 @@ test('native open rejects parser disagreements before presenting an incomplete d
 })
 
 test('signed PDFs can be previewed through PDFium without enabling edits', { skip }, async () => {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  pdf.catalog.set(PDFName.of('Perms'), pdf.context.obj({
-    DocMDP: { Type: 'Sig', ByteRange: [0, 10, 20, 30], Contents: PDFHexString.of('abc123') },
-  }))
-  const state = memoryWorkspace(await pdf.save({ useObjectStreams: false }))
+  const state = memoryWorkspace(classicPdf([
+    '<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP << /Type /Sig /ByteRange [0 10 20 30] /Contents <616263313233> >> >> >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
+  ]))
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-service-signed-preview'
   try {
@@ -183,21 +292,16 @@ test('signed PDFs can be previewed through PDFium without enabling edits', { ski
 })
 
 test('readOutline preserves a real nested Unicode bookmark tree', { skip }, async () => {
-  const pdf = await PDFDocument.create()
-  const first = pdf.addPage([300, 400])
-  const second = pdf.addPage([300, 400])
-  const root = pdf.context.obj({ Type: 'Outlines', Count: 2 })
-  const rootRef = pdf.context.register(root)
-  const chapter = pdf.context.obj({ Title: PDFHexString.fromText('Chapter 1'), Parent: rootRef, Count: 1,
-    Dest: [first.ref, PDFName.of('Fit')] })
-  const chapterRef = pdf.context.register(chapter)
-  const section = pdf.context.obj({ Title: PDFHexString.fromText('第二节'), Parent: chapterRef,
-    Dest: [second.ref, PDFName.of('Fit')] })
-  const sectionRef = pdf.context.register(section)
-  chapter.set(PDFName.of('First'), sectionRef); chapter.set(PDFName.of('Last'), sectionRef)
-  root.set(PDFName.of('First'), chapterRef); root.set(PDFName.of('Last'), chapterRef)
-  pdf.catalog.set(PDFName.of('Outlines'), rootRef)
-  const state = memoryWorkspace(await pdf.save({ useObjectStreams: false }))
+  const state = memoryWorkspace(classicPdf([
+    '<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
+    '<< /Producer (fixture) >>', pdfStream(''), pdfStream(''),
+    pdfDict({ Type: '/Outlines', Count: '2', First: ref(9), Last: ref(9) }),
+    pdfDict({ Title: pdfHex('Chapter 1'), Parent: ref(8), Count: '1', First: ref(10), Last: ref(10), Dest: `[${ref(3)} /Fit]` }),
+    pdfDict({ Title: pdfHex('第二节'), Parent: ref(9), Dest: `[${ref(4)} /Fit]` }),
+  ]))
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-service-outline'
   try {
@@ -301,9 +405,7 @@ test('page and OCR rendering enforce bounds and preserve full-page crop geometry
 })
 
 test('OCR rejects a subpixel strip at the crop edge that rounds to an empty native tile', async () => {
-  const document = await PDFDocument.create()
-  document.addPage([13, 3000])
-  const state = memoryWorkspace(await document.save())
+  const state = memoryWorkspace(plainPdf([{ size: [13, 3000] }]))
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-ocr-subpixel-edge'
   try {
@@ -535,4 +637,26 @@ test('unloading when native pixels arrive never admits PNG compression after the
     await unloading
     assert.equal(encodes, 0); assert.equal(service.diagnostics().documents, 0)
   } finally { await unloading; await service.dispose(); await state.workspaces.dispose() }
+})
+
+test('wire returns an annotation delta for a continuous open and open fails a missing capability', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-delta'
+  try {
+    const opened = await open(service, sessionId)
+    const delta = await service.dispatch(sessionId, {
+      action: 'open', sessionId,
+      address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf`,
+      knownRevision: opened.revision, knownBytesHash: opened.reader.bytesHash,
+    }, agent(sessionId), signal) as { document?: unknown; annotationDelta?: unknown }
+    assert.equal(delta.document, undefined)
+    assert.ok(delta.annotationDelta, 'a continuous open can omit unchanged document metadata')
+  } finally { await service.dispose() }
+
+  const unavailable = new CapabilityRegistry()
+  unavailable.plan = async () => ({ supported: false, missing: [{ capability: pdfCapabilities.renderPage }] }) as never
+  const denied = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess, capabilities: unavailable })
+  try { await assert.rejects(open(denied, 'pdf-service-missing-capability'), { code: 'pdf/native-unsupported' }) }
+  finally { await denied.dispose(); await state.workspaces.dispose() }
 })

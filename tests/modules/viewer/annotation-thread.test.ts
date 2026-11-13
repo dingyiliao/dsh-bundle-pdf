@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { createAnnotationThreadIndex, isReply, isStandaloneNote } from '../../../src/modules/viewer/model/annotation-thread.ts'
+import { createAnnotationThreadIndex, isReply, isStandaloneNote } from '../../../src/client/viewer/model/annotation-thread.ts'
 
 const mark = (id: string, overrides: Partial<PdfAnnotation> = {}): PdfAnnotation => ({
   id, page: 1, subtype: 'Highlight', flags: 4, supported: true, editable: true,

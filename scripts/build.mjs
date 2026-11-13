@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, readdir, mkdir, rm, writeFile, copyFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, resolve } from 'node:path'
+import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const project = fileURLToPath(new URL('../', import.meta.url))
@@ -28,6 +28,19 @@ await new Promise((resolveBuild, rejectBuild) => {
   child.once('close', code => code === 0 ? resolveBuild() : rejectBuild(new Error(`SDK declaration build exited with status ${code}`)))
 })
 
+// Preserve the published declaration entry paths while keeping the emitted
+// relative imports between src modules intact.
+const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'))
+for (const entry of Object.values(manifest.exports)) {
+  const prefix = './dist/types/'
+  if (typeof entry !== 'object' || !entry.types?.startsWith(prefix)) continue
+  const target = join(project, entry.types)
+  const emitted = join(dist, 'types', 'src', entry.types.slice(prefix.length))
+  const specifier = relative(dirname(target), emitted).split(sep).join('/').replace(/\.d\.ts$/, '.js')
+  await mkdir(dirname(target), { recursive: true })
+  await writeFile(target, `export * from ${JSON.stringify(specifier.startsWith('.') ? specifier : `./${specifier}`)};\n`)
+}
+
 const common = {
   absWorkingDir: project,
   bundle: true,
@@ -48,11 +61,6 @@ const hostBuild = await build({
   ...common, entryPoints: ['src/entrypoints/reader-host.ts'], outfile: 'dist/index.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
-})
-const documentWorkerBuild = await build({
-  ...common, entryPoints: ['src/adapters/host/pdf-lib/document-worker.ts'], outfile: 'dist/pdf-document-worker.mjs',
-  platform: 'node', target: 'node22', format: 'esm',
-  banner: { js: 'import { createRequire as __pdfWorkerRequire } from "node:module";\nconst require = __pdfWorkerRequire(import.meta.url);' },
 })
 const nativeProviderBuild = await build({
   ...common, entryPoints: ['src/entrypoints/native-host.ts'], outfile: 'dist/native-provider.js',
@@ -162,7 +170,7 @@ await writeFile(join(dist, 'assets/manifest.json'), `${JSON.stringify({ version:
 
 // Keep bundled dependency notices with the distributable, including OCR assets.
 const roots = new Set([tesseractRoot, coreRoot, packageRoot('@tesseract.js-data/eng'), packageRoot('@tesseract.js-data/chi_sim')])
-for (const result of [hostBuild, documentWorkerBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, enginesBuild, bridgeBuild, recoveryBuild]) {
+for (const result of [hostBuild, nativeProviderBuild, ocrHostBuild, imageHostBuild, clientBuild, ocrBuild, translationBuild, embeddingBuild, capabilityBuild, enginesBuild, bridgeBuild, recoveryBuild]) {
   for (const input of Object.keys(result.metafile.inputs)) {
     const normalized = input.replaceAll('\\', '/')
     const match = normalized.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)

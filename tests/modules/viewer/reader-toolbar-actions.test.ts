@@ -2,8 +2,8 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
-import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } from '../../../src/modules/viewer/components/ReaderToolbar.tsx'
-import type { ExplanationToolsProps } from '../../../src/modules/viewer/components/ExplanationTools.tsx'
+import { ReaderToolbar, type ReaderToolbarActions, type ReaderToolbarState } from '../../../src/client/viewer/components/ReaderToolbar.tsx'
+import type { ExplanationToolsProps } from '../../../src/client/viewer/components/ExplanationTools.tsx'
 
 const readyState: ReaderToolbarState = {
   hasDocument: true, canPromptExplanation: true, explanationActive: false, explanationSending: false,

@@ -3,7 +3,7 @@ import { resolveFormField, validateFormChanges, FormValidationError, projectedFo
 
 /** Validate and project field values without modifying PDF bytes; save performs the same checks on the canonical tree. */
 export function projectFormOperations(document: PdfDocumentInfo, operations: readonly PdfFormOperation[],
-  options: { requireVisible?: boolean } = {}): PdfDocumentInfo {
+  options: Parameters<typeof validateFormChanges>[2] = {}): PdfDocumentInfo {
   if (!operations.length) return document
   if (document.readOnly || document.formKind !== 'acroform' || !document.formFields) {
     throw new PdfDocumentError('read-only', 'This PDF has no editable AcroForm fields.')

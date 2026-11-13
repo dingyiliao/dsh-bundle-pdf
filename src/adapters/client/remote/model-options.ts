@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { PDF_MODEL_OPTIONS_METHOD, visionModelCatalogSchema, type VisionModelCatalog } from '../../../contracts/model-options.js'
+import { rpcResponseSchema } from '../../../contracts/rpc/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
 export interface ModelOptionsSnapshot {
@@ -13,10 +14,9 @@ export interface ModelOptionsStore {
   load(): Promise<void>
   refresh(): Promise<void>
 }
-const reply = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: visionModelCatalogSchema }),
-  z.object({ ok: z.literal(false), error: z.object({ message: z.string() }) }),
-])
+// This legacy DSH catalog route still returns a message-only error envelope.
+// Keep that wire contract explicit while sharing the common response factory.
+const reply = rpcResponseSchema(visionModelCatalogSchema, z.object({ message: z.string() }))
 
 /** Read-only DSH catalog mirror. It never submits a conversation model selection. */
 export function createModelOptionsStore(connection: PdfConnection, lifetime: AbortSignal): ModelOptionsStore & { dispose(): void } {

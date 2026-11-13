@@ -2,12 +2,12 @@ import type { DocumentPreviewProps } from '@deepseek-ai/dsh-client-ui-sidebar-do
 import type { PdfClientApi, PdfSettings } from '../shared/contracts.ts'
 import type { TranslationRegistry } from '../translation/index.js'
 import type { HostOcrApi, ImageUnderstandingApi, PdfReadingContextUpdate, PdfAgentNavigationApi,
-  PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi, PdfIndexingApi } from '../modules/viewer/index.js'
+  PdfRegionEvidenceApi, PdfTextSelectionEvidenceApi, PdfIndexingApi } from '../client/viewer/index.js'
 import type { PromptContentPart } from '../modules/explanation/index.js'
 import type { PdfEvidenceNavigation } from './toolview/pdf-evidence-navigation.js'
 
 export type { PdfClientApi, PdfSettings, WorkspaceSnapshot } from '../shared/contracts.ts'
-export type { PdfReadingContextUpdate } from '../modules/viewer/index.js'
+export type { PdfReadingContextUpdate } from '../client/viewer/index.js'
 
 export type ReaderProps = Pick<DocumentPreviewProps, 'resourceAddress' | 'scrollportRef' | 'useTabInfo'> & {
   // Resource addresses are decoded into plain strings; DSH's slot owns the branded SessionId.

@@ -14,6 +14,8 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 - **Agent control**: read, search, annotate, edit bookmarks and fill existing AcroForm fields in the same draft as the user.
 - **Save and recover**: undo/redo, draft recovery, save/save as, and source-file conflict detection.
 - **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts and annotation-only saves.
+- **Input shortcuts**: in explanation, comment and note editors, **Enter** saves, **Shift+Enter** inserts a newline, and **Esc** cancels.
+- **Low-zoom reading**: below **50%** zoom the reader is browse-only. Scrolling, search, links and annotations remain available, but text selection and copy are disabled until you zoom back to 50%.
 
 ## Screenshots
 
@@ -46,7 +48,7 @@ Click a screenshot to open it at full resolution.
 
 ## Install
 
-Validated with DSH `0.2.2-rc.1`. See [package.json](package.json) for supported versions.
+Validated with DSH `0.2.2-rc.2`. The plugin admits DSH `>=0.2.2-rc.1 <0.3.0-0`; see [DSH compatibility](docs/dsh-compatibility.md).
 
 Use the npm package name below, not a GitHub URL. The source repository does not include `dist/`; installing it directly leaves the entry files missing and prevents the plugin from loading.
 
@@ -95,18 +97,20 @@ flowchart TB
     Search --> Copy
     Search --> Engines
     Search --> Index[("Disk index and checkpoints")]
-    Copy --> PDF["PDFium · pdf-lib"]
+    Copy --> PDF["Native PDFium · Reading and writing"]
     Copy --> Storage["Files and draft storage"]
   end
 ```
 
-The Reader and agent tools share Host business logic and a working copy within the same resource session; edits synchronize both ways. A native PDFium worker handles rendering and text extraction. See the [architecture](docs/architecture.md).
+The Reader and agent tools share a Host working copy within each resource session. Native PDFium handles rendering, extraction, document inspection and writes. Separate processes keep document inspection and writes off the render queue. See the [architecture](docs/architecture.md).
 
 ## Development
 
+Build the [pinned PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md) first.
+
 ```sh
 npm ci
-npm run native:build
+DSH_PDFIUM_ROOT=/path/to/sdk npm run native:build
 npm run build
 ```
 

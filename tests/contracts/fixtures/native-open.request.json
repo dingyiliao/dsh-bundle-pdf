@@ -1,0 +1,6 @@
+{
+  "requestId": "req-open-001",
+  "command": "open",
+  "documentId": "doc-001",
+  "metadataOnly": true
+}

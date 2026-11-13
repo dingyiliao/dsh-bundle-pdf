@@ -40,6 +40,7 @@ export interface PdfSessionOwner {
 interface LifecycleApi {
   open: PdfClientApi['open']
   unlock: PdfClientApi['unlock']
+  unlockEdit: PdfClientApi['unlockEdit']
   release: PdfClientApi['release']
 }
 
@@ -64,6 +65,8 @@ export interface PdfSessionLifecycle {
   open(owner: PdfSessionOwner, sessionId: string, address: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Use the occurrence's existing reference for one explicit password submission. */
   unlock(owner: PdfSessionOwner, sessionId: string, address: string, password: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
+  unlockEdit(owner: PdfSessionOwner, sessionId: string, id: string, revision: number,
+    password: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Retry an earlier failed cleanup before admitting further opens. */
   drain(): Promise<void>
   dispose(): Promise<void>
@@ -359,6 +362,19 @@ export function createPdfSessionLifecycle(options: {
     unlock(owner, sessionId, address, password, signal) {
       return admit(owner, sessionId, address, signal,
         referenceId => options.api.unlock(sessionId, address, password, options.signal, referenceId))
+    },
+    async unlockEdit(owner, sessionId, id, revision, password, signal) {
+      const record = recordFor(owner, false)
+      const generation = record.generation
+      await drain()
+      const active = AbortSignal.any([owner.signal, options.signal, ...(signal ? [signal] : [])])
+      active.throwIfAborted()
+      if (sessionId !== record.owner.resourceSessionId || record.adopted !== documentKey(sessionId, id)
+        || record.closing || record.generation !== generation) throw new DOMException('PDF navigation was superseded', 'AbortError')
+      const snapshot = await options.api.unlockEdit(sessionId, id, revision, password, active, record.referenceId)
+      active.throwIfAborted()
+      if (record.generation !== generation) throw new DOMException('PDF navigation was superseded', 'AbortError')
+      return snapshot
     },
     drain,
     dispose,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyIfNoNewerNavigation } from '../../../src/modules/viewer/controllers/reading-resume.ts'
+import { applyIfNoNewerNavigation } from '../../../src/client/viewer/controllers/reading-resume.ts'
 
 test('a late stored position cannot replace a newer page jump', async () => {
   let finishLoad!: (page: number) => void

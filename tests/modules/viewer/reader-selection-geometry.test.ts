@@ -2,8 +2,8 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { captureTextSelection, clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition, overlapFraction,
-  pdfRectToViewport, translatePdfRectInViewport, viewportRectToPdf } from '../../../src/modules/viewer/model/reader-selection.ts'
-import type { PageView, PageViewport } from '../../../src/modules/viewer/model/reader-selection.ts'
+  pdfRectToViewport, translatePdfRectInViewport, viewportRectToPdf } from '../../../src/client/viewer/model/reader-selection.ts'
+import type { PageView, PageViewport } from '../../../src/client/viewer/model/reader-selection.ts'
 
 function withSelectionDom(html: string, run: (document: Document, select: (range: Range) => ReturnType<typeof captureTextSelection>) => void) {
   const { dom, restore: restoreDom, install: installDom } = createDom(`<div id="root">${html}</div>`, { url: 'about:blank', globals: [] })

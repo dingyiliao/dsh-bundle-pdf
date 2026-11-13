@@ -3,23 +3,23 @@ import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { AnnotationColorBar } from '../../../src/modules/viewer/components/AnnotationColorBar.tsx'
-import { AnnotationList } from '../../../src/modules/viewer/components/AnnotationList.tsx'
-import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.tsx'
-import { ExplanationQuestionEditor } from '../../../src/modules/viewer/components/ExplanationQuestionEditor.tsx'
-import { FloatingToolbar } from '../../../src/modules/viewer/components/FloatingToolbar.tsx'
-import { FloatingStatusRail } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
-import { OcrTranscriptPanel } from '../../../src/modules/viewer/components/OcrTranscriptPanel.tsx'
-import { ReadingSidebar, type ReadingSidebarSection } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
-import { ReaderNoteEditor } from '../../../src/modules/viewer/components/ReaderNoteEditor.tsx'
-import { ScreenshotPreview } from '../../../src/modules/viewer/components/ScreenshotPreview.tsx'
-import { SplitActionControl } from '../../../src/modules/viewer/components/SplitActionControl.tsx'
-import { TranslationPanel } from '../../../src/modules/viewer/components/TranslationPanel.tsx'
-import { ToolbarTooltip } from '../../../src/modules/viewer/components/ToolbarTooltip.tsx'
+import { AnnotationColorBar } from '../../../src/client/viewer/components/AnnotationColorBar.tsx'
+import { AnnotationList } from '../../../src/client/viewer/components/AnnotationList.tsx'
+import { BookmarkPanel } from '../../../src/client/viewer/components/BookmarkPanel.tsx'
+import { ExplanationQuestionEditor } from '../../../src/client/viewer/components/ExplanationQuestionEditor.tsx'
+import { FloatingToolbar } from '../../../src/client/viewer/components/FloatingToolbar.tsx'
+import { FloatingStatusRail } from '../../../src/client/viewer/components/FloatingStatusRail.tsx'
+import { OcrTranscriptPanel } from '../../../src/client/viewer/components/OcrTranscriptPanel.tsx'
+import { ReadingSidebar, type ReadingSidebarSection } from '../../../src/client/viewer/components/ReadingSidebar.tsx'
+import { ReaderNoteEditor } from '../../../src/client/viewer/components/ReaderNoteEditor.tsx'
+import { ScreenshotPreview } from '../../../src/client/viewer/components/ScreenshotPreview.tsx'
+import { SplitActionControl } from '../../../src/client/viewer/components/SplitActionControl.tsx'
+import { TranslationPanel } from '../../../src/client/viewer/components/TranslationPanel.tsx'
+import { ToolbarTooltip } from '../../../src/client/viewer/components/ToolbarTooltip.tsx'
 import { TranslationError, type TranslationResult } from '../../../src/translation/index.ts'
 import type { HostOcrRecognition } from '../../../src/adapters/client/remote/host-ocr-api.ts'
-import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
-import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/modules/viewer/model/highlight-colors.ts'
+import type { ReaderDocument, ReaderOutlineItem } from '../../../src/client/viewer/ports/reader-document.ts'
+import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/client/viewer/model/highlight-colors.ts'
 
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
@@ -174,6 +174,69 @@ test('screenshot preview reports modal failure and handles native cancellation',
   })
 })
 
+test('screenshot preview handles unavailable clipboard, OCR callback failures, and focus wrapping', async () => {
+  await withDom(async (dom, container, render) => {
+    const errors: unknown[] = []
+    let closes = 0
+    let ocrCalls = 0
+    const image = { blob: new Blob(['image'], { type: 'image/png' }), width: 10, height: 10, page: 1 }
+    const originalCreate = URL.createObjectURL, originalRevoke = URL.revokeObjectURL
+    const originalClipboardItem = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem')
+    URL.createObjectURL = () => 'blob:preview'
+    URL.revokeObjectURL = () => {}
+    const prototype = dom.HTMLDialogElement.prototype
+    const originalShow = prototype.showModal, originalClose = prototype.close
+    prototype.showModal = function () { this.setAttribute('open', '') }
+    prototype.close = function () { this.removeAttribute('open') }
+    try {
+      const props = { image, t, onError: (error: unknown) => errors.push(error), onClose: () => { closes++ },
+        onOcr: () => { ocrCalls++; throw new Error('ocr failed') } }
+      await render(React.createElement(ScreenshotPreview, props))
+      const dialog = container.querySelector<HTMLDialogElement>('dialog')!
+      assert.equal(dialog.open, true)
+
+      // No ClipboardItem support is a normal browser capability failure.
+      Reflect.deleteProperty(globalThis, 'ClipboardItem')
+      await act(async () => { dialog.querySelector<HTMLButtonElement>('.dsh-pdf-screenshot-actions button')!.click() })
+      assert.match(dialog.querySelector('[role="alert"]')?.textContent ?? '', /reader\.screenshot\.clipboardUnavailable/)
+
+      let copied = 0
+      Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true,
+        value: class { static supports() { return true }; constructor(_data: unknown) {} } })
+      Object.defineProperty(dom.navigator, 'clipboard', { configurable: true,
+        value: { async write() { copied++ } } })
+      await act(async () => { dialog.querySelector<HTMLButtonElement>('.dsh-pdf-screenshot-actions button')!.click(); await Promise.resolve() })
+      assert.equal(copied, 1)
+
+      // With visible focusable controls, both tab directions wrap around.
+      for (const element of [...dialog.querySelectorAll<HTMLElement>('button, a')])
+        element.getClientRects = () => [{ width: 10, height: 10 } as DOMRect] as unknown as DOMRectList
+      const controls = [...dialog.querySelectorAll<HTMLElement>('button, a')]
+      const first = controls[0]!, last = controls.at(-1)!
+      last.focus()
+      await act(async () => { dialog.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Tab' })) })
+      assert.equal(dom.document.activeElement, first)
+      first.focus()
+      await act(async () => { dialog.dispatchEvent(new dom.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Tab', shiftKey: true })) })
+      assert.equal(dom.document.activeElement, last)
+
+      const recognize = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+        .find(button => button.textContent === 'reader.screenshot.recognize')!
+      await act(async () => { recognize.click() })
+      assert.equal(ocrCalls, 1)
+      assert.equal(closes, 1)
+      assert.equal(errors.length, 2, 'unavailable clipboard and OCR callback errors are both surfaced')
+    } finally {
+      prototype.showModal = originalShow
+      prototype.close = originalClose
+      URL.createObjectURL = originalCreate
+      URL.revokeObjectURL = originalRevoke
+      if (originalClipboardItem) Object.defineProperty(globalThis, 'ClipboardItem', originalClipboardItem)
+      else Reflect.deleteProperty(globalThis, 'ClipboardItem')
+    }
+  })
+})
+
 test('page comment card stays attached above its mark and tolerates transient missing anchors', async () => {
   // The real component imports a CSS asset that Node cannot load. Its placement
   // logic uses measured DOM geometry, so only that non-executable asset is stubbed.
@@ -187,7 +250,7 @@ test('page comment card stays attached above its mark and tolerates transient mi
       return nextLoad(url, context)
     },
   })
-  const { AnnotationCommentCard } = await import('../../../src/modules/viewer/components/AnnotationCommentCard.tsx')
+  const { AnnotationCommentCard } = await import('../../../src/client/viewer/components/AnnotationCommentCard.tsx')
   await withDom(async (dom, _container, render) => {
     const rect = (left: number, top: number, width: number, height: number) => ({
       left, top, right: left + width, bottom: top + height, width, height,
@@ -397,9 +460,13 @@ test('question editor keyboard shortcuts save a nonempty question or cancel the 
       }))
       const editor = reader.querySelector<HTMLElement>('.dsh-pdf-explanation-question-editor')!
       assert.ok(editor)
-      await act(async () => { editor.dispatchEvent(new dom.KeyboardEvent('keydown', {
-        bubbles: true, cancelable: true, key: 'Enter', metaKey: true,
-      })) })
+      const submit = new dom.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' })
+      await act(async () => { editor.dispatchEvent(submit) })
+      assert.equal(submit.defaultPrevented, true)
+      assert.equal(saves, 1)
+      const newline = new dom.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', shiftKey: true })
+      await act(async () => { editor.dispatchEvent(newline) })
+      assert.equal(newline.defaultPrevented, false)
       assert.equal(saves, 1)
       await act(async () => { editor.dispatchEvent(new dom.KeyboardEvent('keydown', {
         bubbles: true, cancelable: true, key: 'Escape',
@@ -528,13 +595,15 @@ test('sidebar keyboard navigation opens sections, wraps focus and never toggles 
   })
 })
 
-test('unmounting the sidebar releases an in-progress resize pointer capture', async () => {
+test('sidebar resize releases pointer capture and preview on collapse, cancel, blur and unmount', async () => {
   await withDom(async (dom, container, render) => {
+    const preview: boolean[] = []
     const props = {
       activeSection: 'ocr' as const, onSectionChange() {}, expanded: true, onExpandedChange() {},
       panels: {}, pdf: null, currentPage: 1, pageInput: '1', navigating: false,
       onPageInputChange() {}, onPageInputSubmit() {}, onPageInputReset() {},
-      onNavigatePage() {}, onStepPage() {}, onNavigateDestination() {}, t,
+      onNavigatePage() {}, onStepPage() {}, onNavigateDestination() {},
+      onResizeActiveChange: (active: boolean) => preview.push(active), t,
     }
     await render(React.createElement(ReadingSidebar, props))
     const divider = container.querySelector<HTMLElement>('.dsh-pdf-sidebar-divider')!
@@ -542,17 +611,35 @@ test('unmounting the sidebar releases an in-progress resize pointer capture', as
     divider.setPointerCapture = () => { captured = true }
     divider.hasPointerCapture = () => captured
     divider.releasePointerCapture = () => { captured = false; releases++ }
-    const start = new dom.MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 240 })
-    Object.defineProperty(start, 'pointerId', { value: 7 })
-    await act(async () => { divider.dispatchEvent(start) })
+    const pointer = (type: string, pointerId = 7) => {
+      const event = new dom.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 240 })
+      Object.defineProperty(event, 'pointerId', { value: pointerId })
+      divider.dispatchEvent(event)
+    }
+    await act(async () => { pointer('pointerdown') })
     assert.equal(captured, true)
     await render(React.createElement(ReadingSidebar, { ...props, expanded: false }))
     assert.equal(releases, 1, 'collapsing the sidebar ends its active resize')
     await render(React.createElement(ReadingSidebar, props))
-    await act(async () => { divider.dispatchEvent(start) })
+    await act(async () => { pointer('pointerdown'); pointer('pointercancel', 42) })
+    assert.equal(captured, true, 'another pointer cannot end the current resize')
+    await act(async () => {
+      pointer('pointercancel')
+      assert.equal(captured, false)
+      assert.equal(preview.at(-1), true, 'the layout retains the preview until the last resize frame')
+      dom.dispatchEvent(new dom.Event('blur'))
+    })
+    assert.equal(preview.at(-1), false, 'window blur clears a pending preview')
+    await act(async () => {
+      pointer('pointerdown')
+      pointer('lostpointercapture')
+      assert.equal(captured, false)
+      pointer('pointerdown')
+    })
     assert.equal(captured, true)
     await render(React.createElement('div'))
-    assert.equal(releases, 2)
+    assert.equal(releases, 4)
+    assert.deepEqual(preview, [true, false, true, false, true, true, false])
   })
 })
 

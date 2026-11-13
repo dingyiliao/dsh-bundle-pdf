@@ -6,13 +6,13 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
-import { PDFDocument } from 'pdf-lib'
+import { plainPdf } from '../fixtures/plain-pdf.ts'
 import { apply } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
 import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
 import type { EmbeddingRegistry } from '../../src/embedding/index.ts'
-import { FrameDecoder, encodeFrame } from '../../src/adapters/host/pdfium/framing.ts'
-import type { NativeProcessRuntime } from '../../src/adapters/host/pdfium/native-worker.ts'
+import { FrameDecoder, encodeFrame } from '../../src/engine/host/framing.ts'
+import type { NativeProcessRuntime } from '../../src/engine/host/native-worker.ts'
 
 type Tool = { name: string; execute(input: unknown, execution: unknown): Promise<unknown> }
 
@@ -22,13 +22,12 @@ test('Host retrieval reauthorizes cached jobs and preserves full-document index 
       const root = await mkdtemp(join(await realpath(tmpdir()), 'pdf-host-retrieval-'))
       t.after(() => rm(root, { recursive: true, force: true }))
       await writeFile(join(root, 'manifest.json'), JSON.stringify({ version: 1, files: [] }))
-      const document = await PDFDocument.create()
       const large = resolution === 'large-index', dimensions = large ? 1024 : 2, expectedChunks = large ? 5000 : 1
       const text = large ? Array.from({ length: expectedChunks }, (_, index) =>
         `A cached document remains readable. Unique evidence paragraph ${index}.`).join('\n\n')
         : 'A cached document remains readable.'
-      document.addPage([200, 200]).drawText(text, { x: 10, y: 160, size: 10 })
-      const bytes = await document.save(), path = join(root, 'cached-page.pdf')
+      const bytes = plainPdf([{ size: [200, 200], lines: [{ text, x: 10, y: 160, size: 10 }] }])
+      const path = join(root, 'cached-page.pdf')
       await writeFile(path, bytes)
       const sessionId = 'retrieval-owner', agent = { session: { id: sessionId, header: {} } }
       const tools = new Map<string, Tool>(), services = new Map<string, unknown>()
@@ -46,9 +45,16 @@ test('Host retrieval reauthorizes cached jobs and preserves full-document index 
             const request = frame.metadata as { command: string; requestId: string }
             commands.push(request.command)
             let value: unknown
-            if (request.command === 'hello') value = { protocolVersion: 1, build: '156.0.8076.0' }
+            if (request.command === 'hello') value = { protocolVersion: 2, build: '156.0.8076.0', documentExtensions: true }
             else if (request.command === 'open') value = { pageCount: 1, formType: 0, signatureCount: 0 }
-            else if (request.command === 'close') value = {}
+            else if (request.command === 'security') value = { securityRevision: -1, permissions: 0xffffffff }
+            else if (request.command === 'documentInfo') value = { securityRevision: -1, permissions: 0xffffffff,
+              pages: [{ page: 1, rotation: 0, userUnit: 1, mediaBox: [0, 0, 200, 200], cropBox: [0, 0, 200, 200],
+                visibleBox: [0, 0, 200, 200], boxSource: 'page-dictionary', renderedWidth: 200, renderedHeight: 200 }] }
+            else if (request.command === 'fingerprints') value = { digests: [null] }
+            else if (request.command === 'documentOutlines') value = { entries: [] }
+            else if (request.command === 'annotationPages') value = { pageIndices: [] }
+            else if (request.command === 'close') value = { closed: true }
             else {
               assert.equal(request.command, 'text')
               value = { items: [{ str: text, transform: [10, 0, 0, 10, 10, 160], width: text.length * 5,

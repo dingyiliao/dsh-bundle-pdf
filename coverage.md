@@ -14,13 +14,15 @@ when a test or the 100% coverage gate fails.
 Runtime prerequisites and test commands are in the [testing guide](docs/testing.md).
 
 The TypeScript/TSX denominator is every source line that TypeScript maps to
-emitted JavaScript under `src/`, excluding standalone closing braces with no
+emitted JavaScript under `src/` and `src/engine/`, excluding standalone closing braces with no
 independently executable operation and static `import` linkage that the shipped
 bundle resolves at build time. The report lists both kinds of excluded source
 lines per file for audit. The C++ denominator comes from LLVM's line
-summary for `native/pdfium-worker.cpp`. This excludes erased type declarations,
-CSS, tests, build scripts, generated bundles, and the prebuilt third-party
-PDFium library. A missing runtime source is reported as *uninstrumented*,
+summary for the worker and the implementation compiled with the selected SDK.
+The build uses the pinned, patched PDFium SDK. Set `DSH_PDFIUM_ROOT` to the
+SDK location if it is outside the default build cache. The linked PDFium library and patches
+compiled into it are outside the LLVM instrumentation. A missing worker
+source for the selected SDK is reported as *uninstrumented*,
 never silently counted as 100%. The browser report maps
 V8 ranges through the DSH bundle source map and seeds unexecuted Client source
 locations as zero. The merge accepts only lines mapped to emitted JavaScript;

@@ -4,8 +4,8 @@ import test from 'node:test'
 import React, { act } from 'react'
 import type { PdfFormField } from '../../../src/core/pdf-types.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import { createReaderFormCommits } from '../../../src/modules/viewer/controllers/reader-form-commits.ts'
-import { ReaderFormCommitProvider } from '../../../src/modules/viewer/rendering/FormCommitContext.tsx'
+import { createReaderFormCommits } from '../../../src/client/viewer/controllers/reader-form-commits.ts'
+import { ReaderFormCommitProvider } from '../../../src/client/viewer/rendering/FormCommitContext.tsx'
 
 test('focused widget drafts defer only to commands in their own Reader and otherwise commit on blur', async () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<div id="root"></div>', { url: 'about:blank', globals: [] })
@@ -13,7 +13,7 @@ test('focused widget drafts defer only to commands in their own Reader and other
   installDom({ window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, Event: dom.Event,
     IS_REACT_ACT_ENVIRONMENT: true })
-  const { FormWidgets } = await import('../../../src/modules/viewer/rendering/FormWidgets.tsx')
+  const { FormWidgets } = await import('../../../src/client/viewer/rendering/FormWidgets.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const calls: string[] = [], errors: unknown[] = []

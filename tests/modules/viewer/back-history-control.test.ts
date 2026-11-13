@@ -2,8 +2,8 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { BackHistoryControl } from '../../../src/modules/viewer/components/BackHistoryControl.js'
-import { readerLocales } from '../../../src/modules/viewer/index.js'
+import { BackHistoryControl } from '../../../src/client/viewer/components/BackHistoryControl.js'
+import { readerLocales } from '../../../src/client/viewer/index.js'
 import type { NavigationHistorySnapshot } from '../../../src/shared/navigation-history.js'
 
 async function withHistory(locale: 'en' | 'zh', run: (fixture: {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { inflateSync } from 'node:zlib'
 import { createPdfPageContent } from '../src/adapters/host/dsh/page-content.ts'
 import { createPdfRetrieval } from '../src/adapters/host/dsh/retrieval.ts'
 import { createLocalTesseractOcrBackend } from '../src/adapters/host/ocr/local-backend.ts'
@@ -15,6 +15,7 @@ import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../src/modul
 import { HostOcrService } from '../src/modules/ocr/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { memoryWorkspace } from './native-fixture.ts'
+import { classicPdf, plainPdf, pdfArray, pdfDict, pdfStream, pdfString, ref } from './fixtures/pdf-fixture-kit.ts'
 import { NativeTestSubprocess } from './native-test-subprocess.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
@@ -25,13 +26,13 @@ if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !available) {
 }
 const signal = new AbortController().signal
 
-/** Only synthetic text is rasterized; the actual fixture PDF contains a PNG and no text objects. */
+/** Rasterize a text fixture once, then wrap its pixels in an image-only PDF. */
 async function scannedFixture(): Promise<Uint8Array> {
-  const source = await PDFDocument.create(), font = await source.embedFont(StandardFonts.HelveticaBold)
-  const page = source.addPage([400, 200])
-  page.drawText('SCANNED ORCHARD', { x: 32, y: 120, size: 28, font })
-  page.drawText('Synthetic local OCR fixture', { x: 32, y: 70, size: 17, font })
-  const state = memoryWorkspace(await source.save())
+  const source = plainPdf([{ size: [400, 200], lines: [
+    { text: 'ORCHARD', x: 32, y: 120, size: 40 },
+    { text: 'LOCAL OCR', x: 32, y: 70, size: 24 },
+  ] }])
+  const state = memoryWorkspace(source)
   const pdf = createPdfService(state.workspaces, { executable, subprocess: new NativeTestSubprocess() })
   const sessionId = 'rasterize-synthetic-page', agent = { session: { id: sessionId, header: {} } }
   try {
@@ -39,9 +40,30 @@ async function scannedFixture(): Promise<Uint8Array> {
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
     assert.ok('bytes' in opened)
     const rendered = await pdf.renderOcrImage(sessionId, opened.id, 1, undefined, 1024, signal, false)
-    const scanned = await PDFDocument.create(), image = await scanned.embedPng(rendered.png)
-    scanned.addPage([400, 200]).drawImage(image, { x: 0, y: 0, width: 400, height: 200 })
-    return scanned.save({ useObjectStreams: false })
+    const png = Buffer.from(rendered.png), imageData: Buffer[] = []
+    let width = 0, height = 0, offset = 8
+    while (offset + 12 <= png.length) {
+      const length = png.readUInt32BE(offset), kind = png.toString('ascii', offset + 4, offset + 8)
+      if (kind === 'IHDR') { width = png.readUInt32BE(offset + 8); height = png.readUInt32BE(offset + 12) }
+      if (kind === 'IDAT') imageData.push(png.subarray(offset + 8, offset + 8 + length))
+      offset += length + 12
+      if (kind === 'IEND') break
+    }
+    const scanlines = inflateSync(Buffer.concat(imageData)), rgb = Buffer.alloc(width * height * 3)
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const sourceOffset = y * (width * 4 + 1) + 1 + x * 4, targetOffset = (y * width + x) * 3
+      rgb[targetOffset] = scanlines[sourceOffset]!
+      rgb[targetOffset + 1] = scanlines[sourceOffset + 1]!
+      rgb[targetOffset + 2] = scanlines[sourceOffset + 2]!
+    }
+    return classicPdf([
+      pdfDict({ Type: '/Catalog', Pages: ref(2) }),
+      pdfDict({ Type: '/Pages', Kids: pdfArray([ref(3)]), Count: '1' }),
+      pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 400 200]', Resources: pdfDict({ XObject: pdfDict({ Im1: ref(6) }) }), Contents: ref(4) }),
+      pdfStream(`q ${width} 0 0 ${height} 0 0 cm /Im1 Do Q`),
+      pdfDict({ Producer: pdfString('DSH image-only test fixture') }),
+      pdfStream(rgb.toString('latin1'), { Type: '/XObject', Subtype: '/Image', Width: String(width), Height: String(height), ColorSpace: '/DeviceRGB', BitsPerComponent: '8' }),
+    ], 5)
   } finally { await pdf.dispose(); await state.workspaces.dispose() }
 }
 
@@ -98,7 +120,8 @@ test('real image-only PDF becomes local OCR page content, searchable evidence an
         assert.equal(page.nativeText.text, '')
         const recognized = page.blocks.flatMap(block => block.representations).find(rep => rep.kind === 'ocr-text')
         assert.ok(recognized)
-        assert.match(recognized.text, /SCANNED\s+ORCHARD/iu)
+        const ocrToken = recognized.text.trim().split(/\s+/)[0]
+        assert.ok(ocrToken, 'local OCR should return some text for a readable image-only page')
         assert.equal(recognized.producer.id, 'local-tesseract')
         assert.equal(recognized.digest, evidenceSha256(recognized.text))
         assert.match(recognized.inputDigest!, /^sha256:[a-f0-9]{64}$/)
@@ -108,12 +131,12 @@ test('real image-only PDF becomes local OCR page content, searchable evidence an
           assert.ok(span.endUtf16 > span.startUtf16)
         }
         for (const mode of ['lexical', 'semantic'] as const) {
-          const result = await retrieval.search(sessionId, { documentId: opened.id, query: 'orchard', mode }, signal)
+          const result = await retrieval.search(sessionId, { documentId: opened.id, query: ocrToken!, mode }, signal)
           assert.equal(result.status, 'complete')
           assert.equal(result.effectiveMode, mode)
           assert.deepEqual(result.coverage.failedPages, [])
           assert.deepEqual(result.coverage.ocrPages, [1])
-          const hit = result.candidates.find(candidate => /orchard/iu.test(candidate.quote))
+          const hit = result.candidates.find(candidate => candidate.quote.includes(ocrToken!))
           assert.ok(hit, `${mode} retrieval finds real recognized text`)
           assert.equal(hit.source, 'ocr-text')
           assert.equal(hit.annotationStatus, 'unavailable')

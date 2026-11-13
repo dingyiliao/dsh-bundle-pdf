@@ -63,5 +63,5 @@ output-affecting revision; a URL alone is insufficient.
 
 See [engine contracts](../../docs/engine-extensions.md) and the
 [testing guide](../../docs/testing.md). The repository's
-[`engine-extensions.test.ts`](../../tests/examples/engine-extensions.test.ts)
+[`engine-extensions.test.ts`](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/tests/examples/engine-extensions.test.ts)
 tests these backends with mocked HTTP responses; it does not contact a model.

@@ -1,11 +1,8 @@
-import { z } from 'zod'
 import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildResultSchema } from '../../../contracts/retrieval-index.js'
+import { rpcResponseSchema } from '../../../contracts/rpc/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
-const reply = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: retrievalRebuildResultSchema }),
-  z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
-])
+const reply = rpcResponseSchema(retrievalRebuildResultSchema)
 
 /** Settings action uses the authenticated connection, independently of any PDF view or Session. */
 export function createRetrievalIndexApi(connection: PdfConnection, lifetime: AbortSignal) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
+import { sessionFile } from '../src/shared/address.ts'
 
 test('accepts native snapshots without transferring PDF bytes or inventing a MediaBox', async () => {
   const bytesHash = `sha256:${createHash('sha256').update('native snapshot').digest('hex')}`
@@ -100,6 +101,49 @@ test('a late unlock from a closed tab cannot replace a surviving tab’s snapsho
     await api.refresh('s', opened.id)
     assert.equal(knownRevision, 7)
     assert.deepEqual(seen, [7])
+  } finally { lifetime.abort() }
+})
+
+test('editing unlock is scoped to an open reference and does not replay its owner password', async () => {
+  const lifetime = new AbortController()
+  const address = 'dsh-resource://file/session/s/document.pdf'
+  const unlocks: Record<string, unknown>[] = []
+  let failure = false
+  let deliver!: (reply: unknown) => void
+  const value = (revision: number) => {
+    const wire = recoveryWire('protected', revision)
+    return { ...wire, value: { ...wire.value, document: {
+      ...wire.value.document, encrypted: true, readOnly: revision === 1,
+      annotationEditing: revision === 1 ? 'owner-password-required' : 'allowed',
+    } } }
+  }
+  const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+    if (method === 'pdf.watch') return new Promise(() => {})
+    const request = payload as Record<string, unknown>
+    if (request.action === 'release') return { ok: true, value: { released: true } }
+    if (request.action !== 'unlockEdit') return value(1)
+    unlocks.push(request)
+    if (failure) throw new Error('transport disconnected')
+    return new Promise(resolve => { deliver = resolve })
+  } } }, lifetime.signal)
+  try {
+    const locked = await api.open('s', address, undefined, 'owner-tab')
+    await api.open('s', address, undefined, 'another-tab')
+    await assert.rejects(api.unlockEdit('s', locked.id, 1, 'secret', undefined, 'unknown-tab'), { name: 'AbortError' })
+    await assert.rejects(api.unlockEdit('s', locked.id, 1, 'invalid\0password', undefined, 'owner-tab'), /Invalid PDF password/)
+    failure = true
+    await assert.rejects(api.unlockEdit('s', locked.id, 1, 'secret', undefined, 'owner-tab'), /transport disconnected/)
+    assert.equal(unlocks.length, 1)
+    assert.deepEqual(unlocks[0], { action: 'unlockEdit', sessionId: 's', id: 'protected',
+      revision: 1, referenceId: 'owner-tab', password: 'secret', knownBytesHash: locked.reader.bytesHash, knownRevision: 1 })
+    failure = false
+    const late = api.unlockEdit('s', locked.id, 1, 'secret', undefined, 'owner-tab')
+    await api.release('s', undefined, 'owner-tab')
+    deliver(value(2))
+    await assert.rejects(late, { name: 'AbortError' })
+    const accepted = api.unlockEdit('s', locked.id, 1, 'secret', undefined, 'another-tab')
+    deliver(value(2))
+    assert.equal((await accepted).document.annotationEditing, 'allowed')
   } finally { lifetime.abort() }
 })
 
@@ -237,6 +281,123 @@ function testWire(id: string) {
 function recoveryWire(id: string, revision: number) {
   return { ok: true, value: { ...testWire(id).value, path: '/document.pdf', revision } }
 }
+
+for (const firstToSeeSave of ['save', 'refresh'] as const) {
+  test(`a ${firstToSeeSave} snapshot retargets protected recovery to the encrypted Save As copy`, async () => {
+    const lifetime = new AbortController()
+    const original = '/document.pdf'
+    const copy = '/copies/protected #2 中文.pdf'
+    const opened: { id: string; path: string; referenceId: unknown }[] = []
+    let committed = false
+    let restarted = false
+    let finishSave!: (reply: unknown) => void
+    const wire = (id: string, revision: number, path: string) => {
+      const result = recoveryWire(id, revision)
+      return { ...result, value: { ...result.value, path,
+        document: { ...result.value.document, encrypted: true, annotationEditing: 'allowed' } } }
+    }
+    const api = createPdfApi({ rpc: { async call(_path, method, payload) {
+      const request = payload as Record<string, unknown>
+      if (method === 'pdf.watch') return new Promise(() => {})
+      if (request.action === 'open') {
+        assert.equal('password' in request, false, 'automatic recovery never requests a password')
+        const addressed = sessionFile(String(request.address))
+        assert.equal(addressed.sessionId, 's')
+        const id = restarted ? 'replacement-copy' : committed ? 'original-new-view' : 'retargeted-copy'
+        opened.push({ id, path: addressed.path, referenceId: request.referenceId })
+        return wire(id, restarted ? 0 : 1, addressed.path)
+      }
+      if (request.action === 'save') {
+        committed = true
+        if (firstToSeeSave === 'refresh') return new Promise(resolve => { finishSave = resolve })
+        return wire('retargeted-copy', 2, copy)
+      }
+      if (request.action === 'refresh') {
+        if (restarted) return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+        return wire('retargeted-copy', 2, copy)
+      }
+      return { ok: true, value: { released: true } }
+    } } }, lifetime.signal)
+    try {
+      const address = 'dsh-resource://file/session/s//document.pdf'
+      const working = await api.open('s', address, undefined, 'active-view')
+      const updates: string[] = []
+      api.subscribe(working.id, value => { updates.push(value.path) })
+      const save = api.save('s', working.id, 1, { path: copy, expectedTargetVersion: null })
+      if (firstToSeeSave === 'refresh') {
+        assert.equal((await api.refresh('s', working.id)).path, copy)
+        finishSave(wire('retargeted-copy', 2, copy))
+      }
+      assert.equal((await save).path, copy)
+      const separate = await api.open('s', address, undefined, 'original-view')
+      assert.equal(separate.id, 'original-new-view')
+      assert.equal(separate.path, original)
+      restarted = true
+      const recovered = await api.refresh('s', working.id)
+      assert.equal(recovered.id, 'replacement-copy')
+      assert.equal(recovered.path, copy)
+      assert.equal(recovered.document.annotationEditing, 'allowed')
+      assert.equal(updates.at(-1), copy)
+      assert.deepEqual(opened, [
+        { id: 'retargeted-copy', path: original, referenceId: 'active-view' },
+        { id: 'original-new-view', path: original, referenceId: 'original-view' },
+        { id: 'replacement-copy', path: copy, referenceId: 'active-view' },
+      ])
+    } finally { lifetime.abort() }
+  })
+}
+
+test('Save As fences a delayed recovery of the original PDF', async () => {
+  const lifetime = new AbortController()
+  const original = '/document.pdf', copy = '/encrypted-copy.pdf'
+  const address = 'dsh-resource://file/session/s//document.pdf'
+  const calls: Array<{ method: string; payload: Record<string, unknown> }> = []
+  let restarting = false
+  let oldRecoverySignal: AbortSignal | undefined
+  let deliverOldOpen!: (value: unknown) => void
+  let markOldOpen!: () => void
+  const oldOpenStarted = new Promise<void>(resolve => { markOldOpen = resolve })
+  const wire = (id: string, revision: number, path: string) => {
+    const result = recoveryWire(id, revision)
+    return { ...result, value: { ...result.value, path, document: {
+      ...result.value.document, encrypted: true, annotationEditing: 'allowed',
+    } } }
+  }
+  const api = createPdfApi({ rpc: { async call(_path, method, payload, signal) {
+    const request = payload as Record<string, unknown>
+    calls.push({ method, payload: request })
+    if (method === 'pdf.watch') return new Promise(() => {})
+    if (request.action === 'open') {
+      const addressed = sessionFile(String(request.address))
+      if (!restarting) return wire('old-id', 1, original)
+      if (addressed.path === copy) return wire('new-copy-id', 0, copy)
+      oldRecoverySignal = signal
+      markOldOpen()
+      return new Promise(resolve => { deliverOldOpen = resolve })
+    }
+    if (request.action === 'refresh') return { ok: false, error: { code: 'pdf/unknown-document', message: 'Host restarted' } }
+    if (request.action === 'save') return wire('old-id', 2, copy)
+    return { ok: true, value: { released: true } }
+  } } }, lifetime.signal)
+  try {
+    const opened = await api.open('s', address, undefined, 'active-view')
+    const updates: string[] = []
+    api.subscribe(opened.id, value => { updates.push(value.path) })
+    restarting = true
+    const oldRecovery = api.refresh('s', opened.id)
+    await within(oldOpenStarted)
+    assert.equal((await api.save('s', opened.id, 1, { path: copy })).path, copy)
+    assert.equal(oldRecoverySignal?.aborted, true)
+    // The carrier ignores cancellation, so the late original reference still
+    // needs release even though its reply may never become the active document.
+    deliverOldOpen(wire('new-original-id', 0, original))
+    await assert.rejects(oldRecovery, { name: 'AbortError' })
+    assert.deepEqual(calls.find(call => call.payload.action === 'release')?.payload,
+      { action: 'release', sessionId: 's', id: 'new-original-id', referenceId: 'active-view' })
+    assert.equal((await api.refresh('s', opened.id)).id, 'new-copy-id')
+    assert.deepEqual(updates, [copy, copy])
+  } finally { lifetime.abort() }
+})
 
 async function within<T>(promise: Promise<T>, milliseconds = 4000): Promise<T> {
   let timer!: ReturnType<typeof setTimeout>

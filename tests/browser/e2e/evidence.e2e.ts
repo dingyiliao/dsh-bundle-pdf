@@ -8,7 +8,7 @@ import { readPagePresentationMeta } from '../../../src/adapters/host/dsh/pdf-evi
 import { evidenceSha256 } from '../../../src/modules/evidence/index.ts'
 import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { sourcePdf } from '../support/documents.ts'
 import { chooseZoom } from '../support/toolbar.ts'
 
@@ -175,15 +175,13 @@ it('reuses evidence references for exact repeated-text jumps, annotation and mul
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF exact evidence test' })
     const filename = 'reader-exact-evidence-e2e.pdf', path = join(scaffold.workspaceCwd, filename)
-    const source = await PDFDocument.create(), font = await source.embedFont(StandardFonts.Helvetica)
-    source.addPage([400, 1400]).drawText('Origin reading position', { x: 50, y: 1300, size: 15, font })
-    const evidencePage = source.addPage([400, 1400])
-    evidencePage.drawText('Repeated evidence', { x: 50, y: 1100, size: 15, font })
-    evidencePage.drawText('Different surrounding context', { x: 50, y: 800, size: 15, font })
-    evidencePage.drawText('Repeated evidence', { x: 50, y: 500, size: 15, font })
+    const line = (text: string, y: number) => ({ text, x: 50, y, size: 15 })
     // A following page keeps both targets away from the document-end scroll clamp.
-    source.addPage([400, 1400]).drawText('Following page', { x: 50, y: 1300, size: 15, font })
-    await writeFile(path, await source.save({ useObjectStreams: false }))
+    await writeFile(path, plainPdf([
+      { size: [400, 1400], lines: [line('Origin reading position', 1300)] },
+      { size: [400, 1400], lines: [line('Repeated evidence', 1100), line('Different surrounding context', 800), line('Repeated evidence', 500)] },
+      { size: [400, 1400], lines: [line('Following page', 1300)] },
+    ]))
     const resolved = await scaffold.ctx.sessionController.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
     let call = 0

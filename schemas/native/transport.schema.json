@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dsh-plugin-pdf/native-transport.schema.json",
+  "title": "DSH PDF Native worker transport v2",
+  "description": "Flat request payload and correlated reply envelope. Command payload fields are owned by src/engine/protocol/commands.ts.",
+  "oneOf": [
+    {
+      "title": "Request",
+      "type": "object",
+      "required": ["requestId", "command"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "title": "Successful reply",
+      "type": "object",
+      "required": ["requestId", "ok", "value"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "ok": { "const": true },
+        "value": {}
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Failed reply",
+      "type": "object",
+      "required": ["requestId", "ok"],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": { "type": "string" },
+            "message": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

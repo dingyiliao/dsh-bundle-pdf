@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { checkFormChoiceGroups, formChoiceGroupSchema, FormChoiceError } from '../../../src/modules/forms/index.ts'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
 import { duplicateFieldNamesFixture } from '../../fixtures/acroform.ts'
 
 test('printed exclusive checkbox groups validate final values, including existing selections and explicit unchecks', async () => {
-  const doc = await loadPdfDocument(await duplicateFieldNamesFixture())
+  const doc = await inspectFixturePdf(await duplicateFieldNamesFixture())
   const boxes = doc.formFields!.filter(field => field.type === 'checkbox')
   const group = { fieldIds: boxes.map(field => field.id!), evidence: { page: 1, quote: 'Select one option only' } }
   const project = (values: Array<[string, boolean]>) => projectFormOperations(doc,
@@ -31,7 +31,7 @@ test('printed exclusive checkbox groups validate final values, including existin
 })
 
 test('choice checks reject missing, linked, non-checkbox and wrong-page groups and bound the complete batch', async () => {
-  const doc = await loadPdfDocument(await duplicateFieldNamesFixture())
+  const doc = await inspectFixturePdf(await duplicateFieldNamesFixture())
   const boxes = doc.formFields!.filter(field => field.type === 'checkbox')
   const group = { fieldIds: boxes.map(field => field.id!), evidence: { page: 1, quote: 'Choose one' } }
   for (const invalid of [

@@ -27,14 +27,15 @@ export function projectedDocument(baseline: PdfDocumentInfo, record: WorkspaceRe
 }
 
 export function projectWorkingCopyOperations(document: PdfDocumentInfo, operations: readonly PdfWorkingCopyOperation[],
-  dates: string | readonly string[]): PdfDocumentInfo {
+  dates: string | readonly string[], { allowRepeatedFormFields = false } = {}): PdfDocumentInfo {
   const annotations = operations.filter((operation): operation is PdfAnnotationOperation =>
     operation.type === 'add' || operation.type === 'update' || operation.type === 'delete')
   const forms = operations.filter((operation): operation is Extract<PdfWorkingCopyOperation, { type: 'set-field' }> => operation.type === 'set-field')
   const annotationDates = typeof dates === 'string' ? dates : operations.flatMap((operation, index) =>
     operation.type === 'add' || operation.type === 'update' || operation.type === 'delete' ? [dates[index]] : [])
   const projected = annotations.length ? projectPdfOperations(document, annotations, annotationDates) : document
-  return projectOutlineOperations(projectFormOperations(projected, forms), operations.filter(isOutlineOperation))
+  return projectOutlineOperations(projectFormOperations(projected, forms, { allowRepeated: allowRepeatedFormFields }),
+    operations.filter(isOutlineOperation))
 }
 
 /** A new edit replaces the redo branch and advances the optimistic revision. */

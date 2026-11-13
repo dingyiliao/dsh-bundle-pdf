@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/index.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
@@ -131,9 +131,7 @@ async function textEvidenceToolFixture(extraction?: 'local-ocr') {
 }
 
 async function searchToolFixture(texts: string[], embeddings?: EmbeddingRegistry) {
-  const document = await PDFDocument.create()
-  for (const _text of texts) document.addPage([300, 400])
-  const state = memoryWorkspace(await document.save()), sessionId = 'search-handle-owner'
+  const state = memoryWorkspace(blankPdf(texts.length, [300, 400])), sessionId = 'search-handle-owner'
   const reads: number[] = [], nativeClosed: string[] = []
   let beforeRead: ((page: number) => Promise<void>) | undefined
   const pages = {
@@ -420,9 +418,7 @@ test('pdf_page_jump forwards only a validated same-session target to the visible
 })
 
 test('image-derived navigation rejects a draft edit after final source attestation without sending a Reader request', async () => {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  const state = memoryWorkspace(await pdf.save()), sessionId = 'derived-jump-final-race'
+  const state = memoryWorkspace(blankPdf(1, [300, 400])), sessionId = 'derived-jump-final-race'
   const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
     address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent(sessionId), signal)
   assert.ok('bytes' in opened)

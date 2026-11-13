@@ -1,9 +1,9 @@
 import { createRemoteCall } from './request.js'
 import { z } from 'zod'
-import type { HostOcrApi } from '../../../modules/viewer/index.js'
+import type { HostOcrApi } from '../../../client/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
-export type { HostOcrApi, HostOcrAvailability, HostOcrRecognition } from '../../../modules/viewer/index.js'
+export type { HostOcrApi, HostOcrAvailability, HostOcrRecognition } from '../../../client/viewer/index.js'
 
 const availability = z.object({
   status: z.enum(['available', 'disabled', 'not-configured', 'unavailable']),

@@ -1,6 +1,6 @@
 import { expect, it, onTestFailed } from 'vitest'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
-import { newEnglishPage, saveFailureShot, launchWebScaffold, seedSession, watchConsole, DSH_ROOT, ROOT, SESSION } from '../support/scaffold.ts'
+import { newEnglishPage, saveFailureShot, launchWebScaffold, seedSession, watchConsole, MODEL_FIXTURE, MODEL_FIXTURE_AVAILABLE, ROOT, SESSION } from '../support/scaffold.ts'
 import { type Browser } from 'playwright'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -268,7 +268,9 @@ it('requires a question before saving an explanation passage, then edits or remo
         else element.setAttribute('style', style)
       }, originalReaderStyle)
     }
-    const selectFirstWordForExplanation = () => reader.evaluate(element => {
+    const selectFirstWordForExplanation = async () => {
+      await expect.poll(async () => reader.locator('[data-pdf-page="1"] [data-pdf-text="active"] span[data-pdf-run]').count(), { timeout: 15_000 }).toBeGreaterThan(0)
+      return reader.evaluate(element => {
       const layer = element.querySelector('[data-pdf-page="1"] [data-pdf-text="active"]')
       const scroll = element.querySelector<HTMLElement>('.dsh-pdf-scroll')
       const first = layer?.querySelector<HTMLElement>('span[data-pdf-run]')
@@ -293,7 +295,8 @@ it('requires a question before saving an explanation passage, then edits or remo
       window.getSelection()?.removeAllRanges()
       window.getSelection()?.addRange(range)
       scroll.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
-    })
+      })
+    }
     await selectFirstWordForExplanation()
 
     const editor = reader.getByRole('dialog', { name: 'Ask about this passage' })
@@ -336,24 +339,18 @@ it('requires a question before saving an explanation passage, then edits or remo
       .waitFor({ state: 'visible', timeout: 20_000 })
     await expect.poll(() => pendingPage.isEnabled()).toBe(true)
     await expect.poll(() => mainToolbar.getByRole('button', { name: 'Start explanation mode' }).isEnabled()).toBe(true)
+    await reader.locator('.dsh-pdf-scroll').evaluate(root => { root.scrollTop = root.scrollHeight })
+    await expect.poll(() => pendingPage.inputValue()).toBe('2')
     const awayFromPending = await reader.locator('.dsh-pdf-scroll').evaluate(root => root.scrollTop)
-    // Page steps remain enabled during navigation. A second real user action
-    // can supersede the automatic return to the paused question's page. Keep
-    // that race deterministic by activating the step on the navigation state
-    // transition, without replacing jump/reveal or changing any timeout.
-    await mainToolbar.evaluate(element => {
-      const reader = element.closest('.dsh-pdf-reader')!
-      const input = reader.querySelector<HTMLInputElement>('.dsh-pdf-page-input')!
-      const previous = reader.querySelector<HTMLButtonElement>('.dsh-pdf-page-step')!
-      const observer = new MutationObserver(() => {
-        if (!input.disabled) return
-        observer.disconnect()
-        if (previous.disabled) throw new Error('A page step must remain available during navigation')
-        previous.click()
-      })
-      observer.observe(input, { attributes: true, attributeFilter: ['disabled'] })
-      element.querySelector<HTMLButtonElement>('.dsh-pdf-tool-explain')!.click()
-    })
+    // Hold animation frames after mode entry so a real page step supersedes
+    // the return navigation before it can finish its layout commit.
+    await page.clock.install()
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 500))
+    try {
+      await mainToolbar.getByRole('button', { name: 'Start explanation mode' }).evaluate((button: HTMLButtonElement) => button.click())
+      await expect.poll(() => pendingPage.isDisabled()).toBe(true)
+      await reader.locator('.dsh-pdf-page-step:enabled').first().evaluate((button: HTMLButtonElement) => button.click())
+    } finally { await page.clock.resume() }
     await status.waitFor({ state: 'hidden' })
     await editor.waitFor({ state: 'hidden' })
     await reader.getByText('The page is not ready yet. Please retry.', { exact: true }).waitFor({ state: 'visible' })
@@ -499,12 +496,12 @@ it('requires a question before saving an explanation passage, then edits or remo
   }
 }, 90_000)
 
-it('captures an explanation image on another page only after a vision model is selected', async () => {
+it.skipIf(!MODEL_FIXTURE_AVAILABLE)('captures an explanation image on another page only after a vision model is selected', async () => {
   // The real replay adapter publishes image-input metadata without issuing a
   // model call; the question stays a draft until the user explicitly sends it.
   const scaffold = await launchWebScaffold({
     profile: { packages: [{ dir: ROOT, enabled: true }] },
-    replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
+    replayFixture: MODEL_FIXTURE,
     replayProvidersOnly: true,
   })
   let browser: Browser | undefined
@@ -637,10 +634,10 @@ it('captures an explanation image on another page only after a vision model is s
   }
 }, 90_000)
 
-it('stops accepting explanation passages and image regions at the visible item limit', async () => {
+it.skipIf(!MODEL_FIXTURE_AVAILABLE)('stops accepting explanation passages and image regions at the visible item limit', async () => {
   const scaffold = await launchWebScaffold({
     profile: { packages: [{ dir: ROOT, enabled: true }] },
-    replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
+    replayFixture: MODEL_FIXTURE,
     replayProvidersOnly: true,
   })
   let browser: Browser | undefined
@@ -665,7 +662,8 @@ it('stops accepting explanation passages and image regions at the visible item l
     await column.locator('[data-files-entry="file"]').getByRole('button', { name: FILE_NAME, exact: true }).click()
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible', timeout: 20_000 })
-    await reader.locator('[data-pdf-page="1"] [data-pdf-text="active"]').waitFor({ state: 'visible', timeout: 20_000 })
+    await reader.locator('[data-pdf-page="1"] [data-pdf-text="active"] span[data-pdf-run]').first()
+      .waitFor({ state: 'attached', timeout: 20_000 })
     const selection = await scaffold.ctx.sessionController.selectModel({ sessionId,
       provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' })
     expect(selection).toMatchObject({ selected: { model: 'deepseek-v4-flash-vision-exp' } })

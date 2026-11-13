@@ -3,7 +3,7 @@ import { compareOrRefreshGolden, launchWebScaffold, seedSession, watchConsole, w
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PDFDocument, rgb } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 import { expectUnannotatedPage, expectUniformHighlight, highlightPixels, screenshotPagePixels } from '../support/pixels.ts'
 import { captureToolbarEditsAria, openSidebarSection } from '../support/toolbar.ts'
@@ -18,10 +18,7 @@ it('keeps one new highlight uniform across overlapping quads before and after sa
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF overlapping highlight test' })
     const path = join(scaffold.workspaceCwd, 'reader-overlap-highlight-e2e.pdf')
-    const source = await PDFDocument.create()
-    const sheet = source.addPage([240, 160])
-    sheet.drawRectangle({ x: 0, y: 0, width: 240, height: 80, color: rgb(0.75, 0.75, 0.75) })
-    await writeFile(path, await source.save({ useObjectStreams: false }))
+    await writeFile(path, plainPdf([{ size: [240, 160], operators: '0.75 g 0 0 240 80 re f\n' }]))
 
     // Seed a real Host edit so the browser renders its unsaved SVG preview.
     // Each quad has a flat area and shares one overlapping 30-point strip.

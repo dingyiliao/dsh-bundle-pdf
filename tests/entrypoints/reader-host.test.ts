@@ -7,7 +7,8 @@ import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test, { after, type TestContext } from 'node:test'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
-import { PDFDocument } from 'pdf-lib'
+import { plainPdf } from '../fixtures/plain-pdf.ts'
+import { fixtureDocumentExecutable } from '../fixtures/native-document.ts'
 import { apply, inject, name } from '../../src/entrypoints/reader-host.ts'
 import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
 import { PDF_ENDPOINT, responseSchema, wireSnapshotSchema } from '../../src/contracts/rpc/index.ts'
@@ -63,7 +64,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
   const ctx = {
     loader: { locate: () => options.namespace ?? 'entry/pdf',
       resolve: (id: string) => ({ options: { id: id === 'entry/pdf' ? 'pdf-reader-entry' : id } }) },
-    fs: {}, sandboxPolicy: {}, pdfNative: { executable: '/unused/pdfium-worker' }, subprocess: nativeTestSubprocess,
+    fs: {}, sandboxPolicy: {}, pdfNative: { executable: fixtureDocumentExecutable }, subprocess: nativeTestSubprocess,
     sessionController: { async resolveAgent() {
       return options.agentSessionId
         ? { agent: { session: { id: options.resolvedAgentId ?? options.agentSessionId, header: {} } } }
@@ -164,10 +165,7 @@ async function mountDocument(runtime: ReturnType<typeof host>, assetRoot: string
 }
 
 async function openSyntheticDocument(runtime: ReturnType<typeof host>, assetRoot: string, sessionId: string, text?: string) {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([200, 200])
-  if (text) page.drawText(text, { x: 10, y: 160, size: 10 })
-  const bytes = await pdf.save()
+  const bytes = plainPdf([{ size: [200, 200], lines: text ? [{ text, x: 10, y: 160, size: 10 }] : [] }])
   const path = await mountDocument(runtime, assetRoot, bytes)
   const opened = await runtime.registeredTools.get('pdf_open')!.execute({ path }, {
     agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal,
@@ -414,6 +412,7 @@ test('indexing controls use the resource Session and a long poll reauthorizes be
 test('Host plugin installs its authenticated routes, tools, services and isolated domains', async (t) => {
   const assets = await assetFixture(t)
   const runtime = host()
+  runtime.ctx.pdfNative.documentExtensions = true
   assert.equal(name, 'pdf-reader')
   assert.deepEqual(inject, ['connection', 'sessionController', 'fs', 'sandboxPolicy', 'storageDomain',
     'loader', 'tools', 'pdfNative', 'subprocess'])

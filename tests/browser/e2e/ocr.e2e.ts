@@ -1,5 +1,5 @@
 import { expect, it, onTestFailed } from 'vitest'
-import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, saveFailureShot, DSH_ROOT, ROOT, SESSION } from '../support/scaffold.ts'
+import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, saveFailureShot, MODEL_FIXTURE, MODEL_FIXTURE_AVAILABLE, ROOT, SESSION } from '../support/scaffold.ts'
 import { join } from 'node:path'
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -8,11 +8,11 @@ import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 import { FILE_NAME, sourcePdf } from '../support/documents.ts'
 import { openSidebarSection } from '../support/toolbar.ts'
 
-it('recognizes the current PDF page through Host OCR and searches its page-level transcript', async () => {
+it.skipIf(!MODEL_FIXTURE_AVAILABLE)('recognizes the current PDF page through Host OCR and searches its page-level transcript', async () => {
   const recognizedText = ['Quartz OCR proof on page one.', ...Array(80).fill('Additional recognized line.')].join('\n')
   const scaffold = await launchWebScaffold({
     profile: { packages: [{ dir: ROOT, enabled: true }] },
-    replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
+    replayFixture: MODEL_FIXTURE,
     replayProvidersOnly: true,
   })
   let browser: Browser | undefined

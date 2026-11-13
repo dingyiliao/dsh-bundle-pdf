@@ -1,6 +1,6 @@
 {
   "name": "@dylanl1/dsh-plugin-pdf",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "description": "PDF reading, annotations, navigation and selection translation for DeepSeek Harness",
   "license": "MIT",
@@ -64,7 +64,13 @@
     "scripts/local-embedding-server.py",
     "performance.md",
     "native-pdf.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/dsh-compatibility.md",
+    "docs/testing.md",
+    "docs/releasing.md",
+    "docs/pdf-engine.md",
+    "coverage.md",
+    "examples"
   ],
   "icon": "./icon.svg",
   "scripts": {
@@ -86,12 +92,14 @@
     "test:coverage:project": "node scripts/coverage-project.mjs",
     "test:coverage": "npm run test:coverage:project",
     "test:web": "npm run build && node scripts/run-web-tests.mjs",
-    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm test",
+    "check": "npm run typecheck && npm run typecheck:tests && npm run typecheck:bench && npm run check:dsh && npm run check:architecture && npm run test",
     "package:native": "node scripts/package-native.mjs",
     "package:main": "node scripts/package-main.mjs",
     "package:smoke": "node scripts/smoke-package-install.mjs",
     "release:publish": "node scripts/publish-npm.mjs",
-    "bench:indexing": "node --import tsx bench/indexing.ts"
+    "bench:indexing": "node --import tsx bench/indexing.ts",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check:dsh": "node scripts/check-dsh-compatibility.mjs"
   },
   "dsh": {
     "bundle": {
@@ -112,12 +120,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-attachment": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-fs-local": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-attachment": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs-local": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
     "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
@@ -144,27 +152,25 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-util-workspace-path": "0.2.2-rc.1",
-    "@pdf-lib/fontkit": "1.1.1",
-    "pdf-lib": "1.17.1",
-    "zod": "~4.4.3"
+    "@deepseek-ai/dsh-util-workspace-path": "^0.2.2-rc.1",
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-attachment": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-sidebar-documentpreview": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-loader-smoke": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-documentpreview": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-loader-smoke": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.2",
     "@deepseek-ai/schemastery": "3.19.0",
     "@jridgewell/sourcemap-codec": "1.6.0",
     "@tesseract.js-data/chi_sim": "1.0.0",
@@ -181,13 +187,24 @@
     "tesseract.js-core": "7.0.0",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "@deepseek-ai/dsh-error": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.2",
+    "@deepseek-ai/cordis-plugin-group": "~1.1.0",
+    "@deepseek-ai/cordis-plugin-include": "~1.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "~1.1.0",
+    "@deepseek-ai/dsh-launch-environment": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-http-proxy": "0.2.2-rc.2"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
   }
 }

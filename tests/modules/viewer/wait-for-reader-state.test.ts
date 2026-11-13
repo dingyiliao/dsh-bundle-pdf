@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { waitForReaderState } from '../../../src/modules/viewer/controllers/wait-for-reader-state.js'
+import { waitForReaderState } from '../../../src/client/viewer/controllers/wait-for-reader-state.js'
 
 class TrackedTarget extends EventTarget {
   listeners = 0

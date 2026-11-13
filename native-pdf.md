@@ -18,9 +18,11 @@ Host 管理员可用 `DSH_PDF_NATIVE_HELPER` 指向可信 helper；这是显式�
 
 ## 源码构建
 
+先构建[固定版本的 PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md)。
+
 ```sh
 npm ci
-npm run native:build
+DSH_PDFIUM_ROOT=/path/to/sdk npm run native:build
 npm run build
 ```
 
@@ -38,25 +40,32 @@ Host 的打开/读取租约保证 mutable native document ID 不在一次读取�
 
 ## 帧协议
 
-协议定义位于 `src/engine/framing.ts` 与 `native/pdfium-worker.cpp`。stdin/stdout 都使用二进制帧：
+协议定义位于 `src/engine/host/framing.ts`、`native/worker/worker-runtime.cpp` 与 `native/backend/pdfium/pdfium-worker.cpp`。stdin/stdout 都使用二进制帧：
 
 ```text
 uint32le JSON字节数 | uint32le 二进制字节数 | UTF-8 JSON | 二进制载荷
 ```
 
-每条请求带唯一 `requestId` 和 `command`。成功回复为 `{requestId, ok: true, value}`，失败回复为 `{requestId, ok: false, error: {code, message}}`；Host 校验关联与长度。`open` 的载荷是 PDF 字节；`render` 回复的载荷是 RGBA 像素，其余命令返回 JSON。stdout 只能写协议，stderr 被 Host 排空且不无界保存。
+每条请求带唯一 `requestId` 和 `command`。成功回复为 `{requestId, ok: true, value}`，失败回复为 `{requestId, ok: false, error: {code, message}}`。Host 校验关联与长度。`open` 的载荷是 PDF 字节，`applyFormFields` 可携带生成外观所需的字体。`render` 和 `saveChunk` 回复分别携带 RGBA 和保存后的 PDF 字节。stdout 只写协议，stderr 由 Host 排空。
 
 | 命令 | 职责 |
 | --- | --- |
 | `hello` | 返回协议版本、引擎和 PDFium build；Host 必须匹配 |
 | `open` / `close` | 从字节创建/释放文档；返回页数、表单类型和签名数量 |
+| `security` | 读取加密处理器版本、当前凭据的有效权限和文档原始用户权限 |
+| `documentInfo` / `fingerprints` | 分批读取页面几何、文档能力和页面内容指纹 |
+| `documentOutlines` / `applyOutlines` | 读取和更新可编辑的原生书签树 |
+| `formFields` / `applyFormFields` | 分批读取 AcroForm 字段，应用值并生成 widget 外观 |
 | `text` | 原生文字项、样式、逐字位置及 Unicode 映射质量 |
+| `selectionGeometry` | 可选能力。分块返回字符索引、文字和 PDF 坐标四边形，供客户端本地拖选 |
 | `outline` / `destination` | 读取书签树和命名目的地 |
 | `links` | 读取页链接及目的地 |
 | `inspect` | 分页只读检查页面对象类型和边界，每批最多 100 项 |
 | `render` | 按页、方向、完整栅格尺寸和 tile 区域绘制，独立控制标注及表单外观 |
+| `annotations` / `annotationEdit` | 分页读取受支持的标注，在普通 PDF 或有批注权限的未签名加密 PDF 上应用修改 |
+| `saveCopy` / `saveChunk` | 保存副本，保留原安全设置，并分块读取，副本上限 128 MiB |
 
-协议当前为 `1`。JSON 上限 2 MiB，请求二进制上限 256 MiB，回复二进制上限 8 MiB。native 页号从 0 开始，Host 外部页号从 1 开始。tile 最大 1026×1026，包含边缘余量；正常 Reader 使用 512 设备像素分块，图像组合由 Host 控制。
+协议当前为 `2`。JSON 上限 2 MiB，PDF 输入上限 256 MiB，字体输入上限 32 MiB，回复二进制上限 8 MiB。多数 native 页命令使用从 0 开始的页下标，Host 外部页号从 1 开始。tile 最大 1026×1026，包含边缘余量。Reader 使用 512 设备像素分块，图像组合由 Host 控制。
 
 ## 调度、取消与资源
 
@@ -70,11 +79,11 @@ RGBA 在 Host 编码为 PNG，通过有界 RPC 返回 Client。Client 管理解�
 
 ## 原生能力范围
 
-- PDFium 读取/绘制普通页面、原生文字、链接、目的地、书签和 AcroForm 原有外观；不在 worker 中编辑或保存 PDF。表单、标注和目录写入由上层共享工作副本及 pdf-lib 完成。
-- 表单环境仅用于绘制，不运行 PDF JavaScript、网络动作或 PDFium 表单输入事件。XFA 不支持；签名文档只读，签名数量不代表已验证签名真伪。
-- PDFium 能解锁的加密 PDF 只读打开，文本提取遵守 PDF 权限。密码由 Host 在阅读视图存续期间保留在内存中，原文件保持加密，阅读器不生成解密副本。
+- PDFium 读取页面、原生文字、链接、目的地、书签和 AcroForm 外观。普通 PDF 的批注、表单与书签在独立文档进程中写入，保存结果经重开验证。AcroForm 保存按需嵌入随包字体的子集，字形不受支持时拒绝该次写入。
+- 表单绘制及编辑不执行 PDF JavaScript 或网络动作。XFA 不支持；签名文档只读。检测到签名结构不代表验证了签名真伪。
+- PDFium 能解锁的加密 PDF 遵守文档的文本提取和批注权限。密码和批注草稿由 Host 在阅读视图存续期间保留在内存中。另存为在隔离句柄上输出仍受原安全设置保护的字节，验证后才写到其他路径。
 - 截图/OCR 可关闭原生标注或 widget 外观；图像生成不能据此推断 OCR/图像理解后端可用。未保存的编辑投影也不是 native 源基线的一部分。
 - 文字提取区分合法换行断字标记与 Unicode 映射故障。Host 可用随包本地 OCR 修复异常文字层，结果标记为派生/近似文字；不会改写原 PDF，也不能冒充精确原生字形证据。复杂字体、RTL、竖排等版面的结果仍取决于实际提取质量。
 - 页面对象检查为只读；对象移动、正文替换、图片/矢量写入和稳定页面对象 ID 不在当前协议中。
 
-协议、进程生命周期和原生集成测试由 `npm run check` 收集；真实原生用例需先构建 helper，`DSH_PDF_REQUIRE_NATIVE_TESTS=1` 可禁止缺少 helper 时跳过。覆盖率入口见 [测试文档](docs/testing.md)。历史原生 smoke 数据保留在 [benchmark 目录](docs/benchmarks/native-v1-20260930/README.md)，不作为当前实现的性能结论。
+协议、进程生命周期和原生集成测试由 `npm run check` 收集；真实原生用例需先构建 helper，`DSH_PDF_REQUIRE_NATIVE_TESTS=1` 可禁止缺少 helper 时跳过。覆盖率入口见 [测试文档](docs/testing.md)。历史原生 smoke 数据保留在 [benchmark 目录](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/docs/benchmarks/native-v1-20260930/README.md)，不作为当前实现的性能结论。

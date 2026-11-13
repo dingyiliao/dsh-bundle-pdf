@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderSave, type ReaderSaveOptions } from '../../../src/modules/viewer/index.ts'
+import { useReaderSave, type ReaderSaveOptions } from '../../../src/client/viewer/index.ts'
 
 async function withSave(run: (fixture: {
   state(): ReturnType<typeof useReaderSave>
@@ -24,7 +24,13 @@ async function withSave(run: (fixture: {
   const errors: unknown[] = []
   const saves: Array<{ path?: string; overwrite?: boolean; expectedTargetVersion?: string | null }> = []
   const inspections: string[] = []
-  const snapshot = { id: 'doc-1', revision: 4, path: '/original.pdf', dirty: true } as WorkspaceSnapshot
+  const snapshot: WorkspaceSnapshot = {
+    id: 'doc-1', revision: 4, path: '/original.pdf', sourceVersion: 'source-1', contentVersion: 'content-1',
+    dirty: true, canUndo: true, canRedo: false, conflict: false,
+    document: { pageCount: 1, signed: false, encrypted: false, readOnly: false, annotations: [],
+      pages: [{ page: 1, cropBox: [0, 0, 200, 300], rotation: 0, userUnit: 1 }] },
+    reader: { bytesHash: `sha256:${'a'.repeat(64)}`, generation: 1, protocolVersion: 1 },
+  }
   let latest: ReturnType<typeof useReaderSave> | undefined
   const Harness = (props: ReaderSaveOptions) => { latest = useReaderSave(props); return null }
   const options: ReaderSaveOptions = {
@@ -105,6 +111,32 @@ test('Save As opens the draft, chooses only a directory, and rebinds this resour
     assert.equal(state().feedback?.durationMs, 2000)
     assert.equal(state().saveAsOpen, false)
     assert.deepEqual(paths, ['session-file://session-1/copies/copy.pdf'])
+  })
+})
+
+test('encrypted annotation changes can only save to an inspected copy path', async () => {
+  await withSave(async ({ state, options, render, saves, inspections }) => {
+    const current: WorkspaceSnapshot = { ...options.snapshot!,
+      document: { ...options.snapshot!.document, encrypted: true, annotationEditing: 'allowed' } }
+    const errors: unknown[] = []
+    await render({ ...options, snapshot: current, currentSnapshot: () => current,
+      setError: error => { if (error) errors.push(error) } })
+    await act(async () => {
+      await state().save()
+      await state().save(current.path, { version: 'original', overwrite: true })
+      state().beginSaveAs()
+      state().setSaveName('original.pdf')
+    })
+    assert.deepEqual(errors, ['reader.encryptedSaveAsOnly', 'reader.encryptedSaveAsOnly'])
+    assert.equal(state().locationError, 'protected-source')
+    assert.equal(state().savePath, undefined)
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(inspections, [])
+    assert.deepEqual(saves, [])
+    await act(async () => { state().setSaveName('encrypted-copy.pdf') })
+    await waitForSave(() => !!state().target, 'the protected copy target is inspected')
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [{ path: '/encrypted-copy.pdf', overwrite: false, expectedTargetVersion: null }])
   })
 })
 

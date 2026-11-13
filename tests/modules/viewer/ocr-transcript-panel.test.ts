@@ -4,9 +4,9 @@ import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { OcrTranscriptPanel } from '../../../src/modules/viewer/components/OcrTranscriptPanel.tsx'
-import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
-import { readerLocales } from '../../../src/modules/viewer/index.js'
+import { OcrTranscriptPanel } from '../../../src/client/viewer/components/OcrTranscriptPanel.tsx'
+import { ReadingSidebar } from '../../../src/client/viewer/components/ReadingSidebar.tsx'
+import { readerLocales } from '../../../src/client/viewer/index.js'
 import type { HostOcrRecognition } from '../../../src/adapters/client/remote/host-ocr-api.ts'
 
 const t = (key: string) => (readerLocales.en as Record<string, string>)[key] ?? key

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf as blankFixturePdf } from '../../fixtures/plain-pdf.ts'
 import { Context } from '@deepseek-ai/cordis'
 import ToolsService, { type ToolExecutionInput } from '@deepseek-ai/dsh-tools'
 import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
@@ -22,9 +22,7 @@ const signal = new AbortController().signal
 const agent = { session: { id: sessionId, header: { cwd: '/fixtures' } } }
 
 async function blankPdf() {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  return pdf.save({ useObjectStreams: false })
+  return blankFixturePdf(1, [300, 400])
 }
 
 test('published DSH native tool pipeline dispatches PDF tools and removes their fiber-owned registrations', async () => {

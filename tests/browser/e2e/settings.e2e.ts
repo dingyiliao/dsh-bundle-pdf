@@ -37,7 +37,7 @@ it('updates engine settings live when a contributor plugin loads and unloads, re
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
     const tripwire = watchConsole(page)
-    onTestFailed(() => saveFailureShot(page, 'pdf-engine-directory-browser'))
+    onTestFailed(() => saveFailureShot(page, 'engine-directory-browser'))
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached' })
     await openSettings(page, 'en')

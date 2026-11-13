@@ -2,12 +2,12 @@
 import { createRoot } from 'react-dom/client'
 import { Reader } from '../src/client/Reader.tsx'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
-import { readerLocales } from '../src/modules/viewer/index.js'
+import { readerLocales } from '../src/client/viewer/index.js'
 import { createTranslationRegistry } from '../src/translation/index.ts'
 import { defaultSettings } from '../src/shared/contracts.ts'
 import { observePdfPerformance, type PdfPerformanceEvent } from '../src/shared/performance.ts'
 import { readerStyles } from '../src/client/reader-styles.js'
-import { pageIndexAtOffset, windowLayout } from '../src/modules/viewer/index.ts'
+import { pageIndexAtOffset, windowLayout } from '../src/client/viewer/index.ts'
 
 interface Config { sessionId: string; token: string; pages: number; annotations: number }
 interface Payload { metrics: Record<string, number | null>; stages: PdfPerformanceEvent[]; qualityPassed: boolean }

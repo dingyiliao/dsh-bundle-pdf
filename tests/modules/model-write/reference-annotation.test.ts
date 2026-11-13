@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { readPageWindow, createMemoryEvidenceReferenceStore, createTextReferenceResolver,
   evidenceSha256, createTextRangeReferences, searchPageWindows, type TextReferenceResolverPort } from '../../../src/modules/evidence/index.ts'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
 import { createPdfRetrieval } from '../../../src/adapters/host/dsh/retrieval.ts'
-import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
+import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
@@ -233,11 +233,8 @@ test('source replacement and cancellation after resolving evidence still apply z
 const executable = resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 test('real PDFium evidence offsets become the correct shared-draft annotation without a model rectangle',
   { skip: !existsSync(executable) }, async () => {
-    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-    const page = pdf.addPage([400, 400])
-    page.drawText(quote, { x: 60, y: 260, size: 12, font })
-    page.drawText(quote, { x: 60, y: 180, size: 12, font })
-    const state = memoryWorkspace(await pdf.save())
+    const state = memoryWorkspace(plainPdf([{ size: [400, 400], lines: [260, 180]
+      .map(y => ({ text: quote, x: 60, y, size: 12 })) }] ))
     const worker = new NativeWorker(executable, nativeTestSubprocess)
     let writes: ReturnType<typeof createModelWriteService> | undefined
     try {

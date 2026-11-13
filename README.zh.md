@@ -14,6 +14,8 @@
 - **模型操作**：读页、检索、标注、编辑书签和填写已有 AcroForm 表单，与用户共用草稿。
 - **保存与恢复**：撤销／重做、草稿恢复、保存／另存为和源文件冲突检测。
 - **OCR 与检索**：区域截图、文字识别，以及基于自配 embedding 模型的语义搜索（实验功能）。索引持久化到磁盘，支持扫描页文字、图像描述、失败续建，重启或仅保存标注后继续复用。
+- **输入快捷键**：解释问题、批注和便签输入框按 **Enter** 保存，**Shift+Enter** 换行，**Esc** 取消。
+- **低缩放浏览**：缩放低于 **50%** 时进入纯浏览模式，仍可滚动、搜索、打开链接和查看标注，但暂不提供文字选择或复制；放大到 50% 即恢复。
 
 ## 功能演示
 
@@ -46,7 +48,7 @@
 
 ## 安装
 
-已验证 DSH `0.2.2-rc.1`。支持的版本见 [package.json](package.json)。
+已验证 DSH `0.2.2-rc.2`。插件接受 `>=0.2.2-rc.1 <0.3.0-0` 的 DSH 0.2.x 版本，策略见 [DSH 兼容策略](docs/dsh-compatibility.md)。
 
 请使用下方 npm 包名安装，不要使用 GitHub 链接。源码仓库不含 `dist/`，直接安装会因缺少入口文件而无法启用插件。
 
@@ -95,18 +97,20 @@ flowchart TB
     Search --> Copy
     Search --> Engines
     Search --> Index[("磁盘索引与检查点")]
-    Copy --> PDF["PDFium · pdf-lib"]
+    Copy --> PDF["原生 PDFium · 文档读写"]
     Copy --> Storage["文件与草稿存储"]
   end
 ```
 
-阅读器与模型工具共用 Host 业务能力和同一资源会话内的工作副本，修改双向同步。原生 PDFium worker 负责渲染和文字提取。详见[架构文档](docs/architecture.md)。
+阅读器与模型工具共用同一资源会话内的 Host 工作副本。原生 PDFium 负责渲染、文字提取、文档检查和写入。文档检查与写入使用独立进程，避免占用前台渲染队列。详见[架构文档](docs/architecture.md)。
 
 ## 开发
 
+先构建[固定版本的 PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md)。
+
 ```sh
 npm ci
-npm run native:build
+DSH_PDFIUM_ROOT=/path/to/sdk npm run native:build
 npm run build
 ```
 

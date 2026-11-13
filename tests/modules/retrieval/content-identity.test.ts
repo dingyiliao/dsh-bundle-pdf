@@ -133,3 +133,64 @@ test('restoring a legacy ready index records page proof for a later edit without
   assert.deepEqual(reads, [1, 2, 2])
   assert.ok(updated.chunks.some(chunk => chunk.page === 2 && chunk.text.includes('open-2')))
 })
+
+test('changed fingerprint algorithms reuse OCR and vectors only for identical source bytes', async () => {
+  const sha = (part: string) => `sha256:${part.repeat(64)}`
+  const document: RetrievalDocument = {
+    id: 'doc', path: '/fixture/scanned.pdf', sourceDigest: sha('1'), contentVersion: 'original', pageCount: 1,
+    indexContentDigest: sha('a'), indexPageDigests: [sha('b')],
+  }
+  const records = new Map<string, unknown>()
+  const ocrReads: string[] = [], documentEmbeddings: string[] = []
+  const ports: RetrievalPorts = {
+    documents: { snapshot: () => ({ ...document }) },
+    cache: { async get(key) { return records.get(key) }, async set(key, value) { records.set(key, value) } },
+    pages: { indexIdentity: () => 'configured-ocr', async read() {
+      ocrReads.push(document.sourceDigest)
+      return { source: 'ocr', text: `Scanned evidence from the ${document.contentVersion} document.` }
+    } },
+    embedding: { select: () => ({ fingerprint: 'fixture-encoder', dimensions: 2, maxBatchSize: 8,
+      async embed(texts, purpose) {
+        if (purpose === 'document') documentEmbeddings.push(...texts)
+        return texts.map(() => [1, 0])
+      },
+    }) },
+  }
+  const input = { documentId: document.id, query: 'scanned evidence', mode: 'semantic' as const }
+  async function search() {
+    const service = createRetrievalService(ports)
+    try { return await service.search('session', input) }
+    finally { await service.dispose() }
+  }
+
+  const first = await search()
+  assert.equal(first.status, 'complete')
+  assert.deepEqual(first.coverage.ocrPages, [1])
+  assert.deepEqual(ocrReads, [sha('1')])
+  assert.equal(documentEmbeddings.length, 1)
+
+  Object.assign(document, { contentVersion: 'upgraded', indexContentDigest: sha('c'), indexPageDigests: [sha('d')] })
+  const upgraded = await search()
+  assert.equal(upgraded.status, 'complete')
+  assert.notEqual(upgraded.indexGeneration, first.indexGeneration)
+  assert.equal(upgraded.coverage.embeddedChunks, first.coverage.embeddedChunks)
+  assert.deepEqual(upgraded.chunks, first.chunks)
+  assert.deepEqual(ocrReads, [sha('1')])
+  assert.equal(documentEmbeddings.length, 1)
+
+  delete document.indexContentDigest
+  document.indexPageDigests = [null]
+  const withoutFingerprint = await search()
+  assert.equal(withoutFingerprint.status, 'complete')
+  assert.deepEqual(withoutFingerprint.chunks, first.chunks)
+  assert.deepEqual(ocrReads, [sha('1')])
+  assert.equal(documentEmbeddings.length, 1)
+
+  Object.assign(document, { sourceDigest: sha('2'), contentVersion: 'changed', indexContentDigest: sha('e'),
+    indexPageDigests: [sha('f')] })
+  const changed = await search()
+  assert.equal(changed.status, 'complete')
+  assert.match(changed.chunks[0]!.text, /changed document/)
+  assert.deepEqual(ocrReads, [sha('1'), sha('2')])
+  assert.equal(documentEmbeddings.length, 2)
+})

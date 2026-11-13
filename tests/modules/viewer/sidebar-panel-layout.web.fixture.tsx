@@ -3,12 +3,12 @@ import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation, PdfOutlineItem } from '../../../src/core/pdf-types.js'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.js'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.js'
-import { BookmarkPanel } from '../../../src/modules/viewer/components/BookmarkPanel.js'
-import { PageThumbnailPanel } from '../../../src/modules/viewer/components/PageThumbnailPanel.js'
-import { readerSidebarPanels, type ReaderSidebarPanelsOptions } from '../../../src/modules/viewer/components/ReaderSidebarPanels.js'
-import { readingSidebarSections, type ReadingSidebarSection } from '../../../src/modules/viewer/components/ReadingSidebar.js'
-import type { ReaderDocument, ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.js'
-import { readerLocales } from '../../../src/modules/viewer/locales.js'
+import { BookmarkPanel } from '../../../src/client/viewer/components/BookmarkPanel.js'
+import { PageThumbnailPanel } from '../../../src/client/viewer/components/PageThumbnailPanel.js'
+import { readerSidebarPanels, type ReaderSidebarPanelsOptions } from '../../../src/client/viewer/components/ReaderSidebarPanels.js'
+import { readingSidebarSections, type ReadingSidebarSection } from '../../../src/client/viewer/components/ReadingSidebar.js'
+import type { ReaderDocument, ReaderOutlineItem } from '../../../src/client/viewer/ports/reader-document.js'
+import { readerLocales } from '../../../src/client/viewer/locales.js'
 
 const actions: string[] = []
 const outlines: ReaderOutlineItem[] = Array.from({ length: 80 }, (_, index) => ({

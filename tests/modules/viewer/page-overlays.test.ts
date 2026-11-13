@@ -4,8 +4,8 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import { PageContextOverlays, PageMarkupOverlay } from '../../../src/modules/viewer/rendering/PageOverlays.tsx'
-import { annotationPolygons } from '../../../src/modules/viewer/model/reader-annotations.ts'
+import { PageContextOverlays, PageMarkupOverlay } from '../../../src/client/viewer/rendering/PageOverlays.tsx'
+import { annotationPolygons } from '../../../src/client/viewer/model/reader-annotations.ts'
 
 const geometry: PdfPageInfo = { page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }
 const viewport = new NativeViewport(geometry, 1, 0)

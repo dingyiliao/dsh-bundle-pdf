@@ -6,10 +6,11 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NavigationHistory, type NavigationPosition } from '../../../src/shared/navigation-history.ts'
 import type { PdfClientApi } from '../../../src/shared/contracts.ts'
-import { useReaderNavigation, type ReaderNavigationOptions } from '../../../src/modules/viewer/index.ts'
-import { navigateAgentRequest } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
-import { NativeViewport, setWindowLayout, buildPageLayout, READING_TOP_INSET } from '../../../src/modules/viewer/index.ts'
-import type { NativeDocument, PageView } from '../../../src/modules/viewer/index.ts'
+import { useReaderNavigation, type ReaderNavigationOptions } from '../../../src/client/viewer/index.ts'
+import { navigateAgentRequest } from '../../../src/client/viewer/controllers/agent-text-navigation.ts'
+import { NativePage } from '../../../src/client/viewer/rendering/document.ts'
+import { NativeViewport, setWindowLayout, buildPageLayout, READING_TOP_INSET } from '../../../src/client/viewer/index.ts'
+import type { NativeDocument, PageView } from '../../../src/client/viewer/index.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { AgentNavigationRequest } from '../../../src/contracts/navigation.ts'
 
@@ -51,6 +52,92 @@ test('history return reports a failed page restore without popping the destinati
     restoreDom()
 
   }
+})
+
+for (const replacement of ['destination', 'invalid', 'origin'] as const) test(`a rapid jump preserves its committed origin when the last request targets ${replacement}`, async () => {
+  const { dom, restore, install } = createDom(undefined, { globals: [] })
+  install({ window: dom, document: dom.document, IS_REACT_ACT_ENVIRONMENT: true,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())) })
+  const root = createRoot(dom.document.getElementById('root')!)
+  const tab = new AbortController(), scroll = dom.document.createElement('div')
+  const pages = [1, 2, 3].map(page => ({ page, cropBox: [0, 0, 400, 600] as const, rotation: 0, userUnit: 1 }))
+  const snapshot = { id: 'doc', contentVersion: 'v1', document: { pageCount: pages.length, pages } } as unknown as WorkspaceSnapshot
+  const document = { snapshot } as NativeDocument
+  const layoutFor = (zoom: number) => buildPageLayout(snapshot.document.pages, () => zoom, 0, READING_TOP_INSET)
+  const intermediateZoom = 1.25, firstTop = 120, intermediateTop = layoutFor(intermediateZoom)[1]!.top
+  const bounds = (top: number, height: number) => ({ left: 0, top, right: 400, bottom: top + height, width: 400, height } as DOMRect)
+  const scrollWrites: number[] = []
+  let top = firstTop, reachedIntermediate!: () => void
+  const intermediate = new Promise<void>(resolve => { reachedIntermediate = resolve })
+  const state: ReaderNavigationOptions['state'] = { current: { snapshot, scrollRoot: scroll, fit: 'custom',
+    zoom: 1, size: { width: 400, height: 400 }, currentPage: 1 } }
+  Object.defineProperties(scroll, { clientWidth: { value: 400 }, clientHeight: { value: 400 },
+    scrollWidth: { get: () => 400 * state.current.zoom },
+    scrollTop: { get: () => top, set: (value: number) => {
+      top = value; scrollWrites.push(value)
+      if (value === intermediateTop) reachedIntermediate()
+    } } })
+  scroll.getBoundingClientRect = () => bounds(0, 400)
+  const views: ReaderNavigationOptions['views'] = { current: new Map() }
+  const setZoom = (zoom: number) => {
+    state.current.zoom = zoom
+    const layout = layoutFor(zoom)
+    setWindowLayout(scroll, layout)
+    for (const number of [1, 3]) {
+      const geometry = layout[number - 1]!
+      const element = dom.document.createElement('div')
+      element.getBoundingClientRect = () => bounds(geometry.top - top, geometry.height)
+      const page = new NativePage(document, number)
+      views.current.set(number, { element, page, viewport: page.getViewport({ scale: zoom }) })
+    }
+  }
+  setZoom(1)
+  const history = new NavigationHistory({ capacity: 10 }), errors: unknown[] = []
+  const options: ReaderNavigationOptions = {
+    api: { positions: { async get() { return null }, async set() {} } } as unknown as PdfClientApi,
+    sessionId: 'session', tabSignal: tab.signal, contentRevision: 1, pdf: document, snapshot,
+    scrollRoot: scroll, currentPage: 1, historyCapacity: 10, lifetime: { history, ocrPages: new Map() }, state, views,
+    setCurrentPage: page => { state.current.currentPage = page }, setPageInput() {},
+    setZoom, setFit: fit => { state.current.fit = fit },
+    setPositionNotice() {}, onError: error => { errors.push(error) }, t: key => key,
+  }
+  let navigation!: ReturnType<typeof useReaderNavigation>
+  const Harness = () => { navigation = useReaderNavigation(options); return null }
+  const settle = async () => {
+    for (let attempt = 0; attempt < 100 && navigation.navigationLock.current; attempt++) {
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    assert.equal(navigation.navigationLock.current, false)
+  }
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    const origin = navigation.capture()
+    await act(async () => {
+      const first = navigation.jump(2, { scale: intermediateZoom })
+      await intermediate
+      assert.equal(await navigation.jump(1, {}, true, { signal: tab.signal,
+        validate: () => assert.fail('An agent request must not replace a user jump') }), false)
+      const lastPage = replacement === 'destination' ? 3 : replacement === 'invalid' ? 4 : 1
+      assert.equal(await navigation.jump(lastPage, replacement === 'origin' ? origin : {}), false)
+      assert.equal(await first, false)
+      await settle()
+    })
+    assert.equal(scrollWrites[0], intermediateTop)
+    assert.equal(state.current.zoom, 1, 'an abandoned custom zoom must not become the next navigation default')
+    if (replacement === 'destination') {
+      assert.ok(!scrollWrites.includes(firstTop), 'the interrupted jump must not visibly restore its starting position')
+      assert.equal(state.current.currentPage, 3)
+      assert.deepEqual(history.snapshot().positions, [origin], 'only the settled jump enters history with the original reading point')
+      await act(async () => { navigation.navigateHistory(); await settle() })
+      assert.equal(top, firstTop)
+      assert.equal(history.size, 0)
+    } else {
+      assert.equal(top, firstTop, 'if the last jump cannot move, restore the original scroll position')
+      assert.equal(state.current.currentPage, 1)
+      assert.equal(history.size, 0)
+    }
+    assert.deepEqual(errors.map(error => (error as Error).message), replacement === 'invalid' ? ['reader.invalidDestination'] : [])
+  } finally { tab.abort(); await act(async () => root.unmount()); restore() }
 })
 
 for (const resumePage of [1, 2]) test(resumePage === 1

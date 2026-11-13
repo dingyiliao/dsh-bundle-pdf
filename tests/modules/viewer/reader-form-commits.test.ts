@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createReaderFormCommits } from '../../../src/modules/viewer/controllers/reader-form-commits.ts'
+import { createReaderFormCommits } from '../../../src/client/viewer/controllers/reader-form-commits.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void

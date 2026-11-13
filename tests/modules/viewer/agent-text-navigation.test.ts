@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import type { AgentNavigationRequest, TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { navigateAgentRequest, textTargetPosition, type AgentTextNavigationOptions } from '../../../src/modules/viewer/controllers/agent-text-navigation.ts'
+import { navigateAgentRequest, textTargetPosition, type AgentTextNavigationOptions } from '../../../src/client/viewer/controllers/agent-text-navigation.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import { NativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
+import { NativeDocument } from '../../../src/client/viewer/rendering/document.ts'
 import type { NativeReaderApi, NativeTextContent } from '../../../src/shared/native.ts'
 
 const hash = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`

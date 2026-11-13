@@ -1,0 +1,74 @@
+name: Build the patched PDFium SDK
+description: Build the PDFium source revision locked by this project and stage its worker.
+inputs:
+  project:
+    description: Path to the plugin checkout relative to the GitHub workspace.
+    default: .
+  target:
+    description: Target platform. Leave empty for the native host, or set linux-arm64 on a Linux x64 runner.
+    default: ''
+  build-worker:
+    description: Build the worker on this runner after staging the SDK.
+    default: 'true'
+outputs:
+  sdk-root:
+    description: Absolute path to the staged PDFium SDK.
+    value: ${{ steps.build.outputs.sdk-root }}
+runs:
+  using: composite
+  steps:
+    - name: Synchronize and build pinned PDFium
+      id: build
+      shell: bash
+      working-directory: ${{ inputs.project }}
+      env:
+        DEPOT_TOOLS_UPDATE: '0'
+        DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+        DSH_PDF_NATIVE_OFFLINE: '1'
+        PDFIUM_TARGET: ${{ inputs.target }}
+        PDFIUM_BUILD_WORKER: ${{ inputs.build-worker }}
+      run: |
+        set -euo pipefail
+        work="$RUNNER_TEMP/dsh-pdfium"
+        gclient_runner=(gclient)
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          work="$(cygpath -u "$RUNNER_TEMP")/dsh-pdfium"
+          gclient_runner=(env MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c gclient.bat)
+        fi
+        pdfium_revision="$(node -p 'require("./native/dependencies.json").pdfium.sourceRevision')"
+        depot_revision="$(node -p 'require("./native/dependencies.json").pdfium.depotToolsRevision')"
+        mkdir -p "$work"
+        git init "$work/depot_tools"
+        git -C "$work/depot_tools" fetch --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$depot_revision"
+        git -C "$work/depot_tools" checkout --detach FETCH_HEAD
+        git init "$work/pdfium"
+        git -C "$work/pdfium" remote add origin https://pdfium.googlesource.com/pdfium.git
+        git -C "$work/pdfium" fetch --depth=1 origin "$pdfium_revision"
+        git -C "$work/pdfium" checkout --detach FETCH_HEAD
+        export PATH="$work/depot_tools:$PATH"
+        (
+          cd "$work"
+          printf '%s\n' 'solutions = [{"name": "pdfium", "url": "https://pdfium.googlesource.com/pdfium.git", "managed": False, "custom_vars": {"checkout_configuration": "minimal"}}]' > .gclient
+          if [[ "$PDFIUM_TARGET" == linux-arm64 ]]; then
+            printf '%s\n' 'target_cpu = ["arm64"]' >> .gclient
+          fi
+          "${gclient_runner[@]}" sync --revision "pdfium@$pdfium_revision" --no-history --shallow -j 8
+        )
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          sed -i 's/10\.0\.28000\.0/10.0.26100.0/g' "$work/pdfium/build/vs_toolchain.py" "$work/pdfium/build/toolchain/win/setup_toolchain.py"
+          sed -i 's/NTDDI_WIN11_BR/NTDDI_WIN11_GE/g' "$work/pdfium/build/config/win/BUILD.gn"
+        fi
+        sdk_args=(--checkout "$work/pdfium" --sdk "$work/sdk")
+        if [[ -n "$PDFIUM_TARGET" ]]; then sdk_args+=(--target "$PDFIUM_TARGET"); fi
+        node native/pdfium/build-pdfium-sdk.mjs "${sdk_args[@]}"
+        sdk="$(node -p 'require("node:path").resolve(process.argv[1])' "$work/sdk")"
+        if [[ -f "$sdk/DSH_PATCHSET" ]]; then
+          project_root="$GITHUB_WORKSPACE/${{ inputs.project }}"
+          mkdir -p "$project_root/native/.deps/pdfium-patched"
+          cp "$sdk/DSH_PATCHSET" "$project_root/native/.deps/pdfium-patched/DSH_PATCHSET"
+        fi
+        printf 'sdk-root=%s\n' "$sdk" >> "$GITHUB_OUTPUT"
+        if [[ "$PDFIUM_BUILD_WORKER" == true ]]; then
+          DSH_PDFIUM_ROOT="$sdk" npm run native:build
+          printf 'DSH_PDFIUM_ROOT=%s\nDSH_PDF_REQUIRE_NATIVE_EXTENSIONS=1\n' "$sdk" >> "$GITHUB_ENV"
+        fi

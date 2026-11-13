@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import '../adapters/host/dsh/session-events.js'
 import { createEvidenceReferenceStore } from '../adapters/host/storage/evidence-references.js'
 import { createIndexingLog } from '../adapters/host/filesystem/indexing-log.js'
 import { resolveIndexingLogDirectory, resolveRetrievalStoreDirectory } from '../adapters/host/dsh/indexing-log-location.js'
@@ -25,7 +26,7 @@ import { createPdfModelOptions, type PdfModelOptionsController } from '../adapte
 import { PDF_MODEL_OPTIONS_METHOD } from '../contracts/model-options.js'
 import { retainPdfDocument } from '../adapters/host/dsh/transport.js'
 import { createLocalFiles } from '../adapters/host/filesystem/local-files.js'
-import { createPdfLibDocumentAdapter } from '../adapters/host/pdf-lib/document-adapter.js'
+import { createNativeDocumentPort } from '../adapters/host/pdfium/document-port.js'
 import { createV1DraftRepository } from '../adapters/host/storage/v1-drafts.js'
 import { createV1NavigationStore } from '../adapters/host/storage/v1-navigation.js'
 import { createWorkingCopyService, draftSchema } from '../modules/working-copy/index.js'
@@ -116,9 +117,11 @@ export async function apply(
     key: path => createHash('sha256').update(process.platform === 'win32' ? path.toLowerCase() : path).digest('hex'),
   }, () => readConfig(config))
   const referenceStore = createEvidenceReferenceStore(evidenceDomain.table('references'))
-  const pdfDocument = createPdfLibDocumentAdapter()
+  const pdfDocument = createNativeDocumentPort(ctx.pdfNative.executable, ctx.subprocess)
   const workspaces = createWorkingCopyService(files, createV1DraftRepository(domain.table('drafts')), pdfDocument, {
     inspect: (bytes, password, signal): Promise<PdfDocumentInfo | undefined> => pdfService.inspectEncrypted(bytes, password, signal),
+    materializeAnnotations: (snapshot, baseline, password, signal) =>
+      pdfService.materializeEncryptedAnnotations(snapshot, baseline, password, signal),
     release: (id): void => { void pdfService.releaseDocument(id).catch(() => undefined) },
   })
   const positions = createReadingPositions(workspaces, createV1NavigationStore(positionDomain.table('positions')))

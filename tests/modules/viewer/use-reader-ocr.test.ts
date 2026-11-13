@@ -5,8 +5,8 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NavigationHistory } from '../../../src/shared/navigation-history.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderLifetime } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
-import { useReaderOcr, type ReaderOcrOptions } from '../../../src/modules/viewer/index.ts'
+import type { ReaderLifetime } from '../../../src/client/viewer/controllers/reader-lifetime.ts'
+import { useReaderOcr, type ReaderOcrOptions } from '../../../src/client/viewer/index.ts'
 
 const snapshot = { id: 'doc-1', revision: 7, contentVersion: 'content-1' } as WorkspaceSnapshot
 
@@ -84,5 +84,30 @@ test('OCR rejects a late response after its tab occurrence is aborted', async ()
     await act(async () => { pending = state().recognize(); await Promise.resolve() })
     await act(async () => { tab.abort(); release!(); await pending })
     assert.equal(state().ocrTranscript, null)
+  })
+})
+
+test('OCR cancellation marks the active request and settles without publishing a transcript', async () => {
+  await withOcr(async ({ state, options, render }) => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    await render({ ...options, api: { async availability() { return { status: 'available' } },
+      async recognize(_request, signal) {
+        await gate
+        assert.ok(signal)
+        signal.throwIfAborted()
+        return { documentId: 'doc-1', page: 1, revision: 7, contentVersion: 'content-1',
+          text: 'should not publish', status: 'complete', source: { backendId: 'test', backendVersion: '1' },
+          geometry: { status: 'none' }, warnings: [] }
+      } } })
+    let pending!: Promise<void>
+    await act(async () => { pending = state().recognize(); await Promise.resolve() })
+    assert.equal(state().ocrProgress, 'recognizing')
+    await act(async () => { state().cancel() })
+    assert.equal(state().ocrProgress, 'cancelling')
+    release()
+    await act(async () => { await pending })
+    assert.equal(state().ocrTranscript, null)
+    assert.equal(state().ocrProgress, null)
   })
 })

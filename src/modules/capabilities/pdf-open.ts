@@ -5,6 +5,7 @@ export interface PdfOpenProbe {
   pageCount: number
   formType: number
   signatureCount: number
+  signatureStatus?: -1 | 0 | 1
 }
 
 /** Neither parser may silently downgrade a feature detected by the other. */
@@ -16,6 +17,6 @@ export function requiredPdfOpenCapabilities(probe: PdfOpenProbe, parsedFormKind?
   if (probe.formType === 1) required.push(pdfCapabilities.renderAcroForm)
   else if (probe.formType === 2 || probe.formType === 3) required.push(pdfCapabilities.renderXfa)
   else if (probe.formType !== 0) required.push(`pdf.form.unknown-${probe.formType}.render`)
-  if (probe.signatureCount > 0) required.push(pdfCapabilities.previewSigned)
+  if (probe.signatureCount > 0 || probe.signatureStatus) required.push(pdfCapabilities.previewSigned)
   return [...new Set(required)]
 }

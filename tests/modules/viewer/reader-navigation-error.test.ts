@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderProps } from '../../../src/client/contracts.ts'
-import { setWindowLayout, windowLayout } from '../../../src/modules/viewer/index.ts'
+import { setWindowLayout, windowLayout } from '../../../src/client/viewer/index.ts'
 
 registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }

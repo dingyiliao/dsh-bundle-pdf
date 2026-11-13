@@ -7,7 +7,7 @@ import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { Reader } from '../client/Reader.tsx'
 import { Settings, settingsLocales } from '../client/settings/Settings.tsx'
 import { createPdfIndexingApi } from '../adapters/client/remote/indexing.js'
-import { readerLocales } from '../modules/viewer/index.js'
+import { readerLocales } from '../client/viewer/index.js'
 import { createPdfApi, createPdfAgentNavigationApi, createReadingContextReporter, type PdfConnection } from '../adapters/client/remote/pdf-api.ts'
 import { createPdfEvidenceRevalidator } from '../adapters/client/remote/pdf-evidence.ts'
 import { createHostOcrApi } from '../adapters/client/remote/host-ocr-api.ts'
@@ -22,6 +22,7 @@ import { createEngineCatalogStore } from '../adapters/client/remote/engine-catal
 import { createModelOptionsStore } from '../adapters/client/remote/model-options.js'
 import { createTranslationDirectoryMirror } from '../adapters/client/remote/translation-directory.js'
 import { createRetrievalIndexApi } from '../adapters/client/remote/retrieval-index.js'
+import { rpcResponseSchema } from '../contracts/rpc/index.js'
 import { engineBinding, engineCatalogSchema, engineConfigurationsSchema, engineExecutionSchema } from '../modules/engines/index.js'
 import { persistTranslationLanguage } from '../adapters/client/dsh/persist-translation-language.js'
 import { PdfEvidenceToolCard, type PdfToolCallProps } from '../client/toolview/PdfEvidenceToolCard.js'
@@ -58,6 +59,7 @@ interface ClientContext {
 }
 
 const settingsSchema = z.object({
+  nativeSelectionPreview: z.boolean().optional(),
   ocrEngine: z.string().optional(), imageEngine: z.string().optional(),
   engineConfigurations: engineConfigurationsSchema.optional(),
   ocrTimeoutMs: z.number(),
@@ -72,13 +74,12 @@ const settingsSchema = z.object({
 export async function apply(ctx: ClientContext): Promise<void> {
   const lifetime = new AbortController()
   ctx.effect(() => () => lifetime.abort(), 'pdf: client lifetime')
-  const bootstrap = z.discriminatedUnion('ok', [
-    z.object({ ok: z.literal(true), value: z.object({ namespace: z.string(), settingsNamespace: z.string(), settings: settingsSchema,
-      engineCatalog: engineCatalogSchema,
-      translationEngines: z.array(z.object({ id: z.string(), name: z.string(), version: z.string(),
-        execution: engineExecutionSchema, maxInputCharacters: z.number().int().positive().optional() })) }) }),
-    z.object({ ok: z.literal(false), error: z.object({ message: z.string() }) }),
-  ]).parse(
+  const bootstrapValue = z.object({ namespace: z.string(), settingsNamespace: z.string(), settings: settingsSchema,
+    engineCatalog: engineCatalogSchema,
+    translationEngines: z.array(z.object({ id: z.string(), name: z.string(), version: z.string(),
+      execution: engineExecutionSchema, maxInputCharacters: z.number().int().positive().optional() })) })
+  // The bootstrap route is still message-only on older DSH versions.
+  const bootstrap = rpcResponseSchema(bootstrapValue, z.object({ message: z.string() })).parse(
     await ctx.connection.rpc.call('/api', 'pdf.info', {}, lifetime.signal),
   )
   if (lifetime.signal.aborted || ctx.fiber?.uid === null) return
@@ -180,6 +181,8 @@ export async function apply(ctx: ClientContext): Promise<void> {
       open: (sessionId, address, signal) => sessionLifecycle.open(owner, sessionId, address, signal),
       unlock: (sessionId, address, password, signal) =>
         sessionLifecycle.unlock(owner, sessionId, address, password, signal),
+      unlockEdit: (sessionId, id, revision, password, signal) =>
+        sessionLifecycle.unlockEdit(owner, sessionId, id, revision, password, signal),
     }), [owner])
     return <Reader {...props} sessionId={file.sessionId} api={readerApi} hostOcr={configuredOcr}
       indexingApi={indexingApi}

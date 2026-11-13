@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
 import { buildSaveReview } from '../../../src/modules/model-write/save-review.ts'
-import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
+import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
@@ -192,16 +192,12 @@ test('an already-covered range is rechecked for concurrent edits before reportin
 const nativeExecutable = resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 test('real PDFium page text creates a complete two-page model mark',
   { skip: !existsSync(nativeExecutable) }, async () => {
-    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-    const first = pdf.addPage([300, 400])
-    first.drawText('Before native', { x: 60, y: 280, size: 12, font })
-    first.drawText('Start native', { x: 60, y: 250, size: 12, font })
-    first.drawText('Middle native', { x: 60, y: 230, size: 12, font })
-    const second = pdf.addPage([300, 400])
-    second.drawText('More native', { x: 60, y: 280, size: 12, font })
-    second.drawText('Finish native', { x: 60, y: 250, size: 12, font })
-    second.drawText('After native', { x: 60, y: 230, size: 12, font })
-    const bytes = await pdf.save(), state = memoryWorkspace(bytes)
+    const line = (text: string, y: number) => ({ text, x: 60, y, size: 12 })
+    const bytes = plainPdf([
+      { size: [300, 400], lines: [line('Before native', 280), line('Start native', 250), line('Middle native', 230)] },
+      { size: [300, 400], lines: [line('More native', 280), line('Finish native', 250), line('After native', 230)] },
+    ])
+    const state = memoryWorkspace(bytes)
     const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
     assert.ok('bytes' in opened)

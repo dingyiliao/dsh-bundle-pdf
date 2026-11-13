@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { PageView } from '../../../src/modules/viewer/model/reader-selection.ts'
-import { setWindowLayout } from '../../../src/modules/viewer/rendering/window-layout.ts'
-import { useReaderPageTracking } from '../../../src/modules/viewer/controllers/use-reader-page-tracking.ts'
+import type { PageView } from '../../../src/client/viewer/model/reader-selection.ts'
+import { clearWheelZoomReflow, setWheelZoomReflow, setWindowLayout } from '../../../src/client/viewer/rendering/window-layout.ts'
+import { useReaderPageTracking, useReaderScrollPreview } from '../../../src/client/viewer/controllers/use-reader-page-tracking.ts'
 
 test('page tracking follows the visible page but preserves a user-edited page number', async () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })
@@ -156,5 +156,62 @@ test('a clamped explicit jump survives queued scroll events while real movement 
     await act(async () => root.unmount())
     restoreDom()
 
+  }
+})
+
+test('scroll preview needs sustained fast motion and gives way to reading, zoom and navigation', async () => {
+  let now = 0
+  const { dom, restore } = createDom('<div id="root"></div><div id="scroller"></div>', {
+    values: { performance: { now: () => now } },
+  })
+  const root = createRoot(dom.document.getElementById('root')!)
+  const scroll = dom.document.getElementById('scroller')!
+  const navigation = { current: false }
+  let preview = false
+  const Harness = ({ enabled }: { enabled: boolean }) => {
+    preview = useReaderScrollPreview(scroll, enabled, navigation)
+    return null
+  }
+  const move = async (distance: number, elapsed = 16) => {
+    await act(async () => {
+      now += elapsed
+      scroll.scrollTop += distance
+      scroll.dispatchEvent(new dom.Event('scroll'))
+    })
+  }
+  try {
+    await act(async () => root.render(React.createElement(Harness, { enabled: true })))
+    await move(500, 100)
+    await move(12)
+    await move(120)
+    assert.equal(preview, false, 'one large delta does not switch the raster')
+    await move(120)
+    assert.equal(preview, true)
+    await move(120)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 105)) })
+    assert.equal(preview, false, 'the sharp raster returns when fast movement stops')
+
+    await move(120)
+    await move(120)
+    navigation.current = true
+    await move(1000)
+    assert.equal(preview, false, 'navigation cancels an active preview')
+    navigation.current = false
+    const zoom = { ownerKey: 'reader', source: [], page: 1, scale: 2,
+      fraction: [0, 0] as const, pointer: [0, 0] as const, prepare() {}, complete() {}, cancel() {} }
+    setWheelZoomReflow(scroll, zoom)
+    await move(500)
+    await move(500)
+    assert.equal(preview, false, 'wheel zoom offsets do not count as scroll')
+    clearWheelZoomReflow(scroll, zoom)
+
+    await move(120)
+    await move(120)
+    assert.equal(preview, true)
+    await act(async () => root.render(React.createElement(Harness, { enabled: false })))
+    assert.equal(preview, false)
+  } finally {
+    await act(async () => root.unmount())
+    restore()
   }
 })

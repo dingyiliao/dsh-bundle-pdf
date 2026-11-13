@@ -56,13 +56,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: dsh-bundle-pdf
+          path: dsh-plugin-pdf
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
-          # Keep the adjacent test host reproducible; bump deliberately when
-          # adopting a new DSH contract.
-          ref: d02ea370ee15556a643207eeb21810c29ca8c437
+          # Keep the adjacent test host reproducible and inside the plugin's
+          # engines.dsh window. This is DSH 0.2.2-rc.2, the version used for
+          # the local integration and coverage runs.
+          ref: ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c
           path: deepseek-harness
       - uses: actions/setup-node@v4
         with:
@@ -76,28 +77,28 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: pinned-native-sdk
-          path: dsh-bundle-pdf/native/.deps
-      - name: Install PDF bundle and pinned native SDK
-        working-directory: dsh-bundle-pdf
-        env:
-          DSH_PDF_NATIVE_OFFLINE: '1'
-        run: |
-          npm ci
-          npm run native:build
+          path: dsh-plugin-pdf/native/.deps
+      - name: Install PDF bundle
+        working-directory: dsh-plugin-pdf
+        run: npm ci
+      - name: Build the pinned PDFium extensions for integration and coverage
+        uses: ./dsh-plugin-pdf/.github/actions/build-pdfium
+        with:
+          project: dsh-plugin-pdf
       # Playwright's Chromium install stalls after download under Node 26 on
       # this runner. Use the LTS CLI runtime, then restore Node 26 for coverage.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Install Chromium with system dependencies
-        working-directory: dsh-bundle-pdf
+        working-directory: dsh-plugin-pdf
         timeout-minutes: 10
         run: npx playwright install --with-deps chromium
       - uses: actions/setup-node@v4
         with:
           node-version: 26.7.0
       - name: Browser interaction tests
-        working-directory: dsh-bundle-pdf
+        working-directory: dsh-plugin-pdf
         env:
           DSH_SNAPSHOT: replay
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
@@ -110,7 +111,7 @@ jobs:
           clang++ --version
           llvm-profdata --version
       - name: Node, browser, and native project coverage
-        working-directory: dsh-bundle-pdf
+        working-directory: dsh-plugin-pdf
         env:
           DSH_SNAPSHOT: replay
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
@@ -121,12 +122,42 @@ jobs:
         with:
           name: dsh-pdf-project-coverage
           path: |
-            dsh-bundle-pdf/.test-output/project-coverage-*/
-            dsh-bundle-pdf/.test-output/web-tests-*/
+            dsh-plugin-pdf/.test-output/project-coverage-*/
+            dsh-plugin-pdf/.test-output/web-tests-*/
           if-no-files-found: warn
           include-hidden-files: true
-  native:
+  linux-arm64-sdk:
     needs: native-sdk
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-native-sdk
+          path: native/.deps
+      # The Chromium DEPS lock supplies an x64-hosted Linux Clang. Cross-build
+      # just PDFium here, then build and run the worker on the ARM64 runner.
+      - uses: ./.github/actions/build-pdfium
+        id: sdk
+        with:
+          target: linux-arm64
+          build-worker: 'false'
+      - name: Verify AArch64 SDK library
+        shell: bash
+        env:
+          PDFIUM_SDK: ${{ steps.sdk.outputs.sdk-root }}
+        run: |
+          LC_ALL=C readelf -h "$PDFIUM_SDK/lib/libpdfium.so" | grep -E 'Machine:[[:space:]]+AArch64'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patched-pdfium-linux-arm64
+          path: ${{ steps.sdk.outputs.sdk-root }}
+          if-no-files-found: error
+  native:
+    needs: [native-sdk, linux-arm64-sdk]
     strategy:
       fail-fast: false
       matrix:
@@ -156,9 +187,18 @@ jobs:
         with:
           name: pinned-native-sdk
           path: native/.deps
-      - run: npm run native:build
+      - uses: ./.github/actions/build-pdfium
+        if: matrix.target != 'linux-arm64'
+      - uses: actions/download-artifact@v4
+        if: matrix.target == 'linux-arm64'
+        with:
+          name: patched-pdfium-linux-arm64
+          path: native/.deps/pdfium-patched
+      - name: Build the worker natively with the AArch64 SDK
+        if: matrix.target == 'linux-arm64'
         env:
           DSH_PDF_NATIVE_OFFLINE: '1'
+        run: npm run native:build
       - name: Check standalone Windows runtime dependencies
         if: matrix.target == 'win32-x64'
         shell: pwsh
@@ -174,6 +214,8 @@ jobs:
       - run: npm run check
         env:
           DSH_PDF_REQUIRE_NATIVE_TESTS: '1'
+          DSH_PDF_REQUIRE_NATIVE_EXTENSIONS: '1'
+          DSH_PDFIUM_ROOT: ${{ matrix.target == 'linux-arm64' && format('{0}/native/.deps/pdfium-patched', github.workspace) || format('{0}/native/.deps/pdfium-patched', github.workspace) }}
       - name: Pack and verify platform native dependency
         run: node scripts/package-native.mjs ${{ matrix.target }}
       - name: Pack and verify universal plugin

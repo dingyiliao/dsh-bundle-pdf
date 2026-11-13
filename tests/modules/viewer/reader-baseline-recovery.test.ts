@@ -5,7 +5,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { NativeReaderApi, NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
-import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/modules/viewer/controllers/use-reader-document.ts'
+import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/client/viewer/controllers/use-reader-document.ts'
 
 const snapshot = (hash = 'bytes-before-save', revision = 1, id = 'document'): WorkspaceSnapshot => ({
   id, path: `/tmp/${id}.pdf`, sourceVersion: `source-${revision}`, contentVersion: 'content', revision,

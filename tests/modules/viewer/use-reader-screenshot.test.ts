@@ -5,8 +5,8 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-selection.ts'
-import { useReaderScreenshot, type ReaderScreenshotOptions } from '../../../src/modules/viewer/controllers/use-reader-screenshot.ts'
+import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+import { useReaderScreenshot, type ReaderScreenshotOptions } from '../../../src/client/viewer/controllers/use-reader-screenshot.ts'
 
 const annotation = (id: string, page: number) => ({ id, page }) as PdfAnnotation
 const snapshot = { id: 'doc-1', revision: 7, document: { annotations: [annotation('current-2', 2), annotation('current-3', 3)] } } as WorkspaceSnapshot

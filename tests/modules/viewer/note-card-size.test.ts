@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { MIN_NOTE_CARD_HEIGHT, MIN_NOTE_CARD_WIDTH, noteCardSizeStorageKey,
-  parseNoteCardSize, readNoteCardSize, saveNoteCardSize } from '../../../src/modules/viewer/model/note-card-size.ts'
+  parseNoteCardSize, readNoteCardSize, saveNoteCardSize } from '../../../src/client/viewer/model/note-card-size.ts'
 
 test('note card sizing accepts one minimum and rejects corrupt saved values', () => {
   assert.deepEqual(parseNoteCardSize(JSON.stringify({ width: MIN_NOTE_CARD_WIDTH, height: MIN_NOTE_CARD_HEIGHT })),

@@ -3,7 +3,7 @@ import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSetti
 import { type Browser } from 'playwright'
 import { type EmbeddingRegistry } from '../../../src/embedding/index.ts'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { PDFDocument } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { join } from 'node:path'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 import { openSidebarSection } from '../support/toolbar.ts'
@@ -34,10 +34,10 @@ it('shows per-PDF indexing progress and cancels and resumes through the shared t
     const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-indexing-web-e2e')
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF indexing test' })
-    const document = await PDFDocument.create()
-    for (let index = 0; index < 3; index++) document.addPage([300, 400]).drawText(`Indexing page ${index + 1}`, { x: 30, y: 300, size: 12 })
     const name = 'reader-indexing-e2e.pdf'
-    await writeFile(join(scaffold.workspaceCwd, name), await document.save())
+    await writeFile(join(scaffold.workspaceCwd, name), plainPdf(Array.from({ length: 3 }, (_, index) => ({
+      size: [300, 400], lines: [{ text: `Indexing page ${index + 1}`, x: 30, y: 300, size: 12 }],
+    }))))
 
     browser = await launchBrowser()
     const page = await newEnglishPage(browser), tripwire = watchConsole(page)

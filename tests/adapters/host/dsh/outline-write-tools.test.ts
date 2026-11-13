@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfModelWriteTools, questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
 
 test('pdf_bookmark_edit is discoverable and writes only the session-owned, unsaved draft', async () => {
-  const pdf = await PDFDocument.create()
-  pdf.addPage()
-  const state = memoryWorkspace(new Uint8Array(await pdf.save()))
+  const state = memoryWorkspace(blankPdf())
   const sessionId = 'outline-tool'
   const agent = { session: { id: sessionId, header: {} } }
   const signal = new AbortController().signal

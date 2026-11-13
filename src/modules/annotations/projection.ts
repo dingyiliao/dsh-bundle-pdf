@@ -10,7 +10,7 @@ const defaultColor: PdfColor = [1, 0.85, 0]
 
 function invalid(message: string): never { throw new PdfDocumentError('invalid-operation', message) }
 
-/** pdf-lib's PDFString.fromDate() wire value, without a PDF writer dependency. */
+/** PDF date wire value in UTC. */
 function pdfDateFromUtc(date: Date): string {
   const padded = (value: number, width: number) => String(value).padStart(width, '0')
   return `D:${padded(date.getUTCFullYear(), 4)}${padded(date.getUTCMonth() + 1, 2)}${padded(date.getUTCDate(), 2)}${padded(date.getUTCHours(), 2)}${padded(date.getUTCMinutes(), 2)}${padded(date.getUTCSeconds(), 2)}Z`
@@ -125,12 +125,15 @@ function projectPdfOperationsImpl(
       let replyToId = operation.annotation.replyToId
       if (operation.annotation.replyToId !== undefined) {
         const parent = entries.get(operation.annotation.replyToId)
-        if (!parent || !parent.editable || parent.page !== operation.annotation.page
-          || !editableTypes.has(parent.subtype) || parent.replyType === 'Group') {
-          invalid('A reply requires an editable parent annotation on the same page.')
+        if (!parent) throw new PdfDocumentError('unknown-annotation', 'Reply parent annotation not found.')
+        if (parent.page !== operation.annotation.page) invalid('A reply requires a parent annotation on the same page.')
+        const canonical = [...entries.values()].find(item => item.page === parent.page
+          && objectId(item) === objectId(parent)) ?? parent
+        const locked = parent.editable ? canonical : parent
+        if (!locked.editable || !editableTypes.has(locked.subtype) || locked.replyType === 'Group') {
+          throw new PdfDocumentError('annotation-read-only', `Reply parent cannot be edited: ${locked.readOnlyReason ?? 'reply-chain'}`)
         }
-        replyToId = [...entries.values()].find(item => item.page === parent.page
-          && objectId(item) === objectId(parent))?.id ?? parent.id
+        replyToId = canonical.id
       }
       const annotation: PdfAnnotation = {
         ...operation.annotation,

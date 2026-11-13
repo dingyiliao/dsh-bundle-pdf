@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, prepareTextSelectionEvidence,
   revalidateTextSelectionEvidence, type AgentPageReadPort, type FreshSourceRead,
   type SelectionRevalidationRequest } from '../../../src/modules/evidence/index.ts'
@@ -22,9 +22,7 @@ if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(nativeExecut
 }
 
 async function pdfBytes(texts = originalTexts) {
-  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-  for (const text of texts) pdf.addPage([300, 250]).drawText(text, { x: 40, y: 160, size: 12, font })
-  return pdf.save()
+  return plainPdf(texts.map(text => ({ size: [300, 250], lines: [{ text, x: 40, y: 160, size: 12 }] })))
 }
 
 function content(text: string): NativeTextContent {

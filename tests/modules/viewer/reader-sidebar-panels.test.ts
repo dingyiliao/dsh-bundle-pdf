@@ -4,8 +4,8 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { HostOcrRecognition } from '../../../src/modules/viewer/ports/ocr.ts'
-import { readerSidebarPanels, type ReaderSidebarPanelsOptions } from '../../../src/modules/viewer/components/ReaderSidebarPanels.tsx'
+import type { HostOcrRecognition } from '../../../src/client/viewer/ports/ocr.ts'
+import { readerSidebarPanels, type ReaderSidebarPanelsOptions } from '../../../src/client/viewer/components/ReaderSidebarPanels.tsx'
 
 const snapshot = { id: 'doc-1', revision: 1, contentVersion: 'v1', reader: { bytesHash: 'hash-1' } } as WorkspaceSnapshot
 

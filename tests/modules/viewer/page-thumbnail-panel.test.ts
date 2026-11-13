@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { PageThumbnailPanel, thumbnailColumnCount } from '../../../src/modules/viewer/components/PageThumbnailPanel.tsx'
-import type { ReaderDocument } from '../../../src/modules/viewer/ports/reader-document.ts'
+import { PageThumbnailPanel, thumbnailColumnCount } from '../../../src/client/viewer/components/PageThumbnailPanel.tsx'
+import type { ReaderDocument } from '../../../src/client/viewer/ports/reader-document.ts'
 
 test('page thumbnails switch to one column only when the sidebar is narrow', () => {
   assert.equal(thumbnailColumnCount(267), 1)

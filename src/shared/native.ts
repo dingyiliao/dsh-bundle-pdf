@@ -1,7 +1,10 @@
+import type { SelectionGeometryChunk } from '../engine/protocol/selection.js'
+
 export interface ReaderDescriptor {
   bytesHash: string
   generation: number
   protocolVersion: 1
+  selectionGeometry?: true
 }
 export interface NativeTileRequest {
   page: number; rotation: number; rasterWidth: number; rasterHeight: number
@@ -37,6 +40,8 @@ export interface NativeReaderApi {
   tile(sessionId: string, id: string, reader: ReaderDescriptor, tile: NativeTileRequest, signal?: AbortSignal): Promise<NativeTile>
   text(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal,
     options?: NativeTextReadOptions): Promise<NativeTextContent>
+  selectionGeometry?(sessionId: string, id: string, reader: ReaderDescriptor, page: number, offset: number,
+    signal: AbortSignal): Promise<SelectionGeometryChunk>
   links(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal): Promise<unknown[]>
   outline(sessionId: string, id: string, reader: ReaderDescriptor, signal?: AbortSignal): Promise<NativeOutlineItem[] | null>
   destination(sessionId: string, id: string, reader: ReaderDescriptor, name: string, signal?: AbortSignal): Promise<unknown>

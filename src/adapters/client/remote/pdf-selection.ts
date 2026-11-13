@@ -1,7 +1,7 @@
 import { responseSchema } from '../../../contracts/rpc/index.js'
 import { selectionPrepareRequestSchema, selectionPrepareResultSchema,
   selectionRevalidationRequestSchema, selectionRevalidationResultSchema } from '../../../contracts/selection.js'
-import type { PdfTextSelectionEvidenceApi } from '../../../modules/viewer/index.js'
+import type { PdfTextSelectionEvidenceApi } from '../../../client/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
 /** The Host, not the browser selection, determines the text admitted as evidence. */

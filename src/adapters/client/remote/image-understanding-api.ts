@@ -4,11 +4,11 @@ import { z } from 'zod'
 import { MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
 import { inspectPng } from '../../../shared/png.js'
 import type { ImageUnderstandingApi,
-  PreparedImageReference } from '../../../modules/viewer/index.js'
+  PreparedImageReference } from '../../../client/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
 export type { ImageUnderstandingApi, ImageUnderstandingAvailability,
-  PreparedImageReference } from '../../../modules/viewer/index.js'
+  PreparedImageReference } from '../../../client/viewer/index.js'
 
 const availability = z.discriminatedUnion('status', [
   z.object({ status: z.literal('available'), kind: z.enum(['direct-image', 'derived-text']),

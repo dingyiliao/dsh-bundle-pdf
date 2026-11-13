@@ -96,6 +96,8 @@ export interface PdfDocumentInfo {
   title?: string
   signed: boolean
   encrypted: boolean
+  /** Annotation permissions of a live, protected Reader copy. */
+  annotationEditing?: 'allowed' | 'owner-password-required'
   /** Copy/extract permission reported by the native security handler for a protected Reader. */
   allowTextExtraction?: boolean
   formKind?: 'acroform' | 'xfa'

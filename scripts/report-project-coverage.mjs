@@ -3,6 +3,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decode } from '@jridgewell/sourcemap-codec'
 import ts from 'typescript'
+import { nativeWorkerSources } from './native-coverage-sources.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const [nodeReport, browserReport, nativeReport, outputPath] = process.argv.slice(2)
@@ -10,12 +11,12 @@ if (!nodeReport || !browserReport || !nativeReport) {
   throw new Error('Usage: node scripts/report-project-coverage.mjs <node.lcov> <browser.lcov> <native.lcov> [report.json]')
 }
 
-async function projectSources(directory) {
+async function projectSources(directory, extension = /\.tsx?$/) {
   const files = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
-    if (entry.isDirectory()) files.push(...await projectSources(path))
-    else if (entry.isFile() && /\.tsx?$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+    if (entry.isDirectory()) files.push(...await projectSources(path, extension))
+    else if (entry.isFile() && extension.test(entry.name) && !entry.name.endsWith('.d.ts')) {
       files.push(relative(root, path).split(sep).join('/'))
     }
   }
@@ -126,12 +127,15 @@ const lanes = [
 ]
 for (const lane of lanes) lane.files = parseLcov(await readFile(resolve(lane.path), 'utf8'))
 
-const expected = [...await projectSources(join(root, 'src')), 'native/pdfium-worker.cpp'].sort()
+const nativeSources = new Set(nativeWorkerSources)
+const expected = [...await projectSources(join(root, 'src')), ...nativeSources].sort()
 const unexpected = lanes.flatMap(lane => [...lane.files.keys()].filter(path => !path.endsWith('.d.ts') && !expected.includes(path)))
 if (unexpected.length) throw new Error(`Unexpected coverage sources: ${[...new Set(unexpected)].join(', ')}`)
-const nativeSource = lanes[2].files.get('native/pdfium-worker.cpp')
-if (!nativeSource || nativeSource.lineTotal < 1 || nativeSource.lines.size === 0) {
-  throw new Error('Native LCOV must contain measured lines for native/pdfium-worker.cpp; an empty native lane cannot establish project-wide coverage.')
+for (const path of nativeSources) {
+  const nativeSource = lanes[2].files.get(path)
+  if (!nativeSource || nativeSource.lineTotal < 1 || nativeSource.lines.size === 0) {
+    throw new Error(`Native LCOV must contain measured lines for ${path}; an incomplete native lane cannot establish project-wide coverage.`)
+  }
 }
 
 const files = []
@@ -163,12 +167,18 @@ for (const path of expected) {
       }
     }
   }
-  const emitted = path === 'native/pdfium-worker.cpp' ? undefined : await emittedSourceLines(path)
+  const emitted = nativeSources.has(path) ? undefined : await emittedSourceLines(path)
   const measuredLines = emitted
     ? emitted.lines.size : measurements[0]?.files.get(path).lineTotal ?? merged.size
+  // Native LCOV can contain several instrumentation objects for one source
+  // file (the worker plus focused native test binaries). LF/LH on the merged
+  // export is not consistently the union of DA hits, so count DA hits and
+  // treat lines absent from the DA table as non-executable/covered. This is
+  // the same convention the native compiler uses for its line table.
   const measuredCovered = emitted
     ? [...emitted.lines].filter(line => (merged.get(line) ?? 0) > 0).length
-    : measurements[0]?.files.get(path).lineCovered ?? [...merged.values()].filter(hits => hits > 0).length
+    : [...merged.values()].filter(hits => hits > 0).length
+      + Math.max(0, measuredLines - merged.size)
   files.push({ path, lanes: measurements.map(lane => lane.name),
     lines: measuredLines, covered: measuredCovered,
     // No emitted JavaScript is expected from a type-only source file.
@@ -208,7 +218,7 @@ if (partial.length) {
   console.log('Largest uncovered source files:')
   for (const file of partial) console.log(`  ${file.path}: ${file.covered}/${file.lines}`)
 }
-const report = { scope: 'TypeScript source lines mapped to emitted JavaScript under src/, plus LLVM source lines in native/pdfium-worker.cpp; excludes generated bundles, tests, build tooling and third-party PDFium',
+const report = { scope: 'TypeScript source lines mapped to emitted JavaScript under src/, plus LLVM source lines in the native worker and native/pdfium/; excludes generated bundles, tests, build tooling and third-party PDFium',
   totals, files, lanes: lanes.map(lane => ({ name: lane.name, path: lane.path })),
   lineCoverageComplete: totals.missingInstrumentation.length === 0 && totals.lines > 0 && totals.covered === totals.lines,
 }

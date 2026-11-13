@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { OcrTranscriptPanel } from '../../../src/modules/viewer/components/OcrTranscriptPanel.js'
-import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.js'
-import { ScrollablePanel } from '../../../src/modules/viewer/components/ScrollablePanel.js'
-import { readerLocales } from '../../../src/modules/viewer/locales.js'
-import type { HostOcrRecognition } from '../../../src/modules/viewer/ports/ocr.js'
+import { OcrTranscriptPanel } from '../../../src/client/viewer/components/OcrTranscriptPanel.js'
+import { ReadingSidebar } from '../../../src/client/viewer/components/ReadingSidebar.js'
+import { ScrollablePanel } from '../../../src/client/viewer/components/ScrollablePanel.js'
+import { readerLocales } from '../../../src/client/viewer/locales.js'
+import type { HostOcrRecognition } from '../../../src/client/viewer/ports/ocr.js'
 
 const result: HostOcrRecognition = { documentId: 'layout-document', page: 64, revision: 1, contentVersion: 'layout-v1',
   text: 'Recognized text with a selectable passage.\n第二行识别文字。', status: 'complete',

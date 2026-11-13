@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { ReaderAlerts, type ReaderAlertsProps } from '../../../src/modules/viewer/components/ReaderAlerts.tsx'
+import { ReaderAlerts, type ReaderAlertsProps } from '../../../src/client/viewer/components/ReaderAlerts.tsx'
 
 function props(overrides: Partial<ReaderAlertsProps> = {}): ReaderAlertsProps {
   return {

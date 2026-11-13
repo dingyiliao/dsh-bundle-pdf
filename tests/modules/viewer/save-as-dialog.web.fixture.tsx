@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { SaveAsDialog } from '../../../src/modules/viewer/components/SaveAsDialog.js'
-import { readerLocales } from '../../../src/modules/viewer/locales.js'
+import { SaveAsDialog } from '../../../src/client/viewer/components/SaveAsDialog.js'
+import { readerLocales } from '../../../src/client/viewer/locales.js'
 
 interface Input { replaceConfirm?: boolean; error?: string; busy?: boolean }
 let configure: (input: Input) => void = () => {}

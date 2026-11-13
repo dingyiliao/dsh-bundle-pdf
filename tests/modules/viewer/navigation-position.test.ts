@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { NativeDocument, PageView } from '../../../src/modules/viewer/index.ts'
-import { NativeViewport, setWindowLayout } from '../../../src/modules/viewer/index.ts'
-import { captureReaderPosition, readerPageScale, resolvePdfDestination } from '../../../src/modules/viewer/index.ts'
+import type { NativeDocument, PageView } from '../../../src/client/viewer/index.ts'
+import { NativeViewport, setWindowLayout } from '../../../src/client/viewer/index.ts'
+import { captureReaderPosition, readerPageScale, resolvePdfDestination } from '../../../src/client/viewer/index.ts'
 
 const pages: PdfPageInfo[] = [1, 2].map(page => ({ page, cropBox: [0, 0, 400, 600], rotation: 0, userUnit: 1 }))
 const snapshot = { contentVersion: 'content-1', document: { pages } } as WorkspaceSnapshot

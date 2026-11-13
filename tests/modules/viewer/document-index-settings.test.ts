@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { DocumentIndexSettings } from '../../../src/modules/viewer/components/DocumentIndexSettings.tsx'
-import { readerLocales } from '../../../src/modules/viewer/locales.ts'
+import { DocumentIndexSettings } from '../../../src/client/viewer/components/DocumentIndexSettings.tsx'
+import { readerLocales } from '../../../src/client/viewer/locales.ts'
 import type { PdfDocumentIndexPolicy } from '../../../src/contracts/indexing.ts'
-import type { ReaderIndexingControl } from '../../../src/modules/viewer/controllers/use-reader-indexing.tsx'
+import type { ReaderIndexingControl } from '../../../src/client/viewer/controllers/use-reader-indexing.tsx'
 
 const defaults: PdfDocumentIndexPolicy = { indexScanPages: false, indexImageDescriptions: false }
 const scanLabel = 'Text recognition (OCR)', imageLabel = 'Image descriptions'

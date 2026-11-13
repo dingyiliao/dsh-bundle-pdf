@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { benchmarkPdf } from './fixtures.ts'
 import { EmbeddingRegistry, type EmbeddingEngine } from '../src/embedding/index.ts'
 import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../src/adapters/host/embedding/openai-compatible.ts'
 import { registerPdfAgentTools } from '../src/adapters/host/dsh/agent-tools.ts'
@@ -41,13 +41,13 @@ const paragraphs = [
   'An operating system schedules processes on the processor. Context switching lets several programs make progress while sharing the same hardware.',
   'Network latency is the time a message needs to reach another computer. Bandwidth describes the amount of information sent per second.',
 ]
-const fixture = await PDFDocument.create(), font = await fixture.embedFont(StandardFonts.Helvetica)
-for (const [index, text] of paragraphs.entries()) {
-  const page = fixture.addPage([612, 792])
-  page.drawText(`Synthetic retrieval fixture - page ${index + 1}`, { font, x: 48, y: 730, size: 12 })
-  page.drawText(text, { font, x: 48, y: 670, size: 12, maxWidth: 500, lineHeight: 18 })
-}
-const bytes = await fixture.save()
+const bytes = benchmarkPdf(paragraphs.map((text, index) => ({
+  size: [612, 792],
+  lines: [
+    { text: `Synthetic retrieval fixture - page ${index + 1}`, x: 48, y: 730, size: 12 },
+    ...text.match(/.{1,78}(?: |$)/g)!.map((line, row) => ({ text: line.trim(), x: 48, y: 670 - row * 18, size: 12 })),
+  ],
+})))
 const cacheDirectory = await mkdtemp(join(tmpdir(), 'pdf-retrieval-integration-'))
 const sessionId = 'synthetic-real-embedding-retrieval'
 const agent = { session: { id: sessionId, header: {} } }

@@ -1,7 +1,7 @@
 import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { captureTextSelection, type PageView } from '../../../src/modules/viewer/model/reader-selection.ts'
+import { captureTextSelection, type PageView } from '../../../src/client/viewer/model/reader-selection.ts'
 
 test('a selection inside one text node includes surrounding context and its actual page box', () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><div id="root"><div id="page"><div data-pdf-text="active"><span>hello world again</span></div></div></div>', { globals: [] })

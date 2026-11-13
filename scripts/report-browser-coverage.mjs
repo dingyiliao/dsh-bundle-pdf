@@ -7,7 +7,8 @@ import ts from 'typescript'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const packageId = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name
-const relocatedSourcePrefix = `/plugins/${packageId.slice(0, packageId.indexOf('/') + 1)}src/`
+const relocatedSourceScope = `/plugins/${packageId.slice(0, packageId.indexOf('/') + 1)}`
+const sourceDirectories = ['src']
 const artifactDirectory = process.env.DSH_PDF_BROWSER_COVERAGE_DIR
 const output = process.env.DSH_PDF_BROWSER_COVERAGE_OUTPUT
 if (!artifactDirectory || !output) {
@@ -17,12 +18,13 @@ if (!isAbsolute(artifactDirectory) || !isAbsolute(output)) {
   throw new Error('PDF browser coverage paths must be absolute.')
 }
 
-/** DSH relocates ../src under the package scope; derive it from the actual package identity. */
+/** DSH relocates the source maps under the package scope. */
 function localSource(source) {
-  const prefix = relocatedSourcePrefix
-  if (!source.startsWith(prefix)) return undefined
-  const path = resolve(root, 'src', source.slice(prefix.length))
-  const sourceRoot = resolve(root, 'src')
+  const directory = sourceDirectories.find(name => source.startsWith(relocatedSourceScope + name + '/'))
+  if (!directory) return undefined
+  const prefix = relocatedSourceScope + directory + '/'
+  const sourceRoot = resolve(root, directory)
+  const path = resolve(sourceRoot, source.slice(prefix.length))
   const relativePath = relative(sourceRoot, path)
   return relativePath !== '' && relativePath !== '..' && !relativePath.startsWith(`..${sep}`)
     && !isAbsolute(relativePath) && /\.tsx?$/.test(path) && !path.endsWith('.d.ts')
@@ -143,8 +145,8 @@ async function walkClient(directory) {
 }
 
 // Keep the Browser lane scoped to Client-owned code after the V2 move. The
-// project-wide report independently counts every emitted source line in src/.
-for (const directory of ['src/client', 'src/modules/viewer', 'src/adapters/client']) {
+// project-wide report independently counts emitted source lines in both roots.
+for (const directory of ['src/client', 'src/client/viewer', 'src/adapters/client', 'src/engine/client']) {
   await walkClient(join(root, directory))
 }
 await seedClientSource(join(root, 'src/entrypoints/reader-client.tsx'))

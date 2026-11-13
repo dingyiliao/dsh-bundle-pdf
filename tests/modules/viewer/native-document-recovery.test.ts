@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { NativeDocument, openNativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
-import type { NativeDocumentEvents } from '../../../src/modules/viewer/rendering/document.ts'
+import { NativeDocument, openNativeDocument } from '../../../src/client/viewer/rendering/document.ts'
+import type { NativeDocumentEvents } from '../../../src/client/viewer/rendering/document.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { NativeReaderApi, NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
 

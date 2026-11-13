@@ -26,7 +26,8 @@ async function fixture(platform = `${process.platform}-${process.arch}`, directo
   await writeFile(library, libraryBytes)
   if (operatingSystem !== 'win32') await chmod(executable, 0o755)
   const manifest = {
-    protocolVersion: 1,
+    protocolVersion: 2,
+    pdfiumSourceRevision: 'a'.repeat(40),
     platform,
     executableSha256: hash(workerBytes),
     librarySha256: hash(libraryBytes),
@@ -53,7 +54,18 @@ async function npmFixture(platform = `${process.platform}-${process.arch}`) {
 test('native provider accepts a complete package for the current platform', async () => {
   const value = await fixture()
   try {
-    assert.deepEqual(await verifyNativeDistribution(value.directory), { executable: value.executable })
+    assert.deepEqual(await verifyNativeDistribution(value.directory), { executable: value.executable, documentExtensions: true })
+  } finally {
+    await rm(value.directory, { recursive: true, force: true })
+  }
+})
+
+test('native provider rejects a stock archive with no patched source revision', async () => {
+  const value = await fixture()
+  try {
+    const { pdfiumSourceRevision: _source, ...manifest } = value.manifest
+    await writeFile(join(value.directory, 'manifest.json'), JSON.stringify(manifest))
+    await assert.rejects(verifyNativeDistribution(value.directory), /optional dependencies enabled/)
   } finally {
     await rm(value.directory, { recursive: true, force: true })
   }
@@ -88,7 +100,7 @@ test('installed native provider resolves every supported platform through its ow
     await t.test(platform, async () => {
       const value = await npmFixture(platform)
       try {
-        assert.deepEqual(await resolveNativeDistribution(value.packageRoot, platform), { executable: value.executable })
+        assert.deepEqual(await resolveNativeDistribution(value.packageRoot, platform), { executable: value.executable, documentExtensions: true })
       } finally {
         await rm(value.root, { recursive: true, force: true })
       }
@@ -114,9 +126,9 @@ test('source checkouts can use their locally built native files only when the de
     await mkdir(join(value.root, 'native'))
     await writeFile(join(value.root, 'native/dependencies.json'), '{}')
     const staged = await fixture(undefined, join(value.root, 'dist/native'))
-    assert.deepEqual(await resolveNativeDistribution(value.packageRoot), { executable: value.executable })
+    assert.deepEqual(await resolveNativeDistribution(value.packageRoot), { executable: value.executable, documentExtensions: true })
     await rm(value.nativeRoot, { recursive: true, force: true })
-    assert.deepEqual(await resolveNativeDistribution(value.packageRoot), { executable: staged.executable })
+    assert.deepEqual(await resolveNativeDistribution(value.packageRoot), { executable: staged.executable, documentExtensions: true })
     await writeFile(staged.executable, 'changed staged helper')
     await assert.rejects(resolveNativeDistribution(value.packageRoot), /native files.+missing or invalid/)
   } finally {

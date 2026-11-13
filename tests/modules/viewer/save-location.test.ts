@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSaveLocation, resolveSaveLocation } from '../../../src/modules/viewer/model/save-location.ts'
+import { createSaveLocation, resolveSaveLocation } from '../../../src/client/viewer/model/save-location.ts'
 
 test('copy suggestions preserve source directories and the existing annotated-PDF naming convention', () => {
   for (const [source, directory, name] of [

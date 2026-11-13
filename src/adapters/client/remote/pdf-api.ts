@@ -1,13 +1,15 @@
 import { z } from 'zod'
+import { selectionGeometryChunkSchema } from '../../../engine/protocol/selection.js'
+import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { agentNavigationRequestSchema } from '../../../contracts/navigation.js'
 import { PDF_ENDPOINT, readingPositionSchema, responseSchema, wireSnapshotSchema } from '../../../contracts/rpc/index.ts'
 import type { PdfReadingPosition, PdfClientApi, PdfStoredReadingPosition, WorkspaceSnapshot } from '../../../shared/contracts.ts'
 import { sessionFile } from '../../../shared/address.ts'
 import { measurePdfAsync } from '../../../shared/performance.ts'
 import type { NativeOutlineItem, NativeReaderApi, NativeTextContent } from '../../../shared/native.ts'
-import type { PdfReadingContextUpdate, PdfAgentNavigationApi } from '../../../modules/viewer/index.js'
+import type { PdfReadingContextUpdate, PdfAgentNavigationApi } from '../../../client/viewer/index.js'
 
-export type { PdfReadingContextUpdate } from '../../../modules/viewer/index.js'
+export type { PdfReadingContextUpdate } from '../../../client/viewer/index.js'
 
 export interface PdfConnection {
   rpc: { call(path: string, method: string, payload: object, signal?: AbortSignal): Promise<unknown> }
@@ -152,6 +154,25 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
     if (!wire.baselineFormFields && previous && previous.reader.bytesHash === wire.reader.bytesHash) value.baselineFormFields = previous.baselineFormFields
     beforePublish?.(value)
     latest.set(value.id, value)
+    // Save As retargets the working copy in place. A watch refresh may see the
+    // new path before the save reply; either accepted snapshot must fence old
+    // recovery attempts and make the new canonical path the next open target.
+    const source = sourceAddresses.get(value.id)
+    if (source && previous && requestedId === value.id && previous.path !== value.path
+      && 'sessionId' in payload && payload.sessionId === source.sessionId && 'action' in payload
+      && (payload.action === 'save' || payload.action === 'refresh')) {
+      const next = { ...source, address: sessionFileAddress(source.sessionId, value.path) }
+      sourceAddresses.set(value.id, next)
+      failedWatchRecoveries.delete(value.id)
+      const recovery = recoveries.get(value.id)
+      if (recovery) {
+        recovery.controller.abort()
+        watches.get(value.id)?.abort()
+        void recovery.promise.catch(() => {}).finally(() => {
+          if (sourceAddresses.get(value.id) === next && listeners.get(value.id)?.size) watch(value.id)
+        })
+      } else if (listeners.get(value.id)?.size) watch(value.id)
+    }
     for (const listener of listeners.get(value.id) ?? []) listener.callback(value)
     return value
   }
@@ -311,6 +332,10 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
         lang: z.string().nullable(), quality: z.object({ unmappedCharacters: z.number().int().nonnegative() }).optional(),
         extraction: z.literal('local-ocr').optional(), warnings: z.array(z.string()).optional() }).parse(result) as NativeTextContent
     },
+    async selectionGeometry(sessionId, id, reader, page, offset, signal) {
+      return selectionGeometryChunkSchema.parse(await call({ action: 'selectionGeometry', sessionId, id,
+        bytesHash: reader.bytesHash, page, offset }, signal, 'pdf.native'))
+    },
     async links(sessionId, id, reader, page, signal) { return z.array(z.unknown()).max(10000).parse(await call({ action: 'links', sessionId, id, bytesHash: reader.bytesHash, page }, signal, 'pdf.native')) },
     async outline(sessionId, id, reader, signal) {
       const item: z.ZodType<NativeOutlineItem> = z.lazy(() => z.object({ id: z.string().max(512).optional(), title: z.string().max(8191), dest: z.unknown().optional(),
@@ -366,6 +391,22 @@ export function createPdfApi(connection: PdfConnection, lifetime: AbortSignal): 
       assertViewOpen()
       failedWatchRecoveries.delete(value.id)
       if (listeners.get(value.id)?.size) watch(value.id)
+      return value
+    },
+    async unlockEdit(sessionId, id, revision, password, signal, referenceId) {
+      if (!password || password.length > 1024 || password.includes('\0')) throw new Error('Invalid PDF password')
+      if (!referenceId) throw new Error('A PDF view reference is required to unlock editing')
+      const assertViewOpen = () => {
+        const source = sourceAddresses.get(id)
+        if (closedReferences.has(referenceKey(sessionId, referenceId))
+          || source?.sessionId !== sessionId || !source.references.has(referenceId)) throw viewEnded()
+      }
+      assertViewOpen()
+      const value = await snapshot({ action: 'unlockEdit', sessionId, id, revision, referenceId, password }, signal, next => {
+        assertViewOpen()
+        if (next.id !== id) throw invalidRecovery('PDF editing unlock returned a different document')
+      })
+      assertViewOpen()
       return value
     },
     async refresh(sessionId, id, signal) {

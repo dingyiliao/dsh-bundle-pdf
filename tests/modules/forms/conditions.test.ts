@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { checkFormConditions, FormConditionError, type FormCondition } from '../../../src/modules/forms/index.ts'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 
 test('conditional details evaluate final values; false/unknown reject writes, clearing and existing values are preserved', async () => {
-  const doc = await loadPdfDocument(await acroformFixture())
+  const doc = await inspectFixturePdf(await acroformFixture())
   const ids = Object.fromEntries(doc.formFields!.map(field => [field.name, field.id!]))
   const rule: FormCondition = { fieldIds: [ids.Text1], when: { fieldId: ids.accepted, equals: true },
     evidence: { page: 1, quote: 'Only if accepted, provide details' }, onInactive: 'preserve' }
@@ -33,7 +33,7 @@ test('conditional details evaluate final values; false/unknown reject writes, cl
 })
 
 test('inactive fields must be empty by default even when not submitted; authorized clearing is explicit and atomic', async () => {
-  const doc = await loadPdfDocument(await acroformFixture())
+  const doc = await inspectFixturePdf(await acroformFixture())
   const ids = Object.fromEntries(doc.formFields!.map(field => [field.name, field.id!]))
   const rule: FormCondition = { fieldIds: [ids.Text1], when: { fieldId: ids.accepted, equals: true },
     evidence: { page: 1, quote: 'If accepted, complete the name' } }
@@ -52,7 +52,7 @@ test('inactive fields must be empty by default even when not submitted; authoriz
 })
 
 test('condition rules reject unknown/self targets, bad options/types, absent controlling pages and malformed input', async () => {
-  const doc = await loadPdfDocument(await acroformFixture())
+  const doc = await inspectFixturePdf(await acroformFixture())
   const ids = Object.fromEntries(doc.formFields!.map(field => [field.name, field.id!]))
   const rule: FormCondition = { fieldIds: [ids.Text1], when: { fieldId: ids.accepted, equals: true },
     evidence: { page: 1, quote: 'If yes, provide details' } }

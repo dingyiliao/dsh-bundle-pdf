@@ -1,0 +1,10 @@
+{
+  "requestId": "req-open-001",
+  "ok": true,
+  "value": {
+    "pageCount": 1,
+    "formType": 0,
+    "signatureCount": 0,
+    "signatureStatus": 0
+  }
+}

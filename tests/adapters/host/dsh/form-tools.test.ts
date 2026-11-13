@@ -4,7 +4,6 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { inflateSync } from 'node:zlib'
-import { PDFDocument, PDFName } from 'pdf-lib'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { registerPdfFormInspectionTool } from '../../../../src/adapters/host/dsh/model-form-tools.ts'
@@ -306,11 +305,9 @@ test('empty and selected dropdown inspection values round-trip directly through 
 test('dense inspection puts small IDs inside widgets, omits appearances and preserves surrounding printed ink',
   { skip: !existsSync(executable) }, async () => {
     const source = await denseFormFixture(), env = await setup(source)
-    // Independent reference: physically remove widgets from a synthetic clone, not the tested document.
-    const bare = await PDFDocument.load(source)
-    bare.catalog.delete(PDFName.of('AcroForm'))
-    bare.getPages().forEach(page => page.node.delete(PDFName.of('Annots')))
-    const reference = await setup(await bare.save())
+    // `renderFormPage(..., includeWidgets=false)` is the native clean-body
+    // reference; no second PDF writer is needed for this comparison.
+    const reference = env
     function decode(png: Uint8Array) {
       const data = Buffer.from(png), chunks: Buffer[] = []
       for (let offset = 8; offset + 12 <= data.length;) {

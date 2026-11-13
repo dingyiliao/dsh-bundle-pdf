@@ -1,4 +1,4 @@
-import type { PageGeometry } from '../../src/modules/viewer/rendering/page-layout.js'
+import type { PageGeometry } from '../../src/client/viewer/rendering/page-layout.js'
 
 export interface ZoomHandoffScenario {
   name: string
@@ -58,11 +58,13 @@ export async function recordWheelZoomHandoff(scenario: ZoomHandoffScenario) {
   const fraction = [(pointer[0] - initial.left) / initial.width, (pointer[1] - initial.top) / initial.height]
   // Only require pixels that were already painted before the gesture. Newly
   // revealed, previously unpainted parts of a large page may legitimately load.
-  const known = [...paper.querySelectorAll<HTMLCanvasElement>('canvas[data-pdf-raster-ready="true"]')].map(canvas => ({
-    left: Number(canvas.dataset.tileLeft), top: Number(canvas.dataset.tileTop),
-    right: Number(canvas.dataset.tileLeft) + Number(canvas.dataset.tileWidth),
-    bottom: Number(canvas.dataset.tileTop) + Number(canvas.dataset.tileHeight),
-  }))
+  const known = [...paper.querySelectorAll<HTMLCanvasElement>('canvas[data-pdf-raster-ready="true"]')]
+    .filter(canvas => canvas.width > 0 && canvas.height > 0)
+    .map(canvas => {
+      const box = canvas.getBoundingClientRect()
+      return { left: (box.left - initial.left) / initial.width, top: (box.top - initial.top) / initial.height,
+        right: (box.right - initial.left) / initial.width, bottom: (box.bottom - initial.top) / initial.height }
+    })
   const points = [fraction, ...[.15, .5, .85].flatMap(x => [.15, .5, .85].map(y => [x, y]))]
     .filter(([x, y]) => known.some(box => x >= box.left && x < box.right && y >= box.top && y < box.bottom))
   const samples: Array<{ phase: string; x: number | null; y: number | null; present: boolean;

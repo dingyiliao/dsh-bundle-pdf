@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
-import { createPdfLibDocumentAdapter } from '../../../src/adapters/host/pdf-lib/document-adapter.js'
+import { createFixtureDocumentPort } from '../../fixtures/native-document.ts'
 import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.js'
 import { digestPdfBytes } from '../../../src/modules/document/index.js'
 import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.js'
+import { acroformFixture } from '../../fixtures/acroform.ts'
 
 const sessionId = 'form-workflow'
 const path = '/form.pdf'
@@ -13,10 +13,7 @@ const agent = { session: { id: sessionId, header: { cwd: '/' } } }
 const signal = new AbortController().signal
 
 test('form edits use one durable draft, undo/redo, and the ordinary safe-save transaction', async () => {
-  const formPdf = await PDFDocument.create()
-  const page = formPdf.addPage([300, 400])
-  formPdf.getForm().createTextField('applicant').addToPage(page, { x: 20, y: 300, width: 150, height: 24 })
-  let current: Uint8Array = new Uint8Array(await formPdf.save())
+  let current: Uint8Array = await acroformFixture()
   const records = new Map<string, DraftRecord>()
   const drafts = createV1DraftRepository({
     get: key => records.get(key),
@@ -32,14 +29,14 @@ test('form edits use one durable draft, undo/redo, and the ordinary safe-save tr
       return { path, version: digestPdfBytes(bytes), fsVersion: 'fs-2', size: bytes.length }
     },
   }
-  const adapter = createPdfLibDocumentAdapter()
+  const adapter = createFixtureDocumentPort()
   const service = createWorkingCopyService(files, drafts, adapter)
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('document' in opened)
     assert.equal(opened.document.readOnly, false)
     const change = (id: string, revision: number, value: string) => service.execute(sessionId, {
-      action: 'change', sessionId, id, revision, operations: [{ type: 'set-field', name: 'applicant', value }],
+      action: 'change', sessionId, id, revision, operations: [{ type: 'set-field', name: 'Text1', value }],
     }, agent, signal)
     const first = await change(opened.id, opened.revision, '第一个值')
     assert.ok('document' in first)
@@ -47,7 +44,7 @@ test('form edits use one durable draft, undo/redo, and the ordinary safe-save tr
     assert.equal(first.dirty, true)
     const undone = await service.execute(sessionId, { action: 'undo', sessionId, id: first.id, revision: first.revision }, agent, signal)
     assert.ok('document' in undone)
-    assert.equal(undone.document.formFields?.[0].value, '')
+    assert.equal(undone.document.formFields?.[0].value, 'Demo')
     const redone = await service.execute(sessionId, { action: 'redo', sessionId, id: undone.id, revision: undone.revision }, agent, signal)
     assert.ok('document' in redone)
     assert.equal(redone.document.formFields?.[0].value, '第一个值')
@@ -59,7 +56,7 @@ test('form edits use one durable draft, undo/redo, and the ordinary safe-save tr
     }, agent, signal)
     assert.ok('document' in saved)
     assert.equal(saved.dirty, false)
-    assert.equal((await PDFDocument.load(current)).getForm().getTextField('applicant').getText(), '最终值')
+    assert.equal(saved.document.formFields?.find(field => field.name === 'Text1')?.value, '最终值')
     assert.equal(records.size, 0)
   } finally {
     await service.dispose()

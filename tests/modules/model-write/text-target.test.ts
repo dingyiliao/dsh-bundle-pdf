@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { locateTextRange, locateTextOffsetRange } from '../../../src/shared/geometry/text-target.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { NativeWorker } from '../../../src/adapters/host/pdfium/native-worker.ts'
+import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 
 function page(items: NativeTextContent['items']): NativeTextContent {
@@ -116,13 +116,12 @@ test('one-scalar native runs use their exact origin and width without guessing m
 const executable = resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 test('real PDFium one-character text objects expose glyph positions and remain exactly targetable',
   { skip: !existsSync(executable) }, async () => {
-    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-    const pdfPage = pdf.addPage([400, 300])
-    pdfPage.drawText('A', { x: 60, y: 180, size: 12, font })
-    pdfPage.drawText('B', { x: 60 + font.widthOfTextAtSize('A', 12), y: 180, size: 12, font })
+    const bytes = plainPdf([{ size: [400, 300], lines: [
+      { text: 'A', x: 60, y: 180, size: 12 }, { text: 'B', x: 68.004, y: 180, size: 12 },
+    ] }])
     const worker = new NativeWorker(executable, nativeTestSubprocess)
     try {
-      await worker.request({ command: 'open', documentId: 'single-glyph-target' }, await pdf.save())
+      await worker.request({ command: 'open', documentId: 'single-glyph-target' }, bytes)
       const content = (await worker.request({ command: 'text', documentId: 'single-glyph-target', pageIndex: 0 })).value as NativeTextContent
       assert.deepEqual(content.items.map(item => item.str), ['A', 'B'])
       assert.ok(content.items.every(item => item.glyphs?.length === 1))
@@ -133,13 +132,12 @@ test('real PDFium one-character text objects expose glyph positions and remain e
     } finally { await worker.dispose() }
   })
 test('real PDFium glyph positions select the title and not the nearby row', { skip: !existsSync(executable) }, async () => {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([400, 300]), font = await pdf.embedFont(StandardFonts.Helvetica)
-  page.drawText('Bit[0] Reserved.', { x: 50, y: 140, size: 12, font })
-  page.drawText('MMFAR title', { x: 50, y: 100, size: 12, font })
+  const bytes = plainPdf([{ size: [400, 300], lines: [
+    { text: 'Bit[0] Reserved.', x: 50, y: 140, size: 12 }, { text: 'MMFAR title', x: 50, y: 100, size: 12 },
+  ] }])
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
-    await worker.request({ command: 'open', documentId: 'text-target-test' }, await pdf.save())
+    await worker.request({ command: 'open', documentId: 'text-target-test' }, bytes)
     const content = (await worker.request({ command: 'text', documentId: 'text-target-test', pageIndex: 0 })).value as NativeTextContent
     const { rect, quadPoints } = locateTextRange(content, 'MMFAR title', 'MMFAR title', true)
     assert.ok(rect[1] < 100 && rect[3] > 100)

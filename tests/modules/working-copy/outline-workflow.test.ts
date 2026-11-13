@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
-import { inProcessPdfDocument } from '../../fixtures/working-copy-service.ts'
+import { blankPdf } from '../../fixtures/plain-pdf.ts'
+import { fixturePdfDocument } from '../../fixtures/working-copy-service.ts'
 import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
 import { digestPdfBytes } from '../../../src/modules/document/index.ts'
 import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
 
 test('embedded outline drafts recover after restart and ordinary save commits the outline', async () => {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400]); pdf.addPage([300, 400])
-  let current = new Uint8Array(await pdf.save())
+  let current = blankPdf(2, [300, 400])
   const sessionId = 'outline-recovery', path = '/outline.pdf'
   const address = `dsh-resource://file/session/${sessionId}/%2Foutline.pdf`
   const agent = { session: { id: sessionId, header: { cwd: '/' } } }
@@ -26,7 +24,7 @@ test('embedded outline drafts recover after restart and ordinary save commits th
       return { path, version: digestPdfBytes(current), fsVersion: 'saved', size: current.length }
     },
   }
-  let service = createWorkingCopyService(files, drafts, inProcessPdfDocument)
+  let service = createWorkingCopyService(files, drafts, fixturePdfDocument)
   try {
     const opened = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('bytes' in opened)
@@ -38,7 +36,7 @@ test('embedded outline drafts recover after restart and ordinary save commits th
     assert.deepEqual(current, original)
     assert.ok(records.size > 0)
     await service.dispose()
-    service = createWorkingCopyService(files, drafts, inProcessPdfDocument)
+    service = createWorkingCopyService(files, drafts, fixturePdfDocument)
     const recovered = await service.execute(sessionId, { action: 'open', sessionId, address }, agent, signal)
     assert.ok('bytes' in recovered)
     assert.equal(recovered.document.outline?.[0].title, 'Embedded chapter')

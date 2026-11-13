@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TranslationPanel, type TranslationPanelProps } from '../../../src/modules/viewer/components/TranslationPanel.tsx'
+import { TranslationPanel, type TranslationPanelProps } from '../../../src/client/viewer/components/TranslationPanel.tsx'
 import { TranslationError, translationEn, type TranslationRequest, type TranslationResult } from '../../../src/translation/index.ts'
 
 const t = (key: string) => translationEn[key.replace(/^reader\./, '') as keyof typeof translationEn] ?? key
@@ -87,6 +87,20 @@ test('component presentation of supplied reconstruction preserves the original a
     await act(async () => { f.button('Copy translation').click() })
     assert.equal(copied, 'Original: subtrac\nPossible completion: subtract\nThe final letter may have been omitted.\n\n减去')
     assert.equal(f.container.querySelector('.dsh-pdf-translation-source-text')!.textContent, 'subtrac')
+  })
+})
+
+test('copying a translation reports unavailable and denied clipboard capabilities', async () => {
+  await withPanel(async () => result('Copied text'), async f => {
+    const copy = f.button('Copy translation')
+    Object.defineProperty(f.dom.navigator, 'clipboard', { configurable: true, value: {} })
+    await act(async () => { copy.click() })
+    assert.match(f.container.querySelector('[role="alert"]')?.textContent ?? '', /Text copying is unavailable/)
+
+    Object.defineProperty(f.dom.navigator, 'clipboard', { configurable: true,
+      value: { async writeText() { throw new Error('permission denied') } } })
+    await act(async () => { copy.click(); await Promise.resolve() })
+    assert.match(f.container.querySelector('[role="alert"]')?.textContent ?? '', /Copy failed/)
   })
 })
 

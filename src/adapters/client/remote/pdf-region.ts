@@ -2,10 +2,10 @@ import { z } from 'zod'
 import { responseSchema } from '../../../contracts/rpc/index.js'
 import { MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../modules/explanation/index.js'
 import { inspectPng } from '../../../shared/png.js'
-import type { PdfRegionEvidenceApi } from '../../../modules/viewer/index.js'
+import type { PdfRegionEvidenceApi } from '../../../client/viewer/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
-export type { PdfRegionEvidence, PdfRegionEvidenceApi } from '../../../modules/viewer/index.js'
+export type { PdfRegionEvidence, PdfRegionEvidenceApi } from '../../../client/viewer/index.js'
 
 const identity = z.string().min(1).max(512)
 const rectPdf = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])

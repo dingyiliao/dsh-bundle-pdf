@@ -3,7 +3,7 @@
 This document describes the current single-document retrieval behavior. For the
 engine registration contract and all engine settings, see
 [Engine extensions](engine-extensions.md). For reproducible commands, see
-[Benchmark protocols](../bench/README.md); frozen measurements are linked at
+[Benchmark protocols](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/README.md); frozen measurements are linked at
 the end.
 
 ## Configure semantic retrieval
@@ -179,11 +179,11 @@ credentials or raw provider responses.
 
 ## Measurement evidence
 
-- [Frozen indexing benchmark](benchmarks/indexing-20261102/README.md): local
+- [Frozen indexing benchmark](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/docs/benchmarks/indexing-20261102/README.md): local
   SQLite/checkpoint cost, reuse and restart recovery with fake vectors. It does
   not measure PDFium, OCR, inference, network or real-user latency.
-- [`bench/retrieval.ts`](../bench/retrieval.ts) and
-  [`bench/retrieval-integration.ts`](../bench/retrieval-integration.ts): synthetic
+- [`bench/retrieval.ts`](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/retrieval.ts) and
+  [`bench/retrieval-integration.ts`](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/retrieval-integration.ts): synthetic
   ranking and real-PDFium/local-model integration runners. Their small authored
   corpus is a development fixture, not held-out retrieval accuracy evidence.
 - [Performance summary](../performance.md): other frozen component measurements

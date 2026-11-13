@@ -5,13 +5,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 
-export interface PdfNativeService { executable: string }
+export interface PdfNativeService { executable: string; documentExtensions?: boolean }
 
 interface NativeManifest {
   protocolVersion: number
   platform: string
   executableSha256: string
   librarySha256: string
+  pdfiumSourceRevision: string
 }
 
 export const name = 'pdf-native'
@@ -29,7 +30,7 @@ export async function verifyNativeDistribution(directory: string, platform = `${
   let manifest: NativeManifest
   try {
     manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
-    if (manifest.protocolVersion !== 1 || manifest.platform !== platform
+    if (manifest.protocolVersion !== 2 || manifest.platform !== platform || !/^[a-f0-9]{40}$/.test(manifest.pdfiumSourceRevision)
       || !isHash(manifest.executableSha256) || !isHash(manifest.librarySha256)) {
       throw new Error('invalid native manifest')
     }
@@ -43,7 +44,7 @@ export async function verifyNativeDistribution(directory: string, platform = `${
   } catch (error) {
     throw new Error(`PDF native files for ${platform} are missing or invalid; reinstall the PDF plugin with optional dependencies enabled`, { cause: error })
   }
-  return { executable }
+  return { executable, documentExtensions: true }
 }
 
 /** Resolve the exact platform dependency from this installation, never the process cwd. */
@@ -80,7 +81,7 @@ export async function apply(ctx: Pick<Context, 'provide'>): Promise<void> {
   if (override) {
     const info = await stat(override)
     if (!info.isFile()) throw new Error('DSH_PDF_NATIVE_HELPER must point to a file')
-    ctx.provide('pdfNative', { executable: override })
+    ctx.provide('pdfNative', { executable: override, documentExtensions: true })
     return
   }
   const packageRoot = new URL(import.meta.url.endsWith('.ts') ? '../../' : '../', import.meta.url)

@@ -1,6 +1,6 @@
 """Regenerate the small synthetic fixtures with pypdf 6.10 and cryptography.
 
-The encrypted object stream comes first, reproducing pdf-lib's early parse
+The encrypted object stream comes first, reproducing an early parser's
 failure. The documents contain only synthetic pages, text and annotations.
 Private pypdf fields are used only to assemble the test fixtures.
 """
@@ -14,7 +14,7 @@ from pypdf.generic import (
 )
 
 
-def fixture(password: str) -> bytes:
+def fixture(password: str, *, permissions: UserAccessPermissions = UserAccessPermissions(0xfffffffc)) -> bytes:
     writer = PdfWriter()
     page = writer.add_blank_page(400, 600)
     page.cropbox = RectangleObject((20, 30, 340, 530))
@@ -35,7 +35,7 @@ def fixture(password: str) -> bytes:
     })
     writer.add_annotation(0, annotation)
     writer.add_metadata({'/Title': 'Encrypted compatibility fixture'})
-    writer.encrypt(password, 'fixture-owner', algorithm='AES-256')
+    writer.encrypt(password, 'fixture-owner', permissions_flag=permissions, algorithm='AES-256')
     encryption_id = writer._encrypt_entry.indirect_reference.idnum
     compressed = [(number, obj) for number, obj in enumerate(writer._objects, 1) if number != encryption_id]
     body = BytesIO()
@@ -125,9 +125,37 @@ def restricted_text_fixture() -> bytes:
     return output.getvalue()
 
 
+def annotation_edges_fixture() -> bytes:
+    """An encrypted page with a note thread and unusable markup geometry."""
+    writer = PdfWriter()
+    writer.add_blank_page(300, 400)
+
+    def add(subtype: str, contents: str, parent=None):
+        annotation = DictionaryObject({
+            NameObject('/Type'): NameObject('/Annot'),
+            NameObject('/Subtype'): NameObject(subtype),
+            NameObject('/Rect'): RectangleObject((20, 100, 40, 120)),
+            NameObject('/Contents'): TextStringObject(contents),
+        })
+        if parent is not None:
+            annotation[NameObject('/IRT')] = parent
+        return writer.add_annotation(0, annotation).indirect_reference
+
+    root = add('/Text', 'Thread root')
+    add('/Text', 'Thread reply', root)
+    add('/Highlight', 'Missing quadrilateral')
+    writer.encrypt('', 'fixture-owner', algorithm='AES-256')
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 if __name__ == '__main__':
     directory = Path(__file__).parent
     (directory / 'encrypted-object-stream.pdf').write_bytes(fixture(''))
     (directory / 'password-object-stream.pdf').write_bytes(fixture('fixture-password'))
+    (directory / 'encrypted-annotation-restricted.pdf').write_bytes(
+        fixture('', permissions=UserAccessPermissions(0xfffffffc) & ~UserAccessPermissions.ADD_OR_MODIFY))
     (directory / 'encrypted-inherited-boxes.pdf').write_bytes(inherited_boxes_fixture())
     (directory / 'encrypted-restricted-text.pdf').write_bytes(restricted_text_fixture())
+    (directory / 'encrypted-annotation-edges.pdf').write_bytes(annotation_edges_fixture())

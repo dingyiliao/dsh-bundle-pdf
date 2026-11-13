@@ -15,8 +15,8 @@ const manifest = JSON.parse(await readFile(join(native, 'manifest.json'), 'utf8'
 const executable = `dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`
 const library = process.platform === 'win32' ? 'pdfium.dll'
   : process.platform === 'darwin' ? 'libpdfium.dylib' : 'libpdfium.so'
-if (manifest.protocolVersion !== 1 || manifest.platform !== target
-    || manifest.pdfiumVersion !== lock.pdfium.version || manifest.sdkArchiveSha256 !== lock.pdfium.assets[target]) {
+if (manifest.protocolVersion !== 2 || manifest.platform !== target
+    || manifest.pdfiumVersion !== lock.pdfium.version || manifest.pdfiumSourceRevision !== lock.pdfium.sourceRevision) {
   throw new Error(`Native manifest does not match pinned dependencies for ${target}`)
 }
 const expected = ['manifest.json', executable, library, 'PDFIUM_LICENSE', 'JSON_LICENSE.MIT']

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ToolbarIcon, type ToolbarIconName } from '../../../src/modules/viewer/components/ToolbarIcon.tsx'
+import { ToolbarIcon, type ToolbarIconName } from '../../../src/client/viewer/components/ToolbarIcon.tsx'
 
 const render = (props: { name: ToolbarIconName; accent?: string }) =>
   renderToStaticMarkup(React.createElement(ToolbarIcon, props))

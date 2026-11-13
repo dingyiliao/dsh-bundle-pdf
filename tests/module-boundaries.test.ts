@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import ts from 'typescript'
 
-const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
+const projectRoot = fileURLToPath(new URL('../', import.meta.url))
+const sourceRoot = join(projectRoot, 'src')
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -14,6 +15,20 @@ function sourceFiles(directory: string): string[] {
     return /\.tsx?$/.test(entry.name) && !entry.name.endsWith('.d.ts') ? [path] : []
   })
 }
+
+const allSourceFiles = () => new Set(sourceFiles(sourceRoot))
+
+test('PDF engine source has one TypeScript boundary and one native boundary', () => {
+  assert.equal(existsSync(join(projectRoot, 'pdf-engine')), false, 'legacy top-level pdf-engine must not return')
+  for (const path of [
+    'src/engine/client', 'src/engine/host', 'src/engine/protocol',
+    'src/adapters/host/pdfium/document-port.ts',
+    'native/worker/worker-runtime.cpp', 'native/backend/pdf-backend.h',
+    'native/backend/pdfium/pdfium-worker.cpp', 'native/pdfium',
+  ]) assert.equal(existsSync(join(projectRoot, path)), true, `missing canonical engine path: ${path}`)
+  assert.equal(existsSync(join(projectRoot, 'src/engine/host/document-worker.ts')), false,
+    'PDFium document adaptation must not return to the low-level engine host')
+})
 
 function localTarget(file: string, specifier: string, files: ReadonlySet<string>): string | undefined {
   if (!specifier.startsWith('.')) return
@@ -51,13 +66,13 @@ function imports(file: string, files: ReadonlySet<string>, includeTypes = false)
   return targets
 }
 
-function display(path: string): string { return relative(sourceRoot, path).split(sep).join('/') }
+function display(path: string): string { return relative(projectRoot, path).split(sep).join('/') }
 
 function assertRuntimeBoundary(from: readonly string[], forbidden: readonly string[]): void {
-  const files = new Set(sourceFiles(sourceRoot))
+  const files = allSourceFiles()
   const graph = new Map([...files].map(file => [file, imports(file, files)]))
   const matches = (file: string, roots: readonly string[]) => roots.some(root =>
-    file === join(sourceRoot, root) || file.startsWith(join(sourceRoot, root) + sep))
+    file === join(projectRoot, root) || file.startsWith(join(projectRoot, root) + sep))
   for (const origin of files) {
     if (!matches(origin, from)) continue
     const queue: string[][] = [[origin]]
@@ -75,31 +90,45 @@ function assertRuntimeBoundary(from: readonly string[], forbidden: readonly stri
 }
 
 test('Host runtime imports cannot reach Client implementation, directly or transitively', () => {
-  assertRuntimeBoundary(['host', 'adapters/host', 'entrypoints/reader-host.ts', 'entrypoints/native-host.ts',
-    'entrypoints/ocr-host.ts', 'entrypoints/image-understanding-host.ts'],
-  ['client', 'adapters/client', 'modules/viewer', 'entrypoints/reader-client.tsx'])
+  assertRuntimeBoundary(['src/host', 'src/adapters/host', 'src/entrypoints/reader-host.ts', 'src/entrypoints/native-host.ts',
+    'src/entrypoints/ocr-host.ts', 'src/entrypoints/image-understanding-host.ts', 'src/engine/host'],
+  ['src/client', 'src/adapters/client', 'src/client/viewer', 'src/entrypoints/reader-client.tsx', 'src/engine/client'])
 })
 
 test('Client runtime imports cannot reach Host implementation, directly or transitively', () => {
-  assertRuntimeBoundary(['client', 'adapters/client', 'modules/viewer', 'entrypoints/reader-client.tsx'],
-  ['host', 'adapters/host', 'entrypoints/reader-host.ts', 'entrypoints/native-host.ts',
-    'entrypoints/ocr-host.ts', 'entrypoints/image-understanding-host.ts'])
+  assertRuntimeBoundary(['src/client', 'src/adapters/client', 'src/client/viewer', 'src/entrypoints/reader-client.tsx', 'src/engine/client'],
+  ['src/host', 'src/adapters/host', 'src/entrypoints/reader-host.ts', 'src/entrypoints/native-host.ts',
+    'src/entrypoints/ocr-host.ts', 'src/entrypoints/image-understanding-host.ts', 'src/engine/host'])
 })
 
-test('Viewer imports no legacy Client implementation, including type-only imports', () => {
-  const files = new Set(sourceFiles(sourceRoot))
-  const viewerRoot = join(sourceRoot, 'modules', 'viewer') + sep
+test('native protocol types and validators have no application implementation dependencies', () => {
+  assertRuntimeBoundary(['src/engine/protocol'], [
+    'src/client', 'src/modules', 'src/adapters', 'src/entrypoints', 'src/shared',
+    'src/translation', 'src/core', 'src/engine/client', 'src/engine/host',
+  ])
+})
+
+test('native engine host stays below PDFium adapters and feature modules', () => {
+  assertRuntimeBoundary(['src/engine/host'], [
+    'src/client', 'src/modules', 'src/adapters', 'src/entrypoints', 'src/shared', 'src/core', 'src/engine/client',
+  ])
+})
+
+test('Viewer imports no Client implementation outside its own root, including type-only imports', () => {
+  const files = allSourceFiles()
+  const viewerRoot = join(sourceRoot, 'client', 'viewer') + sep
   const clientRoot = join(sourceRoot, 'client') + sep
   for (const file of files) {
     if (!file.startsWith(viewerRoot)) continue
     for (const target of imports(file, files, true)) {
-      assert.ok(!target.startsWith(clientRoot), `${display(file)} depends on legacy ${display(target)}`)
+      assert.ok(!target.startsWith(clientRoot) || target.startsWith(viewerRoot),
+        `${display(file)} depends on Client implementation ${display(target)}`)
     }
   }
 })
 
 test('imports across feature modules use their public index', () => {
-  const files = new Set(sourceFiles(sourceRoot))
+  const files = allSourceFiles()
   const modulesRoot = join(sourceRoot, 'modules') + sep
   for (const file of files) {
     for (const target of imports(file, files, true)) {
@@ -113,7 +142,7 @@ test('imports across feature modules use their public index', () => {
 })
 
 test('feature-module dependencies form a directed acyclic graph', () => {
-  const files = new Set(sourceFiles(sourceRoot))
+  const files = allSourceFiles()
   const modulesRoot = join(sourceRoot, 'modules') + sep
   const owner = (file: string): string | undefined => file.startsWith(modulesRoot)
     ? relative(modulesRoot, file).split(sep)[0] : undefined

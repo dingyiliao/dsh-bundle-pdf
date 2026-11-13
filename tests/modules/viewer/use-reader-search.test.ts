@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
-import type { NativeDocument } from '../../../src/modules/viewer/index.ts'
-import type { OcrPage } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
-import { useReaderSearch, type ReaderSearchOptions } from '../../../src/modules/viewer/index.ts'
+import type { NativeDocument } from '../../../src/client/viewer/index.ts'
+import type { OcrPage } from '../../../src/client/viewer/controllers/reader-lifetime.ts'
+import { useReaderSearch, type ReaderSearchOptions } from '../../../src/client/viewer/index.ts'
 
 const pages: PdfPageInfo[] = [1, 2].map(page => ({ page, cropBox: [0, 0, 400, 600], rotation: 0, userUnit: 1 }))
 

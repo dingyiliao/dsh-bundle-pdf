@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRegionEvidenceApi } from '../../../../src/adapters/client/remote/pdf-region.ts'
 import type { PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
-import type { PdfRegionEvidenceApi } from '../../../../src/modules/viewer/ports/reader.ts'
+import type { PdfRegionEvidenceApi } from '../../../../src/client/viewer/ports/reader.ts'
 
 // A complete 1×1 PNG, including IHDR, IDAT, and IEND chunks.
 const png = Uint8Array.from(Buffer.from(

@@ -4,8 +4,8 @@ import type { PdfPageInfo } from '../../../src/core/pdf-types.js'
 import {
   buildPageLayout, pagePixelToPdfPoint, PAGE_GAP, READING_TOP_INSET,
   readingPageProbe, readingSafeTop, windowForViewport,
-} from '../../../src/modules/viewer/rendering/page-layout.js'
-import { pageIndexAtOffset } from '../../../src/modules/viewer/rendering/window-layout.js'
+} from '../../../src/client/viewer/rendering/page-layout.js'
+import { pageIndexAtOffset } from '../../../src/client/viewer/rendering/window-layout.js'
 
 test('placeholder pixel points round-trip to PDF space at every right-angle rotation', () => {
   const page: PdfPageInfo = { page: 1, cropBox: [10, 20, 210, 420], rotation: 0, userUnit: 2 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/index.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
 import { createAgentNavigation, createReaderContexts } from '../../../../src/modules/navigation/index.ts'
@@ -28,12 +28,11 @@ type AnnotationResult = { status: string; revision: number; annotationId: string
   coverage: { complete: true; pages: Array<{ annotationId: string; refId: string; text: string; startUtf16: number }> } }
 
 async function pdfFixture() {
-  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-  const page = pdf.addPage([400, 400])
-  page.drawText(quote, { x: 60, y: 300, size: 12, font })
-  page.drawText('An unrelated middle paragraph', { x: 60, y: 230, size: 12, font })
-  page.drawText(quote, { x: 60, y: 160, size: 12, font })
-  return pdf.save()
+  return plainPdf([{ size: [400, 400], lines: [
+    { text: quote, x: 60, y: 300, size: 12 },
+    { text: 'An unrelated middle paragraph', x: 60, y: 230, size: 12 },
+    { text: quote, x: 60, y: 160, size: 12 },
+  ] }])
 }
 
 async function fixture() {

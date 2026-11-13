@@ -10,3 +10,6 @@ bench-results/
 artifacts/
 native/.deps/
 native/build/
+.DS_Store
+.vscode/
+*.profraw

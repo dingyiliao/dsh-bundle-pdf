@@ -1,7 +1,7 @@
 // Exercise native worker internals without adding a test command to the
 // shipped protocol. This translation unit is built only by the coverage runner.
 #define main dsh_pdf_native_worker_main
-#include "pdfium-worker.cpp"
+#include "backend/pdfium/pdfium-worker.cpp"
 #undef main
 
 #include <fstream>

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { ReaderSelection, PageView } from '../../../src/modules/viewer/model/reader-selection.ts'
+import type { ReaderSelection, PageView } from '../../../src/client/viewer/model/reader-selection.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderSelection, type ReaderSelectionOptions } from '../../../src/modules/viewer/index.ts'
+import { useReaderSelection, type ReaderSelectionOptions } from '../../../src/client/viewer/index.ts'
 
 const initial = { id: 'doc-1', revision: 4 } as WorkspaceSnapshot
 const selected: ReaderSelection = {

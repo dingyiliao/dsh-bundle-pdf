@@ -1,6 +1,6 @@
 # PDF 插件架构
 
-本文说明当前源码的职责、数据归属和运行时边界。功能与使用限制见[功能规范](../spec.md)，模型工具契约见[模型工具契约](./agent-tools.md)，扩展接口见[引擎扩展](./engine-extensions.md)，原生实现见[原生 PDF 实现](../native-pdf.md)。
+本文说明当前源码的职责、数据归属和运行时边界。功能与使用限制见[功能规范](../spec.md)，模型工具契约见[模型工具契约](./agent-tools.md)，扩展接口见[引擎扩展](./engine-extensions.md)，原生实现见[原生 PDF 实现](../native-pdf.md)，引擎分层见[PDF 引擎模块](./pdf-engine.md)。
 
 ## 运行时与职责
 
@@ -19,14 +19,16 @@ flowchart LR
     TOOL --> READ
     READ -->|只读快照与操作租约| WC
     WC --> PURE[文档、标注、表单与目录模型]
-    WC --> WRITE[pdf-lib 工作线程]
+    WC --> DOCUMENT[文档检查与写入端口]
+    WC -->|加密批注写回| PDF[PDFium 适配器]
     WC --> FILES[文件与草稿存储]
-    READ --> PDF[PDFium 适配器]
+    READ --> PDF
     READ --> AI[OCR、图像理解与 embedding]
     READ --> INDEX[派生内容与索引存储]
   end
   REMOTE --> RPC
-  PDF --> WORKER[原生 worker]
+  PDF --> WORKER[PDFium 渲染进程]
+  DOCUMENT --> NATIVE[PDFium 文档进程]
 ```
 
 RPC 和模型工具共享领域能力与工作副本，不各自实现写入事务。入口可有不同交互和查询策略：Reader 的交互搜索与模型的有界关键词搜索共享文字内核，但不强制使用相同限额。读页、搜索和识别不会暗中导航；后台打开文档与在侧栏显示文档是两个操作。
@@ -45,21 +47,25 @@ RPC 和模型工具共享领域能力与工作副本，不各自实现写入事�
 | `src/modules/navigation/`、`explanation/` | 阅读上下文、导航请求和阅读位置；解释材料与提词组合 |
 | `src/modules/capabilities/`、`engines/` | 能力规划、类型化引擎目录、配置与缓存身份 |
 | `src/modules/ocr/`、`image-understanding/` | 与 PDF 解耦的图像处理服务和任务生命周期 |
-| `src/modules/viewer/` | `components` 视图、`controllers` 交互状态、`rendering` 窗口化绘制、`model` 纯展示逻辑、`ports` 外部依赖 |
+| `src/client/viewer/` | `components` 视图、`controllers` 交互状态、`rendering` 窗口化绘制、`model` 纯展示逻辑、`ports` 外部依赖 |
 | `src/adapters/host/dsh/` | DSH RPC、工具、会话、模型、授权和后台任务装配 |
 | `src/adapters/host/dsh/indexing/` | 索引迁移读写屏障，以及文档检索、预建和任务状态的组合 |
-| `src/adapters/host/{filesystem,storage,pdf-lib,pdfium,ocr,embedding}/` | 文件/存储及具体 PDF、OCR、embedding 实现 |
+| `src/adapters/host/{filesystem,storage,pdfium,ocr,embedding}/` | 文件、存储、PDFium 适配和 AI 引擎实现 |
 | `src/adapters/client/{remote,dsh}/` | RPC 客户端、订阅、快照同步和会话发送 |
 | `src/client/`、`src/client/settings/` | Reader 组合、DSH 工具卡、会话生命周期；设置组件、确认和合并逻辑及样式集中于 `settings/` |
 | `src/shared/` | 共享契约、纯坐标换算、有界缓存和订阅辅助 |
 | `src/core/pdf-types.ts`、`src/shared/navigation-history.ts` | PDF 数据类型、跨运行环境的纯视口历史 |
-| `src/adapters/host/pdfium/framing.ts` | 原生 worker 的帧协议 |
-| `src/{ocr,translation,embedding}/`、`src/host/` | 已发布 SDK、注册接口及 Host 类型入口 |
-| `native/` | PDFium worker、构建依赖锁与原生回调测试 |
+| `src/engine/` | PDF 引擎协议、进程适配和客户端选区；按 `client`、`host`、`protocol` 分层 |
+| `src/engine/host/` | 原生 worker、帧协议、队列、取消和句柄租约；不包含工作副本投影 |
+| `src/adapters/host/pdfium/` | PDFium 文档适配、标注、表单、书签和保存字节；组合工作副本操作后调用 native worker |
+| `src/{ocr,translation,embedding}/`、`src/host/` | 已发布 SDK、注册接口及 Host 类型入口；`src/host/*` 仅保留兼容类型 re-export |
+| `native/` | Worker runtime、稳定 Backend 接口、PDFium worker、构建依赖锁与原生回调测试；`native/pdfium/` 保存 SDK 补丁、扩展头文件和 SDK 构建脚本 |
 
 `working-copy` 组合文档、标注、表单和目录算法；文件操作、PDF 物化与存储通过端口接入。Host 不导入 Client 运行时代码，Client 不导入 Host 实现。领域模块可脱离 DSH 装配测试，但并非全部模块都是无 Node 依赖的纯函数。
 
-每个阅读器插件实例按需启动一个工作线程，串行执行 PDF 解析、逐页指纹计算和物化。线程接收 PDF 字节和编辑操作，返回元数据与物化后的字节。Host 负责文件授权、工作副本修订和原子保存。
+PDFium 文档进程负责检查、逐页指纹和写入，与前台渲染进程分开排队。`native/worker/worker-runtime.cpp` 只负责进程生命周期、二进制 framing、请求关联和错误 envelope；`native/backend/pdf-backend.h` 定义可替换的 Backend 边界，当前实现是 `PdfiumBackend`。两者共用 `src/engine/protocol/` 契约。文档进程接收 PDF 字节与类型化操作，返回元数据或经重开校验的 PDF 字节。Host 负责文件授权、工作副本修订和原子发布。
+
+加密文档的工作副本只由阅读器持有。Host 通过 PDFium 获取当前凭据的有效批注权限，复用标注投影和撤销历史，并将草稿与凭据留在内存。另存为在独立原生句柄上应用草稿，分块读回密文，并重新打开核对加密、原始权限和批注后再原子发布。
 
 ## 文档身份与授权
 

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { ReaderCommentEditor, type ReaderCommentEditorProps } from '../../../src/modules/viewer/components/ReaderCommentEditor.tsx'
+import { ReaderCommentEditor, type ReaderCommentEditorProps } from '../../../src/client/viewer/components/ReaderCommentEditor.tsx'
 
 async function withEditor(run: (fixture: {
   container: HTMLElement
@@ -95,6 +95,27 @@ test('new comment composer requires only text, and close is distinct from cancel
       container.querySelector<HTMLButtonElement>('.dsh-pdf-comment-editor-close')!.click()
     })
     assert.deepEqual(actions, ['close', 'dismiss'])
+  })
+})
+
+test('comment textarea submits on Enter, keeps Shift+Enter for newlines, and Escape cancels', async () => {
+  await withEditor(async ({ container, props, render, actions }) => {
+    await render({ ...props, comment: 'A comment' })
+    const editor = container.querySelector<HTMLElement>('.dsh-pdf-comment-editor')!
+    const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => editor.dispatchEvent(enter))
+    assert.equal(enter.defaultPrevented, true)
+    assert.deepEqual(actions, ['apply'])
+
+    const newline = new window.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    await act(async () => editor.dispatchEvent(newline))
+    assert.equal(newline.defaultPrevented, false)
+    assert.deepEqual(actions, ['apply'])
+
+    const escape = new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await act(async () => editor.dispatchEvent(escape))
+    assert.equal(escape.defaultPrevented, true)
+    assert.deepEqual(actions, ['apply', 'close'])
   })
 })
 

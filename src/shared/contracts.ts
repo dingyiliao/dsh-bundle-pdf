@@ -24,6 +24,8 @@ export const translationTargetLanguages = ['zh', 'en', 'ja', 'ko', 'fr', 'de'] a
 export const translationSourceLanguage = 'auto' as const
 
 export interface PdfSettings {
+  /** Development preview of native-coordinate selection. */
+  nativeSelectionPreview?: boolean
   ocrEngine?: string
   imageEngine?: string
   embeddingEngine?: string
@@ -46,6 +48,7 @@ export interface PdfSettings {
 }
 
 export const defaultSettings: PdfSettings = {
+  nativeSelectionPreview: false,
   ocrEngine: 'local-tesseract', imageEngine: 'dsh-vision', embeddingEngine: 'none', engineConfigurations: {},
   indexScanPages: true, indexImageDescriptions: false,
   ocrTimeoutMs: 120000,
@@ -88,6 +91,9 @@ export interface PdfClientApi {
   open(sessionId: string, address: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
   /** Explicit user password entry; never retain or replay it during automatic recovery. */
   unlock(sessionId: string, address: string, password: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
+  /** Upgrade the current Reader occurrence's annotation permissions. */
+  unlockEdit(sessionId: string, id: string, revision: number, password: string, signal?: AbortSignal,
+    referenceId?: string): Promise<WorkspaceSnapshot>
   /** Read the current working-copy snapshot without reloading the source or acquiring a view reference. */
   refresh(sessionId: string, id: string, signal?: AbortSignal): Promise<WorkspaceSnapshot>
   /** Omit id to permanently close this occurrence's reference, including opens whose reply was lost. */

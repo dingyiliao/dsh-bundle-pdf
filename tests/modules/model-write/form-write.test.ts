@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
 import { createModelWriteService, modelFillFormSchema } from '../../../src/modules/model-write/index.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
+import { classicPdf, pdfArray, pdfDict, pdfStream, pdfString, ref } from '../../fixtures/pdf-fixture-kit.ts'
 
 const sessionId = 'model-forms'
 const agent = { session: { id: sessionId, header: {} } }
@@ -40,14 +40,14 @@ test('model form batches share Reader drafts, one-step undo/redo and approved Un
     assert.equal(state.writes(), 0)
     const saved = await writes.save(sessionId, { documentId: opened.id, expectedRevision: current().revision }, agent, signal, async () => true)
     assert.equal(saved.dirty, false); assert.equal(state.writes(), 1)
-    const form = (await PDFDocument.load(state.current())).getForm()
-    assert.equal(form.getTextField('Text1').getText(), '测试')
-    assert.equal(form.getRadioGroup('contact').getSelected(), 'phone')
-    assert.equal(form.getCheckBox('accepted').isChecked(), true)
+    const form = state.workspaces.readSnapshot(sessionId, opened.id).document.formFields!
+    assert.equal(form.find(field => field.name === 'Text1')?.value, '测试')
+    assert.equal(form.find(field => field.name === 'contact')?.value, 'phone')
+    assert.equal(form.find(field => field.name === 'accepted')?.value, true)
     await writes.fillForm(sessionId, { documentId: opened.id, expectedRevision: current().revision,
       fields: [{ fieldId: ids.Text1, value: '' }] }, agent, signal)
     await writes.save(sessionId, { documentId: opened.id, expectedRevision: current().revision }, agent, signal, async () => true)
-    assert.equal((await PDFDocument.load(state.current())).getForm().getTextField('Text1').getText(), '')
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.formFields?.find(field => field.name === 'Text1')?.value, '')
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
 
@@ -85,7 +85,7 @@ test('fill then clear before the first save commits empty values and a clean sha
     const current = state.workspaces.readSnapshot(sessionId, opened.id)
     assert.equal(current.conflict, false); assert.equal(current.dirty, false); assert.equal(current.canUndo, false)
     assert.equal(current.document.formFields!.find(field => field.id === ids.Text1)!.value, '')
-    assert.equal((await PDFDocument.load(state.current())).getForm().getTextField('Text1').getText(), '')
+    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.formFields?.find(field => field.name === 'Text1')?.value, '')
     const reopened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
     assert.ok('bytes' in reopened)
@@ -106,10 +106,12 @@ test('clear phase uses a fresh revision; every supported field can be cleared, r
     assert.deepEqual(Object.fromEntries(preview.document.formFields!.filter(field => ['Text1', 'contact', 'choice', 'list', 'accepted']
       .includes(field.name)).map(field => [field.name, field.value])), { Text1: '', contact: '', choice: [], list: [], accepted: false })
     await writes.save(sessionId, { documentId: opened.id, expectedRevision: cleared.revision }, agent, signal, async () => true)
-    const form = (await PDFDocument.load(state.current())).getForm()
-    assert.equal(form.getTextField('Text1').getText(), ''); assert.equal(form.getRadioGroup('contact').getSelected(), undefined)
-    assert.deepEqual(form.getDropdown('choice').getSelected(), []); assert.deepEqual(form.getOptionList('list').getSelected(), [])
-    assert.equal(form.getCheckBox('accepted').isChecked(), false)
+    const form = state.workspaces.readSnapshot(sessionId, opened.id).document.formFields!
+    assert.equal(form.find(field => field.name === 'Text1')?.value, '')
+    assert.equal(form.find(field => field.name === 'contact')?.value, '')
+    assert.deepEqual(form.find(field => field.name === 'choice')?.value, [])
+    assert.deepEqual(form.find(field => field.name === 'list')?.value, [])
+    assert.equal(form.find(field => field.name === 'accepted')?.value, false)
     assert.equal(state.writes(), 1)
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })
@@ -165,10 +167,24 @@ test('form writes fence revision, session, source, cancellation, disposal and in
 })
 
 test('a large filled form has a complete compact approval, saves only after approval and reopens correctly', async () => {
-  const pdf = await PDFDocument.create(), page = pdf.addPage([600, 800])
-  for (let index = 0; index < 100; index++) pdf.getForm().createTextField(`item-${index}`)
-    .addToPage(page, { x: 20 + index % 5 * 110, y: 30 + Math.floor(index / 5) * 35, width: 100, height: 24 })
-  const state = memoryWorkspace(new Uint8Array(await pdf.save())), writes = createModelWriteService(state.workspaces)
+  const fields: string[] = [], widgets: number[] = []
+  const objects: string[] = [
+    pdfDict({ Type: '/Catalog', Pages: ref(2), AcroForm: ref(7) }),
+    pdfDict({ Type: '/Pages', Kids: pdfArray([ref(5)]), Count: '1' }),
+    pdfDict({ Type: '/Font', Subtype: '/Type1', BaseFont: '/Helvetica', Encoding: '/WinAnsiEncoding' }),
+    pdfDict({ Producer: pdfString('DSH PDF test fixture') }),
+    pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 600 800]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6) }),
+    pdfStream(''), pdfDict({ Type: '/AcroForm', Fields: '[]', NeedAppearances: 'true' }),
+  ]
+  let next = 8
+  for (let index = 0; index < 100; index++) {
+    const field = next++, widget = next++; fields.push(ref(field)); widgets.push(widget)
+    objects.push(pdfDict({ FT: '/Tx', T: pdfString(`item-${index}`), Kids: pdfArray([ref(widget)]) }))
+    objects.push(pdfDict({ Type: '/Annot', Subtype: '/Widget', FT: '/Tx', Parent: ref(field), Rect: `[${20 + index % 5 * 110} ${30 + Math.floor(index / 5) * 35} ${120 + index % 5 * 110} ${54 + Math.floor(index / 5) * 35}]`, P: ref(5) }))
+  }
+  objects[4] = pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 600 800]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6), Annots: pdfArray(widgets.map(ref)) })
+  objects[6] = pdfDict({ Type: '/AcroForm', Fields: pdfArray(fields), NeedAppearances: 'true' })
+  const state = memoryWorkspace(classicPdf(objects)), writes = createModelWriteService(state.workspaces)
   try {
     const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
@@ -191,7 +207,7 @@ test('a large filled form has a complete compact approval, saves only after appr
     assert.equal(state.writes(), 0)
     const saved = await writes.save(sessionId, { documentId: opened.id, expectedRevision: edited.revision }, agent, signal, async () => true)
     assert.equal(saved.dirty, false); assert.equal(state.writes(), 1)
-    const form = (await PDFDocument.load(state.current())).getForm()
-    for (let index = 0; index < 100; index++) assert.equal(form.getTextField(`item-${index}`).getText(), `value-${index}`)
+    const form = state.workspaces.readSnapshot(sessionId, opened.id).document.formFields!
+    for (let index = 0; index < 100; index++) assert.equal(form.find(field => field.name === `item-${index}`)?.value, `value-${index}`)
   } finally { writes.dispose(); await state.workspaces.dispose() }
 })

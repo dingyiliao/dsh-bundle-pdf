@@ -295,6 +295,7 @@ it('renders an annotation destination after scrolling deep into a book-length PD
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible', timeout: 20_000 })
     await openSidebarSection(reader, 'Annotations')
+    await reader.locator('.dsh-pdf-comments').waitFor({ state: 'visible', timeout: 20_000 })
     const scroll = reader.locator('.dsh-pdf-scroll')
     const input = reader.locator('.dsh-pdf-sidebar').getByRole('textbox', { name: 'Page' })
     await reader.locator('.dsh-pdf-windowed-pages').waitFor({ state: 'attached', timeout: 20_000 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { currentTranslationSelection } from '../../../src/modules/viewer/model/translation-selection.ts'
+import { currentTranslationSelection } from '../../../src/client/viewer/model/translation-selection.ts'
 import { TranslationError } from '../../../src/translation/types.ts'
 
 test('a captured translation selection belongs to its reader and source document', () => {

@@ -4,10 +4,10 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-selection.ts'
-import type { NativeDocument } from '../../../src/modules/viewer/rendering/document.ts'
-import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/modules/viewer/index.ts'
-import { readerLocales } from '../../../src/modules/viewer/locales.ts'
+import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+import type { NativeDocument } from '../../../src/client/viewer/rendering/document.ts'
+import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/client/viewer/index.ts'
+import { readerLocales } from '../../../src/client/viewer/locales.ts'
 
 type TextEvidenceApi = NonNullable<ReaderExplanationOptions['textSelectionEvidence']>
 type TextRevalidationRequest = Parameters<TextEvidenceApi['revalidate']>[0]
@@ -525,6 +525,23 @@ test('question editing and new text/region selections reject a changed PDF basel
     await act(async () => { assert.equal(state().selectRegion(2, { rect: [0, 0, 20, 20], quadPoints: [] }), true) })
     assert.equal(state().editor, null)
     assert.equal(state().error, 'reader.explain.sourceChanged')
+  })
+})
+
+test('starting region mode again toggles back to text mode', async () => {
+  await withExplanation(async ({ state, options, render }) => {
+    await render({ ...options, pdf: { numPages: 2 } as NativeDocument,
+      regionEvidence: { async prepare() { throw new Error('not called') } } })
+    await act(async () => { state().start() })
+    assert.ok(state().active)
+    assert.equal(state().editor, null)
+    options.regionPurpose.current = 'explanation'
+    await render({ ...options, mode: 'region', regionPurpose: options.regionPurpose,
+      pdf: { numPages: 2 } as NativeDocument,
+      regionEvidence: { async prepare() { throw new Error('not called') } } })
+    assert.equal(state().active !== null, true)
+    await act(async () => { state().beginRegion() })
+    assert.equal(options.regionPurpose.current, null)
   })
 })
 

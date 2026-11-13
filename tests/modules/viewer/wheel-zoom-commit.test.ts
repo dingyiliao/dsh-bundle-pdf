@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBoundedFrameRetry, createWheelZoomCommit, type ZoomCommitClock, type ZoomFrameClock } from '../../../src/modules/viewer/controllers/wheel-zoom-commit.js'
+import { createBoundedFrameRetry, createWheelZoomCommit, type ZoomCommitClock, type ZoomFrameClock } from '../../../src/client/viewer/controllers/wheel-zoom-commit.js'
 
 function fakeClock() {
   let now = 0

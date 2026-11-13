@@ -12,22 +12,24 @@
 | `tests/native-*.test.ts` | PDFium 协议、渲染、文字及保存集成 | `npm test` |
 | `tests/browser/ocr-local-worker.test.ts` | 构建后的浏览器 OCR Worker 启动 | 项目覆盖率流程 |
 
-`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供测试数据；`tests/support/` 统一临时 DOM 环境的创建和恢复，各场景保留自己的 mock。`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](../bench/README.md)。
+`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供测试数据；`tests/support/` 统一临时 DOM 环境的创建和恢复，各场景保留自己的 mock。`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/README.md)。
 
 ## 运行
 
 ```sh
-npm run check                 # 源码、测试及 bench 类型检查，构建和 Node 测试
+npm run check                 # 类型检查、DSH 兼容、架构门禁、构建和 Node 测试
 npm run test:web              # 浏览器交互
 npm run test:coverage:project # Node、Browser 和 native 合并覆盖率
 node --import tsx --test tests/<path>.test.ts
 ```
 
-浏览器测试需要相邻的 `deepseek-harness` 仓库及其已构建产物、Playwright Chromium 和本地 HTTP 监听权限。测试宿主版本须与被验证的 SDK 对齐；CI 的固定提交见[工作流](../.github/workflows/native.yml)。原生测试需先运行 `npm run native:build`。
+覆盖率的 Web 通道在每个交互失败后重试一次，以吸收 Chromium 布局/栅格时序抖动；普通 `npm run test:web` 不重试并直接报告第一次失败。
+
+浏览器测试需要相邻的 `deepseek-harness` 仓库及其已构建产物、Playwright Chromium 和本地 HTTP 监听权限。测试宿主版本须与被验证的 SDK 对齐，CI 的固定提交见[工作流](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/.github/workflows/native.yml)。原生测试需用[补丁版 PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md) 构建助手。
 
 使用非默认位置的 Chromium 时，将 `DSH_PDF_BROWSER_EXECUTABLE` 设为其可执行文件的绝对路径。
 
-项目覆盖率要求 Node 26.7+、Chromium 及 LLVM 工具链。采集期间保持源码和构建配置不变；报告写入命令打印的 `.test-output/` 目录。分母、合并方法及 100% 行覆盖率门槛见[覆盖率口径](../coverage.md)。TC 数量不代表覆盖率。
+项目覆盖率要求 Node 26.7+、Chromium、LLVM 工具链和[补丁版 PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md)。将 `DSH_PDFIUM_ROOT` 指向补丁版 SDK，重新构建 `dist/native`，再用 `DSH_PDF_REQUIRE_NATIVE_EXTENSIONS=1` 运行覆盖率。采集期间保持源码和构建配置一致，报告写入命令打印的 `.test-output/` 目录。分母、合并方法及 100% 行覆盖率门槛见[覆盖率口径](../coverage.md)。
 
 ## 跨边界验证
 
@@ -43,5 +45,5 @@ node --import tsx --test tests/<path>.test.ts
 验证系统安装的 Desktop 能否安装已发布的 PDF 插件时，指定插件的 npm 版本。应用默认取自 `/Applications/DeepSeek Harness.app`，也可以通过 `--app` 指定另一个已安装的应用：
 
 ```sh
-node scripts/smoke-dsh-compatibility.mjs --package @dylanl1/dsh-plugin-pdf@0.1.7
+node scripts/smoke-dsh-compatibility.mjs --package @dylanl1/dsh-plugin-pdf@0.1.8
 ```

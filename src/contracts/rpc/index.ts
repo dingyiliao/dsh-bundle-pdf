@@ -1,4 +1,4 @@
-export { PDF_ENDPOINT, requestEnvelopeSchema, responseSchema } from './envelope.js'
+export { PDF_ENDPOINT, requestEnvelopeSchema, responseSchema, rpcErrorSchema, rpcResponseSchema } from './envelope.js'
 export { wireSnapshotSchema, wireAnnotationSchema } from './workspace.js'
 export type { WireSnapshot } from './workspace.js'
 export { operationSchema, requestSchema } from './requests.js'

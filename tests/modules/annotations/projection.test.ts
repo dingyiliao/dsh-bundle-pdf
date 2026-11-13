@@ -1,38 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDict, PDFDocument, PDFHexString, PDFName } from 'pdf-lib'
-import { applyPdfOperations, loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { classicPdf } from '../../fixtures/plain-pdf.ts'
+import { materializeFixturePdf, inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { projectPdfOperations } from '../../../src/modules/annotations/index.ts'
 import type { NewPdfAnnotation, PdfAnnotation, PdfDocumentInfo, PdfAnnotationOperation } from '../../../src/core/pdf-types.ts'
 
 const when = '2026-09-30T08:15:30.000Z'
 
-async function fixture(): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create()
-  const first = pdf.addPage([300, 400])
-  const second = pdf.addPage([300, 400])
-  const third = pdf.addPage([300, 400])
-  const shared = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', Rect: [20, 20, 120, 40],
-    QuadPoints: [20, 40, 120, 40, 20, 20, 120, 20],
-    C: [1, 1, 0], Contents: PDFHexString.fromText('shared'),
-  }))
-  const popup = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Popup', Rect: [130, 20, 230, 70], Parent: shared,
-  }))
-  pdf.context.lookup(shared, PDFDict).set(PDFName.of('Popup'), popup)
-  const other = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Text', Rect: [30, 100, 50, 120],
-    Contents: PDFHexString.fromText('other'),
-  }))
-  const last = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Text', Rect: [30, 180, 50, 200],
-    Contents: PDFHexString.fromText('last'),
-  }))
-  first.node.set(PDFName.of('Annots'), pdf.context.obj([shared, popup]))
-  second.node.set(PDFName.of('Annots'), pdf.context.obj([shared, other]))
-  third.node.set(PDFName.of('Annots'), pdf.context.obj([last]))
-  return pdf.save({ useObjectStreams: false })
+const markup = '<< /Type /Annot /Subtype /Highlight /Rect [20 20 120 40] /QuadPoints [20 40 120 40 20 20 120 20]'
+
+function fixture(): Uint8Array {
+  return classicPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 300 400] >>',
+    '<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R] >>',
+    '<< /Type /Page /Parent 2 0 R /Annots [6 0 R 8 0 R] >>',
+    '<< /Type /Page /Parent 2 0 R /Annots [9 0 R] >>',
+    `${markup} /C [1 1 0] /Contents (shared) /Popup 7 0 R >>`,
+    '<< /Type /Annot /Subtype /Popup /Rect [130 20 230 70] /Parent 6 0 R >>',
+    '<< /Type /Annot /Subtype /Text /Rect [30 100 50 120] /Contents (other) >>',
+    '<< /Type /Annot /Subtype /Text /Rect [30 180 50 200] /Contents (last) >>',
+  ])
 }
 
 function newText(id: string, page: number): NewPdfAnnotation {
@@ -41,20 +29,20 @@ function newText(id: string, page: number): NewPdfAnnotation {
 
 function visible(annotations: readonly PdfAnnotation[]) {
   return annotations.map(({ id, page, subtype, rect, quadPoints, color, commentPosition, contents, createdAt, modifiedAt, editable }) => ({
-    id, page, subtype, rect, quadPoints, color, commentPosition, contents, createdAt, modifiedAt, editable,
+    id, page, subtype, rect, quadPoints, color: color?.map(Math.fround), commentPosition, contents, createdAt, modifiedAt, editable,
   }))
 }
 
 async function assertMatchesSaved(bytes: Uint8Array, baseline: PdfDocumentInfo, operations: PdfAnnotationOperation[]) {
   const projected = projectPdfOperations(baseline, operations, when)
-  const saved = await applyPdfOperations(bytes, operations, operations.map(() => when))
+  const saved = await materializeFixturePdf(bytes, operations, operations.map(() => when))
   assert.deepEqual(visible(projected.annotations), visible(saved.document.annotations))
   return projected
 }
 
 test('projection keeps page and annotation order when additions target different pages', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const operations: PdfAnnotationOperation[] = [
     { type: 'add', annotation: newText('new-third', 3) },
     { type: 'add', annotation: newText('new-first', 1) },
@@ -72,8 +60,8 @@ test('projection keeps page and annotation order when additions target different
 })
 
 test('editing either alias updates every reference to the same PDF dictionary', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const aliases = baseline.annotations.filter(item => item.sourceObjectId === baseline.annotations[0].sourceObjectId)
   assert.equal(aliases.length, 2)
   const projected = await assertMatchesSaved(bytes, baseline, [
@@ -89,21 +77,23 @@ test('editing either alias updates every reference to the same PDF dictionary', 
 })
 
 test('only standalone Text notes can be moved, and projection updates their PDF-space rectangle', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const note = baseline.annotations.find(item => item.contents === 'other')!
   const moved = await assertMatchesSaved(bytes, baseline, [
     { type: 'update', id: note.id, patch: { rect: [90, 120, 110, 140] } },
   ])
-  assert.deepEqual(moved.annotations.find(item => item.id === note.id)?.rect, [90, 120, 110, 140])
+  const movedNote = moved.annotations.find(item => item.id === note.id)
+  assert.deepEqual(movedNote?.rect, [90, 120, 110, 140])
+  assert.equal(movedNote?.color, undefined)
   const mark = baseline.annotations.find(item => item.subtype === 'Highlight')!
   assert.throws(() => projectPdfOperations(baseline,
     [{ type: 'update', id: mark.id, patch: { rect: [90, 120, 110, 140] } }], when), /Only standalone notes/)
 })
 
 test('comment-card positions belong to root markups and project as PDF user-space points', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const mark = baseline.annotations.find(item => item.subtype === 'Highlight')!
   const position: [number, number] = [240, 310]
   const projected = await assertMatchesSaved(bytes, baseline, [
@@ -116,8 +106,8 @@ test('comment-card positions belong to root markups and project as PDF user-spac
 })
 
 test('deleting an alias removes every reference and its associated popup', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const shared = baseline.annotations[0]
   const aliases = baseline.annotations.filter(item => item.sourceObjectId === shared.sourceObjectId)
   const popup = baseline.annotations.find(item => item.subtype === 'Popup')
@@ -128,8 +118,8 @@ test('deleting an alias removes every reference and its associated popup', async
 })
 
 test('a rejected batch leaves the input intact and later operations use the updated index', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const original = structuredClone(baseline)
   const temporary = newText('temporary', 2)
   assert.throws(() => projectPdfOperations(baseline, [
@@ -147,15 +137,15 @@ test('a rejected batch leaves the input intact and later operations use the upda
 })
 
 test('reply comments follow their parent and cannot leave an orphan', async () => {
-  const bytes = await fixture()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = fixture()
+  const baseline = await inspectFixturePdf(bytes)
   const parent = baseline.annotations.find(item => item.subtype === 'Highlight')!
   const reply: NewPdfAnnotation = {
     id: 'thread-reply', page: parent.page, subtype: 'Text', rect: [60, 160, 80, 180],
     replyToId: parent.id, contents: 'An explanation', author: 'Reader',
   }
   const projected = projectPdfOperations(baseline, [{ type: 'add', annotation: reply }], when)
-  const saved = await applyPdfOperations(bytes, [{ type: 'add', annotation: reply }], [when])
+  const saved = await materializeFixturePdf(bytes, [{ type: 'add', annotation: reply }], [when])
   assert.equal(projected.annotations.find(item => item.id === reply.id)?.replyToId, parent.id)
   assert.equal(projected.annotations.find(item => item.id === reply.id)?.replyType, 'R')
   assert.deepEqual(
@@ -181,15 +171,13 @@ test('reply comments follow their parent and cannot leave an orphan', async () =
 })
 
 test('reply projection uses the canonical parent alias for a duplicated PDF annotation', async () => {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([300, 400])
-  const shared = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', Rect: [20, 20, 120, 40],
-    QuadPoints: [20, 40, 120, 40, 20, 20, 120, 20],
-  }))
-  page.node.set(PDFName.of('Annots'), pdf.context.obj([shared, shared]))
-  const bytes = await pdf.save()
-  const baseline = await loadPdfDocument(bytes)
+  const bytes = classicPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >>',
+    '<< /Type /Page /Parent 2 0 R /Annots [4 0 R 4 0 R] >>',
+    `${markup} >>`,
+  ])
+  const baseline = await inspectFixturePdf(bytes)
   const aliases = baseline.annotations.filter(item => item.subtype === 'Highlight')
   assert.equal(aliases.length, 2)
   const operation: PdfAnnotationOperation = { type: 'add', annotation: {
@@ -198,12 +186,12 @@ test('reply projection uses the canonical parent alias for a duplicated PDF anno
   } }
   const projected = projectPdfOperations(baseline, [operation], when)
   assert.equal(projected.annotations.find(item => item.id === 'aliased-reply')?.replyToId, aliases[0].id)
-  const materialized = await applyPdfOperations(bytes, [operation], [when])
+  const materialized = await materializeFixturePdf(bytes, [operation], [when])
   assert.equal(materialized.document.annotations.find(item => item.id === 'aliased-reply')?.replyToId, aliases[0].id)
 })
 
 test('editing imported rich-text Contents clears only its rich-text marker in the projected draft', async () => {
-  const baseline = await loadPdfDocument(await fixture())
+  const baseline = await inspectFixturePdf(fixture())
   const target = baseline.annotations.find(item => item.subtype === 'Text')!
   const richBaseline = { ...baseline, annotations: baseline.annotations.map(item =>
     item.id === target.id ? { ...item, hasRichText: true as const } : item) }

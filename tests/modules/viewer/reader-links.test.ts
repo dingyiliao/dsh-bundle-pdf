@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from '../../../src/modules/viewer/model/reader-links.ts'
-import type { PageViewport } from '../../../src/modules/viewer/model/reader-selection.ts'
+import { actionableLink, createLinkHitTester, linkAtPoint, namedLinkAction, safeLinkUrl, type PdfLink } from '../../../src/client/viewer/model/reader-links.ts'
+import type { PageViewport } from '../../../src/client/viewer/model/reader-selection.ts'
 
 const identityViewport = {
   convertToPdfPoint: (x: number, y: number) => [x, y],

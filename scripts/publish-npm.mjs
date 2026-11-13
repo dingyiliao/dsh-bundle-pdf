@@ -69,8 +69,8 @@ async function verifyNative(archive, metadata, target, lock) {
     throw new Error(`Incomplete or unexpected native files: ${metadata.name}`)
   }
   const manifest = JSON.parse(archiveFile(archive, 'package/bin/manifest.json').toString('utf8'))
-  if (manifest.protocolVersion !== 1 || manifest.platform !== target || manifest.pdfiumVersion !== lock.pdfium.version
-      || manifest.sdkArchiveSha256 !== lock.pdfium.assets[target]
+  if (manifest.protocolVersion !== 2 || manifest.platform !== target || manifest.pdfiumVersion !== lock.pdfium.version
+      || manifest.pdfiumSourceRevision !== lock.pdfium.sourceRevision
       || sha256(archiveFile(archive, `package/bin/${executable}`)) !== manifest.executableSha256
       || sha256(archiveFile(archive, `package/bin/${library}`)) !== manifest.librarySha256) {
     throw new Error(`Native integrity or SDK pin mismatch: ${metadata.name}`)
@@ -88,7 +88,7 @@ function verifyMain(archive, metadata, main) {
     if (JSON.stringify(metadata[key]) !== JSON.stringify(main[key])) throw new Error(`Main package ${key} differs from the release manifest`)
   }
   if (files.some(path => /^package\/(?:src|native|tests|node_modules)\//.test(path) || path.startsWith('package/dist/native/')
-      || path.endsWith('.map') || /\.(?:tsx?|cpp|cc|h|hpp)$/.test(path) && !path.endsWith('.d.ts')
+      || path.endsWith('.map') || /\.(?:tsx?|cpp|cc|h|hpp)$/.test(path) && !path.endsWith('.d.ts') && !path.startsWith('package/examples/')
       || /(?:^|\/)(?:credentials?|secrets?|tokens?)\.(?:json|txt)$/.test(path) || /\.(?:pem|key)$/.test(path))) {
     throw new Error('Main package contains source, native binaries, credentials or temporary files')
   }

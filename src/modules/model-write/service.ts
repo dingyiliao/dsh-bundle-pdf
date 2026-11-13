@@ -97,6 +97,7 @@ export interface ModelWriteReview {
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
 function checkRevision(snapshot: HostWorkspaceSnapshot, expectedRevision: number): void {
+  if (snapshot.document.encrypted) fail('pdf/protected-document', 'Protected PDFs can only be edited in the Reader')
   if (snapshot.revision !== expectedRevision) fail('pdf/stale-revision', 'The PDF working copy changed; read its status again')
   if (snapshot.conflict) fail('pdf/source-conflict', 'The PDF source changed outside this working copy')
   if (snapshot.document.readOnly) fail('pdf/read-only', snapshot.document.readOnlyReason ?? 'This PDF is read-only')

@@ -1,0 +1,13 @@
+{
+  "requestId": "req-annotation-001",
+  "command": "annotationEdit",
+  "documentId": "doc-001",
+  "pageIndex": 0,
+  "action": "add",
+  "annotation": {
+    "id": "annotation-001",
+    "subtype": "Text",
+    "rect": [10, 20, 30, 40],
+    "contents": "Review note"
+  }
+}

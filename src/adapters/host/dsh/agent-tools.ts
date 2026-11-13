@@ -15,6 +15,7 @@ import { createBackgroundDocuments, type BackgroundReaderPort, createWorkingCopy
   type WorkingCopyFilePort } from '../../../modules/working-copy/index.js'
 import type { PdfAgent } from './transport.js'
 import { imageContextPresentationMeta, readPagePresentationMeta, evidenceReadPresentationMeta, keywordSearchPresentationMeta } from './pdf-evidence-meta.js'
+import './session-events.js'
 import { registerPdfModelWriteTools } from './model-write-tools.js'
 import { freshSourceReader } from './fresh-source.js'
 import { registerPdfFormInspectionTool, type FormPageRenderPort } from './model-form-tools.js'

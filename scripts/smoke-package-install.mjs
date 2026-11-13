@@ -110,10 +110,11 @@ try {
   const manifest = JSON.parse(await readFile(join(nativeRoot, 'bin/manifest.json'), 'utf8'))
   assert.equal(reply.requestId, requestId)
   assert.equal(reply.ok, true)
-  assert.equal(reply.value?.protocolVersion, 1)
+  assert.equal(reply.value?.protocolVersion, 2)
+  assert.equal(reply.value?.documentExtensions, true)
   assert.equal(reply.value?.engine, 'pdfium')
   assert.equal(reply.value?.build, manifest.pdfiumVersion)
-  console.log(`[package-smoke] public /native provider and real PDFium hello: ${target}, protocol=1, build=${reply.value.build}`)
+  console.log(`[package-smoke] public /native provider and real PDFium hello: ${target}, protocol=${reply.value.protocolVersion}, build=${reply.value.build}`)
 
   const compiler = join(root, 'node_modules/typescript/bin/tsc')
   for (const [entry, contract, service] of [

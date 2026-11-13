@@ -11,7 +11,7 @@ test('radio, dropdown and list controls send exact field identities and typed va
   installDom({ window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, Event: dom.Event,
     IS_REACT_ACT_ENVIRONMENT: true })
-  const { FormWidgets } = await import('../../../src/modules/viewer/rendering/FormWidgets.tsx')
+  const { FormWidgets } = await import('../../../src/client/viewer/rendering/FormWidgets.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const widget = { page: 1, rect: [20, 20, 80, 40] as [number, number, number, number] }
@@ -21,6 +21,7 @@ test('radio, dropdown and list controls send exact field identities and typed va
       widgets: [{ ...widget, option: 'one' }, { ...widget, option: 'two' }] },
     { ...base, id: 'dropdown-id', name: 'Choice', type: 'dropdown', value: ['one'], options: ['one', 'two'] },
     { ...base, id: 'list-id', name: 'List', type: 'option-list', value: ['one'], options: ['one', 'two'] },
+    { ...base, id: 'check-id', name: 'Agree', type: 'checkbox', value: false },
     { ...base, id: 'locked-id', name: 'Locked', type: 'text', readOnly: true },
   ]
   const writes: Array<[string, string | boolean | string[]]> = []
@@ -43,7 +44,9 @@ test('radio, dropdown and list controls send exact field identities and typed va
       for (const option of list.options) option.selected = true
       list.dispatchEvent(new dom.Event('change', { bubbles: true }))
     })
-    assert.deepEqual(writes, [['radio-id', 'two'], ['dropdown-id', 'two'], ['list-id', ['one', 'two']]])
+    const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Agree"]')!
+    await act(async () => { checkbox.click() })
+    assert.deepEqual(writes, [['radio-id', 'two'], ['dropdown-id', 'two'], ['list-id', ['one', 'two']], ['check-id', true]])
     fields[0] = { ...fields[0], value: 'two' }
     fields[1] = { ...fields[1], value: 'two' }
     await render()

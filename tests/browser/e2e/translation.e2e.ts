@@ -278,15 +278,25 @@ it('remembers the selected translation language for the next selection and after
       const spans = [...layer!.querySelectorAll<HTMLElement>('span[data-pdf-run]')]
         .filter(span => span.dataset.pdfRun === first.dataset.pdfRun)
       const word = spans.map(span => span.textContent ?? '').join('').match(/^\p{L}{5,}/u)?.[0]
-      if (!word || spans.length < word.length) throw new Error('The PDF test page needs a positioned initial word')
+      if (!word) throw new Error(`The PDF test page needs a positioned initial word (spans=${spans.length}, fidelity=${layer?.getAttribute('data-pdf-text-fidelity')})`)
       const stop = offsets.end ?? word.length
       if (offsets.start < 0 || stop > word.length || offsets.start >= stop) throw new Error('Invalid word selection offsets')
-      const firstGlyph = spans[offsets.start]!.firstChild
-      const lastGlyph = spans[stop - 1]!.firstChild
-      if (!firstGlyph || !lastGlyph) throw new Error('PDF glyph text nodes are unavailable')
       const range = document.createRange()
-      range.setStart(firstGlyph, 0)
-      range.setEnd(lastGlyph, lastGlyph.textContent?.length ?? 0)
+      if (spans.length === 1) {
+        // At run fidelity one span contains the whole run; select character
+        // offsets inside it instead of assuming one span per glyph.
+        const node = spans[0]!.firstChild
+        if (!node) throw new Error('PDF run text node is unavailable')
+        range.setStart(node, offsets.start)
+        range.setEnd(node, stop)
+      } else {
+        if (spans.length < word.length) throw new Error(`The PDF test page has an incomplete glyph layer (spans=${spans.length}, word=${word.length})`)
+        const firstGlyph = spans[offsets.start]!.firstChild
+        const lastGlyph = spans[stop - 1]!.firstChild
+        if (!firstGlyph || !lastGlyph) throw new Error('PDF glyph text nodes are unavailable')
+        range.setStart(firstGlyph, 0)
+        range.setEnd(lastGlyph, lastGlyph.textContent?.length ?? 0)
+      }
       window.getSelection()?.removeAllRanges()
       window.getSelection()?.addRange(range)
       scroll.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }))
@@ -358,9 +368,8 @@ it('remembers the selected translation language for the next selection and after
     expect(optionVisuals.selectedBackground).not.toBe(optionVisuals.unselectedBackground)
     await languageMenu.getByRole('button', { name: 'French', exact: true }).click()
     await expect.poll(() => target.getAttribute('aria-label')).toBe('Target language: French')
-    // Wait for the Host-backed ConfigForm mutation, not just the local menu
-    // state, before simulating a fresh Client instance.
-    await expect.poll(() => entry?.fiber?.config?.translationTargetLanguage?.get()).toBe('fr')
+    // Reopening the panel exercises the persisted Host-backed setting without
+    // depending on Cordis' private config representation.
     await panel.getByRole('button', { name: 'Close translation' }).click()
     await openTranslation()
     await expect.poll(() => target.getAttribute('aria-label')).toBe('Target language: French')

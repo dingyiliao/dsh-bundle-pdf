@@ -9,7 +9,7 @@ import {
   parseHighlightQuickColors,
   readNoteQuickColors,
   removeHighlightQuickColor,
-} from '../../../src/modules/viewer/model/highlight-colors.ts'
+} from '../../../src/client/viewer/model/highlight-colors.ts'
 
 test('quick highlight colors start with five defaults and an intentionally emptied bar stays empty', () => {
   const defaults = parseHighlightQuickColors(null)

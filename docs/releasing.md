@@ -19,7 +19,7 @@ Installation runs no build or download hooks.
    `dsh-pdf-main` and the five `dsh-pdf-native-<target>` artifacts. Do not mix
    runs.
 
-On a source checkout, `npm run native:build`, `npm run build`,
+On a source checkout, build the [pinned PDFium SDK](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/native/pdfium/README.md) first. Then `npm run native:build`, `npm run build`,
 `npm run package:native -- <target>` and `npm run package:main` create the
 current platform's packages. `npm run package:smoke -- --main <main.tgz>
 --native <native.tgz>` checks a clean install, a real PDFium handshake and
@@ -44,7 +44,7 @@ different content under the same version requires a new version.
 After publication, verify automatic native selection from the registry alone:
 
 ```sh
-npm run package:smoke -- --package @dylanl1/dsh-plugin-pdf@0.1.7
+npm run package:smoke -- --package @dylanl1/dsh-plugin-pdf@0.1.8
 ```
 
 Use the version being released in that command.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { pageAtPointer, suspendScrollAnchoring } from '../../../src/modules/viewer/rendering/pdf-viewport-geometry.ts'
-import { clearWindowLayout, setWindowLayout } from '../../../src/modules/viewer/index.ts'
+import { pageAtPointer, suspendScrollAnchoring } from '../../../src/client/viewer/rendering/pdf-viewport-geometry.ts'
+import { clearWindowLayout, setWindowLayout } from '../../../src/client/viewer/index.ts'
 
 class TestElement {
   dataset: { pageNumber?: string } = {}

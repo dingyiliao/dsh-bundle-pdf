@@ -6,6 +6,7 @@ import { engineConfigurationsSchema } from '../modules/engines/index.js'
 import { migrateEngineConfigurations, migrateImageEngine } from '../shared/engine-configuration-migration.js'
 
 export const Config = z.object({
+  nativeSelectionPreview: z.boolean().default(false).volatile(),
   ocrEngine: z.string().pattern(/\S/).default(defaultSettings.ocrEngine!).volatile(),
   imageEngine: z.string().pattern(/\S/).default('dsh-vision').volatile(),
   embeddingEngine: z.string().pattern(/\S/).default('none').volatile(),
@@ -35,6 +36,7 @@ export function readConfig(config: HostConfig): PdfSettings {
   const configurations = engineConfigurationsSchema.parse(engineConfigurations)
   const imageEngine = config.imageEngine?.get() ?? defaultSettings.imageEngine!
   return {
+    nativeSelectionPreview: config.nativeSelectionPreview?.get() ?? false,
     ocrEngine: config.ocrEngine?.get() ?? defaultSettings.ocrEngine,
     imageEngine: migrateImageEngine(imageEngine, configurations),
     embeddingEngine: config.embeddingEngine?.get() ?? defaultSettings.embeddingEngine,

@@ -6,7 +6,7 @@ import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
 import type { ReaderProps } from '../../../src/client/contracts.ts'
 import type { NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
-import { readerLifetime } from '../../../src/modules/viewer/controllers/reader-lifetime.ts'
+import { readerLifetime } from '../../../src/client/viewer/controllers/reader-lifetime.ts'
 import { TranslationRegistry, type TranslationRequest } from '../../../src/translation/index.ts'
 import type { VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
 

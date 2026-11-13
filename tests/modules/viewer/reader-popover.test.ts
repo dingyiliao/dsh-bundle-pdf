@@ -2,7 +2,7 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act, useRef, useState, type ReactNode } from 'react'
-import { ReaderPopover } from '../../../src/modules/viewer/components/ReaderPopover.js'
+import { ReaderPopover } from '../../../src/client/viewer/components/ReaderPopover.js'
 
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {

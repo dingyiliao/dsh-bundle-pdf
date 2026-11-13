@@ -4,8 +4,8 @@ import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/adapters/host/pdfium/framing.ts'
-import { NativeWorker, type NativeProcessRuntime } from '../src/adapters/host/pdfium/native-worker.ts'
+import { FrameDecoder, encodeFrame, MAX_NATIVE_REPLY } from '../src/engine/host/framing.ts'
+import { NativeWorker, type NativeProcessRuntime } from '../src/engine/host/native-worker.ts'
 import { NativeTestSubprocess, nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { ByteCache } from '../src/shared/cache/index.ts'
@@ -58,12 +58,12 @@ let input = Buffer.alloc(0), held
 process.stdin.on('data', chunk => { input = Buffer.concat([input, chunk]); drain() })
 function drain() { while (input.length >= 8) { const j=input.readUInt32LE(0),b=input.readUInt32LE(4);if(input.length<8+j+b)return;const q=JSON.parse(input.subarray(8,8+j));input=input.subarray(8+j+b);setTimeout(()=>reply(q),q.command==='hello'?0:40) } }
 function reply(q) {
-  if(q.command==='hang')return
-  if(${holdFirst} && q.command==='first') { held=q;process.stderr.write('first-received\\n');return }
+  if(q.documentId==='hang')return
+  if(${holdFirst} && q.documentId==='first') { held=q;process.stderr.write('first-received\\n');return }
   if(q.command==='release-first') { const first=held;held=undefined;replyNow(first);return }
   replyNow(q)
 }
-function replyNow(q) { const value=q.command==='hello'?{protocolVersion:1,build:'156.0.8076.0'}:{command:q.command};const json=Buffer.from(JSON.stringify({requestId:q.requestId,ok:true,value})),prefix=Buffer.alloc(8);prefix.writeUInt32LE(json.length);process.stdout.write(Buffer.concat([prefix,json])) }
+function replyNow(q) { const value=q.command==='hello'?{protocolVersion:2,build:'156.0.8076.0'}:{closed:true};const json=Buffer.from(JSON.stringify({requestId:q.requestId,ok:true,value})),prefix=Buffer.alloc(8);prefix.writeUInt32LE(json.length);process.stdout.write(Buffer.concat([prefix,json])) }
 `)
   await chmod(executable, 0o755)
   return { executable, close: () => rm(directory, { recursive: true, force: true }) }
@@ -77,7 +77,10 @@ test('real helper pipes retain a cancelled request until its reply is drained', 
     private handle?: SubprocessHandle
     override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
       const handle = this.handle = super.spawn(spec)
-      const incoming = new FrameDecoder(frame => { sent.push((frame.metadata as { command: string }).command) })
+      const incoming = new FrameDecoder(frame => {
+        const request = frame.metadata as { command: string; documentId?: string }
+        sent.push(request.documentId ?? request.command)
+      })
       const stdin = handle.stdin!
       const write = stdin.write.bind(stdin)
       stdin.write = ((chunk: Uint8Array) => { incoming.feed(chunk); return write(chunk) }) as typeof stdin.write
@@ -97,17 +100,17 @@ test('real helper pipes retain a cancelled request until its reply is drained', 
   try {
     await worker.ready()
     const controller = new AbortController()
-    const first = worker.request({ command: 'first' }, undefined, controller.signal)
+    const first = worker.request({ command: 'close', documentId: 'first' }, undefined, controller.signal)
     // A parent-process tick cannot prove that the child received the command.
     await Promise.race([firstReceived, first.then(() => { throw new Error('First request completed before its reply was released') })])
-    const second = worker.request({ command: 'second' })
+    const second = worker.request({ command: 'close', documentId: 'second' })
     void second.catch(() => {})
     controller.abort()
     await assert.rejects(first, { name: 'AbortError' })
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.deepEqual(sent, ['hello', 'first'], 'cancellation must retain the active slot until its reply')
     subprocess.releaseFirst()
-    assert.deepEqual((await second).value, { command: 'second' })
+    assert.deepEqual((await second).value, { closed: true })
     assert.deepEqual(sent, ['hello', 'first', 'release-first', 'second'])
   } finally { await worker.dispose(); await fake.close() }
 })
@@ -115,9 +118,9 @@ test('timeout kills the helper and a later handshake starts a new generation', {
   const fake = await fakeWorker(), worker = new NativeWorker(fake.executable, nativeTestSubprocess, 1000)
   try {
     await worker.ready(); const firstGeneration = worker.generation
-    await assert.rejects(worker.request({ command: 'hang' }), { code: 'pdf/native-timeout' })
+    await assert.rejects(worker.request({ command: 'close', documentId: 'hang' }), { code: 'pdf/native-timeout' })
     await worker.ready(); assert.equal(worker.generation, firstGeneration + 1)
-    assert.deepEqual((await worker.request({ command: 'recovered' })).value, { command: 'recovered' })
+    assert.deepEqual((await worker.request({ command: 'close', documentId: 'recovered' })).value, { closed: true })
   } finally { await worker.dispose(); await fake.close() }
 })
 
@@ -214,7 +217,7 @@ test('a replacement waits for the previous managed process range to exit', async
       const decoder = new FrameDecoder(frame => {
         const request = frame.metadata as { command: string; requestId: string }
         const value = request.command === 'hello'
-          ? { protocolVersion: 1, build: '156.0.8076.0' } : { command: request.command }
+          ? { protocolVersion: 2, build: '156.0.8076.0' } : { closed: true }
         for (const part of encodeFrame({ requestId: request.requestId, ok: true, value })) stdout.write(part)
       })
       stdin.on('data', chunk => decoder.feed(chunk))
@@ -247,6 +250,6 @@ test('a replacement waits for the previous managed process range to exit', async
     await restart
     assert.equal(subprocess.spawns, 2)
     assert.equal(worker.generation, 2)
-    assert.deepEqual((await worker.request({ command: 'recovered' })).value, { command: 'recovered' })
+    assert.deepEqual((await worker.request({ command: 'close', documentId: 'recovered' })).value, { closed: true })
   } finally { subprocess.releaseRange(); await worker.dispose() }
 })

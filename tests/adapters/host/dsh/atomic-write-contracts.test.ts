@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument } from 'pdf-lib'
+import { blankPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfModelWriteTools } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
 import { FORM_FILLING_GUIDANCE } from '../../../../src/adapters/host/dsh/form-guidance.ts'
 import { PDF_INTENT_PROMPT } from '../../../../src/adapters/host/dsh/system-prompt.ts'
@@ -16,9 +16,7 @@ interface Tool {
 }
 
 async function fixture() {
-  const pdf = await PDFDocument.create()
-  pdf.addPage([300, 400])
-  const state = memoryWorkspace(await pdf.save())
+  const state = memoryWorkspace(blankPdf(1, [300, 400]))
   const agent = { session: { id: 'atomic-write-tools', header: {} } }
   const execution = { agent, signal: new AbortController().signal }
   const tools = new Map<string, Tool>()

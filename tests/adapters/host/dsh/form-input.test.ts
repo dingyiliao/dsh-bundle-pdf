@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { numberedFillFormSchema, numberedReference, resolveNumberedFormInput } from '../../../../src/adapters/host/dsh/form-input.ts'
 import { createFormInspectionRegistry, inspectFormPage } from '../../../../src/modules/forms/index.ts'
-import { loadPdfDocument } from '../../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../../fixtures/native-document.ts'
 import { acroformFixture } from '../../../fixtures/acroform.ts'
 
 test('numbered input stays bounded and maps fallback diagnostic references without exposing native identities', async () => {
-  const document = await loadPdfDocument(await acroformFixture())
+  const document = await inspectFixturePdf(await acroformFixture())
   const store = createFormInspectionRegistry(), identity = { sessionId: 'owner', documentId: 'doc', revision: 1,
     contentVersion: 'version', sourceDigest: 'digest' }
   const page = inspectFormPage(document, 1), id = store.issue(identity, page, document), bindings = store.resolve(id, identity, 1)

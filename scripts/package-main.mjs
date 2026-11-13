@@ -10,7 +10,7 @@ if (!Array.isArray(pkg.files) || pkg.files.length === 0) throw new Error('The ma
 const safePath = path => typeof path === 'string' && path !== '' && !path.includes('\\')
   && !path.split('/').some(segment => !segment || segment === '..' || segment.startsWith('.') || segment === 'node_modules')
 const allowedRoots = new Set(['dist', 'locale', 'docs', 'scripts', 'README.md', 'README.zh.md', 'spec.md',
-  'performance.md', 'native-pdf.md', 'LICENSE', 'cordis.patch.yml', 'icon.svg'])
+  'performance.md', 'native-pdf.md', 'coverage.md', 'examples', 'LICENSE', 'cordis.patch.yml', 'icon.svg'])
 for (const path of pkg.files) {
   if (!safePath(path) || !allowedRoots.has(path.split('/')[0]) || /[*?\[\]{}]/.test(path)
       || path.startsWith('scripts/') && path !== 'scripts/local-embedding-server.py') {
@@ -29,7 +29,7 @@ delete metadata.bundledDependencies
 await packVerified(root, metadata, async stage => {
   const include = path => {
     if (path === 'dist/native' || path.startsWith('dist/native/')) return false
-    if (!safePath(path) || path.endsWith('.map') || /\.(?:tsx?|cpp|cc|h|hpp)$/.test(path) && !path.endsWith('.d.ts')
+    if (!safePath(path) || path.endsWith('.map') || /\.(?:tsx?|cpp|cc|h|hpp)$/.test(path) && !path.endsWith('.d.ts') && !path.startsWith('examples/')
         || /(?:^|\/)(?:credentials?|secrets?|tokens?)\.(?:json|txt)$/.test(path) || /\.(?:pem|key)$/.test(path)) {
       throw new Error(`Source, credentials or temporary files cannot be published: ${path}`)
     }
@@ -51,7 +51,7 @@ await packVerified(root, metadata, async stage => {
       if (!files.some(file => file.startsWith(start) && file.endsWith(end))) throw new Error(`Missing exported files: ${target}`)
     } else if (!files.includes(path)) throw new Error(`Missing exported file: ${target}`)
   }
-  for (const required of ['dist/index.js', 'dist/client.js', 'dist/pdf-document-worker.mjs', 'dist/THIRD_PARTY_NOTICES.md']) {
+  for (const required of ['dist/index.js', 'dist/client.js', 'dist/assets/forms/NotoSansCJKsc-Regular.otf', 'dist/THIRD_PARTY_NOTICES.md']) {
     if (!files.includes(required)) throw new Error(`The main package is missing ${required}`)
   }
   for (const path of files.filter(path => path.startsWith('locale/') && path.endsWith('.json'))) {

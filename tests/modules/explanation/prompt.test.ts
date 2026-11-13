@@ -3,8 +3,8 @@ import { describe, it } from 'node:test'
 import { buildMixedExplanationPrompt, type TextExplanationExcerpt, type ExplanationImageReferencePreparation,
   type ExplanationImageReferenceRequest, type PromptContentPart,
   type RegionExplanationExcerpt } from '../../../src/modules/explanation/index.ts'
-import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-selection.ts'
-import { readerLocales } from '../../../src/modules/viewer/locales.ts'
+import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+import { readerLocales } from '../../../src/client/viewer/locales.ts'
 
 const t = (key: string): string => readerLocales.en[key] ?? key
 

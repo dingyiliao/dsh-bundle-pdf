@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
-import { useReaderSidebarLayout } from '../../../src/modules/viewer/controllers/use-reader-sidebar-layout.ts'
+import { useReaderSidebarLayout } from '../../../src/client/viewer/controllers/use-reader-sidebar-layout.ts'
 
 test('each PDF keeps its own sidebar section and expansion across file switches', async () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })

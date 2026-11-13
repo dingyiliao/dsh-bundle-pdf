@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { useReaderFormCommits, type ReaderFormCommitOptions } from '../../../src/modules/viewer/rendering/FormCommitContext.tsx'
+import { useReaderFormCommits, type ReaderFormCommitOptions } from '../../../src/client/viewer/rendering/FormCommitContext.tsx'
 
 test('the active form owner reports a rejected write through the latest handler and retains the draft for retry', async () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<div id="root"></div>', { url: 'about:blank', globals: [] })

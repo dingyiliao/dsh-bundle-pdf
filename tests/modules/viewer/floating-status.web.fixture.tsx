@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FloatingStatusRail, type FloatingStatus } from '../../../src/modules/viewer/components/FloatingStatusRail.js'
+import { FloatingStatusRail, type FloatingStatus } from '../../../src/client/viewer/components/FloatingStatusRail.js'
 
 interface StatusInput { id: string; label: string; actionLabel?: string; durationMs?: number; occurrence?: number; tone?: FloatingStatus['tone'] }
 let presses = 0

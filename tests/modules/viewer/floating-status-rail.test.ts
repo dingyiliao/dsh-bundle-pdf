@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { FloatingStatusRail, floatingStatusOrder, type FloatingStatus } from '../../../src/modules/viewer/components/FloatingStatusRail.tsx'
+import { FloatingStatusRail, floatingStatusOrder, type FloatingStatus } from '../../../src/client/viewer/components/FloatingStatusRail.tsx'
 
 test('floating statuses retain their first-appearance order when another status arrives', () => {
   assert.deepEqual(floatingStatusOrder([], ['save']), ['save'])

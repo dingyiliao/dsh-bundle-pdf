@@ -271,6 +271,7 @@ body[data-ds-dark-theme] .dsh-pdf-reader {
   -webkit-user-select: text; user-select: text;
 }
 .dsh-pdf-selection-overlay { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.dsh-pdf-scroll[data-pdf-selection="native-preview"] .dsh-pdf-mode-text { cursor: text; user-select: none; }
 /* A half pixel of bleed keeps two neighbouring regions from leaving an unpainted
    seam when the compositor rasterizes a fractional CSS coordinate. */
 .dsh-pdf-selection-box { position: absolute; background: var(--dsw-alias-bg-document-selection); box-shadow: 0 0 0 0.5px var(--dsw-alias-bg-document-selection); }

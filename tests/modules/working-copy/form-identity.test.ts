@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createModelWriteService } from '../../../src/modules/model-write/index.ts'
 import { formFieldId, inspectFormPage } from '../../../src/modules/forms/index.ts'
-import { loadPdfDocument } from '../../../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { createWorkspaces } from '../../fixtures/working-copy-service.ts'
 import { workingCopyOperationSchema } from '../../../src/contracts/rpc/requests.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
@@ -45,7 +45,7 @@ test('same-name controls have independent IDs; draft/undo/recovery/save preserve
     const saved = await writes.save(sessionId, { documentId: restored.id, expectedRevision: restored.revision }, agent, signal,
       async review => { assert.equal(review.saveChangeCount, 2); return true })
     assert.equal(saved.dirty, false); assert.equal(state.writes(), 1)
-    const reloaded = await loadPdfDocument(state.current())
+    const reloaded = await inspectFixturePdf(state.current())
     assert.deepEqual(reloaded.formFields!.map(formFieldId), fields.map(formFieldId), 'object IDs survive serialization')
     assert.deepEqual(reloaded.formFields!.filter(field => field.name === 'same-name').map(field => field.value), [false, true, false])
   } finally { writes.dispose(); await service.dispose() }

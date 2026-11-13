@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
-import { NativeWorker } from '../src/adapters/host/pdfium/native-worker.ts'
+import { classicPdf, plainPdf } from './fixtures/plain-pdf.ts'
+import { NativeWorker } from '../src/engine/host/native-worker.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { NativeTextContent } from '../src/shared/native.ts'
 import { prepareTextSelectionEvidence } from '../src/modules/evidence/selection.ts'
@@ -14,13 +14,17 @@ const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native text tests require a built helper')
 
 test('PDFium supplies each character origin and advance for precise text selection', { skip: !existsSync(executable) }, async () => {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([300, 180])
-  const font = await pdf.embedFont(StandardFonts.TimesRoman)
-  page.drawText('WiWi selection', { x: 32, y: 96, size: 24, font })
+  const drawing = 'BT /F1 24 Tf 32 96 Td (WiWi selection) Tj ET\n'
+  const bytes = classicPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 180] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>',
+    `<< /Length ${drawing.length} >>\nstream\n${drawing}endstream`,
+  ])
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
-    await worker.request({ command: 'open', documentId: 'positioned-text' }, await pdf.save())
+    await worker.request({ command: 'open', documentId: 'positioned-text' }, bytes)
     const content = (await worker.request({ command: 'text', documentId: 'positioned-text', pageIndex: 0 })).value as NativeTextContent
     const run = content.items.find(item => item.str.includes('WiWi'))
     assert.ok(run, 'PDFium must return the visible text run')
@@ -38,11 +42,11 @@ test('PDFium supplies each character origin and advance for precise text selecti
 
 test('real PDFium text reaches Host selection evidence with both ordinary and single-character objects',
   { skip: !existsSync(executable) }, async () => {
-    const pdf = await PDFDocument.create(), page = pdf.addPage([300, 180])
-    const font = await pdf.embedFont(StandardFonts.Helvetica)
-    page.drawText('Hello', { x: 32, y: 96, size: 14, font })
-    page.drawText('X', { x: 240, y: 24, size: 14, font })
-    const bytes = await pdf.save(), signal = new AbortController().signal
+    const bytes = plainPdf([{ size: [300, 180], lines: [
+      { text: 'Hello', x: 32, y: 96, size: 14 },
+      { text: 'X', x: 240, y: 24, size: 14 },
+    ] }])
+    const signal = new AbortController().signal
     const snapshot = { id: 'selection-document', path: '/fixtures/selection.pdf', bytes,
       sourceVersion: 'source-1', contentVersion: 'content-1', revision: 0,
       document: { pageCount: 1, pages: [{ page: 1, cropBox: [0, 0, 300, 180], rotation: 0, userUnit: 1 }] },
@@ -55,8 +59,8 @@ test('real PDFium text reaches Host selection evidence with both ordinary and si
       assert.ok(single, 'the page must contain the unrelated single-character text object')
       assert.equal(single.glyphs?.length, 1, 'single-character objects must expose the same glyph contract')
       const references = createMemoryEvidenceReferenceStore()
-      for (const [quote, x, y] of [['Hello', 32, 96], ['X', 240, 24]] as const) {
-        const right = x + font.widthOfTextAtSize(quote, 14)
+      for (const [quote, x, y, width] of [['Hello', 32, 96, 31.892], ['X', 240, 24, 9.338]] as const) {
+        const right = x + width
         const rect: [number, number, number, number] = [x - 1, y - 3, right + 1, y + 12]
         const result = await prepareTextSelectionEvidence({ readSnapshot: () => snapshot },
           { async readPageText() { return { snapshot, content } } }, references,

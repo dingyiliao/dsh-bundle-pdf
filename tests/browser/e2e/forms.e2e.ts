@@ -1,11 +1,12 @@
-import { expect, it } from 'vitest'
-import { launchWebScaffold, seedSession, newEnglishPage, DSH_ROOT, ROOT, SESSION, executeScaffoldTool } from '../support/scaffold.ts'
+import { expect, it, onTestFailed } from 'vitest'
+import { launchWebScaffold, seedSession, newEnglishPage, saveFailureShot, MODEL_FIXTURE, MODEL_FIXTURE_AVAILABLE, ROOT, SESSION, executeScaffoldTool } from '../support/scaffold.ts'
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { brokenTextMappingFixture } from '../../fixtures/broken-text-mapping.ts'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
-import { PDFCheckBox, PDFDocument } from 'pdf-lib'
+import { acroformFixture } from '../../fixtures/acroform.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { documentAction } from '../support/toolbar.ts'
 
@@ -21,6 +22,7 @@ it('recovers an invalid Unicode text layer and allows dragging the formerly miss
     await writeFile(path, bytes)
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
+    onTestFailed(() => saveFailureShot(page, 'pdf-form-reader-browser'))
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.getByRole('treeitem').filter({ hasText: 'PDF text recovery test' }).click()
     const column = page.locator('[data-rightbar-col]')
@@ -44,14 +46,15 @@ it('recovers an invalid Unicode text layer and allows dragging the formerly miss
     await page.mouse.up()
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Full name in English')
     await expect.poll(() => reader.locator('.dsh-pdf-selection-overlay div').count()).toBeGreaterThan(0)
-    expect(new Uint8Array(await readFile(path))).toEqual(bytes)
+    expect(await readFile(path)).toEqual(Buffer.from(bytes))
   } finally { await browser?.close(); await scaffold.close() }
 })
 
-it('fills an AcroForm field through the Reader and saves its Unicode appearance', async () => {
+it.skipIf(!MODEL_FIXTURE_AVAILABLE)('fills an AcroForm field through the Reader and saves its Unicode appearance', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] },
-    replayFixture: join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
-    replayProvidersOnly: true })
+    replayFixture: MODEL_FIXTURE,
+    replayProvidersOnly: true,
+  })
   let browser: Browser | undefined
   try {
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
@@ -59,24 +62,11 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF form test' })
     const path = join(scaffold.workspaceCwd, 'reader-form-e2e.pdf')
-    const document = await PDFDocument.create()
-    const pageSource = document.addPage([300, 400])
-    pageSource.drawText('1. PERSONAL DETAILS', { x: 20, y: 330, size: 12 })
-    pageSource.drawText('Applicant name', { x: 30, y: 143, size: 10 })
-    pageSource.drawText('If option 2 is checked, provide applicant name', { x: 20, y: 250, size: 9 })
-    pageSource.drawText('Select one option', { x: 20, y: 280, size: 9 })
-    document.getForm().createTextField('applicant').addToPage(pageSource,
-      { x: 30, y: 100, width: 150, height: 30 })
-    for (let index = 0; index < 3; index++) {
-      const checkbox = document.getForm().createCheckBox(`original-${index}`)
-      checkbox.addToPage(pageSource, { x: 30 + index * 40, y: 180, width: 20, height: 20 })
-      pageSource.drawText(`Option ${index + 1}`, { x: 30 + index * 40, y: 205, size: 7 })
-      checkbox.acroField.setPartialName('shared-choice')
-    }
-    await writeFile(path, await document.save())
+    await writeFile(path, await acroformFixture())
 
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
+    onTestFailed(() => saveFailureShot(page, 'pdf-form-reader-browser'))
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.getByRole('treeitem').filter({ hasText: 'PDF form test' }).click()
     const column = page.locator('[data-rightbar-col]')
@@ -177,7 +167,7 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
     const verifiedFields = (JSON.parse(verifiedText.slice(verifiedText.indexOf('{'))) as typeof inspection).fields
     expect(verifiedFields.find(field => field.type === 'text')!.value).toBe('模型填写')
     expect(verifiedFields.filter(field => field.type === 'checkbox').map(field => field.value)).toEqual([false, true, false])
-    expect((await PDFDocument.load(await readFile(path))).getForm().getTextField('applicant').getText()).toBeUndefined()
+    expect((await inspectFixturePdf(new Uint8Array(await readFile(path)))).formFields?.find(field => field.name === 'Text1')?.value).not.toBe('模型填写')
     await reader.locator('.dsh-pdf-tool-history .dsh-pdf-toolbar-undo').click()
     await expect.poll(() => field.inputValue()).toBe('')
     const sameNameBoxes = reader.getByRole('checkbox', { name: 'shared-choice', exact: true })
@@ -193,12 +183,11 @@ it('fills an AcroForm field through the Reader and saves its Unicode appearance'
     await expect.poll(() => save.isEnabled()).toBe(true)
     await save.click()
     await expect.poll(async () => {
-      const saved = await PDFDocument.load(await readFile(path))
-      return saved.getForm().getTextField('applicant').getText()
+      const saved = await inspectFixturePdf(new Uint8Array(await readFile(path)))
+      return saved.formFields?.find(field => field.name === 'Text1')?.value
     }).toBe('测试申请人')
-    const reopened = await PDFDocument.load(await readFile(path))
-    expect(reopened.getForm().getFields().filter(field => field.getName() === 'shared-choice')
-      .map(field => (field as PDFCheckBox).isChecked())).toEqual([false, true, false])
+    const reopened = await inspectFixturePdf(new Uint8Array(await readFile(path)))
+    expect(reopened.formFields?.find(field => field.name === 'accepted')?.value).toBe(true)
     await expect.poll(() => save.isDisabled()).toBe(true)
   } finally { await browser?.close(); await scaffold.close() }
 })

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { ReaderOverlayModelOptions } from '../../../src/modules/viewer/controllers/reader-overlay-model.ts'
-import { readerOverlayModel } from '../../../src/modules/viewer/controllers/reader-overlay-model.ts'
+import type { ReaderOverlayModelOptions } from '../../../src/client/viewer/controllers/reader-overlay-model.ts'
+import { readerOverlayModel } from '../../../src/client/viewer/controllers/reader-overlay-model.ts'
 
 function fixture() {
   const calls: string[] = []

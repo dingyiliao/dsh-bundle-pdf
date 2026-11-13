@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PDFDocument, PDFName } from 'pdf-lib'
-import { loadPdfDocument } from '../src/adapters/host/pdf-lib/pdf-document.ts'
+import { inspectFixturePdf } from './fixtures/native-document.ts'
+import { onePagePdf, pdfDict } from './fixtures/pdf-fixture-kit.ts'
 import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
 import { projectPdfOperations } from '../src/modules/annotations/index.ts'
 import type { NewPdfAnnotation, PdfAnnotationOperation, PdfDocumentInfo } from '../src/core/pdf-types.ts'
@@ -31,14 +31,9 @@ test('projection rejects invalid identifiers, colors, quadrilaterals, and update
 })
 
 test('PDF document decodes CMYK annotation colors into bounded RGB', async () => {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([100, 100])
-  const reference = pdf.context.register(pdf.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', Rect: [10, 10, 50, 30],
-    QuadPoints: [10, 30, 50, 30, 10, 10, 50, 10], C: [0, 0.25, 1, 0.2],
-  }))
-  page.node.set(PDFName.of('Annots'), pdf.context.obj([reference]))
-  const loaded = await loadPdfDocument(await pdf.save({ useObjectStreams: false }))
+  const loaded = await inspectFixturePdf(onePagePdf({ width: 100, height: 100, pageEntries: { Annots: '[7 0 R]' }, extraObjects: [pdfDict({
+    Type: '/Annot', Subtype: '/Highlight', Rect: '[10 10 50 30]', QuadPoints: '[10 30 50 30 10 10 50 10]', C: '[0 0.25 1 0.2]',
+  })] }))
   const color = loaded.annotations[0]?.color
   assert.ok(color)
   assert.ok(Math.abs(color[0] - 0.8) < 0.001)

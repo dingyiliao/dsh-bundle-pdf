@@ -85,3 +85,10 @@ export interface PdfDocumentPort {
   materialize(bytes: Uint8Array, operations: readonly PdfWorkingCopyOperation[],
     operationDates: readonly string[]): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }>
 }
+
+export interface ProtectedReaderPort {
+  inspect(bytes: Uint8Array, password: string | undefined, signal: AbortSignal): Promise<PdfDocumentInfo | undefined>
+  materializeAnnotations?(snapshot: HostWorkspaceSnapshot, baseline: PdfDocumentInfo, password: string | undefined,
+    signal: AbortSignal): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }>
+  release(id: string): void
+}

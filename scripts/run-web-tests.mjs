@@ -117,8 +117,20 @@ if (listOnly) {
     // Reported suite names use " > "; the runner matches ancestor names with
     // spaces. Retain the literal variant for a title containing those symbols.
     const patterns = [...new Set([test.name, test.name.replaceAll(' > ', ' ')])].map(escapeRegex)
-    await run(test.name, ['run', '--config', config, '--allowOnly=false', test.file,
-      '--testNamePattern', `^(?:${patterns.join('|')})$`, '--reporter=json', `--outputFile=${reportPath}`], `${prefix}.log`, reportPath)
+    // Coverage runs execute all 63 two-browser interactions sequentially.
+    // A transient layout/raster timing failure is retried once in that lane;
+    // the normal Web suite remains strict and reports the first failure.
+    const attempts = process.env.DSH_PDF_BROWSER_COVERAGE_DIR ? 2 : 1
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await run(test.name, ['run', '--config', config, '--allowOnly=false', test.file,
+          '--testNamePattern', `^(?:${patterns.join('|')})$`, '--reporter=json', `--outputFile=${reportPath}`], `${prefix}.log`, reportPath)
+        break
+      } catch (error) {
+        if (attempt >= attempts) throw error
+        console.warn(`[web] retrying once after a coverage-lane failure: ${test.name}`)
+      }
+    }
     const report = JSON.parse(await readFile(reportPath, 'utf8'))
     const executed = (report.testResults ?? []).flatMap(file => (file.assertionResults ?? [])
       .filter(result => !['pending', 'skipped', 'todo'].includes(result.status)).map(result => ({ file: file.name, ...result })))

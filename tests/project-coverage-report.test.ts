@@ -58,7 +58,7 @@ test('project source-line report excludes non-executable braces and static bundl
     assert.ok(ocrDeclaration)
     const ocrLine = ocrSource.lineOf(ocrDeclaration)
 
-    const colorPath = 'src/modules/viewer/components/AnnotationColorBar.tsx'
+    const colorPath = 'src/client/viewer/components/AnnotationColorBar.tsx'
     const colorSource = await sourceFixture(colorPath)
     const eventLines = (event: string) => [...new Set(colorSource.nodes(ts.isJsxAttribute)
       .filter(node => node.name.getText(colorSource.file) === event).map(colorSource.lineOf))]
@@ -121,7 +121,11 @@ test('project source-line report excludes non-executable braces and static bundl
       'end_of_record', '',
     ].join('\n'))
     await writeFile(browser, '')
-    await writeFile(native, `SF:${join(root, 'native/pdfium-worker.cpp')}\nDA:38,1\nLF:1\nLH:1\nend_of_record\n`)
+    await writeFile(native, ['native/backend/pdfium/pdfium-worker.cpp', 'native/worker/worker-runtime.cpp',
+      'native/pdfium/selection-geometry.h',
+      'native/pdfium/document-annotations.h', 'native/pdfium/document-metadata.h', 'native/pdfium/document-save.h',
+      'native/pdfium/document-forms.h']
+      .map(path => `SF:${join(root, path)}\nDA:38,1\nLF:1\nLH:1\nend_of_record\n`).join(''))
     const result = spawnSync(process.execPath, ['scripts/report-project-coverage.mjs', node, browser, native, reportPath],
       { cwd: root, encoding: 'utf8' })
     assert.equal(result.status, 1, 'the report still fails because other production lines are uncovered')
@@ -172,6 +176,12 @@ test('project source-line report excludes non-executable braces and static bundl
     assert.ok(runtimeExport)
     assert.equal(runtimeExport.excludedLinkageLines.includes(runtimeExportLine), false,
       'a local value export remains in the executable denominator')
+    assert.ok(report.files.find(file => file.path === 'src/engine/protocol/selection.ts')?.uncoveredLines?.length,
+      'the new engine TypeScript root contributes to the project denominator')
+    assert.ok(report.files.some(file => file.path === 'native/pdfium/selection-geometry.h'),
+      'engine-owned C++ code participates in the project report')
+    assert.ok(report.files.some(file => file.path === 'native/pdfium/document-forms.h'),
+      'form operations in the required PDFium SDK participate in the project report')
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -188,6 +198,6 @@ test('project source-line report rejects an empty native LCOV lane', async () =>
     const result = spawnSync(process.execPath, ['scripts/report-project-coverage.mjs', node, browser, native, reportPath],
       { cwd: root, encoding: 'utf8' })
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /Native LCOV must contain measured lines for native\/pdfium-worker\.cpp/)
+    assert.match(result.stderr, /Native LCOV must contain measured lines for native\/backend\/pdfium\/pdfium-worker\.cpp/)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
@@ -26,22 +26,21 @@ const paragraph = [
 type Tool = { name: string; execute(input: unknown, context: unknown): Promise<unknown> }
 
 async function sampleDocument() {
-  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica)
-  pdf.addPage([540, 720]).drawText('Learning algorithms fit examples.', { x: 42, y: 505, size: 15, font })
-  const page = pdf.addPage([540, 720])
-  const draw = (text: string, y: number, size: number) => page.drawText(text, { x: 42, y, size, font })
-  draw('MACHINE LEARNING / FIELD NOTES', 632, 10)
-  draw('02 / GENERALIZATION', 606, 9)
-  draw('When memorization fails', 558, 25)
-  paragraph.split('\n').forEach((line, index) => draw(line, 505 - index * 25, 15))
-  draw('Good generalization means learning patterns that remain useful', 429, 15)
-  draw('beyond the examples seen during training.', 404, 15)
-  draw('Evaluate the model on held-out data. A low training error together', 353, 15)
-  draw('with a much larger validation error is a warning sign.', 328, 15)
-  draw('DSH PDF READER / EXAMPLE DOCUMENT', 44, 9)
-  pdf.addPage([540, 720]).drawText('Regularization discourages overly complex solutions.',
-    { x: 42, y: 505, size: 15, font })
-  return pdf.save()
+  const line = (text: string, y: number, size = 15) => ({ text, x: 42, y, size })
+  return plainPdf([
+    { size: [540, 720], lines: [line('Learning algorithms fit examples.', 505)] },
+    { size: [540, 720], lines: [
+      line('MACHINE LEARNING / FIELD NOTES', 632, 10), line('02 / GENERALIZATION', 606, 9),
+      line('When memorization fails', 558, 25),
+      ...paragraph.split('\n').map((text, index) => line(text, 505 - index * 25)),
+      line('Good generalization means learning patterns that remain useful', 429),
+      line('beyond the examples seen during training.', 404),
+      line('Evaluate the model on held-out data. A low training error together', 353),
+      line('with a much larger validation error is a warning sign.', 328),
+      line('DSH PDF READER / EXAMPLE DOCUMENT', 44, 9),
+    ] },
+    { size: [540, 720], lines: [line('Regularization discourages overly complex solutions.', 505)] },
+  ])
 }
 
 // The deterministic encoder isolates the range contract; actual retrieval quality

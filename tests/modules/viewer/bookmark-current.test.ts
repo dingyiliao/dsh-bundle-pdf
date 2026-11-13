@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { currentOutlineKey, outlineAncestorKeys } from '../../../src/modules/viewer/model/bookmark-current.ts'
-import type { ReaderOutlineItem } from '../../../src/modules/viewer/ports/reader-document.ts'
+import { currentOutlineKey, outlineAncestorKeys } from '../../../src/client/viewer/model/bookmark-current.ts'
+import type { ReaderOutlineItem } from '../../../src/client/viewer/ports/reader-document.ts'
 
 const outline: ReaderOutlineItem[] = [
   { title: 'Introduction', dest: [0, { name: 'Fit' }], items: [] },

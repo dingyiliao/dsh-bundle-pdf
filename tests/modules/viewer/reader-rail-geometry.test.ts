@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AnnotationCommentCard } from '../../../src/modules/viewer/components/AnnotationCommentCard.tsx'
-import { ExplanationQuestionEditor } from '../../../src/modules/viewer/components/ExplanationQuestionEditor.tsx'
-import { FloatingToolbar } from '../../../src/modules/viewer/components/FloatingToolbar.tsx'
-import { ReadingSidebar } from '../../../src/modules/viewer/components/ReadingSidebar.tsx'
+import { AnnotationCommentCard } from '../../../src/client/viewer/components/AnnotationCommentCard.tsx'
+import { ExplanationQuestionEditor } from '../../../src/client/viewer/components/ExplanationQuestionEditor.tsx'
+import { FloatingToolbar } from '../../../src/client/viewer/components/FloatingToolbar.tsx'
+import { ReadingSidebar } from '../../../src/client/viewer/components/ReadingSidebar.tsx'
 
 const rect = (left: number, top: number, width: number, height: number): DOMRect => ({
   left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {},

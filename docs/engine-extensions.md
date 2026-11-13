@@ -24,7 +24,7 @@ Cordis as peer dependencies and development dependencies; its
 For a package using the same SDK versions:
 
 ```sh
-npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.7 @deepseek-ai/cordis@4.1.0
+npm install --save-dev @dylanl1/dsh-plugin-pdf@^0.1.8 @deepseek-ai/cordis@4.1.0
 ```
 
 Build the entry before installing a local or Git package. Load it in the same
@@ -180,6 +180,6 @@ engine unload or replacement.
   draft ownership. The Reader's automatic character-layer repair is a separate
   local path, not an extension-selected OCR request.
 
-The [example tests](../tests/examples/engine-extensions.test.ts) exercise the actual
+The [example tests](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/tests/examples/engine-extensions.test.ts) exercise the actual
 HTTP adapters, registration, configuration, cancellation and unload with mocked
 HTTP responses. See the [testing guide](testing.md) for verification commands.

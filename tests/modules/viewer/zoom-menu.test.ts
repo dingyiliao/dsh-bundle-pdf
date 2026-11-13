@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ZoomMenu } from '../../../src/modules/viewer/components/ZoomMenu.tsx'
-import { readerLocales } from '../../../src/modules/viewer/index.js'
+import { ZoomMenu } from '../../../src/client/viewer/components/ZoomMenu.tsx'
+import { readerLocales } from '../../../src/client/viewer/index.js'
 
 const t = (key: string) => (readerLocales.en as Record<string, string>)[key] ?? key
 const render = (fit: 'custom' | 'width' | 'page', zoom: number, disabled = false) =>

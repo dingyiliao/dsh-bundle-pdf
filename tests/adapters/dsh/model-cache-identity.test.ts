@@ -4,8 +4,8 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PDFDocument } from 'pdf-lib'
-import { pdfIndexContentIdentity } from '../../../src/adapters/host/pdf-lib/content-identity.ts'
+import { blankPdf } from '../../fixtures/plain-pdf.ts'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
 import { sessionModelCacheIdentity, type SessionModelInfo } from '../../../src/adapters/host/dsh/model-cache-identity.ts'
 import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.ts'
@@ -149,9 +149,9 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     image.register({ ...imageBackend, descriptor: { ...imageBackend.descriptor, id: imageId }, ...scoped })
   }
   registerBackends(legacy)
-  const pdf = await PDFDocument.create(); pdf.addPage([200, 300])
-  const bytes = await pdf.save()
-  const indexIdentity = pdfIndexContentIdentity(await PDFDocument.load(bytes))
+  const bytes = blankPdf(1, [200, 300])
+  const { indexContentDigest, indexPageDigests } = await inspectFixturePdf(bytes)
+  const indexIdentity = { indexContentDigest, indexPageDigests }
   assert.ok(indexIdentity.indexContentDigest)
   assert.match(indexIdentity.indexPageDigests?.[0] ?? '', /^sha256:[a-f0-9]{64}$/)
   let modernMetadata = !legacy, authorizedSession = 'session'

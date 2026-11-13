@@ -38,10 +38,11 @@ async function fixture(parent = tmpdir()) {
     await copyFile(new URL(`scripts/${script}`, repository), join(root, 'scripts', script))
   }
   await write('package.json', JSON.stringify(manifest))
-  for (const path of ['dist/index.js', 'dist/native-provider.js', 'dist/client.js', 'dist/embedding.js', 'dist/pdf-document-worker.mjs']) {
+  for (const path of ['dist/index.js', 'dist/native-provider.js', 'dist/client.js', 'dist/embedding.js']) {
     await write(path, 'export const ready = true\n')
   }
   await write('dist/types/embedding/index.d.ts', 'export interface Engine { id: string }\n')
+  await write('dist/assets/forms/NotoSansCJKsc-Regular.otf', 'fixture font')
   await write('dist/THIRD_PARTY_NOTICES.md', 'Third-party notices\n')
   await write('locale/en.json', '{}')
   await write('docs/engine-extensions.md', '# Engine extensions\n')
@@ -55,9 +56,10 @@ async function fixture(parent = tmpdir()) {
   await write('dist/native/PDFIUM_LICENSE', 'PDFium license')
   await write('dist/native/JSON_LICENSE.MIT', 'JSON license')
   await write('dist/native/licenses/third-party.txt', 'Additional license')
-  await write('native/dependencies.json', JSON.stringify({ pdfium: { version: '1.2.3', assets: { [target]: 'sdk-pin' } } }))
-  await write('dist/native/manifest.json', JSON.stringify({ protocolVersion: 1, platform: target,
-    pdfiumVersion: '1.2.3', sdkArchiveSha256: 'sdk-pin', executableSha256: digest('worker bytes'),
+  const revision = 'a'.repeat(40)
+  await write('native/dependencies.json', JSON.stringify({ pdfium: { version: '1.2.3', sourceRevision: revision, assets: { [target]: 'sdk-pin' } } }))
+  await write('dist/native/manifest.json', JSON.stringify({ protocolVersion: 2, platform: target,
+    pdfiumVersion: '1.2.3', pdfiumSourceRevision: revision, executableSha256: digest('worker bytes'),
     librarySha256: digest('PDFium bytes') }))
   return {
     root, manifest, write,
@@ -95,7 +97,8 @@ test('main npm package retains its SDK and exact platform dependencies without s
     const paths = entries(archive)
     assert.ok(paths.includes('package/dist/types/embedding/index.d.ts'))
     assert.ok(paths.includes('package/dist/client.js'))
-    assert.ok(paths.includes('package/dist/pdf-document-worker.mjs'))
+    assert.ok(paths.includes('package/dist/assets/forms/NotoSansCJKsc-Regular.otf'))
+    assert.ok(!paths.includes('package/dist/pdf-document-worker.mjs'))
     for (const path of ['docs/engine-extensions.md', 'spec.md', 'performance.md', 'native-pdf.md']) {
       assert.ok(paths.includes(`package/${path}`))
     }

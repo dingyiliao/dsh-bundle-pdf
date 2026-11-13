@@ -4,14 +4,15 @@ import { copyFile, cp, mkdir, readFile, writeFile, stat } from 'node:fs/promises
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { patchsetDigest } from '../native/pdfium/patchset.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const lock = JSON.parse(await readFile(join(root, 'native/dependencies.json'), 'utf8'))
 const platform = `${process.platform}-${process.arch}`
 const cache = join(root, 'native/.deps')
-const sdk = process.env.DSH_PDFIUM_ROOT ? resolve(process.env.DSH_PDFIUM_ROOT) : join(cache, 'pdfium')
+const sdk = process.env.DSH_PDFIUM_ROOT ? resolve(process.env.DSH_PDFIUM_ROOT) : join(cache, 'pdfium-patched')
 const jsonDir = process.env.DSH_PDF_JSON_DIR ? resolve(process.env.DSH_PDF_JSON_DIR) : join(cache, 'json')
-const out = join(root, 'dist/native')
+const out = process.env.DSH_PDF_NATIVE_OUT ? resolve(process.env.DSH_PDF_NATIVE_OUT) : join(root, 'dist/native')
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 async function exists(file) { return stat(file).then(() => true, () => false) }
 async function fetchDependency(url, headers) {
@@ -86,25 +87,29 @@ if (process.argv.includes('--download-only')) {
   console.log(`Verified pinned native dependencies in ${cache}`)
   process.exit(0)
 }
-const checksum = lock.pdfium.assets[platform]
-if (!checksum) throw new Error(`No pinned PDFium SDK for ${platform}; native PDF reading is unavailable on this platform`)
-await mkdir(out, { recursive: true })
-if (!process.env.DSH_PDFIUM_ROOT) {
-  const archive = await preparePdfium(platform)
-  await mkdir(sdk, { recursive: true })
-  await run('tar', ['-xzf', archive, '-C', sdk])
+if (!lock.pdfium.assets[platform]) throw new Error(`No pinned PDFium SDK for ${platform}`)
+if (!await exists(join(sdk, 'include/dsh_metadata.h')) || !await exists(join(sdk, 'DSH_SOURCE_REVISION'))) {
+  throw new Error('Build the patched PDFium SDK and set DSH_PDFIUM_ROOT. See native/pdfium/README.md.')
+}
+const expectedPatchset = await patchsetDigest()
+if (!await exists(join(sdk, 'DSH_PATCHSET')) ||
+    (await readFile(join(sdk, 'DSH_PATCHSET'), 'utf8')).trim() !== expectedPatchset) {
+  throw new Error('PDFium SDK patchset does not match this checkout; rebuild it from a clean pinned checkout.')
 }
 const versionText = await readFile(join(sdk, 'VERSION'), 'utf8')
 const sdkVersion = Object.fromEntries([...versionText.matchAll(/^(MAJOR|MINOR|BUILD|PATCH)=(\d+)\s*$/gm)].map(m => [m[1], m[2]]))
 const foundVersion = ['MAJOR', 'MINOR', 'BUILD', 'PATCH'].map(k => sdkVersion[k]).join('.')
 if (foundVersion !== lock.pdfium.version) throw new Error(`SDK version ${foundVersion} differs from pinned ${lock.pdfium.version}`)
+const sourceRevision = (await readFile(join(sdk, 'DSH_SOURCE_REVISION'), 'utf8')).trim()
+if (sourceRevision !== lock.pdfium.sourceRevision) throw new Error('Patched PDFium SDK source revision does not match the lock')
 if (!process.env.DSH_PDF_JSON_DIR) await prepareJson(jsonDir)
 for (const [file, expected] of [['json.hpp', lock.json.headerSha256], ['json-LICENSE.MIT', lock.json.licenseSha256]]) {
   if (digest(await readFile(join(jsonDir, file))) !== expected) throw new Error(`Unexpected JSON dependency ${file}`)
 }
 const executableName = `dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`
+await mkdir(out, { recursive: true })
 if (spawnSync('cmake', ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0) {
-  const build = join(root, 'native/build')
+  const build = join(root, 'native/build', digest(sdk).slice(0, 12))
   await run('cmake', ['-S', join(root, 'native'), '-B', build, `-DPDFium_DIR=${sdk}`,
     `-DJSON_INCLUDE_DIR=${jsonDir}`, '-DCMAKE_BUILD_TYPE=Release'])
   await run('cmake', ['--build', build, '--config', 'Release'])
@@ -112,8 +117,9 @@ if (spawnSync('cmake', ['--version'], { stdio: 'ignore', windowsHide: true }).st
   await copyFile(built, join(out, executableName))
 } else if (process.platform !== 'win32') {
   const compiler = process.env.CXX || (process.platform === 'darwin' ? 'clang++' : 'g++')
-  await run(compiler, ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Wpedantic', `-I${join(sdk, 'include')}`,
-    `-I${jsonDir}`, join(root, 'native/pdfium-worker.cpp'), `-L${join(sdk, 'lib')}`, '-lpdfium',
+  const deploymentTarget = process.platform === 'darwin' ? ['-mmacosx-version-min=13.0'] : []
+  await run(compiler, ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Wpedantic', ...deploymentTarget, `-I${join(sdk, 'include')}`,
+    `-I${root}/native`, `-I${jsonDir}`, join(root, 'native/backend/pdfium/pdfium-worker.cpp'), join(root, 'native/worker/worker-runtime.cpp'), `-L${join(sdk, 'lib')}`, '-lpdfium',
     `-Wl,-rpath,${process.platform === 'darwin' ? '@loader_path' : '$ORIGIN'}`, '-o', join(out, executableName)])
 } else throw new Error('Install CMake and the Visual Studio C++ build tools, then rerun npm run native:build')
 if (process.platform === 'darwin') {
@@ -131,10 +137,16 @@ const library = process.platform === 'win32' ? join(sdk, 'bin/pdfium.dll')
   : join(sdk, 'lib', process.platform === 'darwin' ? 'libpdfium.dylib' : 'libpdfium.so')
 await copyFile(library, join(out, library.split(/[\\/]/).at(-1)))
 await cp(join(sdk, 'licenses'), join(out, 'licenses'), { recursive: true })
+// libjpeg-turbo's license text links to README.ijg; the SDK ships the same
+// IJG text under a different filename. Keep the link resolvable in the pack.
+await copyFile(join(out, 'licenses/libjpeg_turbo.ijg'), join(out, 'licenses/README.ijg')).catch(error => {
+  if (error?.code !== 'ENOENT') throw error
+})
 await copyFile(join(sdk, 'LICENSE'), join(out, 'PDFIUM_LICENSE'))
 await copyFile(join(jsonDir, 'json-LICENSE.MIT'), join(out, 'JSON_LICENSE.MIT'))
-await writeFile(join(out, 'manifest.json'), `${JSON.stringify({ protocolVersion: 1, platform,
-  pdfiumVersion: lock.pdfium.version, sdkArchiveSha256: checksum,
+await writeFile(join(out, 'manifest.json'), `${JSON.stringify({ protocolVersion: 2, platform,
+  pdfiumVersion: lock.pdfium.version, pdfiumSourceRevision: sourceRevision,
+  pdfiumPatchset: expectedPatchset,
   executableSha256: digest(await readFile(join(out, executableName))),
   librarySha256: digest(await readFile(library)) }, null, 2)}\n`)
-console.log(`Built isolated PDFium worker (${platform}, ${lock.pdfium.version}) at dist/native/${executableName}`)
+console.log(`Built isolated PDFium worker (${platform}, ${lock.pdfium.version}) at ${join(out, executableName)}`)

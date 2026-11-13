@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/modules/viewer/controllers/use-reader-document.ts'
+import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/client/viewer/controllers/use-reader-document.ts'
 
 const makeSnapshot = (id: string, sourceVersion = 'source-1') => ({
   id, path: '/tmp/sample.pdf', sourceVersion, contentVersion: 'content-1', revision: 1,
@@ -126,6 +126,50 @@ test('cancelled unlock fails the current lease and a resource switch clears the 
     assert.equal(state().passwordPrompt, null)
     assert.equal(state().snapshot?.id, 'next')
   })
+})
+
+test('editing unlock failures and late replies leave the visible PDF readable', async () => {
+  for (const interruption of ['cancel', 'switch'] as const) {
+    await withDocument(async ({ options, state, render, failed }) => {
+      const locked = makeSnapshot('locked')
+      locked.document = { ...locked.document, encrypted: true, readOnly: true, annotationEditing: 'owner-password-required' }
+      options.api.open = async (_session, address) => address === options.resourceAddress ? locked : makeSnapshot('next')
+      options.api.unlockEdit = async () => { throw Object.assign(new Error('Source changed'), { code: 'pdf/source-conflict' }) }
+      await render(options)
+      const reading = state().pdf
+      assert.ok(reading)
+      await act(async () => { state().beginEditUnlock() })
+      await act(async () => { await state().unlockEditing('fixture-owner') })
+      assert.equal(state().editPasswordPrompt, 'required')
+      assert.equal(state().unlocking, false)
+      assert.equal(state().pdf, reading)
+      assert.equal(state().documentReady(), true)
+      assert.deepEqual(failed, ['Error: Source changed'], 'edit denial does not fail the reading lease')
+
+      let resolve!: (value: WorkspaceSnapshot) => void
+      let signal: AbortSignal | undefined
+      options.api.unlockEdit = async (_session, _id, _revision, _password, requestSignal) => {
+        signal = requestSignal
+        return new Promise(accept => { resolve = accept })
+      }
+      let pending!: Promise<void>
+      await act(async () => { pending = state().unlockEditing('fixture-owner') })
+      assert.equal(state().unlocking, true)
+      if (interruption === 'cancel') await act(async () => { state().cancelEditUnlock() })
+      else await render({ ...options, resourceAddress: 'file:///tmp/next.pdf', content: { ...options.content, revision: 2 } })
+      assert.equal(signal?.aborted, true)
+      await act(async () => {
+        resolve({ ...locked, revision: 2, document: { ...locked.document, readOnly: false, annotationEditing: 'allowed' } })
+        await pending
+      })
+      assert.equal(state().editPasswordPrompt, null)
+      assert.equal(state().unlocking, false)
+      assert.equal(state().snapshot?.id, interruption === 'cancel' ? 'locked' : 'next')
+      assert.notEqual(state().snapshot?.document.annotationEditing, 'allowed')
+      assert.equal(state().documentReady(), true)
+      assert.deepEqual(failed, ['Error: Source changed'])
+    })
+  }
 })
 
 test('a protected Host restart prompts again without replaying the earlier password', async () => {

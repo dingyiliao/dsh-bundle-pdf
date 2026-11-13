@@ -9,6 +9,7 @@ export const idSchema = z.string().min(1).max(512)
 export const pathSchema = z.string().min(1).max(32768).refine(value => !value.includes('\0'), 'Path contains NUL')
 export const hashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const wireHints = { knownBytesHash: hashSchema.optional() }
+const pdfPassword = z.string().min(1).max(1024).refine(value => !value.includes('\0'), 'Password contains NUL')
 
 export const operationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('add'), annotation: z.object({
@@ -49,7 +50,9 @@ export const requestSchema = z.discriminatedUnion('action', [
   z.object({ ...wireHints, action: z.literal('open'), sessionId: idSchema, address: z.string().min(1).max(32768),
     owner: z.enum(['ui', 'agent']).optional(), referenceId: idSchema.optional() }).strict(),
   z.object({ action: z.literal('unlock'), sessionId: idSchema, address: z.string().min(1).max(32768),
-    referenceId: idSchema, password: z.string().min(1).max(1024).refine(value => !value.includes('\0'), 'Password contains NUL') }).strict(),
+    referenceId: idSchema, password: pdfPassword }).strict(),
+  z.object({ ...wireHints, action: z.literal('unlockEdit'), sessionId: idSchema, id: idSchema,
+    revision: z.number().int().min(0), referenceId: idSchema, password: pdfPassword }).strict(),
   z.object({ ...wireHints, action: z.literal('refresh'), sessionId: idSchema, id: idSchema }).strict(),
   z.object({ action: z.literal('release'), sessionId: idSchema, id: idSchema.optional(), referenceId: idSchema }).strict(),
   z.object({ ...wireHints, action: z.literal('inspectTarget'), sessionId: idSchema, path: pathSchema }).strict(),

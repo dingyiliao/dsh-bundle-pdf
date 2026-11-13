@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mergeSelectionRects } from '../../../src/modules/viewer/model/selection-highlight.ts'
+import { mergeSelectionRects } from '../../../src/client/viewer/model/selection-highlight.ts'
 
 test('adjacent glyph selection boxes become one uninterrupted line', () => {
   assert.deepEqual(mergeSelectionRects([

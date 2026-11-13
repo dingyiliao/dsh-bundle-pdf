@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { readerToolbarModel, type ReaderToolbarModelOptions } from '../../../src/modules/viewer/controllers/reader-toolbar-model.ts'
-import { readerFloatingStatuses, readerModeStatus, type ReaderFloatingStatusesOptions } from '../../../src/modules/viewer/controllers/reader-floating-statuses.ts'
+import { readerToolbarModel, type ReaderToolbarModelOptions } from '../../../src/client/viewer/controllers/reader-toolbar-model.ts'
+import { readerFloatingStatuses, readerModeStatus, type ReaderFloatingStatusesOptions } from '../../../src/client/viewer/controllers/reader-floating-statuses.ts'
 
 function toolbarFixture() {
   const calls: string[] = []

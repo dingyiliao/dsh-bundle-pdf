@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../../fixtures/plain-pdf.ts'
 import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
 import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
 import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
@@ -580,12 +580,9 @@ test('a provider callback cannot change the working copy between result validati
 })
 
 test('hybrid tools reuse original evidence for shared-draft annotation and acknowledged exact navigation', native, async () => {
-  const document = await PDFDocument.create(), font = await document.embedFont(StandardFonts.Helvetica)
-  for (const text of ['A short introduction about databases.',
-    'Atomic operations are all-or-nothing.', 'Indexes accelerate queries by storing ordered keys.']) {
-    document.addPage([500, 300]).drawText(text, { x: 40, y: 220, size: 12, font })
-  }
-  const state = memoryWorkspace(await document.save())
+  const state = memoryWorkspace(plainPdf(['A short introduction about databases.',
+    'Atomic operations are all-or-nothing.', 'Indexes accelerate queries by storing ordered keys.']
+    .map(text => ({ size: [500, 300], lines: [{ text, x: 40, y: 220, size: 12 }] }))))
   const pdf = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const refs = createMemoryEvidenceReferenceStore(), contexts = createReaderContexts(state.workspaces)
   const navigation = createAgentNavigation(state.workspaces, contexts, 2000)
@@ -690,4 +687,17 @@ test('scoped availability failures reach Host diagnostics before the unavailable
     assert.equal(events.length, 1, 'unscoped capability probes do not invent task diagnostic ownership')
     assert.ok(!JSON.stringify(response).includes('private'))
   } finally { await retrieval.dispose(); registry.dispose() }
+})
+
+test('invalid document identity rejects malformed explicit fingerprints', async () => {
+  const { invalidDocumentIdentity } = await import('../../../../src/modules/retrieval/identity.ts')
+  const provider = (documentFingerprint?: unknown) => ({
+    fingerprint: 'coverage', dimensions: 8, maxBatchSize: 8, embed: async () => [],
+    ...(documentFingerprint === undefined ? {} : { documentFingerprint }),
+  }) as Parameters<typeof invalidDocumentIdentity>[0]
+  assert.equal(invalidDocumentIdentity(provider()), false)
+  assert.equal(invalidDocumentIdentity(provider('model-v1')), false)
+  assert.equal(invalidDocumentIdentity(provider('')), true)
+  assert.equal(invalidDocumentIdentity(provider(42)), true)
+  assert.equal(invalidDocumentIdentity(provider('x'.repeat(513))), true)
 })

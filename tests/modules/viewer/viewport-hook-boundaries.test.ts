@@ -2,14 +2,14 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act, useState } from 'react'
-import { usePdfViewportSize, type PdfViewportSize } from '../../../src/modules/viewer/controllers/use-pdf-viewport-size.ts'
-import { usePdfWheelZoom } from '../../../src/modules/viewer/controllers/use-pdf-wheel-zoom.ts'
-import { WindowedPages } from '../../../src/modules/viewer/rendering/WindowedPages.tsx'
-import { readingPageProbe } from '../../../src/modules/viewer/rendering/page-layout.ts'
+import { usePdfViewportSize, type PdfViewportSize } from '../../../src/client/viewer/controllers/use-pdf-viewport-size.ts'
+import { usePdfWheelZoom } from '../../../src/client/viewer/controllers/use-pdf-wheel-zoom.ts'
+import { WindowedPages } from '../../../src/client/viewer/rendering/WindowedPages.tsx'
+import { buildPageLayout, capPageWindow, readingPageProbe, windowForViewport } from '../../../src/client/viewer/rendering/page-layout.ts'
 import { clearWheelZoomReflow, pageIndexAtOffset, setWheelZoomReflow, setWindowLayout, wheelZoomReflow, windowLayout,
-  type WheelZoomReflow } from '../../../src/modules/viewer/rendering/window-layout.ts'
-import { readerPageScale } from '../../../src/modules/viewer/controllers/navigation-position.ts'
-import { readingViewportBounds } from '../../../src/modules/viewer/rendering/pdf-viewport-geometry.ts'
+  type WheelZoomReflow } from '../../../src/client/viewer/rendering/window-layout.ts'
+import { readerPageScale } from '../../../src/client/viewer/controllers/navigation-position.ts'
+import { readingViewportBounds } from '../../../src/client/viewer/rendering/pdf-viewport-geometry.ts'
 
 async function withDom(run: (dom: Window & typeof globalThis, viewport: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>, frames: Map<number, FrameRequestCallback>) => Promise<void>) {
@@ -114,6 +114,25 @@ test('the viewport owns floating chrome gutters without reducing its measured fu
       else Reflect.deleteProperty(globalThis, 'ResizeObserver')
     }
   })
+})
+
+test('virtual page windows stay bounded while preserving every visible tiny page', () => {
+  const pages = Array.from({ length: 100 }, (_, index) => ({ page: index + 1,
+    cropBox: [0, 0, 400, 600] as [number, number, number, number], userUnit: 1, rotation: 0 }))
+  const layout = buildPageLayout(pages, () => .1, 0)
+  const viewport = 720, scrollTop = 0
+  const requested = windowForViewport(layout, scrollTop, viewport, viewport)
+  assert.ok(requested.end - requested.start > 16, 'the old overscan window reproduces the low-zoom DOM growth')
+  const capped = capPageWindow(layout, requested, scrollTop, viewport, 16)
+  const visible = windowForViewport(layout, scrollTop, viewport, 0)
+  assert.ok(capped.start <= visible.start && capped.end >= visible.end)
+  assert.ok(capped.end - capped.start <= Math.max(16, visible.end - visible.start))
+
+  const middleTop = layout[49]!.top
+  const middle = capPageWindow(layout, windowForViewport(layout, middleTop, viewport, viewport), middleTop, viewport, 16)
+  const middleVisible = windowForViewport(layout, middleTop, viewport, 0)
+  assert.ok(middle.start <= middleVisible.start && middle.end >= middleVisible.end)
+  assert.ok(middle.end - middle.start <= Math.max(16, middleVisible.end - middleVisible.start))
 })
 
 test('custom zoom retains the reading point and both page edges remain reachable when a floating sidebar expands', async () => {

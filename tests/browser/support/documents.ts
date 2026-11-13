@@ -1,213 +1,123 @@
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFString, StandardFonts } from 'pdf-lib'
 import { readFile } from 'node:fs/promises'
+import { inspectFixturePdf } from '../../fixtures/native-document.ts'
+import { classicPdf, pdfArray, pdfDict, pdfHex, pdfName, pdfString, plainPdf, ref } from '../../fixtures/pdf-fixture-kit.ts'
 
 export const FILE_NAME = 'reader-e2e.pdf'
-
 export const WIDE_NOTE_FILE_NAME = 'reader-wide-note-e2e.pdf'
-
 export const ANNOTATION_FILE_NAME = 'reader-annotation-e2e.pdf'
-
 export const LONG_ANNOTATION_FILE_NAME = 'reader-long-annotation-e2e.pdf'
-
 export const LARGE_FILE_NAME = 'reader-many-pages-e2e.pdf'
-
 export const WIDE_NOTE_PAGE = 25
-
 export const LONG_ANNOTATION_TARGET = 123
-
 export const LONG_ANNOTATION_SOURCE = 752
-
 export const LONG_ANNOTATION_PAGE_COUNT = 1151
-
 export const LARGE_PAGE_COUNT = 128
-
 export const NOTE = 'Saved through the PDF reader browser UI'
 
-/** A stable, editable two-page file that is independent of the plugin's PDF writer. */
+const annotation = (subtype: string, rect: string, contents: string, extra = '') =>
+  pdfDict({ Type: '/Annot', Subtype: `/${subtype}`, Rect: rect, Contents: pdfHex(contents), F: '4',
+    ...(subtype === 'Text' ? {} : { QuadPoints: '[48 510 270 510 48 485 270 485]', C: '[1 0.55 0]' }), ...extra ? { Extra: extra } : {} })
+
 export async function sourcePdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (const label of ['Browser PDF page one', 'Browser PDF page two']) {
-    const page = document.addPage([400, 560])
-    page.drawText(label, { x: 50, y: 490, size: 18, font })
+  return plainPdf([{ size: [400, 560], lines: [{ text: 'Browser PDF page one', x: 50, y: 490, size: 18 }] },
+    { size: [400, 560], lines: [{ text: 'Browser PDF page two', x: 50, y: 490, size: 18 }] }])
+}
+
+function outlinedPdf(pageCount: number, entries: readonly { title: string; page: number; parent?: number; fit?: string }[]): Uint8Array {
+  const pageRefs = Array.from({ length: pageCount }, (_, index) => ref(5 + index * 2))
+  const objects: string[] = [pdfDict({ Type: '/Catalog', Pages: ref(2), Outlines: ref(5 + pageCount * 2) }),
+    pdfDict({ Type: '/Pages', Kids: pdfArray(pageRefs), Count: String(pageCount) }),
+    pdfDict({ Type: '/Font', Subtype: '/Type1', BaseFont: '/Helvetica', Encoding: '/WinAnsiEncoding' }),
+    pdfDict({ Producer: pdfString('DSH browser fixture') })]
+  for (let page = 0; page < pageCount; page++) {
+    objects.push(pdfDict({ Type: '/Page', Parent: ref(2), MediaBox: '[0 0 400 560]', Resources: pdfDict({ Font: pdfDict({ F1: ref(3) }) }), Contents: ref(6 + page * 2) }),
+      `<< /Length 0 >>\nstream\n\nendstream`)
   }
-  return document.save({ useObjectStreams: false })
+  const root = 5 + pageCount * 2, first = root + 1
+  const children = entries.map((_, index) => entries
+    .map((entry, childIndex) => entry.parent === index ? childIndex : -1)
+    .filter(index => index >= 0))
+  const topLevel = entries.map((entry, index) => entry.parent === undefined ? index : -1).filter(index => index >= 0)
+  const items = entries.map((entry, index) => {
+    const object = first + index
+    const parent = entry.parent === undefined ? root : first + entry.parent
+    const siblings = entry.parent === undefined ? topLevel : children[entry.parent]!
+    const siblingIndex = siblings.indexOf(index)
+    const next = siblingIndex >= 0 && siblings[siblingIndex + 1] !== undefined ? ref(first + siblings[siblingIndex + 1]!) : undefined
+    const previous = siblingIndex > 0 ? ref(first + siblings[siblingIndex - 1]!) : undefined
+    const descendants = children[index]!
+    const destination = entry.fit === '/FitR'
+      ? `[${pageRefs[entry.page - 1]} /FitR 0 0 300 310]`
+      : entry.fit === '/FitV'
+        ? `[${pageRefs[entry.page - 1]} /FitV 0]`
+        : `[${pageRefs[entry.page - 1]} ${entry.fit ?? '/Fit'}]`
+    return pdfDict({ Title: pdfHex(entry.title), Parent: ref(parent), Dest: destination,
+      ...(descendants.length ? { First: ref(first + descendants[0]!), Last: ref(first + descendants[descendants.length - 1]!), Count: String(descendants.length) } : {}),
+      ...(next ? { Next: next } : {}), ...(previous ? { Prev: previous } : {}) })
+  })
+  objects.push(pdfDict({ Type: '/Outlines', Count: String(entries.length),
+    ...(topLevel.length ? { First: ref(first + topLevel[0]!), Last: ref(first + topLevel[topLevel.length - 1]!) } : {}) }), ...items)
+  return classicPdf(objects, 4)
 }
 
 export async function outlinedSourcePdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.load(await sourcePdf())
-  const outlines = document.context.obj({ Type: 'Outlines', Count: 2 })
-  const outlinesRef = document.context.register(outlines)
-  const chapter = document.context.obj({ Title: PDFHexString.fromText('Chapter 1'), Parent: outlinesRef, Count: 1,
-    Dest: [document.getPage(1).ref, PDFName.of('XYZ'), 50, 490, null] })
-  const chapterRef = document.context.register(chapter)
-  const section = document.context.obj({ Title: PDFHexString.fromText('Section 1'), Parent: chapterRef,
-    Dest: [document.getPage(1).ref, PDFName.of('XYZ'), 50, 490, null] })
-  const sectionRef = document.context.register(section)
-  chapter.set(PDFName.of('First'), sectionRef); chapter.set(PDFName.of('Last'), sectionRef)
-  outlines.set(PDFName.of('First'), chapterRef); outlines.set(PDFName.of('Last'), chapterRef)
-  document.catalog.set(PDFName.of('Outlines'), outlinesRef)
-  return document.save({ useObjectStreams: false })
+  return outlinedPdf(2, [{ title: 'Chapter 1', page: 2 }, { title: 'Section 1', page: 2, parent: 0 }])
 }
 
-/** Real PDF outline destinations exercise the reader's vertical and rectangle fit modes. */
 export async function fittedOutlinePdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (let number = 1; number <= 4; number++) {
-    const page = document.addPage([400, 560])
-    page.drawText(`Fit destination page ${number}`, { x: 50, y: 490, size: 18, font })
-  }
-  const outlines = document.context.obj({ Type: 'Outlines', Count: 2 })
-  const outlinesRef = document.context.register(outlines)
-  const vertical = document.context.obj({ Title: PDFHexString.fromText('Fit vertical'), Parent: outlinesRef,
-    Dest: [document.getPage(1).ref, PDFName.of('FitV'), 70] })
-  const rectangle = document.context.obj({ Title: PDFHexString.fromText('Fit rectangle'), Parent: outlinesRef,
-    Dest: [document.getPage(2).ref, PDFName.of('FitR'), 50, 120, 350, 430] })
-  const verticalRef = document.context.register(vertical)
-  const rectangleRef = document.context.register(rectangle)
-  vertical.set(PDFName.of('Next'), rectangleRef)
-  rectangle.set(PDFName.of('Prev'), verticalRef)
-  outlines.set(PDFName.of('First'), verticalRef)
-  outlines.set(PDFName.of('Last'), rectangleRef)
-  document.catalog.set(PDFName.of('Outlines'), outlinesRef)
-  return document.save({ useObjectStreams: false })
+  // Keep both destinations away from the initial page.  This makes the
+  // browser test verify an actual outline jump instead of accidentally
+  // passing because the responsive sidebar opened with page 2 already
+  // visible.
+  return outlinedPdf(4, [{ title: 'Fit vertical', page: 2, fit: '/FitV' }, { title: 'Fit rectangle', page: 3, fit: '/FitR' }])
 }
 
-/** An external-reader highlight with two /IRT replies and a nested follow-up. */
 export async function externalThreadPdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.load(await sourcePdf())
-  const page = document.getPage(0)
-  const root = document.context.register(document.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', P: page.ref, Rect: [48, 485, 270, 510],
-    QuadPoints: [48, 510, 270, 510, 48, 485, 270, 485], C: [1, 1, 0], F: 4,
-    NM: PDFString.of('external-thread-root'), T: PDFString.of('Document owner'),
-  }))
-  const alice = document.context.register(document.context.obj({
-    Type: 'Annot', Subtype: 'Text', P: page.ref, Rect: [48, 485, 68, 505],
-    IRT: root, RT: 'R', Contents: PDFHexString.fromText('Alice asks about the method'),
-    T: PDFHexString.fromText('Alice'), CreationDate: PDFString.of("D:20261017100500+08'00'"),
-    M: PDFString.of("D:20261017100500+08'00'"),
-  }))
-  const bob = document.context.register(document.context.obj({
-    Type: 'Annot', Subtype: 'Text', P: page.ref, Rect: [48, 485, 68, 505],
-    IRT: alice, RT: 'R', Contents: PDFHexString.fromText('Bob follows up'),
-    T: PDFHexString.fromText('Bob'), CreationDate: PDFString.of("D:20261017102000+08'00'"),
-    M: PDFString.of("D:20261017102000+08'00'"),
-  }))
-  page.node.set(PDFName.of('Annots'), document.context.obj([root, alice, bob]))
-  return document.save({ useObjectStreams: false })
+  return plainPdf([{ size: [400, 560], lines: [{ text: 'Browser PDF page one', x: 50, y: 490, size: 18 }], annotationObjects: [
+    annotation('Highlight', '[48 485 270 510]', ''),
+    // plainPdf assigns the first page annotation object number 7.  `/IRT`
+    // stores a PDF object reference, not an annotation-array offset; using
+    // `0 0 R` here made PDFium correctly treat both replies as orphaned text.
+    pdfDict({ Type: '/Annot', Subtype: '/Text', Rect: '[48 485 68 505]', Contents: pdfHex('Alice asks about the method'), IRT: ref(7), RT: '/R', T: pdfHex('Alice'),
+      CreationDate: pdfString('D:20260101090000Z'), M: pdfString('D:20260101090000Z') }),
+    pdfDict({ Type: '/Annot', Subtype: '/Text', Rect: '[48 485 68 505]', Contents: pdfHex('Bob follows up'), IRT: ref(7), RT: '/R', T: pdfHex('Bob'),
+      CreationDate: pdfString('D:20260101091000Z'), M: pdfString('D:20260101091000Z') }),
+  ] }])
 }
 
-/** A selectable text mark without a comment, for the on-page comment flow. */
 export async function uncommentedHighlightPdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.load(await sourcePdf())
-  const target = document.getPage(0)
-  const annotation = document.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', P: target.ref, Rect: [48, 485, 270, 510],
-    QuadPoints: [48, 510, 270, 510, 48, 485, 270, 485], C: [1, 1, 0], F: 4,
-  })
-  target.node.set(PDFName.of('Annots'), document.context.obj([document.context.register(annotation)]))
-  return document.save({ useObjectStreams: false })
+  return plainPdf([{ size: [400, 560], lines: [{ text: 'Browser PDF page one', x: 50, y: 490, size: 18 }], annotationObjects: [annotation('Highlight', '[48 485 270 510]', '')] }])
 }
 
-/** A distant narrow note page centered beyond the horizontal viewport at 100% zoom. */
 export async function widePageWithNotePdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (let index = 1; index < WIDE_NOTE_PAGE; index++) {
-    const page = document.addPage([4000, 560])
-    if (index === 1) page.drawText('Wide first page', { x: 50, y: 490, size: 18, font })
-  }
-  const target = document.addPage([300, 560])
-  target.drawText('Narrow note page', { x: 50, y: 490, size: 18, font })
-  const annotation = document.context.obj({
-    Type: 'Annot', Subtype: 'Text', P: target.ref, Rect: [50, 440, 70, 460],
-    Contents: PDFHexString.fromText('Narrow-page note'), Name: PDFName.of('Comment'),
-  })
-  target.node.set(PDFName.of('Annots'), document.context.obj([document.context.register(annotation)]))
-  return document.save({ useObjectStreams: false })
+  return plainPdf(Array.from({ length: WIDE_NOTE_PAGE }, (_, index) => ({ size: index === WIDE_NOTE_PAGE - 1 ? [300, 560] as const : [4000, 560] as const,
+    lines: index === 0 || index === WIDE_NOTE_PAGE - 1 ? [{ text: index === 0 ? 'Wide first page' : 'Narrow note page', x: 50, y: 490, size: 18 }] : undefined,
+    annotationObjects: index === WIDE_NOTE_PAGE - 1 ? [annotation('Text', '[50 440 70 460]', 'Narrow-page note')] : undefined })))
 }
 
 export async function distantHighlightPdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (let index = 1; index < WIDE_NOTE_PAGE; index++) document.addPage([4000, 560])
-  const target = document.addPage([300, 560])
-  target.drawText('Highlighted target page', { x: 50, y: 490, size: 18, font })
-  const annotation = document.context.obj({
-    Type: 'Annot', Subtype: 'Highlight', P: target.ref, Rect: [48, 485, 270, 510],
-    QuadPoints: [48, 510, 270, 510, 48, 485, 270, 485],
-    Contents: PDFHexString.fromText('Distant highlight'), C: [1, 1, 0], F: 4,
-  })
-  target.node.set(PDFName.of('Annots'), document.context.obj([document.context.register(annotation)]))
-  return document.save({ useObjectStreams: false })
+  return plainPdf([...Array.from({ length: WIDE_NOTE_PAGE - 1 }, () => ({ size: [4000, 560] as const })),
+    { size: [300, 560], lines: [{ text: 'Highlighted target page', x: 50, y: 490, size: 18 }], annotationObjects: [annotation('Highlight', '[48 485 270 510]', 'Distant highlight')] }])
 }
 
-/** Same-size pages reproduce a distant highlight jump in a book-length PDF. */
 export async function longHighlightPdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (let number = 1; number <= LONG_ANNOTATION_PAGE_COUNT; number++) {
-    const page = document.addPage([595.28, 841.89])
-    if (number === LONG_ANNOTATION_TARGET) {
-      page.drawText('Highlighted destination', { x: 50, y: 760, size: 18, font })
-      const annotation = document.context.obj({
-        Type: 'Annot', Subtype: 'Highlight', P: page.ref, Rect: [48, 755, 295, 780],
-        QuadPoints: [48, 780, 295, 780, 48, 755, 295, 755],
-        Contents: PDFHexString.fromText('Distant book highlight'), C: [1, 0.5, 0], F: 4,
-      })
-      page.node.set(PDFName.of('Annots'), document.context.obj([document.context.register(annotation)]))
-    } else if (number === LONG_ANNOTATION_SOURCE) {
-      page.drawText('Starting page', { x: 50, y: 760, size: 18, font })
-    }
-  }
-  return document.save({ useObjectStreams: false })
+  return plainPdf(Array.from({ length: LONG_ANNOTATION_PAGE_COUNT }, (_, index) => ({ size: [595.28, 841.89] as const,
+    lines: index + 1 === LONG_ANNOTATION_TARGET || index + 1 === LONG_ANNOTATION_SOURCE ? [{ text: index + 1 === LONG_ANNOTATION_TARGET ? 'Highlighted destination' : 'Starting page', x: 50, y: 760, size: 18 }] : undefined,
+    annotationObjects: index + 1 === LONG_ANNOTATION_TARGET ? [annotation('Highlight', '[48 755 295 780]', 'Distant book highlight')] : undefined })))
 }
 
-/** Keep the large fixture small on disk while exercising a distant page. */
 export async function manyPageSourcePdf(): Promise<Uint8Array> {
-  const document = await PDFDocument.create()
-  const font = await document.embedFont(StandardFonts.Helvetica)
-  for (let number = 1; number <= LARGE_PAGE_COUNT; number++) {
-    const page = document.addPage([400, 560])
-    if (number === 1 || number === 2 || number === 115 || number === LARGE_PAGE_COUNT) {
-      page.drawText(`Browser PDF page ${number}`, { x: 50, y: 490, size: 18, font })
-    }
-    if (number === 1 || number === LARGE_PAGE_COUNT) {
-      const action = number === 1 ? 'LastPage' : 'FirstPage'
-      const link = document.context.obj({ Type: 'Annot', Subtype: 'Link', P: page.ref, Rect: [50, 430, 180, 455],
-        A: { S: PDFName.of('Named'), N: PDFName.of(action) } })
-      page.node.set(PDFName.of('Annots'), document.context.obj([document.context.register(link)]))
-    }
-  }
-  return document.save({ useObjectStreams: false })
+  return plainPdf(Array.from({ length: LARGE_PAGE_COUNT }, (_, index) => ({ size: [400, 560] as const,
+    lines: [1, 2, 115, LARGE_PAGE_COUNT].includes(index + 1) ? [{ text: `Browser PDF page ${index + 1}`, x: 50, y: 490, size: 18 }] : undefined,
+    annotationObjects: index === 0 || index + 1 === LARGE_PAGE_COUNT ? [pdfDict({ Type: '/Annot', Subtype: '/Link', Rect: '[50 430 180 455]', A: pdfDict({ S: '/Named', N: pdfName(index === 0 ? 'LastPage' : 'FirstPage') }) })] : undefined })))
 }
 
-/** Read the saved file with pdf-lib, separately from the Host's edit result. */
 export async function savedNoteContents(path: string): Promise<string[]> {
-  const document = await PDFDocument.load(await readFile(path))
-  const array = document.getPage(0).node.lookup(PDFName.of('Annots'), PDFArray)
-  if (!array) return []
-  const contents: string[] = []
-  for (let index = 0; index < array.size(); index++) {
-    const annotation = document.context.lookup(array.get(index), PDFDict)
-    if (annotation.lookup(PDFName.of('Subtype'), PDFName).asString() !== '/Text') continue
-    contents.push(annotation.lookup(PDFName.of('Contents'), PDFHexString).decodeText())
-  }
-  return contents
+  const inspection = await inspectFixturePdf(new Uint8Array(await readFile(path)))
+  return inspection.annotations.filter(annotation => annotation.subtype === 'Text' && annotation.contents).map(annotation => annotation.contents!)
 }
 
 export async function savedHighlightColors(path: string): Promise<number[][]> {
-  const document = await PDFDocument.load(await readFile(path))
-  const annotations = document.getPage(0).node.lookup(PDFName.of('Annots'), PDFArray)
-  if (!annotations) return []
-  const colors: number[][] = []
-  for (let index = 0; index < annotations.size(); index++) {
-    const annotation = document.context.lookup(annotations.get(index), PDFDict)
-    if (annotation.lookup(PDFName.of('Subtype'), PDFName).asString() !== '/Highlight') continue
-    const color = annotation.lookup(PDFName.of('C'), PDFArray)
-    if (color) colors.push([0, 1, 2].map(channel => color.lookup(channel, PDFNumber).asNumber()))
-  }
-  return colors
+  const inspection = await inspectFixturePdf(new Uint8Array(await readFile(path)))
+  return inspection.annotations.filter(annotation => annotation.subtype === 'Highlight' && annotation.color).map(annotation => annotation.color!)
 }

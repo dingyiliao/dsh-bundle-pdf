@@ -3,10 +3,10 @@ import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, saveFailu
 import { type Browser, type Locator } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 
-it('opens a password-protected PDF through the Reader tab and renders it read-only', async () => {
+it('opens a password-protected PDF after a valid password and enables permitted annotations', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined
   try {
@@ -47,7 +47,13 @@ it('opens a password-protected PDF through the Reader tab and renders it read-on
     await unlock.click()
     await reader.locator('[data-pdf-page] canvas').first().waitFor({ state: 'visible', timeout: 20_000 })
     await prompt.waitFor({ state: 'detached' })
-    await reader.getByText('This PDF is encrypted and opens for reading only.', { exact: false }).waitFor({ state: 'visible' })
+    await reader.getByText('This PDF is encrypted. You can edit annotations and notes.', { exact: false }).waitFor({ state: 'visible' })
+    expect(await reader.getByRole('button', { name: 'Note', exact: true }).isEnabled()).toBe(true)
+    const ocr = reader.getByRole('button', { name: 'OCR page', exact: true })
+    expect(await ocr.isDisabled()).toBe(true)
+    expect(await ocr.getAttribute('title')).toBe('OCR is unavailable for encrypted PDFs.')
+    await reader.locator('.dsh-pdf-tool-availability').hover()
+    await expect.poll(() => page.getByRole('tooltip').textContent()).toBe('OCR is unavailable for encrypted PDFs.')
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -66,12 +72,8 @@ it('resumes the remembered reading position on a fresh client and skips it after
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF resume position test' })
     const name = 'reader-resume-position-e2e.pdf'
     const path = join(scaffold.workspaceCwd, name)
-    const document = await PDFDocument.create()
-    const font = await document.embedFont(StandardFonts.Helvetica)
-    for (const label of ['Probe page one', 'Probe page two', 'Probe page three', 'Probe page four']) {
-      document.addPage([400, 560]).drawText(label, { x: 50, y: 490, size: 18, font })
-    }
-    await writeFile(path, await document.save({ useObjectStreams: false }))
+    await writeFile(path, plainPdf(['Probe page one', 'Probe page two', 'Probe page three', 'Probe page four']
+      .map(text => ({ size: [400, 560], lines: [{ text, x: 50, y: 490, size: 18 }] }))))
 
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
@@ -168,12 +170,8 @@ it('resumes the remembered reading position on a fresh client and skips it after
 
     // An external rewrite keeps page three but changes the bytes, so the
     // remembered position must be reported rather than replayed.
-    const rewritten = await PDFDocument.create()
-    const otherFont = await rewritten.embedFont(StandardFonts.Helvetica)
-    for (const label of ['Rewritten one', 'Rewritten two', 'Rewritten three', 'Rewritten four']) {
-      rewritten.addPage([420, 580]).drawText(label, { x: 50, y: 500, size: 18, font: otherFont })
-    }
-    await writeFile(path, await rewritten.save({ useObjectStreams: false }))
+    await writeFile(path, plainPdf(['Rewritten one', 'Rewritten two', 'Rewritten three', 'Rewritten four']
+      .map(text => ({ size: [420, 580], lines: [{ text, x: 50, y: 500, size: 18 }] }))))
 
     await page.reload({ waitUntil: 'load' })
     await page.locator('style[data-dsh-plugin="@dylanl1/dsh-plugin-pdf"]').waitFor({ state: 'attached', timeout: 20_000 })

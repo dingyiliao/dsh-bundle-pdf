@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
 import { type Context } from '@deepseek-ai/cordis'
 import { type ToolExecutionInput, type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { expect } from 'vitest'
@@ -31,3 +32,4 @@ export async function executeScaffoldTool(tools: ScaffoldToolRuntime, input: Too
 }
 
 export const MODEL_FIXTURE = join(DSH_ROOT, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl')
+export const MODEL_FIXTURE_AVAILABLE = existsSync(MODEL_FIXTURE)

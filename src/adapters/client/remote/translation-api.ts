@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { TranslationError, type TranslationEngine, type TranslationEngineDescriptor } from '../../../translation/index.js'
 import { translationSourceLanguage } from '../../../shared/contracts.js'
 import { interpretationSchema } from '../../../translation/schema.js'
+import { rpcResponseSchema } from '../../../contracts/rpc/index.js'
 import type { PdfConnection } from './pdf-api.js'
 
 const lexicalMeaning = z.object({
@@ -19,10 +20,7 @@ const wireResult = z.object({
     meanings: z.array(lexicalMeaning).min(1),
   }).optional(),
 })
-const response = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: wireResult }),
-  z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
-])
+const response = rpcResponseSchema(wireResult)
 const errorCodes = new Set(['disabled', 'not-configured', 'engine-unavailable', 'authentication-failed',
   'invalid-request', 'limit-exceeded', 'timeout', 'cancelled', 'stale-result', 'translation-failed',
   'invalid-model-output', 'incomplete-model-output', 'empty-model-output'])

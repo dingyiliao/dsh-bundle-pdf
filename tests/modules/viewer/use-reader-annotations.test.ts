@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfAnnotation, PdfAnnotationOperation } from '../../../src/core/pdf-types.ts'
-import type { ReaderSelection } from '../../../src/modules/viewer/model/reader-selection.ts'
+import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderAnnotations, type ReaderAnnotationsOptions } from '../../../src/modules/viewer/index.ts'
+import { useReaderAnnotations, type ReaderAnnotationsOptions } from '../../../src/client/viewer/index.ts'
 
 const existing: PdfAnnotation = {
   id: 'existing', page: 1, subtype: 'Highlight', rect: [10, 20, 50, 30],
@@ -293,6 +293,26 @@ test('adding another comment creates an independent PDF reply', async () => {
     assert.equal(operation.annotation.contents, 'a second opinion')
     assert.equal(state().commentMode, 'read')
   })
+})
+
+test('encrypted markup edits its existing root comment without offering replies or position writes', async () => {
+  const protectedPdf = snapshot([existing])
+  protectedPdf.document.encrypted = true
+  protectedPdf.document.annotationEditing = 'allowed'
+  await withAnnotations(async ({ state, options, render, operations }) => {
+    await render({ ...options, selection: textSelection })
+    await act(async () => { await state().mark('Underline') })
+    assert.deepEqual(operations, [], 'copy-restricted text cannot be marked from a selection')
+    await act(async () => state().selectAnnotation(existing.id))
+    assert.equal(state().supportsCommentReplies, false)
+    assert.equal(state().canPersistCommentPosition, false)
+    await act(async () => state().openCommentEditor())
+    assert.equal(state().commentMode, 'edit')
+    assert.equal(state().comment, existing.contents)
+    await act(async () => state().setComment('Updated protected comment'))
+    await act(async () => { await state().applyComment() })
+    assert.deepEqual(operations, [[{ type: 'update', id: existing.id, patch: { contents: 'Updated protected comment' } }]])
+  }, protectedPdf)
 })
 
 test('editing imported rich text requires confirmation before plain-text conversion', async () => {
