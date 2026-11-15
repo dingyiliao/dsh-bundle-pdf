@@ -71,7 +71,7 @@ test('protected Reader unlock is session-scoped and transient, even after native
   try {
     await assert.rejects(state.workspaces.execute(sessionId, {
       action: 'open', sessionId, address, owner: 'agent',
-    }, agent, signal), { code: 'pdf/protected-document' })
+    }, agent, signal), { code: 'pdf/password-required' })
     await assert.rejects(state.open('tab-a'), { code: 'pdf/password-required' })
     await assert.rejects(state.unlock('tab-a', 'bad-password'), error => {
       assert.equal((error as { code: string }).code, 'pdf/password-incorrect')
@@ -89,10 +89,14 @@ test('protected Reader unlock is session-scoped and transient, even after native
     assert.equal(opened.document?.pageCount, 2)
     assert.equal(opened.document?.pages[0].rotation, 90)
     assert.doesNotMatch(JSON.stringify(response), /fixture-password/)
-    assert.deepEqual(state.workspaces.listOpenDocuments(), [], 'protected copies never schedule indexing')
-    await assert.rejects(state.workspaces.execute(sessionId,
-      { action: 'open', sessionId, address, owner: 'agent' }, agent, signal), { code: 'pdf/protected-document' })
-    await assert.rejects(state.reader.renderPage(sessionId, opened.id, 1, 256, signal), { code: 'pdf/protected-document' })
+    assert.equal(state.workspaces.listOpenDocuments().length, 1, 'authorized protected copies use the shared open-document index')
+    const shared = await state.workspaces.execute(sessionId,
+      { action: 'open', sessionId, address, owner: 'agent' }, agent, signal)
+    assert.ok('bytes' in shared)
+    assert.equal(shared.id, opened.id)
+    await state.workspaces.releaseBackground(sessionId, opened.id)
+    const rendered = await state.reader.renderPage(sessionId, opened.id, 1, 256, signal)
+    assert.equal(rendered.width > 0, true)
     await assert.rejects(state.dispatch({ action: 'save', id: opened.id, revision: opened.revision, options: {} }))
 
     await state.reader.releaseDocument(opened.id)
@@ -227,15 +231,16 @@ test('protected Save As rechecks effective native annotation permission before i
   } finally { await state.dispose() }
 })
 
-test('the Reader honors extraction permissions and rejects non-Reader access to protected pages', { skip }, async () => {
+test('protected model reads honor extraction permissions after shared password acquisition', { skip }, async () => {
   const state = setup(await fixture('encrypted-restricted-text'))
   try {
     const opened = wireSnapshotSchema.parse(await state.unlock('tab-a', 'fixture-password'))
     assert.equal(opened.document?.allowTextExtraction, false)
     const request = { sessionId, id: opened.id, bytesHash: opened.reader.bytesHash, page: 1 }
-    await assert.rejects(state.reader.readPageText(sessionId, opened.id, 1, signal), { code: 'pdf/protected-document' })
+    const restrictedText = await state.reader.readPageText(sessionId, opened.id, 1, signal)
+    assert.deepEqual(restrictedText.content, { items: [], styles: {}, lang: null })
     await assert.rejects(state.reader.native(sessionId, { ...request, action: 'inspect', offset: 0, limit: 1 }, agent, signal),
-      { code: 'pdf/protected-document' })
+      { code: 'pdf/protected-text' })
     await assert.rejects(state.reader.native(sessionId, { ...request, action: 'selectionGeometry', offset: 0 }, agent, signal),
       { code: 'pdf/protected-text' })
     assert.deepEqual(await state.reader.native(sessionId, { ...request, action: 'text', recover: true }, agent, signal),
@@ -292,16 +297,21 @@ test('a native helper without the encrypted writer still opens a passwordless pr
 test('missing protected PDF capabilities close the probe handle without publishing a document', { skip }, async t => {
   const state = setup(await fixture('password-object-stream'))
   const request = NativeWorker.prototype.request
+  const close = NativeWorker.prototype.closeDocument
   const closed: string[] = []
   let xfaDocument: string | undefined
   t.mock.method(NativeWorker.prototype, 'request', async function(this: NativeWorker,
     ...args: Parameters<NativeWorker['request']>) {
     const { command, documentId } = args[0] as { command: string; documentId: string }
     const reply = await request.apply(this, args)
-    if (command === 'close') closed.push(documentId)
     if (command !== 'open') return reply
     xfaDocument = documentId
     return { ...reply, value: { ...(reply.value as object), formType: 2 } }
+  })
+  t.mock.method(NativeWorker.prototype, 'closeDocument', async function(this: NativeWorker,
+    documentId: string, generation: number) {
+    closed.push(documentId)
+    return close.call(this, documentId, generation)
   })
   try {
     await assert.rejects(state.unlock('tab-a', 'fixture-password'), { code: 'pdf/native-unsupported',

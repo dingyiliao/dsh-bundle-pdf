@@ -202,9 +202,6 @@ export async function apply(
       }
       const release = await workspaces.acquire(sessionId, documentId, resolved.agent, signal)
       try {
-        if (workspaces.readSnapshot(sessionId, documentId).document.encrypted) {
-          throw new ImageUnderstandingError('pdf/protected-document', 'Protected PDFs can only be viewed in the Reader')
-        }
         const task = createPdfImageEvidenceResolver(workspaces, referenceStore, attachments,
           freshSourceReader(files, resolved.agent)).resolve(sessionId, documentId, refId, signal)
         pendingRequests.add(task)

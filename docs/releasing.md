@@ -12,10 +12,15 @@ Installation runs no build or download hooks.
    Native package versions and the published main package's five exact optional
    dependencies are generated from this version. The source checkout deliberately
    does not require unpublished native packages, so its locked bootstrap remains usable.
-2. Run the complete project checks. Push a review branch matching `feat/npm-*`
+2. Move the relevant entries from `CHANGELOG.md`'s `Unreleased` section into a
+   dated section matching the exact package version. Record compatibility,
+   breaking changes, migration steps and known issues; write `None` rather than
+   silently omitting an applicable heading. Keep the version in `package.json`
+   and its lockfile as the source of truth.
+3. Run the complete project checks. Push a review branch matching `feat/npm-*`
    or use a pull request to run the five-platform installation matrix and Web /
    project coverage checks.
-3. Use the six package archives from the same successful workflow run:
+4. Use the six package archives from the same successful workflow run:
    `dsh-pdf-main` and the five `dsh-pdf-native-<target>` artifacts. Do not mix
    runs.
 
@@ -40,6 +45,11 @@ The publisher validates all six archives before any registry write, checks
 existing registry integrity, publishes the native dependencies first and the
 main package last. A retry skips an already published byte-identical archive;
 different content under the same version requires a new version.
+
+Create or verify one GitHub Release for the product version, using the matching
+`CHANGELOG.md` section as its source. Include install or upgrade instructions,
+DSH compatibility and known issues; do not create separate release notes for the
+five native dependencies.
 
 After publication, verify automatic native selection from the registry alone:
 

@@ -4,7 +4,7 @@ import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-d
 import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../src/core/pdf-types.ts'
 import { PdfDocumentError } from '../../../src/core/pdf-types.ts'
 import { digestPdfBytes } from '../../../src/modules/document/index.ts'
-import { createWorkingCopyService, type HostWorkspaceSnapshot, type ProtectedReaderPort,
+import { createWorkingCopyService, type HostWorkspaceSnapshot, type ProtectedDocumentPort,
   type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
 
 const sessionId = 'protected-working-copy-test'
@@ -49,7 +49,7 @@ function setup(options: { ownerRequired?: boolean; signed?: boolean; writer?: bo
     async put() { assert.fail('Encrypted edits must never enter disk draft storage') },
     async delete() { assert.fail('Protected transactions must not remove any on-disk draft') },
   })
-  const inspector: ProtectedReaderPort = {
+  const protectedPort: ProtectedDocumentPort = {
     async inspect(_bytes, password) {
       passwords.push(password)
       if (password === 'wrong-password') throw failure('pdf/password-incorrect')
@@ -70,7 +70,7 @@ function setup(options: { ownerRequired?: boolean; signed?: boolean; writer?: bo
     release: id => released.push(id),
   }
   let saveCredential: string | undefined
-  if (options.writer !== false) inspector.materializeAnnotations = async (snapshot, baseline, password) => {
+  if (options.writer !== false) protectedPort.materializeAnnotations = async (snapshot, baseline, password) => {
     assert.equal(snapshot.bytes, sourceBytes, 'projection preserves the exact encrypted baseline bytes')
     assert.equal(baseline.annotations.length, 0)
     assert.ok(snapshot.document.annotations.some(annotation => annotation.id === note.annotation.id))
@@ -80,7 +80,7 @@ function setup(options: { ownerRequired?: boolean; signed?: boolean; writer?: bo
   const service = createWorkingCopyService(files, drafts, {
     async inspect() { throw new PdfDocumentError('encrypted', 'Encrypted test file') },
     async materialize() { assert.fail('Plaintext PDF writer cannot be used') },
-  }, inspector)
+  }, protectedPort)
   const reader = (input: Record<string, unknown>, origin: 'reader' | 'agent' = 'reader') =>
     service.execute(sessionId, { sessionId, ...input }, agent, signal, origin)
   const snapshot = async (input: Record<string, unknown>) => {
@@ -105,7 +105,7 @@ test('an encrypted PDF with effective permission keeps undo, redo and edits in m
     const opened = await f.open()
     assert.equal(opened.document.annotationEditing, 'allowed')
     assert.deepEqual(f.passwords, [undefined])
-    assert.deepEqual(f.service.listOpenDocuments(), [])
+    assert.equal(f.service.listOpenDocuments().length, 1, 'protected working copies are visible to shared model and Reader owners')
     assert.equal(await f.service.suspend(sessionId, opened.id), 'retained-ui')
     const edited = await f.edit(opened, note)
     const updated = await f.edit(edited, { type: 'update', id: note.annotation.id, patch: { contents: 'updated' } })
@@ -176,8 +176,6 @@ test('annotation unlock requires a live reference, unchanged source and a passwo
     const joined = await f.snapshot({ action: 'unlock', address, referenceId: 'tab-b', password: 'user-password' })
     assert.equal(joined.revision, unlocked.revision, 'the same live copy cannot be downgraded by a later opening password')
     const edited = await f.edit(unlocked, note)
-    await assert.rejects(f.reader(f.operation(edited, 'save', { options: { path: savedPath } }), 'agent'),
-      { code: 'pdf/protected-document' })
     const saved = await f.save(edited)
     assert.equal(f.saveCredential(), 'owner-password')
     assert.equal(f.service.passwordFor(saved.id, digestPdfBytes(sourceBytes)), undefined)
@@ -190,45 +188,50 @@ test('annotation unlock requires a live reference, unchanged source and a passwo
   } finally { await f.service.dispose() }
 })
 
-test('an encrypted Reader rejects other operation kinds and protects in-memory content from model requests', async () => {
+test('an encrypted working copy is shared with model owners while password acquisition remains explicit', async () => {
   const f = setup()
   try {
-    await assert.rejects(f.reader({ action: 'open', address, owner: 'ui', referenceId: 'model-view' }, 'agent'),
-      { code: 'pdf/protected-document' })
-    await assert.rejects(f.reader({ action: 'unlock', address, referenceId: 'model-view', password: 'owner-password' }, 'agent'),
-      { code: 'pdf/protected-document' })
+    await assert.rejects(f.reader({ action: 'open', address, owner: 'agent' }, 'agent'), { code: 'pdf/password-required' })
+    const modelOpened = await f.reader({ action: 'unlock', address, referenceId: 'model-view', password: 'owner-password' }, 'agent')
+    assert.ok('bytes' in modelOpened)
     const opened = await f.open()
-    const change = f.operation(opened, 'change', { operations: [note] })
-    await assert.rejects(f.reader(change, 'agent'), { code: 'pdf/protected-document' })
-    await assert.rejects(f.reader({ action: 'refresh', id: opened.id }, 'agent'), { code: 'pdf/protected-document' })
-    await assert.rejects(f.reader({ action: 'discardMany', ids: [opened.id] }, 'agent'), { code: 'pdf/protected-document' })
-    await assert.rejects(f.reader({ action: 'open', address, owner: 'agent' }, 'agent'), { code: 'pdf/protected-document' })
-    await assert.rejects(f.reader(f.operation(opened, 'reload')), { code: 'pdf/read-only' })
+    const joined = await f.reader({ action: 'open', address, owner: 'agent', referenceId: 'model-open' }, 'agent')
+    if (!('bytes' in joined)) throw new Error('Expected shared model snapshot')
+    assert.equal(joined.id, opened.id)
+    const reloaded = await f.reader(f.operation(opened, 'reload'), 'agent')
+    if (!('bytes' in reloaded)) throw new Error('Expected reloaded model snapshot')
+    assert.equal(reloaded.dirty, false)
+
     for (const operation of [
       { type: 'set-field', fieldId: 'field', value: 'private' },
       { type: 'outline-delete', id: 'bookmark' },
       { ...note, annotation: { ...note.annotation, replyToId: 'parent' } },
       { type: 'update', id: note.annotation.id, patch: { commentPosition: [1, 2] } },
     ] satisfies PdfWorkingCopyOperation[]) {
-      await assert.rejects(f.edit(opened, operation), { code: 'pdf/protected-annotation-operation' })
+      await assert.rejects(f.edit(reloaded, operation), { code: 'pdf/protected-annotation-operation' })
     }
     for (const operation of [
       ...(['id', 'contents', 'author'] as const).map(key =>
         ({ ...note, annotation: { ...note.annotation, [key]: '\0' } })),
       { type: 'update', id: note.annotation.id, patch: { contents: 'bad\0text' } },
     ] satisfies PdfWorkingCopyOperation[]) {
-      await assert.rejects(f.edit(opened, operation), { code: 'pdf/invalid-operation' })
+      await assert.rejects(f.edit(reloaded, operation), { code: 'pdf/invalid-operation' })
     }
-    const edited = await f.edit(opened, note)
+    const edited = await f.edit(reloaded, note)
     const discarded = await f.snapshot(f.operation(edited, 'discard'))
     assert.equal(discarded.dirty, false)
     const redrafted = await f.edit(discarded, note)
     f.disk.set(sourcePath, Uint8Array.of(7))
+    const refreshed = await f.snapshot({ action: 'refresh', id: redrafted.id })
+    assert.equal(refreshed.conflict, true)
+    assert.equal(refreshed.dirty, true)
+    assert.deepEqual(refreshed.baselineMismatch?.choices, ['adopt-current', 'retain-operations'])
     const conflicted = await f.snapshot(f.operation(redrafted, 'discard'))
-    assert.equal(conflicted.conflict, true)
+    assert.equal(conflicted.conflict, false)
     assert.equal(conflicted.dirty, false)
-    assert.equal(conflicted.bytes, sourceBytes)
+    assert.notDeepEqual(conflicted.bytes, sourceBytes)
     await f.reader({ action: 'discardMany', ids: [opened.id] })
+    await f.service.releaseBackground(sessionId, opened.id, undefined, 'model-open')
     assert.deepEqual(f.service.listDocuments(), [])
   } finally { await f.service.dispose() }
 })
@@ -249,7 +252,7 @@ test('closing the final protected view fences edits and drops its draft even wit
     await f.reader({ action: 'release', id: draft.id, referenceId: 'tab-b' })
     const reclaim = f.service.suspend(sessionId, draft.id)
     unpin(); unpin = undefined
-    assert.equal(await reclaim, 'released')
+    assert.equal(await reclaim, 'already-closed')
     assert.deepEqual(f.released, [draft.id])
     assert.deepEqual(f.service.listDocuments(), [])
   } finally { unpin?.(); await f.service.dispose() }

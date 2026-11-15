@@ -39,7 +39,11 @@ type AgentNavigation = Pick<ReturnType<typeof createAgentNavigation>, 'navigate'
 
 const documentId = z.string().min(1).max(512)
 const page = z.number().int().min(1).max(100000)
-const openArgs = z.object({ path: z.string().min(1).max(32768) }).strict()
+const openArgs = z.object({ path: z.string().min(1).max(32768),
+  password: z.string().min(1).max(1024).optional(),
+  baselineChoice: z.enum(['adopt-current', 'retain-operations']).optional() }).strict()
+const infoArgs = z.object({ path: z.string().min(1).max(32768),
+  password: z.string().min(1).max(1024).optional() }).strict()
 const closeArgs = z.object({ documentId }).strict()
 const bookmarksArgs = z.object({ documentId,
   cursor: z.string().min(1).max(4096).optional(), limit: z.number().int().min(1).max(50).optional() }).strict()
@@ -111,12 +115,6 @@ function requireSession(exec: ToolRunContext): string {
   return sessionId
 }
 
-function assertModelDocument(document: { encrypted: boolean }): void {
-  if (document.encrypted) throw Object.assign(
-    new Error('Password-protected PDFs are available in the Reader only; model tools cannot access them'),
-    { code: 'pdf/protected-document' })
-}
-
 /** Model-facing PDF reads. Every document access is fenced by exec.agent.session.id. */
 export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on?: Context['on'] }, workspaces: Workspaces,
   pdfService: PdfService, readerContexts: ReaderContexts,
@@ -125,7 +123,6 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
   const textSearches = createSearchSessions<z.infer<typeof startSearchArgs>>({ prefix: 'txt_' })
   const relatedSearches = createSearchSessions<z.infer<typeof startRelatedArgs>>({ prefix: 'rel_' })
   const toolContext = createDocumentToolContext(ctx, workspaces, {
-    assertDocument(sessionId, id) { assertModelDocument(workspaces.readSnapshot(sessionId, id).document) },
     resolveDocumentId(name, raw, sessionId) {
       if (name === 'pdf_keyword_search') {
         const input = searchArgs.parse(raw)
@@ -197,15 +194,16 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
   toolContext.tools.register(defineTool({
     name: 'pdf_info',
     description: 'Read source-file PDF metadata without creating a working copy, a draft, a model reference or a Reader tab. Works whether or not the file is already open; it reports the on-disk source, not unsaved edits. Use pdf_status for working-copy state. File access uses the current session filesystem and sandbox permissions.',
-    parameters: { path: { type: 'string', required: true, description: 'Absolute PDF path or path relative to the session working directory.' } },
+    parameters: { path: { type: 'string', required: true, description: 'Absolute PDF path or path relative to the session working directory.' },
+       password: { type: 'string', description: 'Password for protected metadata inspection; never returned.' } },
     output: readOutput, isConcurrencySafe: () => true,
     async execute(raw, exec) {
-      const { path } = openArgs.parse(raw)
+      const { path, password } = infoArgs.parse(raw)
       const sessionId = requireSession(exec)
       if (!/\.pdf$/i.test(path)) throw Object.assign(new Error('Only PDF files can be inspected'), { code: 'pdf/invalid-address' })
-      const info = await workspaces.inspectFile(sessionId, path, exec.agent!, exec.signal)
+      const info = await workspaces.inspectFile(sessionId, path, exec.agent!, exec.signal, password)
       const document = info.document
-      assertModelDocument(document)
+
       const title = document.title === undefined ? undefined : windowPageText(document.title, 0, 512)
       return { path: info.path.slice(0, 512), pathTruncated: info.path.length > 512,
         size: info.size, sourceDigest: info.sourceDigest, sourceVersion: info.sourceVersion,
@@ -218,30 +216,33 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
 
   toolContext.tools.register(defineTool({
     name: 'pdf_open',
-    description: 'Open an existing PDF as a session-scoped Host working copy for reading and editing. This does not open a tab or expand the reader UI. The path is resolved through the session filesystem and sandbox permissions. Reopening the same canonical path, including later from the reader UI, reuses its document ID, draft and undo history. Idle resource eviction preserves that ID and resumes the working set on the next operation; after a Host/plugin restart obtain a fresh ID.',
-    parameters: { path: { type: 'string', required: true, description: 'Absolute PDF path or path relative to the current session working directory.' } },
+    description: 'Open an existing PDF as a session-scoped Host working copy for reading and editing. For protected PDFs, omit password first to receive a password-required error, then retry with the password. If the source changed while a draft exists, pass baselineChoice to adopt the current bytes or retain the existing operations; the password remains in Host memory and is never returned or persisted. This does not open a tab or expand the reader UI. The path is resolved through the session filesystem and sandbox permissions. Reopening the same canonical path, including later from the Reader, reuses its document ID, draft and undo history. Idle resource eviction preserves that ID and resumes the working set on the next operation; after a Host/plugin restart obtain a fresh ID.',
+    parameters: { path: { type: 'string', required: true, description: 'Absolute PDF path or path relative to the session working directory.' },
+       password: { type: 'string', description: 'Password for a protected PDF; retry after a password-required error.' },
+       baselineChoice: { type: 'string', description: 'When baselineMismatch is returned, choose adopt-current or retain-operations.' } },
     output,
     isConcurrencySafe: () => true,
     async execute(raw, exec) {
-      const { path } = openArgs.parse(raw)
+      const { path, password, baselineChoice } = openArgs.parse(raw)
       const sessionId = requireSession(exec)
       if (!/\.pdf$/i.test(path)) throw Object.assign(new Error('Only PDF files can be opened'), { code: 'pdf/invalid-address' })
       const epoch = background.epoch(sessionId)
       const referenceId = randomUUID()
       const address = sessionFileAddress(sessionId, path)
-      const result = await workspaces.execute(sessionId, { action: 'open', sessionId, address, owner: 'agent', referenceId }, exec.agent as PdfAgent, exec.signal)
+      const result = await workspaces.execute(sessionId, { action: 'open', sessionId, address, owner: 'agent', referenceId, ...(password !== undefined ? { password } : {}), ...(baselineChoice !== undefined ? { baselineChoice } : {}) }, exec.agent as PdfAgent, exec.signal)
       if (!('bytes' in result)) throw Object.assign(new Error('PDF open did not return a working copy'), { code: 'pdf/invalid-response' })
       const ownership = await background.adopt(sessionId, result.id, result.bytes.byteLength, epoch, referenceId)
-      return { status: 'opened', documentId: result.id, path: result.path,
+      return { status: 'opened', documentId: result.id, path: result.path, ...(result.baselineId ? { baselineId: result.baselineId } : {}),
         pageCount: result.document.pageCount, revision: result.revision, contentVersion: result.contentVersion,
-        dirty: result.dirty, conflict: result.conflict, readerUiOpened: false,
+        dirty: result.dirty, conflict: result.conflict, ...(result.baselineMismatch ? { baselineMismatch: { operationsBaselineId: result.baselineMismatch.operationsBaselineId,
+           ...(result.baselineMismatch.currentBaselineId ? { currentBaselineId: result.baselineMismatch.currentBaselineId } : {}), choices: [...result.baselineMismatch.choices] } } : {}), readerUiOpened: false,
         ownership, backgroundIdleMinutes: ownership === 'background' ? 10 : null }
     },
   }))
 
   toolContext.tools.register(defineTool({
     name: 'pdf_close',
-    description: 'Release the model reference to a PDF opened by pdf_open. Reader views and in-flight operations retain their independent references. Idle resident/native resources are reclaimed safely, while the logical document ID and persisted draft remain available within this Host lifetime. This does not close a reader tab, discard edits or save the PDF.',
+    description: 'Release the model reference to a PDF opened by pdf_open. Reader views and in-flight operations retain their independent references. Ordinary idle resident/native resources are reclaimed safely while the logical document ID and persisted draft remain available; protected credentials and unpersisted protected operations are released with the final owner. This does not close a reader tab or save the PDF.',
     parameters: { documentId: DOCUMENT_INPUT }, output,
     isConcurrencySafe: () => true,
     async execute(raw, exec) {
@@ -359,8 +360,11 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
       }, exec.signal)
       const latest = workspaces.readSnapshot(sessionId, documentId)
       if (latest.revision !== observed.revision || latest.contentVersion !== observed.contentVersion
-        || latest.id !== observed.id || latest.path !== observed.path || latest.sourceVersion !== observed.sourceVersion
-        || latest.conflict !== observed.conflict || latest.dirty !== observed.dirty || latest.document !== observed.document
+        || latest.id !== observed.id || latest.path !== observed.path || latest.baselineId !== observed.baselineId
+        || latest.sourceVersion !== observed.sourceVersion
+        || JSON.stringify(latest.baselineMismatch) !== JSON.stringify(observed.baselineMismatch)
+        || latest.conflict !== observed.conflict || latest.dirty !== observed.dirty
+        || JSON.stringify(latest.document) !== JSON.stringify(observed.document)
         || evidenceSha256(latest.bytes) !== evidenceSha256(observed.bytes)
         || JSON.stringify(routing.bindings()) !== selectedBindings
         || readerContexts.current(sessionId).some(item => item.documentId === documentId
@@ -371,6 +375,11 @@ export function registerPdfAgentTools(ctx: Pick<Context, 'tools' | 'get'> & { on
         visibleInReader, ...capabilities,
         limitations: [...result.limitations,
           'Annotation edits enter an undoable draft immediately; only pdf_save requires a separate trusted human approval.',
+          ...(capabilities.signature.signed || capabilities.signature.uncertain
+            ? [capabilities.signature.uncertain
+              ? 'This PDF may be signed: save rewrites the file bytes, so any existing signature will verify as invalid.'
+              : 'This PDF is signed: save rewrites the file bytes, so the existing signature will verify as invalid.']
+            : []),
           'Capabilities are observations, not a reservation; document and selected-backend availability are checked again by each operation.'] }
     },
   }))

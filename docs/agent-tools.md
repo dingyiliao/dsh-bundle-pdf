@@ -37,9 +37,11 @@
 
 `working-copy` 是唯一的打开文档表。同一会话、同一规范路径，无论先通过模型还是 UI 打开，都获得同一份文档、草稿、修订和撤销历史。重复的模型打开取得同一个模型持有者，不因工具重试无限增加引用。UI 标签、模型持有者和执行中的操作分别持有引用。
 
-`pdf_close` 仅释放模型持有者。引用归零后可以回收常驻字节和 native 资源，持久草稿仍保留；空闲回收不授权模型关闭用户视图或删除未保存修改。Host 重启后重新打开以获取有效 ID。
+`pdf_close` 仅释放模型持有者。普通文档在引用归零后可以回收常驻 baseline 字节和 native 资源，持久草稿仍保留；受保护文档的密码和仅驻留内存的操作集会在最后一个 Reader/model owner 离开后释放。空闲回收不授权模型关闭用户视图。Host 重启后重新打开以获取有效 ID。活动 Reader 已有基线时，模型打开复用同一工作副本和基线；否则 Host 通过 `BaselineProvider` 获取并可在模型收到 `pdf/password-required` 后用同一 `pdf_open` 的 `password` 参数重试。密码永不进入工具结果或草稿。重复 `pdf_open` 复用同一模型 owner；一次 `pdf_close` 只释放该 owner，不关闭 Reader occurrence。
 
-`pdf_info` 检查文件本身的元信息，不登记长期模型所有权；`pdf_status` 检查工作副本当前状态，不能用重复打开来替代状态查询。能力报告中的 `supported/available/reason` 是观察结果，执行时仍重新验证。
+`pdf_open`／`pdf_status` 在源字节变化而操作仍绑定旧基线时返回 `conflict: true` 与 `baselineMismatch`。模型必须选择采用当前基线（`pdf_open` 传 `baselineChoice: "adopt-current"`，可同时传密码）或保留操作集（`"retain-operations"`）；Host 不自动清空操作。基线获取或物化失败也不清空操作集。
+
+`pdf_info` 检查文件本身的元信息，不登记长期模型所有权；受保护文件对模型也要求 `password`，不因元信息检查而绕过基线授权。`pdf_status` 检查工作副本当前状态，不能用重复打开来替代状态查询。能力报告中的 `supported/available/reason` 是观察结果，执行时仍重新验证。
 
 ## 搜索、读取与证据
 
@@ -144,6 +146,6 @@ UI 区域 OCR 使用同一个识别服务：框选、裁剪和页面坐标映射
 
 可先检查多页再独立填写。Host 排队验证映射和修订；已知独立页填写可以保留无关检查，目标页、共享字段、依赖、UI 编辑、撤销重做或来源变化要求重新检查。每个单页批次一起成功或失败。填写后重新检查实际值；成功写入不代表语义正确。
 
-所有修改直接进入人和模型共用的未保存草稿，不增加预演或人工确认。`pdf_save(documentId,expectedRevision)` 才通过受信交互渠道请求覆盖原文件的批准，再次核对修订、差异和源摘要后原子保存。模型不能以 `approved:true` 授权自己。另存为仍由 UI 路径选择器处理。
+所有修改直接进入人和模型共用的未保存草稿。普通 change/undo/redo/reload/discard/save 都必须携带调用者观察到的 `expectedRevision`；同一 session 串行执行，陈旧写入返回 `pdf/stale-revision`，无操作的 undo/redo/discard 或 clean save 是 no-op，不推进修订。批次投影、持久化和物化失败均零写入，不发布部分 snapshot。`pdf_save(documentId,expectedRevision)` 才通过受信交互渠道请求覆盖原文件的批准，再次核对修订、差异和源摘要后原子保存。模型不能以 `approved:true` 授权自己。另存为仍由 UI 路径选择器处理。
 
 验证方法及运行命令见[测试指南](testing.md)。

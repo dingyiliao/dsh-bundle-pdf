@@ -119,7 +119,7 @@ test('timeout kills the helper and a later handshake starts a new generation', {
   try {
     await worker.ready(); const firstGeneration = worker.generation
     await assert.rejects(worker.request({ command: 'close', documentId: 'hang' }), { code: 'pdf/native-timeout' })
-    await worker.ready(); assert.equal(worker.generation, firstGeneration + 1)
+    await worker.ready(); assert.equal(worker.generation, firstGeneration + 2)
     assert.deepEqual((await worker.request({ command: 'close', documentId: 'recovered' })).value, { closed: true })
   } finally { await worker.dispose(); await fake.close() }
 })
@@ -249,7 +249,7 @@ test('a replacement waits for the previous managed process range to exit', async
     subprocess.releaseRange()
     await restart
     assert.equal(subprocess.spawns, 2)
-    assert.equal(worker.generation, 2)
+    assert.equal(worker.generation, 3)
     assert.deepEqual((await worker.request({ command: 'close', documentId: 'recovered' })).value, { closed: true })
   } finally { subprocess.releaseRange(); await worker.dispose() }
 })

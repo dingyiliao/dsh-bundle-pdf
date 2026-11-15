@@ -1,7 +1,7 @@
 import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../core/pdf-types.js'
 
-/** A protected copy is only writable if its Reader also has an encrypted writer. */
-export function protectedReaderInfo(document: PdfDocumentInfo, canWrite: boolean): PdfDocumentInfo {
+/** A protected copy is writable only when the Host exposes an encrypted writer. */
+export function protectedDocumentInfo(document: PdfDocumentInfo, canWrite: boolean): PdfDocumentInfo {
   if (!document.annotationEditing || canWrite) return document
   const { annotationEditing: _, ...info } = document
   return { ...info, readOnly: true, readOnlyReason: 'encrypted-document',

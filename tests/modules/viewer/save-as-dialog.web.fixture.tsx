@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { SaveAsDialog } from '../../../src/client/viewer/components/SaveAsDialog.js'
 import { readerLocales } from '../../../src/client/viewer/locales.js'
 
-interface Input { replaceConfirm?: boolean; error?: string; busy?: boolean }
+interface Input { replaceConfirm?: boolean; signatureConfirm?: boolean; signatureCertified?: boolean; error?: string; busy?: boolean }
 let configure: (input: Input) => void = () => {}
 
 function Fixture() {
@@ -28,10 +28,11 @@ function Fixture() {
     </div>
     {open && <SaveAsDialog name={name} directory={directory} pickerAvailable={false} picking={false}
       busy={!!input.busy} targetChecking={false} target={{ path: `${directory}/${name}`, version: null }}
-      replaceConfirm={!!input.replaceConfirm} error={input.error ?? ''} onNameChange={setName} onDirectoryChange={setDirectory}
+      replaceConfirm={!!input.replaceConfirm} signatureConfirm={!!input.signatureConfirm}
+      signatureCertified={!!input.signatureCertified} error={input.error ?? ''} onNameChange={setName} onDirectoryChange={setDirectory}
       onChooseDirectory={() => { throw new Error('This fixture has no native directory picker.') }}
       onSubmit={() => setOpen(false)} onCancel={() => setOpen(false)}
-      onBack={() => setInput(current => ({ ...current, replaceConfirm: false }))} t={t} />}
+      onBack={() => setInput(current => ({ ...current, replaceConfirm: false, signatureConfirm: false }))} t={t} />}
   </div>
 }
 

@@ -78,9 +78,12 @@ export function ReaderAlerts(props: ReaderAlertsProps) {
     {document?.readOnly && <div className="dsh-pdf-notice">
       <span>{t(document.readOnlyReason === 'encrypted-document'
         ? editPassword ? 'reader.encryptedAnnotationLocked' : 'reader.encryptedReadOnly'
-        : 'reader.signedReadOnly')}</span>
+        : 'reader.documentReadOnly')}</span>
       {editPassword && !editPassword.prompt && <button type="button" onClick={editPassword.begin}>{t('reader.unlockEditing')}</button>}
     </div>}
+    {(document?.signed || document?.signatureUncertain) && !document.readOnly && <div className="dsh-pdf-notice" role="status">
+      {t(document.certificationPermission === 1 ? 'reader.signatureCertified'
+        : document.signatureUncertain ? 'reader.signaturePossible' : 'reader.signatureEditable')}</div>}
     {editPassword?.prompt && <ReaderPasswordPrompt key={editPassword.prompt.identity} {...editPassword.prompt} edit t={t} />}
     {document?.annotationEditing === 'allowed' && <div className="dsh-pdf-notice">
       {t('reader.encryptedAnnotationEditable')}</div>}

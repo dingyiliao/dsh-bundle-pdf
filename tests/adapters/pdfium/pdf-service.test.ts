@@ -160,6 +160,25 @@ test('reader selection delivers native glyphs and rejects a result overtaken by 
   }
 })
 
+test('a content context that disagrees with its baseline bytes is rejected before native work', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      return { ...snapshot, contentContext: { ...snapshot.contentContext!,
+        sourceDigest: `sha256:${'0'.repeat(64)}` } }
+    },
+  }
+  const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-content-context'
+  try {
+    const opened = await open(service, sessionId)
+    await assert.rejects(service.native(sessionId, { action: 'outline', sessionId, id: opened.id,
+      bytesHash: opened.reader.bytesHash }, agent(sessionId), signal),
+    { code: 'pdf/stale-reader' })
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
 test('reader selection reports an older helper without native glyph geometry', { skip }, async t => {
   const state = memoryWorkspace(await nativeFixture())
   const ready = NativeWorker.prototype.ready
@@ -276,18 +295,34 @@ test('native open rejects parser disagreements before presenting an incomplete d
   } finally { await state.workspaces.dispose() }
 })
 
-test('signed PDFs can be previewed through PDFium without enabling edits', { skip }, async () => {
-  const state = memoryWorkspace(classicPdf([
+test('signed PDFs can be previewed and edited through PDFium', { skip }, async () => {
+  const sourceBytes = classicPdf([
     '<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP << /Type /Sig /ByteRange [0 10 20 30] /Contents <616263313233> >> >> >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>',
-  ]))
+  ])
+  const state = memoryWorkspace(sourceBytes)
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
   const sessionId = 'pdf-service-signed-preview'
   try {
     const opened = await open(service, sessionId)
-    assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).document.readOnlyReason, 'signed-document')
+    const document = state.workspaces.readSnapshot(sessionId, opened.id).document
+    assert.equal(document.signed, true)
+    assert.equal(document.readOnly, false)
+    assert.equal(document.readOnlyReason, undefined)
     const page = await service.renderPage(sessionId, opened.id, 1, 560, signal)
     assert.deepEqual([...page.png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+    // Editing is allowed on purpose: the save rewrites the bytes, so the
+    // signature no longer covers them and verification reports it as invalid.
+    const changed = await state.workspaces.execute(sessionId, { action: 'change', sessionId, id: opened.id,
+      revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'signed-edit', page: 1, subtype: 'Text', rect: [20, 20, 40, 40], contents: 'after signing',
+      } }] }, agent(sessionId), signal)
+    assert.ok('bytes' in changed && changed.dirty)
+    const saved = await state.workspaces.execute(sessionId, { action: 'save', sessionId, id: opened.id,
+      revision: changed.revision, options: {} }, agent(sessionId), signal)
+    assert.ok('bytes' in saved && !saved.dirty)
+    assert.equal(state.writes(), 1)
+    assert.notDeepEqual(state.current(), sourceBytes)
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 

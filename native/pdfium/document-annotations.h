@@ -29,8 +29,11 @@ void require_protected_annotation_access(Document& doc) {
     throw Failure("pdf/annotation-permission", "This credential does not permit protected PDF annotation editing");
 }
 
+// A known or possible signature does not block plain edits: saving rewrites
+// the bytes and any existing signature becomes invalid. Protected and signed
+// documents keep the stricter gate because that path preserves encryption.
 bool can_edit_plain_document(Document& doc) {
-  return FPDF_GetSecurityHandlerRevision(doc.handle) < 0 && doc.metadata.signature_status(doc.handle) == 0
+  return FPDF_GetSecurityHandlerRevision(doc.handle) < 0
     && doc.formType != FORMTYPE_XFA_FULL && doc.formType != FORMTYPE_XFA_FOREGROUND;
 }
 
