@@ -160,6 +160,25 @@ test('reader selection delivers native glyphs and rejects a result overtaken by 
   }
 })
 
+test('a content context that disagrees with its baseline bytes is rejected before native work', { skip }, async () => {
+  const state = memoryWorkspace(await nativeFixture())
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      return { ...snapshot, contentContext: { ...snapshot.contentContext!,
+        sourceDigest: `sha256:${'0'.repeat(64)}` } }
+    },
+  }
+  const service = createPdfService(workspaces, { executable, subprocess: nativeTestSubprocess })
+  const sessionId = 'pdf-service-content-context'
+  try {
+    const opened = await open(service, sessionId)
+    await assert.rejects(service.native(sessionId, { action: 'outline', sessionId, id: opened.id,
+      bytesHash: opened.reader.bytesHash }, agent(sessionId), signal),
+    { code: 'pdf/stale-reader' })
+  } finally { await service.dispose(); await state.workspaces.dispose() }
+})
+
 test('reader selection reports an older helper without native glyph geometry', { skip }, async t => {
   const state = memoryWorkspace(await nativeFixture())
   const ready = NativeWorker.prototype.ready

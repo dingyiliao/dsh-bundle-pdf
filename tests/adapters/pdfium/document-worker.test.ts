@@ -39,6 +39,15 @@ test('malformed input preserves its error and does not poison the next queued PD
   assert.equal((await next).pageCount, 1)
 })
 
+test('inspection reuse stays bounded across many distinct PDFs', async t => {
+  const port = createFixtureDocumentPort()
+  t.after(() => port.dispose())
+  for (let index = 0; index < 33; index++) {
+    const bytes = plainPdf([{ size: [200, 300], lines: [{ text: `Distinct cached page ${index}`, x: 20, y: 200, size: 12 }] }])
+    assert.equal((await port.inspect(bytes)).pageCount, 1)
+  }
+})
+
 test('unloading the native document port rejects pending and future inspections', async () => {
   const port = createFixtureDocumentPort()
   const source = blankPdf()

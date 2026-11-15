@@ -66,6 +66,21 @@ test('reader alerts present the Save As sheet with separate filename and locatio
   assert.doesNotMatch(replacing, /reader\.saveName|type="checkbox"/)
 })
 
+test('Save As requires signature-loss consent and distinguishes a certification signature', () => {
+  for (const [certified, body] of [[false, 'reader.signatureSaveBody'], [true, 'reader.signatureSaveCertifiedBody']] as const) {
+    const html = renderToStaticMarkup(React.createElement(ReaderAlerts,
+      props({ saveAs: saveAs({ target: { path: '/books/book.pdf', version: 'v1' },
+        signatureConfirm: true, signatureCertified: certified }) })))
+    assert.match(html, /reader\.signatureSaveTitle/)
+    assert.match(html, new RegExp(body))
+    assert.match(html, /reader\.signatureSaveConfirm/)
+    assert.match(html, /book\.pdf/)
+    assert.doesNotMatch(html, /reader\.saveName|type="checkbox"/)
+    if (certified) assert.doesNotMatch(html, /reader\.signatureSaveBody/)
+    else assert.doesNotMatch(html, /reader\.signatureSaveCertifiedBody/)
+  }
+})
+
 test('Save As feedback is announced only in its modal while document notices remain separate', () => {
   const html = renderToStaticMarkup(React.createElement(ReaderAlerts,
     props({ error: 'target changed', positionNotice: 'position unavailable', saveAs: saveAs({ error: 'target changed' }) })))

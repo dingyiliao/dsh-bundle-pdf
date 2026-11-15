@@ -192,15 +192,6 @@ it('keeps the Save As sheet focused and usable in a narrow short reader', async 
     await replacement.getByRole('button', { name: '返回', exact: true }).click()
     expect(await name.evaluate(element => element === document.activeElement)).toBe(true)
 
-    await page.evaluate(() => (window as typeof window & { __pdfSaveAsDialogFixture: { set(input: {
-      signatureConfirm?: boolean; signatureCertified?: boolean
-    }): void } }).__pdfSaveAsDialogFixture.set({ signatureConfirm: true, signatureCertified: true }))
-    const signatureWarning = page.getByRole('dialog', { name: '保存会使签名失效', exact: true })
-    expect(await signatureWarning.getByText('这份 PDF 的认证签名声明不允许任何修改，继续保存会使其失效。').isVisible()).toBe(true)
-    expect(await signatureWarning.getByText('概率论与数理统计-annotated.pdf', { exact: true }).isVisible()).toBe(true)
-    await signatureWarning.getByRole('button', { name: '返回', exact: true }).click()
-    expect(await name.evaluate(element => element === document.activeElement)).toBe(true)
-
     await page.setViewportSize({ width: 360, height: 320 })
     await page.evaluate(() => (window as typeof window & { __pdfSaveAsDialogFixture: { set(input: { error: string }): void } })
       .__pdfSaveAsDialogFixture.set({ error: '保存位置暂时不可用，请检查目标文件夹后重试。'.repeat(16) }))

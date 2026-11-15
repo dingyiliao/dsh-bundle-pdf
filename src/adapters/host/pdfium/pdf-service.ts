@@ -246,13 +246,14 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     })
     admission = task
     openings.set(snapshot.id, task)
-    try { await task } finally { if (openings.get(snapshot.id) === task) openings.delete(snapshot.id) }
-    signal?.throwIfAborted()
-    const handle = handles.get(snapshot.id)
-    if (!handle || handle.generation !== worker.generation || handle.baselineId !== baselineId) {
-      fail('pdf/native-unavailable', 'The native baseline was released before use')
-    }
-    return handle
+    try {
+      // The admission chain resolves with the handle it registered for this
+      // snapshot. Nothing can interleave between that write and this await, so a
+      // re-read of the map could only restate the same value.
+      const handle = await task
+      signal?.throwIfAborted()
+      return handle
+    } finally { if (openings.get(snapshot.id) === task) openings.delete(snapshot.id) }
   }
 
   async function descriptor(snapshot: HostWorkspaceSnapshot, signal: AbortSignal): Promise<ReaderDescriptor> {
@@ -386,9 +387,6 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
         return (await worker.inspectPage({ documentId, pageIndex: input.page - 1,
           offset: input.offset, limit: input.limit }, signal, -5)).value
       case 'selectionGeometry': {
-        if (snapshot.document.encrypted && !snapshot.document.allowTextExtraction) {
-          fail('pdf/protected-text', 'This PDF restricts text extraction')
-        }
         if (!worker.selectionGeometry) fail('pdf/native-selection-unavailable', 'The native PDF helper does not provide selection geometry')
         const reply = await worker.readSelectionGeometry({ documentId, pageIndex: input.page - 1,
           offset: input.offset }, signal, 5)

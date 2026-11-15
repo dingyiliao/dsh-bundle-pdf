@@ -309,8 +309,14 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
 
   async function discardCopies(input: { action: 'discardMany'; sessionId: string; ids: string[] }
     | { action: 'discardAddresses'; sessionId: string; addresses: string[] }, agent: WorkingCopyAgent) {
-    const keys = new Set<string>()
     const ids = new Set(input.action === 'discardMany' ? input.ids : [])
+    const recordOf = (id: string) => copies.get(id)?.record ?? suspended.get(id)?.record
+    // A path key may outlive its identity; never let it resurrect a retired copy.
+    const identityFor = (addressPath: string): string | undefined => {
+      const id = byPath.get(drafts.key(input.sessionId, addressPath))
+      return id && recordOf(id) ? id : undefined
+    }
+    const targets = new Map<string, { key: string; id?: string }>()
     if (input.action === 'discardAddresses') {
       for (const address of input.addresses) {
         const file = sessionFile(address)
@@ -318,43 +324,48 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         if (!/\.pdf$/i.test(file.path)) fail('pdf/invalid-address', 'Only PDF draft addresses can be discarded')
         const cwd = agent.session.header.cwd
         if (!isAbsolute(file.path) && (!cwd || !isAbsolute(cwd))) fail('pdf/invalid-address', 'A relative PDF draft needs the session working directory')
-        // These keys address plugin-owned storage, not filesystem mutations.
-        // Lexical resolution also works after the PDF or its directory vanished.
-        const key = drafts.key(input.sessionId, resolve(cwd ?? '', file.path))
-        keys.add(key)
-        const id = byPath.get(key)
+        // These keys address plugin-owned storage, not filesystem mutations, so
+        // resolution stays lexical and still works after the source vanished.
+        // Only a relative address needs the session directory: resolving an
+        // already-absolute POSIX path on Windows would invent a drive and stop
+        // matching the identity the host registered when it opened the file.
+        const addressPath = isAbsolute(file.path) ? file.path : resolve(cwd ?? '', file.path)
+        const key = drafts.key(input.sessionId, addressPath)
+        const id = identityFor(addressPath)
+        targets.set(key, { key, ...(id ? { id } : {}) })
         if (id) ids.add(id)
       }
     }
     // Validate every owner before deleting anything. Unknown IDs are already
     // disposed, making cleanup safe to retry after a lost response.
     for (const id of ids) {
-      const record = copies.get(id)?.record ?? suspended.get(id)?.record
+      const record = recordOf(id)
       if (record && record.sessionId !== input.sessionId) fail('pdf/session-mismatch', 'Working copy belongs to another session')
 
-      if (record) keys.add(drafts.key(record.sessionId, record.path))
+      if (record) {
+        const key = drafts.key(record.sessionId, record.path)
+        targets.set(key, { key, id })
+      }
     }
     const failures: string[] = []
-    for (const key of keys) {
+    for (const { key, id: knownId } of targets.values()) {
       try {
-        const currentId = byPath.get(key)
+        const currentId = knownId ?? byPath.get(key)
         if (currentId && copies.get(currentId)?.baseline.document.encrypted && references.get(currentId)?.ui.size) {
           references.get(currentId)!.ui.clear()
           idle(input.sessionId, currentId)
           continue
         }
-        const stored = drafts.get(key) ?? (currentId ? copies.get(currentId)?.record ?? suspended.get(currentId)?.record : undefined)
+        const stored = drafts.get(key) ?? (currentId ? recordOf(currentId) : undefined)
         await drafts.delete(key)
-        const id = byPath.get(key) ?? [...ids].find(candidate => {
-          const record = copies.get(candidate)?.record ?? suspended.get(candidate)?.record
-          return record ? drafts.key(record.sessionId, record.path) === key : false
-        })
-        if (id) {
-          passwords.delete(id)
-          copies.delete(id)
-          suspended.delete(id)
-          references.delete(id)
-          if (byPath.get(key) === id) byPath.delete(key)
+        if (currentId) {
+          passwords.delete(currentId)
+          copies.delete(currentId)
+          suspended.delete(currentId)
+          references.delete(currentId)
+          // Retire every alias: a dangling path key would otherwise resurrect a
+          // deleted identity on the next open.
+          for (const [pathKey, mapped] of byPath) if (mapped === currentId) byPath.delete(pathKey)
         }
         if (stored) await drafts.deleteBaseline(stored).catch(() => undefined)
       } catch (error) { failures.push(errorText(error)) }
