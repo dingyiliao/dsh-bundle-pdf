@@ -55,6 +55,50 @@ test('native metadata reads inherited, normalized boxes and page-local UserUnit'
   } finally { await worker.dispose() }
 })
 
+test('native inspection reports DocMDP certification permissions without gating edits', { skip }, async t => {
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
+  try {
+    if (!await hasExtensions(t, worker)) return
+    const pageTree = ['<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >>']
+    // A top-level /FT /Sig field is what PDFium counts as a signature. Adding a
+    // /Reference DocMDP transform makes it a certification signature whose /P
+    // value declares what the signer considers acceptable.
+    const signatureDictionary = (permission: string, reference: boolean) => {
+      const mdp = reference
+        ? ` /Reference [ << /Type /SigRef /TransformMethod /DocMDP /TransformParams`
+          + ` << /Type /TransformParams /P ${permission} /V /1.2 >> >> ]`
+        : ''
+      return '<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached'
+        + ` /ByteRange [0 100 200 300] /Contents <0102>${mdp} >>`
+    }
+    const certified = (permission: string, reference = true) => classicPdf([
+      '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /SigFlags 3 >> >>',
+      ...pageTree,
+      '<< /T (Cert) /FT /Sig /V 5 0 R >>',
+      signatureDictionary(permission, reference),
+    ])
+    for (const [id, permission, reference, expected] of [
+      ['certification-p1', '1', true, 1],
+      ['certification-p2', '2', true, 2],
+      ['certification-p3', '3', true, 3],
+      // Out-of-range values describe no acceptable change, not a permission.
+      ['certification-p4', '4', true, 0],
+      ['signed-without-reference', '1', false, 0],
+    ] as const) {
+      const { value } = await worker.request({ command: 'open', documentId: id }, certified(permission, reference))
+      assert.equal(value.signatureCount, 1, id)
+      assert.equal(value.signatureStatus, 1, id)
+      assert.equal(value.certificationPermission, expected, id)
+      // Saving rewrites the bytes and invalidates the signature by design, so a
+      // certification declaration never blocks the edit itself.
+      await worker.request({ command: 'annotationEdit', documentId: id,
+        pageIndex: 0, action: 'add', annotation: { id: 'certified-note', subtype: 'Text', rect: [12, 12, 30, 30] } })
+      await worker.request({ command: 'saveCopy', documentId: id })
+    }
+  } finally { await worker.dispose() }
+})
+
 test('native signature inspection covers catalog permissions, nested fields, and compressed objects', { skip }, async t => {
   const worker = new NativeWorker(executable, nativeTestSubprocess)
   try {
