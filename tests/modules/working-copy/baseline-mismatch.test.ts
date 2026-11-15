@@ -110,6 +110,8 @@ test('protected model opens retain operations until an explicit baseline choice'
   assert.equal(adopted.conflict, false)
   assert.equal(adopted.dirty, false)
   assert.notEqual(adopted.baselineId, conflict.baselineId)
+  // Windows canonicalizes the backing path after open. Address cleanup must
+  // still retire the live identity even when its original lexical key differs.
   await workspaces.execute(sessionId, { sessionId, action: 'discardAddresses', addresses: [address] }, agent, signal)
   assert.deepEqual(workspaces.listDocuments(), [])
   await workspaces.dispose()

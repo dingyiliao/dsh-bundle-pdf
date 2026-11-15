@@ -345,7 +345,10 @@ export function createWorkingCopyService(files: WorkingCopyFilePort, drafts: Wor
         }
         const stored = drafts.get(key) ?? (currentId ? copies.get(currentId)?.record ?? suspended.get(currentId)?.record : undefined)
         await drafts.delete(key)
-        const id = byPath.get(key)
+        const id = byPath.get(key) ?? [...ids].find(candidate => {
+          const record = copies.get(candidate)?.record ?? suspended.get(candidate)?.record
+          return record ? drafts.key(record.sessionId, record.path) === key : false
+        })
         if (id) {
           passwords.delete(id)
           copies.delete(id)
