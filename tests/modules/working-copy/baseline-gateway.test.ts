@@ -45,6 +45,27 @@ test('baseline gateway classifies protected acquisition and never persists acces
   if (opened.kind === 'acquired') assert.equal(opened.baseline.document.encrypted, true)
 })
 
+test('baseline gateway normalizes protected password and parser failures', async () => {
+  const encrypted = new PdfDocumentError('encrypted', 'encrypted')
+  const pdf = { async inspect() { throw encrypted }, async materialize() { throw new Error('unused') } } as PdfDocumentPort
+  const required = Object.assign(new Error('native password prompt'), { code: 'pdf/password-required' })
+  const protectedDocument = { async inspect(_bytes: Uint8Array, password?: string) {
+    if (password === 'bad') throw required
+    return undefined
+  }, release() {} } as ProtectedDocumentPort
+  const gateway = createBaselineGateway(pdf, protectedDocument)
+  const bad = await gateway.acquire(source, { owner: 'agent', password: 'bad' })
+  assert.equal(bad.kind, 'failed')
+  if (bad.kind === 'failed') assert.deepEqual({ kind: bad.error.kind, code: bad.error.code },
+    { kind: 'protected', code: 'pdf/password-required' })
+  const ui = await gateway.acquire(source, { owner: 'ui' })
+  assert.equal(ui.kind, 'failed')
+  if (ui.kind === 'failed') assert.equal(ui.error.cause, encrypted)
+  const agent = await gateway.acquire(source, { owner: 'agent' })
+  assert.equal(agent.kind, 'failed')
+  if (agent.kind === 'failed') assert.equal(agent.error.code, 'pdf/password-required')
+})
+
 test('baseline failure classification preserves capacity and unavailable facts', () => {
   assert.equal(classifyBaselineFailure(Object.assign(new Error('busy'), { code: 'pdf/native-busy' })).kind, 'capacity')
   assert.equal(classifyBaselineFailure(Object.assign(new Error('gone'), { code: 'pdf/native-unavailable' })).kind,

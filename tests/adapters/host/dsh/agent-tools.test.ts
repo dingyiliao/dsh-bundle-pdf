@@ -281,6 +281,21 @@ test('image-context replay requires a fresh-source adapter', async () => {
   } finally { await dispose() }
 })
 
+test('PDF status distinguishes confirmed and possible signature-loss risks', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    for (const [document, expected] of [
+      [{ ...f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId).document, signed: true }, 'This PDF is signed:'],
+      [{ ...f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId).document,
+        signed: false, signatureUncertain: true as const }, 'This PDF may be signed:'],
+    ] as const) {
+      f.snapshotView(snapshot => ({ ...snapshot, document }))
+      const status = await f.run('pdf_status', { documentId: f.opened.documentId }) as { limitations: string[] }
+      assert.ok(status.limitations.some(item => item.startsWith(expected)))
+    }
+  } finally { await f.dispose() }
+})
+
 test('registered document lifecycle and navigation tools render plain JSON metadata', async () => {
   const f = await textEvidenceToolFixture()
   try {

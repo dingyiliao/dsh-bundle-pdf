@@ -112,4 +112,5 @@ test('protected model opens retain operations until an explicit baseline choice'
   assert.notEqual(adopted.baselineId, conflict.baselineId)
   await workspaces.execute(sessionId, { sessionId, action: 'discardAddresses', addresses: [address] }, agent, signal)
   assert.deepEqual(workspaces.listDocuments(), [])
+  await workspaces.dispose()
 })
