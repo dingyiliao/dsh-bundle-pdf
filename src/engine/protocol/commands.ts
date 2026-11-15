@@ -75,6 +75,8 @@ const outlineItem: z.ZodType<OutlineItem> = z.object({
 
 export const nativeOpenProbeSchema = z.object({ pageCount: positive.max(100_000), formType: integer, signatureCount: integer,
   signatureStatus: z.union([z.literal(-1), z.literal(0), z.literal(1)]).optional(),
+  /** DocMDP permission of a certification signature; absent on older helpers. */
+  certificationPermission: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
 })
 export const nativeSecuritySchema = z.object({
   securityRevision: integer, permissions: permissionMask, userPermissions: permissionMask.optional(),

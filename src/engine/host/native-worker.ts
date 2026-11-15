@@ -108,8 +108,11 @@ export class NativeWorker implements NativePdfPort {
     return this.request({ command: 'open', documentId, ...options }, bytes)
   }
 
-  async closeDocument(documentId: string): Promise<void> {
-    await this.request({ command: 'close', documentId })
+  async closeDocument(documentId: string, generation: number): Promise<void> {
+    // Closing a stale reference must never call ready(), because ready() may
+    // start a replacement worker and send the old document ID to it.
+    if (this.closed || generation !== this.generation || !this.child) return
+    await this.enqueue({ command: 'close', documentId }, new Uint8Array(), undefined, -10)
   }
 
   inspectSecurity(request: NativePayloadFor<'security'>, signal?: AbortSignal, priority?: number) {
@@ -231,6 +234,9 @@ export class NativeWorker implements NativePdfPort {
   private fail(error: unknown): void {
     clearTimeout(this.timer)
     const child = this.child; this.child = undefined; this.startup = undefined
+    // Invalidate every native baseline reference owned by the retired process.
+    // A replacement worker must never receive document IDs from that range.
+    if (child) this.generation++
     if (this.active) this.settle(this.active, error)
     for (const job of this.queue) this.settle(job, error)
     this.active = undefined; this.queue = []; this.queuedBytes = 0

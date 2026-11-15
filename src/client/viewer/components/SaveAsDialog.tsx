@@ -10,6 +10,8 @@ export interface SaveAsDialogProps {
   targetChecking: boolean
   target: { path: string; version: string | null } | null
   replaceConfirm: boolean
+  signatureConfirm: boolean
+  signatureCertified: boolean
   error: string
   nameError?: string
   directoryError?: string
@@ -25,6 +27,7 @@ export interface SaveAsDialogProps {
 /** Presentation only: the save controller owns target versions and replacement consent. */
 export function SaveAsDialog(props: SaveAsDialogProps) {
   const { name, directory, pickerAvailable, picking, busy, targetChecking, target, replaceConfirm,
+    signatureConfirm, signatureCertified,
     error, nameError, directoryError, onNameChange, onDirectoryChange, onChooseDirectory,
     onSubmit, onCancel, onBack, t } = props
   const id = useId()
@@ -67,9 +70,9 @@ export function SaveAsDialog(props: SaveAsDialogProps) {
   }, [editingDirectory])
 
   useLayoutEffect(() => {
-    if (replaceConfirm) confirmButton.current?.focus({ preventScroll: true })
+    if (replaceConfirm || signatureConfirm) confirmButton.current?.focus({ preventScroll: true })
     else nameInput.current?.focus({ preventScroll: true })
-  }, [replaceConfirm])
+  }, [replaceConfirm, signatureConfirm])
 
   return <dialog ref={dialog} className="dsh-pdf-save-as dsh-pdf-glass" role="dialog" aria-modal="true"
     aria-labelledby={`${id}-title`} aria-busy={busy || picking || undefined}
@@ -92,9 +95,13 @@ export function SaveAsDialog(props: SaveAsDialogProps) {
       event.preventDefault(); event.stopPropagation(); if (canSubmit) onSubmit()
     }}>
       <h2 id={`${id}-title`} className="dsh-pdf-save-as-title"><ToolbarIcon name="saveAs" />
-        {t(replaceConfirm ? 'reader.replaceTitle' : 'reader.saveAsTitle')}
+        {t(signatureConfirm ? 'reader.signatureSaveTitle'
+          : replaceConfirm ? 'reader.replaceTitle' : 'reader.saveAsTitle')}
       </h2>
-      {replaceConfirm ? <div className="dsh-pdf-save-as-replacement">
+      {signatureConfirm ? <div className="dsh-pdf-save-as-replacement">
+        <p>{t(signatureCertified ? 'reader.signatureSaveCertifiedBody' : 'reader.signatureSaveBody')}</p>
+        <strong>{name}</strong><span title={directory}>{directory}</span>
+      </div> : replaceConfirm ? <div className="dsh-pdf-save-as-replacement">
         <p>{t('reader.replaceDescription')}</p>
         <strong>{name}</strong><span title={directory}>{directory}</span>
       </div> : <>
@@ -129,11 +136,13 @@ export function SaveAsDialog(props: SaveAsDialogProps) {
       </>}
       {error && <p className="dsh-pdf-save-as-error" role="alert">{error}</p>}
       <div className="dsh-pdf-save-as-actions">
-        <button type="button" disabled={busy} onClick={replaceConfirm ? onBack : onCancel}>
-          {t(replaceConfirm ? 'reader.saveBack' : 'reader.cancel')}
+        <button type="button" disabled={busy} onClick={replaceConfirm || signatureConfirm ? onBack : onCancel}>
+          {t(replaceConfirm || signatureConfirm ? 'reader.saveBack' : 'reader.cancel')}
         </button>
         <button ref={confirmButton} type="submit" className="dsh-pdf-save-as-primary" disabled={!canSubmit}>
-          {t(busy ? 'reader.saving' : replaceConfirm ? 'reader.replaceAndSave' : 'reader.saveCopy')}
+          {t(busy ? 'reader.saving'
+            : signatureConfirm ? 'reader.signatureSaveConfirm'
+              : replaceConfirm ? 'reader.replaceAndSave' : 'reader.saveCopy')}
         </button>
       </div>
     </form>

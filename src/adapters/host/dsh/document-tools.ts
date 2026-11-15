@@ -19,8 +19,6 @@ export function createDocumentToolContext(ctx: PdfToolContext,
   options: {
     /** Resolve Host-owned handles before acquiring the same authorized document pin. */
     resolveDocumentId?: (tool: string, raw: unknown, sessionId: string) => string | undefined
-    /** Model access is checked after acquisition and before releasing a result. */
-    assertDocument?: (sessionId: string, documentId: string) => void
   } = {}): PdfDocumentToolContext {
   const sessions = new Map<string, { controller: AbortController; pending: Set<Promise<unknown>>; closing?: Promise<void> }>()
   let stopped = false, disposal: Promise<void> | undefined
@@ -53,10 +51,7 @@ export function createDocumentToolContext(ctx: PdfToolContext,
             }
             const release = await workspaces.acquire(sessionId, documentId, agent, signal)
             try {
-              options.assertDocument?.(sessionId, documentId)
-              const result = await definition.execute(raw, { ...exec, signal })
-              options.assertDocument?.(sessionId, documentId)
-              return result
+              return await definition.execute(raw, { ...exec, signal })
             } finally { release() }
           })()
           session.pending.add(task)

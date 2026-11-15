@@ -48,7 +48,8 @@ export const workingCopyOperationSchema = z.union([operationSchema,
 
 export const requestSchema = z.discriminatedUnion('action', [
   z.object({ ...wireHints, action: z.literal('open'), sessionId: idSchema, address: z.string().min(1).max(32768),
-    owner: z.enum(['ui', 'agent']).optional(), referenceId: idSchema.optional() }).strict(),
+    owner: z.enum(['ui', 'agent']).optional(), referenceId: idSchema.optional(), password: pdfPassword.optional(),
+    baselineChoice: z.enum(['adopt-current', 'retain-operations']).optional() }).strict(),
   z.object({ action: z.literal('unlock'), sessionId: idSchema, address: z.string().min(1).max(32768),
     referenceId: idSchema, password: pdfPassword }).strict(),
   z.object({ ...wireHints, action: z.literal('unlockEdit'), sessionId: idSchema, id: idSchema,

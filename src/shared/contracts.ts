@@ -63,9 +63,20 @@ export function effectiveTranslationEngine(engineId: string): string {
   return engineId === 'none' ? defaultSettings.translationEngine : engineId
 }
 
+export interface BaselineMismatchDecision {
+  /** Baseline that the operation set still targets. */
+  operationsBaselineId: string
+  /** Newly observed source baseline, when the source could be read. */
+  currentBaselineId?: string
+  /** The caller must choose; no operation data is discarded automatically. */
+  choices: Array<'adopt-current' | 'retain-operations'>
+}
+
 export interface WorkspaceSnapshot {
   id: string
   path: string
+  /** Stable identity of the exact baseline PDF bytes used for this content. */
+  baselineId?: string
   /** Filesystem version used by the DSH document preview owner. */
   sourceVersion: string
   /** Page content identity; annotation edits do not invalidate reading anchors. */
@@ -75,6 +86,7 @@ export interface WorkspaceSnapshot {
   canUndo: boolean
   canRedo: boolean
   conflict: boolean
+  baselineMismatch?: BaselineMismatchDecision
   warning?: string
   document: PdfDocumentInfo
   /** Native annotations present in bytes before projecting unsaved operations. */
@@ -89,7 +101,7 @@ export interface PdfClientApi {
   native: NativeReaderApi
   positions: PdfReadingPositionApi
   open(sessionId: string, address: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
-  /** Explicit user password entry; never retain or replay it during automatic recovery. */
+  /** Explicit user password entry; Client never persists or returns it; Host may retain it only while the baseline is resident. */
   unlock(sessionId: string, address: string, password: string, signal?: AbortSignal, referenceId?: string): Promise<WorkspaceSnapshot>
   /** Upgrade the current Reader occurrence's annotation permissions. */
   unlockEdit(sessionId: string, id: string, revision: number, password: string, signal?: AbortSignal,

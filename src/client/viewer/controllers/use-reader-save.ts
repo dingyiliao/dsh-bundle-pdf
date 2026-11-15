@@ -33,6 +33,8 @@ export function useReaderSave(options: ReaderSaveOptions) {
   const [saveName, setSaveName] = useState('')
   const [saveDirectory, setSaveDirectory] = useState('')
   const [replaceConfirm, setReplaceConfirm] = useState(false)
+  const [signatureConfirm, setSignatureConfirm] = useState(false)
+  const [signatureCertified, setSignatureCertified] = useState(false)
   const [target, setTarget] = useState<{ path: string; version: string | null } | null>(null)
   const [targetChecking, setTargetChecking] = useState(false)
   const [reloadConfirm, setReloadConfirm] = useState(false)
@@ -53,6 +55,8 @@ export function useReaderSave(options: ReaderSaveOptions) {
     setSaveAsPicking(false)
     setSaveAsOpen(false)
     setReplaceConfirm(false)
+    setSignatureConfirm(false)
+    setSignatureCertified(false)
     setTarget(null)
     setTargetChecking(false)
   }, [])
@@ -151,7 +155,8 @@ export function useReaderSave(options: ReaderSaveOptions) {
     const initial = createSaveLocation(current.path)
     dialogOwner.current = {}
     setSaveName(initial.name); setSaveDirectory(initial.directory)
-    setTarget(null); setReplaceConfirm(false); setError(''); setSaveAsOpen(true)
+    setTarget(null); setReplaceConfirm(false); setSignatureConfirm(false); setSignatureCertified(false)
+    setError(''); setSaveAsOpen(true)
     setTargetAttempt(value => value + 1)
   }
 
@@ -183,12 +188,21 @@ export function useReaderSave(options: ReaderSaveOptions) {
     if (!dialogOwner.current || !savePath || saveAsPicking || targetChecking || operationLock.current
       || !target || target.path !== savePath) return
     if (target.version !== null && !replaceConfirm) { setReplaceConfirm(true); return }
+    // Saving rewrites the bytes, so an existing signature stops verifying.
+    // The reader must accept that consequence before the write starts.
+    const current = currentSnapshot()
+    if ((current?.document.signed || current?.document.signatureUncertain) && !signatureConfirm) {
+      setSignatureCertified(current.document.certificationPermission === 1)
+      setSignatureConfirm(true)
+      return
+    }
     await save(savePath)
   }
 
   useEffect(() => {
     setTarget(null)
     setReplaceConfirm(false)
+    setSignatureConfirm(false)
     if (!saveAsOpen || !savePath) { setTargetChecking(false); return }
     const controller = new AbortController()
     const owner = dialogOwner.current
@@ -206,6 +220,7 @@ export function useReaderSave(options: ReaderSaveOptions) {
   return { feedback, setFeedback, showFeedback, saveAsOpen, closeSaveAs, saveAsPicking,
     savePath, saveName, setSaveName, saveDirectory, setSaveDirectory,
     locationError: protectedSource ? 'protected-source' as const : 'error' in location ? location.error : undefined,
-    replaceConfirm, backToSaveAs: () => setReplaceConfirm(false),
+    replaceConfirm, signatureConfirm, signatureCertified,
+    backToSaveAs: () => { setReplaceConfirm(false); setSignatureConfirm(false) },
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs, chooseSaveDirectory, submitSaveAs }
 }

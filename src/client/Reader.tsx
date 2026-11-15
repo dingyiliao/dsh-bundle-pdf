@@ -224,7 +224,7 @@ export function Reader(props: ReaderProps) {
     setError, onError: notifyError, t })
   const { feedback: saveFeedback, setFeedback: setSaveFeedback, showFeedback: showSaveFeedback,
     saveAsOpen, closeSaveAs, saveAsPicking, saveName, setSaveName, saveDirectory, setSaveDirectory,
-    locationError, replaceConfirm, backToSaveAs, chooseSaveDirectory, submitSaveAs,
+    locationError, replaceConfirm, signatureConfirm, signatureCertified, backToSaveAs, chooseSaveDirectory, submitSaveAs,
     target, targetChecking, reloadConfirm, setReloadConfirm, save, beginSaveAs } = saveFlow
   const beginSaveAsAfterFormFlush = () => { void runAfterFormFlush(beginSaveAs) }
   const editable = !!snapshot && !snapshot.document.readOnly && !busy && !saveAsPicking && !colorPending
@@ -553,7 +553,7 @@ export function Reader(props: ReaderProps) {
       } : undefined,
       saveAs: saveAsOpen ? {
         name: saveName, directory: saveDirectory, pickerAvailable: !!props.pickSaveDirectory,
-        picking: saveAsPicking, busy, target, targetChecking, replaceConfirm, error,
+        picking: saveAsPicking, busy, target, targetChecking, replaceConfirm, signatureConfirm, signatureCertified, error,
         nameError: locationError === 'name' ? t('reader.saveNameInvalid')
           : locationError === 'protected-source' ? t('reader.encryptedSaveAsOnly') : undefined,
         directoryError: locationError === 'directory' ? t('reader.saveDirectoryInvalid') : undefined,

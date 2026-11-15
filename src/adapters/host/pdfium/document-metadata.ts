@@ -85,9 +85,14 @@ export async function readNativeDocumentMetadata(options: {
   }
   if (!header) throw invalidGeometry()
   const encrypted = header.securityRevision >= 0
-  const signed = probe.signatureStatus === undefined ? probe.signatureCount !== 0 : probe.signatureStatus !== 0
+  const signatureUncertain = probe.signatureStatus === -1
+  const signed = probe.signatureStatus === undefined ? probe.signatureCount !== 0 : probe.signatureStatus === 1
   const formKind = probe.formType === 1 ? 'acroform' : probe.formType === 2 || probe.formType === 3 ? 'xfa' : undefined
-  const readOnlyReason = encrypted ? 'encrypted-document' : signed ? 'signed-document' : formKind === 'xfa' ? 'xfa-document' : undefined
+  // Signatures are facts and save-time risks, not write gates. A known or
+  // possible signature becomes invalid when the working copy is materialized.
+  const readOnlyReason = encrypted ? 'encrypted-document' : formKind === 'xfa' ? 'xfa-document' : undefined
+  const certification = probe.certificationPermission
+  const certificationPermission = certification === 1 || certification === 2 || certification === 3 ? certification : undefined
   const digests: (string | null)[] = []
   if (!encrypted) for (let offset = 0; offset < pages.length; offset += batchSize) {
     const limit = Math.min(batchSize, pages.length - offset)
@@ -96,6 +101,8 @@ export async function readNativeDocumentMetadata(options: {
     digests.push(...batch)
   }
   return { pageCount: probe.pageCount, pages, title: header.title, signed, encrypted, formKind,
+    ...(signatureUncertain ? { signatureUncertain: true as const } : {}),
+    ...(certificationPermission ? { certificationPermission } : {}),
     readOnly: !!readOnlyReason, readOnlyReason,
     ...(encrypted ? { allowTextExtraction: (header.permissions & 0x10) !== 0 } : {}),
     ...fingerprintInfo(digests), ...outlineInfo(await readOutlines(), pages.length) }

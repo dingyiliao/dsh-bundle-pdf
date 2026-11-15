@@ -4,8 +4,6 @@ English | [中文](README.zh.md)
 
 Read PDFs alongside your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) conversation. Let the model find relevant passages, annotate them, navigate to the source, and return to your previous reading position.
 
-I read papers and books in PDF form. The readers I tried lacked multi-step back navigation, while AI explanation and translation often required another subscription. I built this plugin for my own DSH workspace.
-
 ## Features
 
 - **Read and navigate**: continuous scrolling, zoom, thumbnails, text search, and multi-step back history with selectable destinations.
@@ -13,6 +11,7 @@ I read papers and books in PDF form. The readers I tried lacked multi-step back 
 - **Translate and explain**: word meanings, pronunciation and examples; phrase and sentence translations; questions attached to multiple text passages or image regions, sent together to the current conversation.
 - **Agent control**: read, search, annotate, edit bookmarks and fill existing AcroForm fields in the same draft as the user.
 - **Save and recover**: undo/redo, draft recovery, save/save as, and source-file conflict detection.
+- **Signed PDFs**: signed or possibly signed files remain editable, but saving rewrites the PDF and invalidates any existing signature. The plugin does not verify signature authenticity. Certification signatures that forbid changes require an additional confirmation; use Save as first if you need to preserve the verifiable original.
 - **OCR and retrieval**: region capture, text recognition and experimental semantic search with your own embedding service. Disk-backed indexes include scanned-page text and image descriptions, resume interrupted work, and survive restarts and annotation-only saves.
 - **Input shortcuts**: in explanation, comment and note editors, **Enter** saves, **Shift+Enter** inserts a newline, and **Esc** cancels.
 - **Low-zoom reading**: below **50%** zoom the reader is browse-only. Scrolling, search, links and annotations remain available, but text selection and copy are disabled until you zoom back to 50%.
@@ -75,7 +74,7 @@ The plugin includes a small OCR model supporting Chinese and English. Select **L
 - Navigation and saving: `pdf_page_jump`, `pdf_save`.
 - Images: `ocr_recognize`, `image_understand`.
 
-`pdf_open` opens documents in the background; navigation requires a visible Reader. Agent edits go straight into the draft; overwriting the source still requires user approval. See the [tool documentation](docs/agent-tools.md) for parameters and examples.
+`pdf_open` opens documents in the background; navigation requires a visible Reader. Agent edits go straight into the same draft as the Reader; overwriting the source still requires user approval. For protected PDFs, retry with the `password` parameter after a password-required error. If `baselineMismatch` is returned, pass `baselineChoice: "adopt-current"` or `"retain-operations"`; the password stays in Host memory and is never serialized. See the [tool documentation](docs/agent-tools.md) and [working-copy model](docs/working-copy-model.md) for parameters and boundaries.
 
 ## Extend engines
 

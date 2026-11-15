@@ -88,11 +88,16 @@ test('native signature inspection covers catalog permissions, nested fields, and
       const { value } = await worker.request({ command: 'open', documentId: id }, bytes)
       assert.equal(value.signatureCount, 0, `upstream top-level-only count for ${id}`)
       assert.equal(value.signatureStatus, expected, id)
-      if (expected !== 0) {
-        await assert.rejects(worker.request({ command: 'annotationEdit', documentId: id,
-          pageIndex: 0, action: 'add', annotation: { id: 'denied', subtype: 'Text', rect: [12, 12, 30, 30] } }),
-        { code: 'pdf/annotation-permission' })
-        await assert.rejects(worker.request({ command: 'saveCopy', documentId: id }), { code: 'pdf/annotation-permission' })
+      if (expected === 1) {
+        // A known signature is editable; saving invalidates it on purpose.
+        await worker.request({ command: 'annotationEdit', documentId: id,
+          pageIndex: 0, action: 'add', annotation: { id: 'allowed', subtype: 'Text', rect: [12, 12, 30, 30] } })
+        await worker.request({ command: 'saveCopy', documentId: id })
+      } else if (expected === -1) {
+        // Uncertain signature presence is carried as a risk; it does not block editing.
+        await worker.request({ command: 'annotationEdit', documentId: id,
+          pageIndex: 0, action: 'add', annotation: { id: 'possible-signature', subtype: 'Text', rect: [12, 12, 30, 30] } })
+        await worker.request({ command: 'saveCopy', documentId: id })
       }
     }
   } finally { await worker.dispose() }

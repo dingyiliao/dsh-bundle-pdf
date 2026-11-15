@@ -27,12 +27,19 @@ test('reader alerts expose a single read-only notice, warning, and conflict acti
 test('reader alerts do not label an editable AcroForm as read-only', () => {
   const snapshot = { document: { readOnly: false, formKind: 'acroform' } } as WorkspaceSnapshot
   const html = renderToStaticMarkup(React.createElement(ReaderAlerts, props({ snapshot, editable: true })))
-  assert.doesNotMatch(html, /reader\.signedReadOnly|reader\.encryptedReadOnly/)
+  assert.doesNotMatch(html, /reader\.documentReadOnly|reader\.encryptedReadOnly/)
+})
+
+test('reader alerts present an uncertain signature as an editable save risk', () => {
+  const snapshot = { document: { readOnly: false, signed: false, signatureUncertain: true } } as WorkspaceSnapshot
+  const html = renderToStaticMarkup(React.createElement(ReaderAlerts, props({ snapshot, editable: true })))
+  assert.match(html, /reader\.signaturePossible/)
+  assert.doesNotMatch(html, /reader\.documentReadOnly/)
 })
 
 function saveAs(overrides: Partial<NonNullable<ReaderAlertsProps['saveAs']>> = {}): NonNullable<ReaderAlertsProps['saveAs']> {
   return { name: 'book.pdf', directory: '/books', pickerAvailable: true, picking: false, busy: false,
-    targetChecking: false, target: null, replaceConfirm: false, error: '',
+    targetChecking: false, target: null, replaceConfirm: false, signatureConfirm: false, signatureCertified: false, error: '',
     onNameChange() {}, onDirectoryChange() {}, onChooseDirectory() {}, onSubmit() {}, onCancel() {}, onBack() {},
     t: key => key, ...overrides }
 }

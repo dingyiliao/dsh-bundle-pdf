@@ -92,12 +92,15 @@ export interface ModelWriteReview {
   dirty: boolean
   saveDiffText?: string
   saveChangeCount?: number
+  /** Saving rewrites the bytes, so an existing signature stops verifying. */
+  signed?: boolean
+  signatureUncertain?: boolean
+  certificationPermission?: 1 | 2 | 3
 }
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
 function checkRevision(snapshot: HostWorkspaceSnapshot, expectedRevision: number): void {
-  if (snapshot.document.encrypted) fail('pdf/protected-document', 'Protected PDFs can only be edited in the Reader')
   if (snapshot.revision !== expectedRevision) fail('pdf/stale-revision', 'The PDF working copy changed; read its status again')
   if (snapshot.conflict) fail('pdf/source-conflict', 'The PDF source changed outside this working copy')
   if (snapshot.document.readOnly) fail('pdf/read-only', snapshot.document.readOnlyReason ?? 'This PDF is read-only')
@@ -287,7 +290,11 @@ export function createModelWriteService(workspaces: ModelWritePort, pages?: Agen
     assertOpen()
     const accepted = await review({ kind: 'save', documentId: initial.id, path: initial.path,
       revision: initial.revision, dirty: initial.dirty,
-      saveDiffText: saveDiff.text, saveChangeCount: saveDiff.count })
+      saveDiffText: saveDiff.text, saveChangeCount: saveDiff.count,
+      signed: initial.document.signed,
+      signatureUncertain: initial.document.signatureUncertain === true,
+      ...(initial.document.certificationPermission
+        ? { certificationPermission: initial.document.certificationPermission } : {}) })
     assertOpen()
     if (!accepted) fail('pdf/approval-rejected', 'The user did not approve saving this PDF')
     signal.throwIfAborted()

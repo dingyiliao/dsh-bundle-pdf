@@ -6,6 +6,12 @@ function normalizedPath(path: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path
 }
 
+/** Keep the V1 storage wire shape readable by older plugin releases. */
+function legacyRecord(record: DraftRecord): Omit<DraftRecord, 'baselineId'> {
+  const { baselineId: _, ...legacy } = record
+  return legacy
+}
+
 /** V1 keys and write order are deliberately unchanged for old-release rollback. */
 export function createV1DraftRepository(table: V1DraftPort): WorkingCopyDraftPort {
   const key = (sessionId: string, path: string) =>
@@ -28,7 +34,7 @@ export function createV1DraftRepository(table: V1DraftPort): WorkingCopyDraftPor
         throw Object.assign(new Error('Saved draft baseline is missing or does not belong to this file'),
           { code: 'pdf/draft-damaged' })
       }
-      return { ...saved, original: baseline.original,
+      return { ...saved, baselineId: saved.baselineId === saved.sourceHash ? saved.baselineId : saved.sourceHash, original: baseline.original,
         groupDates: saved.groupDates ?? saved.groups.map(() => new Date().toISOString()) }
     },
     async persist(record, sourceKey, baselineBytes, materializedHash) {
@@ -39,13 +45,13 @@ export function createV1DraftRepository(table: V1DraftPort): WorkingCopyDraftPor
       const baseKey = record.baseKey ?? `base_${key(record.sessionId, record.path)}_${record.sourceHash.slice(7)}`
       if (!record.baseKey) {
         const base: DraftRecord = {
-          ...record, original: record.original ?? encodePdfBaseline(baselineBytes), baseKey: undefined,
+          ...legacyRecord(record), original: record.original ?? encodePdfBaseline(baselineBytes), baseKey: undefined,
           groups: [], groupDates: [], cursor: 0, renderedHash: undefined,
         }
         await table.put(baseKey, base)
       }
       const persisted: DraftRecord = {
-        ...record, original: undefined, baseKey, renderedHash: materializedHash,
+        ...legacyRecord(record), original: undefined, baseKey, renderedHash: materializedHash,
       }
       await table.put(sourceKey, persisted)
       return { ...record, original: undefined, baseKey, renderedHash: materializedHash }

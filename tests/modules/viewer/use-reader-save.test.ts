@@ -114,6 +114,22 @@ test('Save As opens the draft, chooses only a directory, and rebinds this resour
   })
 })
 
+test('a possibly signed PDF requires explicit signature-loss consent before Save As', async () => {
+  await withSave(async ({ state, options, render, saves }) => {
+    const current: WorkspaceSnapshot = { ...options.snapshot!,
+      document: { ...options.snapshot!.document, signatureUncertain: true } }
+    await render({ ...options, snapshot: current, currentSnapshot: () => current })
+    await act(async () => { state().beginSaveAs(); state().setSaveName('signed-copy.pdf') })
+    await waitForSave(() => !!state().target, 'the signed copy target is inspected')
+    await act(async () => { await state().submitSaveAs() })
+    assert.equal(state().signatureConfirm, true)
+    assert.equal(state().signatureCertified, false)
+    assert.deepEqual(saves, [], 'signature risk must be acknowledged before writing')
+    await act(async () => { await state().submitSaveAs() })
+    assert.deepEqual(saves, [{ path: '/signed-copy.pdf', overwrite: false, expectedTargetVersion: null }])
+  })
+})
+
 test('encrypted annotation changes can only save to an inspected copy path', async () => {
   await withSave(async ({ state, options, render, saves, inspections }) => {
     const current: WorkspaceSnapshot = { ...options.snapshot!,

@@ -95,10 +95,14 @@ export interface PdfDocumentInfo {
   annotations: PdfAnnotation[]
   title?: string
   signed: boolean
+  /** Native inspection could not prove whether signature structures are absent. Treat as a signature risk, not a write gate. */
+  signatureUncertain?: true
+  /** DocMDP permission declared by a certification signature; absent without one. */
+  certificationPermission?: 1 | 2 | 3
   encrypted: boolean
-  /** Annotation permissions of a live, protected Reader copy. */
+  /** Annotation permissions of the authorized protected working copy. */
   annotationEditing?: 'allowed' | 'owner-password-required'
-  /** Copy/extract permission reported by the native security handler for a protected Reader. */
+  /** Copy/extract permission reported by the native security handler for a protected PDF. */
   allowTextExtraction?: boolean
   formKind?: 'acroform' | 'xfa'
   formFields?: PdfFormField[]
