@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { storedIndexPageKey } from '../../../src/modules/retrieval/stored-index.ts'
-import { isIndexGenerationRetained } from '../../../src/modules/retrieval/index-transaction.ts'
-import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { storedIndexPageKey } from '../../../src/layers/derived/indexing/stored-index.ts'
+import { isIndexGenerationRetained } from '../../../src/layers/derived/indexing/index-transaction.ts'
+import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 interface Head {
   key: string

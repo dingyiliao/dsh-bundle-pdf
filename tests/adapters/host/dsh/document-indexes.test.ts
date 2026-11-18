@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { posix } from 'node:path'
 import test from 'node:test'
-import { createDocumentIndexes } from '../../../../src/adapters/host/dsh/document-indexes.ts'
-import { createDocumentIndexPolicies, type ResolvedIndexPlan } from '../../../../src/modules/retrieval/document-policy.ts'
-import type { PdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
-import type { OpenWorkingCopyDocument } from '../../../../src/modules/working-copy/index.ts'
+import { createDocumentIndexes } from '../../../../src/layers/facade/indexing/document-indexes.ts'
+import { createDocumentIndexPolicies, type ResolvedIndexPlan } from '../../../../src/layers/facade/indexing/document-policy.ts'
+import type { PdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
+import type { OpenWorkingCopyDocument } from '../../../../src/layers/document/working-copy/index.ts'
 import type { PdfDocumentIndexPolicy } from '../../../../src/contracts/indexing.ts'
-import type { RetrievalProgress } from '../../../../src/modules/retrieval/index.ts'
+import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.ts'
 import { defaultSettings, type PdfSettings } from '../../../../src/shared/contracts.ts'
 
 const signal = new AbortController().signal

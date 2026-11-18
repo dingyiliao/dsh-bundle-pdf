@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { numberedFillFormSchema, numberedReference, resolveNumberedFormInput } from '../../../../src/adapters/host/dsh/form-input.ts'
-import { createFormInspectionRegistry, inspectFormPage } from '../../../../src/modules/forms/index.ts'
+import { numberedFillFormSchema, numberedReference, resolveNumberedFormInput } from '../../../../src/surfaces/host/tools/form-input.ts'
+import { createFormInspectionRegistry, inspectFormPage } from '../../../../src/layers/document/forms/index.ts'
 import { inspectFixturePdf } from '../../../fixtures/native-document.ts'
 import { acroformFixture } from '../../../fixtures/acroform.ts'
 

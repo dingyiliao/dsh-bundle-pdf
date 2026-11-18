@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { projectEvidence, projectPdfToolOutput, evidenceMatchError, annotationBatchError,
-  formatPdfToolData, pdfReadResultContainsContent } from '../../../../src/adapters/host/dsh/tool-output.ts'
-import { readPagePresentationMeta, evidenceReadPresentationMeta } from '../../../../src/adapters/host/dsh/pdf-evidence-meta.ts'
-import { evidenceSha256, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
+  formatPdfToolData, pdfReadResultContainsContent } from '../../../../src/surfaces/host/tools/tool-output.ts'
+import { readPagePresentationMeta, evidenceReadPresentationMeta } from '../../../../src/surfaces/host/tools/evidence-meta.ts'
+import { evidenceSha256, type PdfTextEvidence } from '../../../../src/layers/facade/evidence/index.ts'
 
 const text = 'Original bounded evidence and its surrounding context. '.repeat(45)
 

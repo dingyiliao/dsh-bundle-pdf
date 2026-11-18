@@ -4,7 +4,7 @@ import test from 'node:test'
 import { blankPdf } from '../../fixtures/plain-pdf.ts'
 import { createReadingPositionService, createWorkspaces, type ReadingPositionRecord,
   type HostWorkspaceSnapshot } from '../../fixtures/working-copy-service.ts'
-import type { DraftRecord } from '../../../src/modules/working-copy/index.ts'
+import type { DraftRecord } from '../../../src/layers/document/working-copy/index.ts'
 import { nativeFixture } from '../../native-fixture.ts'
 
 const PATH = '/fixtures/resumed.pdf'

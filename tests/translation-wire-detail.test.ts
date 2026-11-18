@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createHostTranslationEngine } from '../src/adapters/client/remote/translation-api.ts'
-import { TranslationError, type TranslationErrorCode } from '../src/translation/types.ts'
+import { createHostTranslationEngine } from '../src/surfaces/client/adapters/remote/translation-api.ts'
+import { TranslationError, type TranslationErrorCode } from '../src/engines/translation/sdk/types.ts'
 
 test('the authenticated translation wire preserves lexical details', async () => {
   const calls: object[] = []

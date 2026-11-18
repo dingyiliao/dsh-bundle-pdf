@@ -15,12 +15,12 @@
     "outDir": "dist/types"
   },
   "include": [
-    "src/ocr/index.ts",
-    "src/translation/index.ts",
-    "src/embedding/index.ts",
-    "src/host/ocr-plugin.ts",
-    "src/host/image-understanding-plugin.ts",
-    "src/modules/capabilities/index.ts",
-    "src/modules/engines/index.ts"
+    "src/engines/ocr/sdk/index.ts",
+    "src/engines/translation/sdk/index.ts",
+    "src/engines/embedding/sdk/index.ts",
+    "src/plugins/public/ocr-host.ts",
+    "src/plugins/public/image-understanding-host.ts",
+    "src/capabilities/index.ts",
+    "src/engines/spi/index.ts"
   ]
 }

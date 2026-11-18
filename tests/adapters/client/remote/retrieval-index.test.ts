@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalIndexApi } from '../../../../src/adapters/client/remote/retrieval-index.ts'
+import { createRetrievalIndexApi } from '../../../../src/surfaces/client/adapters/remote/retrieval-index.ts'
 import { retrievalRebuildRequestSchema } from '../../../../src/contracts/retrieval-index.ts'
 
 test('index rebuild uses a connection-owned empty request without a document or Session', async () => {

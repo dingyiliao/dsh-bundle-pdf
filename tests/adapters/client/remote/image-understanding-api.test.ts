@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createImageUnderstandingApi } from '../../../../src/adapters/client/remote/image-understanding-api.ts'
-import type { PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createImageUnderstandingApi } from '../../../../src/surfaces/client/adapters/remote/image-understanding-api.ts'
+import type { PdfConnection } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 
 // A complete 1×1 PNG, including IHDR, IDAT, and IEND chunks.
 const png = Uint8Array.from(Buffer.from(

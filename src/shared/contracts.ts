@@ -1,4 +1,4 @@
-import type { PdfAnnotation, PdfDocumentInfo, PdfFormField, PdfOutlineItem, PdfWorkingCopyOperation } from '../core/pdf-types.js'
+import type { PdfAnnotation, PdfDocumentInfo, PdfFormField, PdfOutlineItem, PdfWorkingCopyOperation } from './pdf-types.js'
 import type { NativeReaderApi, ReaderDescriptor } from './native.js'
 import type { NavigationPosition } from './navigation-history.js'
 import { defaultExplanationPromptTemplate } from './explanation-template.js'
@@ -33,7 +33,7 @@ export interface PdfSettings {
   indexScanPages?: boolean
   /** Optional generated whole-page visual descriptions, independently of OCR. */
   indexImageDescriptions?: boolean
-  engineConfigurations?: import('../modules/engines/types.js').EngineConfigurations
+  engineConfigurations?: import('../engines/spi/types.js').EngineConfigurations
   ocrTimeoutMs: number
   translationEngine: string
   translationTargetLanguage: string

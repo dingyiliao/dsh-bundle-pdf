@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { openIndexHead, promoteIndexHead } from '../../../src/modules/retrieval/index-head.ts'
-import { isIndexGenerationRetained, retainIndexGeneration } from '../../../src/modules/retrieval/index-transaction.ts'
-import { storedIndexHeadKey, storedIndexPageKey, type StoredIndexHead } from '../../../src/modules/retrieval/stored-index.ts'
-import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
+import { openIndexHead, promoteIndexHead } from '../../../src/layers/derived/indexing/index-head.ts'
+import { isIndexGenerationRetained, retainIndexGeneration } from '../../../src/layers/derived/indexing/index-transaction.ts'
+import { storedIndexHeadKey, storedIndexPageKey, type StoredIndexHead } from '../../../src/layers/derived/indexing/stored-index.ts'
+import type { RetrievalCache } from '../../../src/layers/derived/indexing/types.ts'
 
 const key = 'a'.repeat(64)
 const id = (index: number) => `${index.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`

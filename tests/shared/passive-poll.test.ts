@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { getEventListeners } from 'node:events'
 import test from 'node:test'
-import { EngineCatalog, EngineDirectory, type EngineDescriptor } from '../../src/modules/engines/index.ts'
-import { createAgentNavigation, createReaderContexts } from '../../src/modules/navigation/index.ts'
-import { createPdfIndexing } from '../../src/adapters/host/dsh/indexing.ts'
-import { createRetrievalPrefetch } from '../../src/adapters/host/dsh/retrieval-prefetch.ts'
+import { EngineCatalog, EngineDirectory, type EngineDescriptor } from '../../src/engines/spi/index.ts'
+import { createAgentNavigation, createReaderContexts } from '../../src/layers/facade/navigation/index.ts'
+import { createPdfIndexing } from '../../src/layers/facade/indexing/indexing.ts'
+import { createRetrievalPrefetch } from '../../src/layers/facade/indexing/retrieval-prefetch.ts'
 import { memoryWorkspace, nativeFixture } from '../native-fixture.ts'
 
 async function fixture() {

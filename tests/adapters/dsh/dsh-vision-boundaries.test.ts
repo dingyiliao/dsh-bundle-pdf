@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createDshVisionBackend, type DshVisionDependencies } from '../../../src/adapters/host/dsh/image-backends.ts'
+import { createDshVisionBackend, type DshVisionDependencies } from '../../../src/engines/image/backends/dsh.ts'
 import { ImageUnderstandingError, MAX_DERIVED_TEXT_CHARACTERS,
-  type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
-import type { EngineConfiguration } from '../../../src/modules/engines/index.js'
+  type ImageUnderstandingRequest } from '../../../src/engines/image/service/index.js'
+import type { EngineConfiguration } from '../../../src/engines/spi/index.js'
 
 type VisionLlm = NonNullable<ReturnType<DshVisionDependencies['getLlm']>>
 const request = (signal = new AbortController().signal): ImageUnderstandingRequest => ({

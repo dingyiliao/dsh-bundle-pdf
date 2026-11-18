@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import test from 'node:test'
 import { isDeepStrictEqual, promisify } from 'node:util'
-import { decodeCachedVector, digest, encodeCachedVector, type CachedRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
-import { chunkRetrievalPage } from '../../../src/modules/retrieval/text.ts'
+import { decodeCachedVector, digest, encodeCachedVector, type CachedRetrievalPage } from '../../../src/layers/derived/indexing/cache.ts'
+import { chunkRetrievalPage } from '../../../src/layers/derived/content/retrieval/text.ts'
 import { buildIndexPageEntries, createVolatileIndexStore, readIndexHead, readIndexPage, readIndexSummary, recoverIndexPageHeader,
   storedIndexHeadKey, storedIndexPageKey, summarizeIndexPage, type StoredIndexPage,
-  type StoredIndexPageHeader } from '../../../src/modules/retrieval/stored-index.ts'
-import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
+  type StoredIndexPageHeader } from '../../../src/layers/derived/indexing/stored-index.ts'
+import type { RetrievalCache } from '../../../src/layers/derived/indexing/types.ts'
 
 const key = 'a'.repeat(64), generation = '42d2d852-35d6-4d86-89c9-824c816e9320'
 const otherGeneration = '27f29b07-90a6-438d-9585-664c7318f1db'
@@ -465,9 +465,9 @@ test('high-dimensional multi-chunk recovery keeps fast, full and scanned results
 })
 
 test('fast summaries and scanned recovery release high-dimensional vector payloads within a bounded heap', async () => {
-  const storedIndexUrl = new URL('../../../src/modules/retrieval/stored-index.ts', import.meta.url).href
-  const cacheUrl = new URL('../../../src/modules/retrieval/cache.ts', import.meta.url).href
-  const textUrl = new URL('../../../src/modules/retrieval/text.ts', import.meta.url).href
+  const storedIndexUrl = new URL('../../../src/layers/derived/indexing/stored-index.ts', import.meta.url).href
+  const cacheUrl = new URL('../../../src/layers/derived/indexing/cache.ts', import.meta.url).href
+  const textUrl = new URL('../../../src/layers/derived/content/retrieval/text.ts', import.meta.url).href
   const script = `
     import assert from 'node:assert/strict'
     import { buildIndexPageEntries, readIndexSummary, recoverIndexPageHeader } from ${JSON.stringify(storedIndexUrl)}

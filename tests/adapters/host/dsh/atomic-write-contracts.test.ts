@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { blankPdf } from '../../../fixtures/plain-pdf.ts'
-import { registerPdfModelWriteTools } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
-import { FORM_FILLING_GUIDANCE } from '../../../../src/adapters/host/dsh/form-guidance.ts'
-import { PDF_INTENT_PROMPT } from '../../../../src/adapters/host/dsh/system-prompt.ts'
-import { createMemoryEvidenceReferenceStore, createTextReferenceResolver, readPageWindow } from '../../../../src/modules/evidence/index.ts'
+import { registerPdfModelWriteTools } from '../../../../src/surfaces/host/tools/model-write-tools.ts'
+import { FORM_FILLING_GUIDANCE } from '../../../../src/surfaces/host/tools/form-guidance.ts'
+import { PDF_INTENT_PROMPT } from '../../../../src/surfaces/host/tools/system-prompt.ts'
+import { createMemoryEvidenceReferenceStore, createTextReferenceResolver, readPageWindow } from '../../../../src/layers/facade/evidence/index.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
 
 interface Tool {

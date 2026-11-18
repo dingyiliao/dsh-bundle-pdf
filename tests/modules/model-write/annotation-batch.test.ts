@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createMemoryEvidenceReferenceStore, createTextRangeReferences, createTextReferenceResolver,
-  evidenceSha256, type TextReferenceResolverPort } from '../../../src/modules/evidence/index.ts'
-import { createModelWriteService, modelAnnotationCreateSchema, type ModelAnnotationItem } from '../../../src/modules/model-write/index.ts'
+  evidenceSha256, type TextReferenceResolverPort } from '../../../src/layers/facade/evidence/index.ts'
+import { createModelWriteService, modelAnnotationCreateSchema, type ModelAnnotationItem } from '../../../src/layers/facade/model-write/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 

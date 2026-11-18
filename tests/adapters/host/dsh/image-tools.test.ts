@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { registerPdfPageRenderTool } from '../../../../src/adapters/host/dsh/image-tools.ts'
-import { HostOcrService } from '../../../../src/modules/ocr/index.ts'
-import { evidenceSha256 } from '../../../../src/modules/evidence/provenance.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+import { registerPdfPageRenderTool } from '../../../../src/surfaces/host/tools/image-tools.ts'
+import { HostOcrService } from '../../../../src/engines/ocr/service/index.ts'
+import { evidenceSha256 } from '../../../../src/layers/facade/evidence/provenance.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 interface Tool {

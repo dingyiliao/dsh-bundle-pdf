@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../../../src/modules/evidence/index.ts'
-import { prepareTextSelectionEvidence, type SelectionFragment } from '../../../src/modules/evidence/selection.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../../../src/layers/facade/evidence/index.ts'
+import { prepareTextSelectionEvidence, type SelectionFragment } from '../../../src/layers/facade/evidence/selection.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 
 const owner = 'session-a', documentId = 'doc-a'

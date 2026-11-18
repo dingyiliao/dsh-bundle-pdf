@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assertToolCursorIdentity, decodeToolCursor, encodeToolCursor,
-  type ToolCursor } from '../../../src/modules/evidence/tool-cursor.ts'
+  type ToolCursor } from '../../../src/layers/facade/evidence/tool-cursor.ts'
 
 const cursor: ToolCursor = { version: 1, kind: 'search', sessionId: 'session-1', documentId: 'doc-1',
   contentVersion: 'content-1', revision: 1, sourceDigest: 'sha256:source', queryHash: 'sha256:query', page: 2, offset: 3 }

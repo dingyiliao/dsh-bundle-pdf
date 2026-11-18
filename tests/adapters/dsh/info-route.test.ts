@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfInfoRoute } from '../../../src/adapters/host/dsh/info-route.ts'
+import { createPdfInfoRoute } from '../../../src/surfaces/host/routes/info.ts'
 
 const settings = { namespace: 'pdf', settingsNamespace: 'profile/pdf', settings: { maxBytes: 42 },
   translationEngines: ['session'] }

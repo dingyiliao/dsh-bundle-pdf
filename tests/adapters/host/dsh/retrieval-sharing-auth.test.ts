@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
-import { EmbeddingRegistry } from '../../../../src/embedding/index.ts'
-import { createMemoryEvidenceReferenceStore } from '../../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+import { createPdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
+import { EmbeddingRegistry } from '../../../../src/engines/embedding/sdk/index.ts'
+import { createMemoryEvidenceReferenceStore } from '../../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 import { defaultSettings } from '../../../../src/shared/contracts.ts'
 
 const signal = new AbortController().signal

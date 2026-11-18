@@ -40,7 +40,7 @@ async function sourceFixture(path: string) {
 test('project source-line report excludes non-executable braces and static bundle linkage', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-pdf-coverage-report-'))
   try {
-    const lifecyclePath = 'src/client/pdf-session-lifecycle.ts'
+    const lifecyclePath = 'src/surfaces/client/pdf-session-lifecycle.ts'
     const lifecycleSource = await sourceFixture(lifecyclePath)
     const structural = [...new Set(lifecycleSource.nodes(ts.isBlock)
       .map(block => lifecycleSource.file.getLineAndCharacterOfPosition(block.end - 1).line + 1))]
@@ -51,14 +51,14 @@ test('project source-line report excludes non-executable braces and static bundl
       .find(line => lifecycleSource.mapped.has(line) && !structural.includes(line))
     assert.ok(executable, 'the lifecycle fixture has a mapped executable statement')
 
-    const ocrPath = 'src/adapters/host/dsh/ocr-tool.ts'
+    const ocrPath = 'src/surfaces/host/tools/ocr-tool.ts'
     const ocrSource = await sourceFixture(ocrPath)
     const ocrDeclaration = ocrSource.nodes(ts.isFunctionDeclaration)
       .find(node => node.name?.text === 'registerOcrAgentTool')
     assert.ok(ocrDeclaration)
     const ocrLine = ocrSource.lineOf(ocrDeclaration)
 
-    const colorPath = 'src/client/viewer/components/AnnotationColorBar.tsx'
+    const colorPath = 'src/surfaces/client/viewer/components/AnnotationColorBar.tsx'
     const colorSource = await sourceFixture(colorPath)
     const eventLines = (event: string) => [...new Set(colorSource.nodes(ts.isJsxAttribute)
       .filter(node => node.name.getText(colorSource.file) === event).map(colorSource.lineOf))]
@@ -77,13 +77,13 @@ test('project source-line report excludes non-executable braces and static bundl
     assert.ok(otherLines.length >= 2)
     const [sharedLine, unknownLine] = otherLines
 
-    const readerPath = 'src/client/Reader.tsx'
+    const readerPath = 'src/surfaces/client/Reader.tsx'
     const readerSource = await sourceFixture(readerPath)
     const imports = readerSource.nodes(ts.isImportDeclaration)
     const runtimeImportLine = readerSource.lineOf(imports.find(node => !node.importClause?.isTypeOnly)!)
     const typeImportLine = readerSource.lineOf(imports.find(node => node.importClause?.isTypeOnly)!)
 
-    const linkagePath = 'src/modules/annotations/index.ts'
+    const linkagePath = 'src/layers/document/annotations/index.ts'
     const linkageSource = await sourceFixture(linkagePath)
     const linkageReExport = linkageSource.nodes(ts.isExportDeclaration)
       .find(node => node.moduleSpecifier && !node.isTypeOnly)
@@ -91,12 +91,12 @@ test('project source-line report excludes non-executable braces and static bundl
     const linkageLine = linkageSource.lineOf(linkageReExport)
     assert.ok(linkageSource.mapped.has(linkageLine), 'TypeScript maps that ESM linkage line')
 
-    const runtimeExportPath = 'src/entrypoints/reader-client.tsx'
+    const runtimeExportPath = 'src/plugins/client.tsx'
     const runtimeExportSource = await sourceFixture(runtimeExportPath)
     const runtimeExportLine = runtimeExportSource.lines.findIndex(line => line.includes("export const name = 'pdf-reader-client'")) + 1
     assert.ok(runtimeExportLine && runtimeExportSource.mapped.has(runtimeExportLine), 'the runtime export is mapped')
 
-    const localFilesPath = 'src/adapters/host/filesystem/local-files.ts'
+    const localFilesPath = 'src/surfaces/host/io/local-files.ts'
     const localFilesSource = await sourceFixture(localFilesPath)
     const elseLine = localFilesSource.lines.findIndex(line => /}\s*else\s*{/.test(line)) + 1
     assert.ok(elseLine, 'the file adapter fixture has a combined else line')
@@ -176,7 +176,7 @@ test('project source-line report excludes non-executable braces and static bundl
     assert.ok(runtimeExport)
     assert.equal(runtimeExport.excludedLinkageLines.includes(runtimeExportLine), false,
       'a local value export remains in the executable denominator')
-    assert.ok(report.files.find(file => file.path === 'src/engine/protocol/selection.ts')?.uncoveredLines?.length,
+    assert.ok(report.files.find(file => file.path === 'src/native-boundary/protocol/selection.ts')?.uncoveredLines?.length,
       'the new engine TypeScript root contributes to the project denominator')
     assert.ok(report.files.some(file => file.path === 'native/pdfium/selection-geometry.h'),
       'engine-owned C++ code participates in the project report')

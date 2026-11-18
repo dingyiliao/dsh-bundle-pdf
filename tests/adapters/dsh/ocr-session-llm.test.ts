@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createSessionLlmOcrBackend,
-  type SessionLlmOcrDependencies, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.js'
-import type { HostOcrRequest } from '../../../src/modules/ocr/index.js'
-import { OcrError } from '../../../src/ocr/types.js'
+  type SessionLlmOcrDependencies, type SessionOcrLlm } from '../../../src/engines/ocr/backends/session-llm.js'
+import type { HostOcrRequest } from '../../../src/engines/ocr/service/index.js'
+import { OcrError } from '../../../src/engines/ocr/sdk/types.js'
 
 type StreamItem = ReturnType<SessionOcrLlm['stream']> extends AsyncIterable<infer T> ? T : never
 

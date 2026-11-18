@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { PdfEvidenceToolCard, type PdfToolCallProps } from '../../../src/client/toolview/PdfEvidenceToolCard.tsx'
-import type { PdfEvidenceNavigation } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
+import { PdfEvidenceToolCard, type PdfToolCallProps } from '../../../src/surfaces/client/toolview/PdfEvidenceToolCard.tsx'
+import type { PdfEvidenceNavigation } from '../../../src/surfaces/client/toolview/pdf-evidence-navigation.ts'
 
 const hash = `sha256:${'a'.repeat(64)}`
 const meta = { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_read_page', documentId: 'doc',

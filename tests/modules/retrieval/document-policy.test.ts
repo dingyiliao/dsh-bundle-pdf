@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { posix } from 'node:path'
 import test from 'node:test'
 import { createDocumentIndexPolicies, indexPolicy, resolveIndexPlan, settingsForIndexPlan,
-  documentIndexRecordSchema } from '../../../src/modules/retrieval/document-policy.ts'
+  documentIndexRecordSchema } from '../../../src/layers/facade/indexing/document-policy.ts'
 import { defaultSettings, type PdfSettings } from '../../../src/shared/contracts.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))

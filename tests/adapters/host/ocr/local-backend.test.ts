@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { resolve } from 'node:path'
-import { createLocalTesseractOcrBackend } from '../../../../src/adapters/host/ocr/local-backend.js'
-import { createLocalTextRecovery } from '../../../../src/adapters/host/ocr/local-text-recovery.js'
-import { BUNDLED_LOCAL_OCR_PRODUCER } from '../../../../src/adapters/host/ocr/local-identity.js'
-import { HostOcrService } from '../../../../src/modules/ocr/index.js'
-import type { OcrOutput } from '../../../../src/ocr/types.js'
+import { createLocalTesseractOcrBackend } from '../../../../src/engines/ocr/backends/local-backend.js'
+import { createLocalTextRecovery } from '../../../../src/engines/ocr/backends/local-text-recovery.js'
+import { BUNDLED_LOCAL_OCR_PRODUCER } from '../../../../src/engines/ocr/backends/local-identity.js'
+import { HostOcrService } from '../../../../src/engines/ocr/service/index.js'
+import type { OcrOutput } from '../../../../src/engines/ocr/sdk/types.js'
 
 const signal = new AbortController().signal
 const request = { sessionId: 'session', signal, image: new Uint8Array([1]), mediaType: 'image/png' as const,

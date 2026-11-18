@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/client/viewer/controllers/use-reader-document.ts'
+import { useReaderDocument, type ReaderDocumentOptions } from '../../../src/surfaces/client/viewer/controllers/use-reader-document.ts'
 
 const makeSnapshot = (id: string, sourceVersion = 'source-1') => ({
   id, path: '/tmp/sample.pdf', sourceVersion, contentVersion: 'content-1', revision: 1,

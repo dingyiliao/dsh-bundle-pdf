@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createV1NavigationStore } from '../../../src/adapters/host/storage/v1-navigation.ts'
+import { createV1NavigationStore } from '../../../src/layers/facade/navigation/storage/v1-navigation.ts'
 
 test('bookmark and position stores use the same V1 path key but keep separate records', async () => {
   const bookmarks = new Map<string, string>()

@@ -4,7 +4,7 @@ import React, { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createDom } from '../../support/dom.ts'
-import { ReaderNoteEditor, type ReaderNoteEditorProps } from '../../../src/client/viewer/components/ReaderNoteEditor.tsx'
+import { ReaderNoteEditor, type ReaderNoteEditorProps } from '../../../src/surfaces/client/viewer/components/ReaderNoteEditor.tsx'
 
 function props(overrides: Partial<ReaderNoteEditorProps> = {}): ReaderNoteEditorProps {
   return {

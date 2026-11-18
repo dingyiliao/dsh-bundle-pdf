@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
-import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
-import { digestPdfBytes } from '../../../src/modules/document/index.ts'
-import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort, type OpenWorkingCopyDocument } from '../../../src/modules/working-copy/index.ts'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.ts'
+import type { PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
+import { digestPdfBytes } from '../../../src/layers/document/content/index.ts'
+import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort, type OpenWorkingCopyDocument } from '../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 const sessionId = 'document-lifetimes'

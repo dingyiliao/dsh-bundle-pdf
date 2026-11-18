@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EngineCatalog, EngineDirectory } from '../../../src/modules/engines/index.ts'
-import { createEngineCatalogStore } from '../../../src/adapters/client/remote/engine-catalog.ts'
-import { createTranslationDirectoryMirror } from '../../../src/adapters/client/remote/translation-directory.ts'
-import { createPdfInfoRoute } from '../../../src/adapters/host/dsh/info-route.ts'
-import { TranslationRegistry } from '../../../src/translation/index.ts'
+import { EngineCatalog, EngineDirectory } from '../../../src/engines/spi/index.ts'
+import { createEngineCatalogStore } from '../../../src/surfaces/client/adapters/remote/engine-catalog.ts'
+import { createTranslationDirectoryMirror } from '../../../src/surfaces/client/adapters/remote/translation-directory.ts'
+import { createPdfInfoRoute } from '../../../src/surfaces/host/routes/info.ts'
+import { TranslationRegistry } from '../../../src/engines/translation/sdk/index.ts'
 
 const descriptor = { id: 'fixture.engine', name: 'Fixture engine', version: '1', execution: 'local' as const,
   capabilities: ['ocr-text' as const] }

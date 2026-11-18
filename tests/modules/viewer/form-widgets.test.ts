@@ -2,7 +2,7 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
-import type { PdfFormField } from '../../../src/core/pdf-types.ts'
+import type { PdfFormField } from '../../../src/shared/pdf-types.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 
 test('radio, dropdown and list controls send exact field identities and typed values', async () => {
@@ -11,7 +11,7 @@ test('radio, dropdown and list controls send exact field identities and typed va
   installDom({ window: dom, document: dom.document, navigator: dom.navigator,
     HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, Event: dom.Event,
     IS_REACT_ACT_ENVIRONMENT: true })
-  const { FormWidgets } = await import('../../../src/client/viewer/rendering/FormWidgets.tsx')
+  const { FormWidgets } = await import('../../../src/surfaces/client/viewer/rendering/FormWidgets.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
   const widget = { page: 1, rect: [20, 20, 80, 40] as [number, number, number, number] }

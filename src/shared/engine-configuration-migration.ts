@@ -1,4 +1,4 @@
-import type { EngineConfiguration, EngineConfigurations } from '../modules/engines/index.js'
+import type { EngineConfiguration, EngineConfigurations } from '../engines/spi/index.js'
 
 function hasExplicitVisionRoute(config: EngineConfiguration | undefined): boolean {
   return typeof config?.provider === 'string' && !!config.provider.trim()

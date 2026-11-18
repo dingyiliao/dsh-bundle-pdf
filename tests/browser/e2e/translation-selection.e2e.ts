@@ -3,7 +3,7 @@ import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSetti
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { type DshTranslationLlm } from '../../../src/adapters/host/dsh/translation-model.ts'
+import { type DshTranslationLlm } from '../../../src/engines/translation/backends/session-model.ts'
 import { launchPdfBrowser as browser } from '../launch.ts'
 import { FILE_NAME, documentBytes, openReader } from '../support/panels.ts'
 

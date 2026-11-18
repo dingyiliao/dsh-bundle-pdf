@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalPrefetch, type RetrievalPrefetchDocument } from '../../../../src/adapters/host/dsh/retrieval-prefetch.ts'
-import type { RetrievalProgress } from '../../../../src/modules/retrieval/index.js'
+import { createRetrievalPrefetch, type RetrievalPrefetchDocument } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
+import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.js'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {
@@ -608,7 +608,7 @@ test('manual rebuild fences an active old occurrence and waits for its real drai
 })
 
 test('run diagnostics retain each occurrence and terminal error without allowing observers to mutate or fail the lane', async () => {
-  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  type Event = import('../../../../src/layers/facade/indexing/indexing-diagnostics.ts').PrefetchDiagnosticEvent
   const events: Event[] = []
   let calls = 0
   const failure = Object.assign(new Error('private provider response'), { code: 'embedding/unavailable' })
@@ -637,7 +637,7 @@ test('run diagnostics retain each occurrence and terminal error without allowing
 })
 
 test('diagnostics explain queued cancellation, replacement and close exactly once while old work drains', async () => {
-  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  type Event = import('../../../../src/layers/facade/indexing/indexing-diagnostics.ts').PrefetchDiagnosticEvent
   const events: Event[] = [], gate = deferred()
   let documents = [document('a'), document('b')]
   const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine' }),
@@ -657,7 +657,7 @@ test('diagnostics explain queued cancellation, replacement and close exactly onc
 })
 
 test('diagnostics distinguish source replacement, configuration retirement, suspension and unloading', async () => {
-  type Event = import('../../../../src/adapters/host/dsh/indexing-diagnostics.ts').PrefetchDiagnosticEvent
+  type Event = import('../../../../src/layers/facade/indexing/indexing-diagnostics.ts').PrefetchDiagnosticEvent
   for (const reason of ['replaced', 'configuration', 'settings-error', 'suspended', 'disposed'] as const) {
     const events: Event[] = [], gate = deferred()
     let source = document('a'), selected = true, throws = false

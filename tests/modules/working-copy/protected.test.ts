@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
-import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../src/core/pdf-types.ts'
-import { PdfDocumentError } from '../../../src/core/pdf-types.ts'
-import { digestPdfBytes } from '../../../src/modules/document/index.ts'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.ts'
+import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../src/shared/pdf-types.ts'
+import { PdfDocumentError } from '../../../src/shared/pdf-types.ts'
+import { digestPdfBytes } from '../../../src/layers/document/content/index.ts'
 import { createWorkingCopyService, type HostWorkspaceSnapshot, type ProtectedReaderPort,
-  type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
+  type WorkingCopyFilePort } from '../../../src/layers/document/working-copy/index.ts'
 
 const sessionId = 'protected-working-copy-test'
 const agent = { session: { id: sessionId, header: { cwd: '/' } } }

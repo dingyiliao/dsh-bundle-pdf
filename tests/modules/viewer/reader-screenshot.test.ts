@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { capturePdfRegion } from '../../../src/client/viewer/rendering/reader-screenshot.ts'
-import type { ReaderDocument, ReaderPage, ReaderRenderOptions, ReaderRenderTask } from '../../../src/client/viewer/ports/reader-document.ts'
-import type { NativeViewport } from '../../../src/client/viewer/index.ts'
+import { capturePdfRegion } from '../../../src/surfaces/client/viewer/rendering/reader-screenshot.ts'
+import type { ReaderDocument, ReaderPage, ReaderRenderOptions, ReaderRenderTask } from '../../../src/surfaces/client/viewer/ports/reader-document.ts'
+import type { NativeViewport } from '../../../src/surfaces/client/viewer/index.ts'
 
 function fakePage(render: (options: ReaderRenderOptions) => ReaderRenderTask, view = [0, 0, 100, 100]): ReaderPage {
   return {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress } from '../../../src/layers/derived/indexing/types.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {

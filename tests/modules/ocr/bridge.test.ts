@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { recognizeInLocalWorker, type LocalOcrAssets, type LocalOcrWorkerRequest } from '../../../src/ocr/bridge.ts'
-import { OcrError, type OcrOutput, type OcrRequest } from '../../../src/ocr/types.ts'
+import { recognizeInLocalWorker, type LocalOcrAssets, type LocalOcrWorkerRequest } from '../../../src/engines/ocr/sdk/bridge.ts'
+import { OcrError, type OcrOutput, type OcrRequest } from '../../../src/engines/ocr/sdk/types.ts'
 
 const assets: LocalOcrAssets = { workerPath: '/worker.js', corePath: '/core', langPath: '/lang', gzip: true }
 const request = (): OcrRequest => ({ image: new Uint8Array([1, 2]), width: 4, height: 3, languages: ['eng'] })

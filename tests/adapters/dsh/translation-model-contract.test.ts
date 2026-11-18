@@ -4,8 +4,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, LlmRuntime, LlmError, type GenerateOptions, type LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import {
   createDshModelTranslationEngine, type DshTranslationChunk, type DshTranslationGenerateOptions,
-} from '../../../src/adapters/host/dsh/translation-model.ts'
-import { TranslationError, type TranslationEngineRequest } from '../../../src/translation/types.ts'
+} from '../../../src/engines/translation/backends/session-model.ts'
+import { TranslationError, type TranslationEngineRequest } from '../../../src/engines/translation/sdk/types.ts'
 
 const hasCode = (code: string) => (error: unknown) => error instanceof TranslationError && error.code === code
 const request = (signal = new AbortController().signal): TranslationEngineRequest => ({

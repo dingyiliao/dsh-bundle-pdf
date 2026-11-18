@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { join, relative, resolve, sep } from 'node:path'
 import test from 'node:test'
-import { resolveIndexingLogDirectory, resolveRetrievalStoreDirectory } from '../../../../src/adapters/host/dsh/indexing-log-location.ts'
+import { resolveIndexingLogDirectory, resolveRetrievalStoreDirectory } from '../../../../src/surfaces/host/io/indexing-log-location.ts'
 
 test('index log location follows the immutable launcher home and profile', () => {
   const home = resolve('isolated-home')

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { invalidDocumentIdentity } from '../../../src/modules/retrieval/identity.ts'
-import type { RetrievalEmbedding } from '../../../src/modules/retrieval/types.ts'
+import { invalidDocumentIdentity } from '../../../src/layers/derived/indexing/identity.ts'
+import type { RetrievalEmbedding } from '../../../src/layers/derived/indexing/types.ts'
 
 const provider = (documentFingerprint?: unknown): RetrievalEmbedding => ({
   fingerprint: 'engine', dimensions: 8, maxBatchSize: 8, embed: async () => [],

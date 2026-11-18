@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CapabilityRegistry, pdfCapabilities, requiredPdfOpenCapabilities } from '../../../src/modules/capabilities/index.ts'
+import { CapabilityRegistry, pdfCapabilities, requiredPdfOpenCapabilities } from '../../../src/capabilities/index.ts'
 
 test('PDF probe names the operations needed for each document feature', () => {
   assert.deepEqual(requiredPdfOpenCapabilities({ pageCount: 1, formType: 0, signatureCount: 0 }), [pdfCapabilities.renderPage])

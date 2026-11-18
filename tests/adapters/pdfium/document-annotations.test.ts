@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import test from 'node:test'
-import { applyNativeAnnotations, readNativeAnnotations } from '../../../src/adapters/host/pdfium/document-annotations.js'
-import { decodeNativeReply, type NativeReply, type NativeRequest } from '../../../src/engine/protocol/commands.js'
-import type { NativePayloadFor, NativePdfPort } from '../../../src/engine/host/native-port.js'
-import type { PdfAnnotation, PdfDocumentInfo } from '../../../src/core/pdf-types.js'
+import { applyNativeAnnotations, readNativeAnnotations } from '../../../src/capabilities/pdfium/document-annotations.js'
+import { decodeNativeReply, type NativeReply, type NativeRequest } from '../../../src/native-boundary/protocol/commands.js'
+import type { NativePayloadFor, NativePdfPort } from '../../../src/native-boundary/host/native-port.js'
+import type { PdfAnnotation, PdfDocumentInfo } from '../../../src/shared/pdf-types.js'
 
 type Row = NativeReply<'annotations'>['value']['annotations'][number]
 

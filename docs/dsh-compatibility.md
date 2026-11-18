@@ -45,7 +45,7 @@ DSH 升到 `0.2.2-rc.2` 后，每个 `@deepseek-ai/dsh-*` peer 都不满足，�
 
 ## 类型边界
 
-- `@deepseek-ai/dsh-session` 的 `Session` 类型图很大，插件只观察 `session/disposed` 的 `{ id }`。该事件在 [session-events.ts](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/src/adapters/host/dsh/session-events.ts) 做**局部结构声明**，避免为了一个事件引入整个 session/agent 类型图，也减少内部类型漂移的影响。
+- `@deepseek-ai/dsh-session` 的 `Session` 类型图很大，插件只观察 `session/disposed` 的 `{ id }`。该事件在 [session-events.ts](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/src/plugins/reader/session-events.ts) 做**局部结构声明**，避免为了一个事件引入整个 session/agent 类型图，也减少内部类型漂移的影响。
 - DSH 的 `ToolsService`、`DomainFacility`、`Subprocess` 等公开服务继续按类型使用；如果未来出现破坏性变更，类型检查会先失败。
 - `@deepseek-ai/dsh-util-workspace-path` 是唯一运行时直接依赖的 DSH 包；使用 `^0.2.2-rc.1`，不锁定补丁。
 

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { observePdfStatus, createMemoryEvidenceReferenceStore, createTextRangeReferences,
-  readPageWindow, searchPageWindows, type EvidenceReferenceStore } from '../../../src/modules/evidence/index.ts'
-import { createEvidenceReferenceStore } from '../../../src/adapters/host/storage/evidence-references.ts'
-import { approximateTextRects } from '../../../src/modules/evidence/geometry.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+  readPageWindow, searchPageWindows, type EvidenceReferenceStore } from '../../../src/layers/facade/evidence/index.ts'
+import { createEvidenceReferenceStore } from '../../../src/layers/facade/evidence/storage/evidence-references.ts'
+import { approximateTextRects } from '../../../src/layers/facade/evidence/geometry.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 
 const signal = new AbortController().signal
@@ -67,7 +67,7 @@ test('keyword search respects page bounds and rejects spliced normalized or scop
 })
 
 test('durable references rebind after authorized reopen without recreating the old snapshot', async () => {
-  const records = new Map<string, import('../../../src/modules/evidence/index.ts').SavedReference>()
+  const records = new Map<string, import('../../../src/layers/facade/evidence/index.ts').SavedReference>()
   const store = createEvidenceReferenceStore({ get: key => records.get(key),
     put: async (key, value) => { records.set(key, structuredClone(value)) },
     delete: async key => records.delete(key), entries: () => records.entries() })

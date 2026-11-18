@@ -144,12 +144,12 @@ async function walkClient(directory) {
   }
 }
 
-// Keep the Browser lane scoped to Client-owned code after the V2 move. The
-// project-wide report independently counts emitted source lines in both roots.
-for (const directory of ['src/client', 'src/client/viewer', 'src/adapters/client', 'src/engine/client']) {
+// Keep the Browser lane scoped to the Client surface and its native-facing
+// adapter. The project-wide report independently counts emitted source lines.
+for (const directory of ['src/surfaces/client', 'src/native-boundary/client']) {
   await walkClient(join(root, directory))
 }
-await seedClientSource(join(root, 'src/entrypoints/reader-client.tsx'))
+await seedClientSource(join(root, 'src/plugins/client.tsx'))
 
 const report = []
 let found = 0

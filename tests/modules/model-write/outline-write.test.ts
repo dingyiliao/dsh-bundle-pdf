@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { blankPdf } from '../../fixtures/plain-pdf.ts'
-import { createModelWriteService, modelOutlineEditSchema } from '../../../src/modules/model-write/index.ts'
+import { createModelWriteService, modelOutlineEditSchema } from '../../../src/layers/facade/model-write/index.ts'
 import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'

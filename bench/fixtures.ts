@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { createNativeDocumentPort } from '../src/adapters/host/pdfium/document-port.ts'
+import { createNativeDocumentPort } from '../src/capabilities/pdfium/document-port.ts'
 import { NativeTestSubprocess } from '../tests/native-test-subprocess.ts'
 
 export function benchmarkDocumentPort() {

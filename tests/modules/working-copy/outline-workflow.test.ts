@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { blankPdf } from '../../fixtures/plain-pdf.ts'
 import { fixturePdfDocument } from '../../fixtures/working-copy-service.ts'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
-import { digestPdfBytes } from '../../../src/modules/document/index.ts'
-import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.ts'
+import { digestPdfBytes } from '../../../src/layers/document/content/index.ts'
+import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/layers/document/working-copy/index.ts'
 
 test('embedded outline drafts recover after restart and ordinary save commits the outline', async () => {
   let current = blankPdf(2, [300, 400])

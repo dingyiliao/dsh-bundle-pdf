@@ -12,7 +12,7 @@ it('keeps concurrent activity ordered, cancelable, timed, and inside a narrow re
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 600 } })
     await page.setContent('<div class="dsh-pdf-reader"><div class="dsh-pdf-body"><div class="dsh-pdf-tool-rail" data-pdf-tool-rail="" id="rail-root"></div><div class="dsh-pdf-content"></div></div></div>')
-    await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f5f5f5; --dsw-alias-bg-layer-1:#fff; --dsw-alias-label-primary:#222; --dsw-alias-border-l2:#ddd; --dsw-alias-link:#4278ed; } html,body { margin:0; height:100%; } #rail-root > .dsh-pdf-main-toolbar { width:100% !important; height:44px !important; } ${await readFile(join(ROOT, 'src/client/reader.css'), 'utf8')}` })
+    await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f5f5f5; --dsw-alias-bg-layer-1:#fff; --dsw-alias-label-primary:#222; --dsw-alias-border-l2:#ddd; --dsw-alias-link:#4278ed; } html,body { margin:0; height:100%; } #rail-root > .dsh-pdf-main-toolbar { width:100% !important; height:44px !important; } ${await readFile(join(ROOT, 'src/surfaces/client/reader.css'), 'utf8')}` })
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
     const reader = page.locator('.dsh-pdf-reader')
     const rail = reader.locator('.dsh-pdf-floating-status-rail')

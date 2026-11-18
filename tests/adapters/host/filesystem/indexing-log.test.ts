@@ -3,7 +3,7 @@ import test, { type TestContext } from 'node:test'
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createIndexingLog } from '../../../../src/adapters/host/filesystem/indexing-log.ts'
+import { createIndexingLog } from '../../../../src/surfaces/host/io/indexing-log.ts'
 import * as fileSystem from 'node:fs/promises'
 
 async function fixture(t: TestContext) {

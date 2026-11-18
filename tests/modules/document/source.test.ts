@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { decodePdfBaseline, digestPdfBytes, encodePdfBaseline } from '../../../src/modules/document/index.ts'
+import { decodePdfBaseline, digestPdfBytes, encodePdfBaseline } from '../../../src/layers/document/content/index.ts'
 
 test('V1 baseline codec retains the exact byte view and verifies source identity', () => {
   const backing = Uint8Array.from([255, 11, 22, 33, 44])

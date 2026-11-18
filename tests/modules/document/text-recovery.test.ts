@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { recoveredPageText } from '../../../src/modules/document/text-recovery.ts'
+import { recoveredPageText } from '../../../src/layers/document/content/text-recovery.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
-import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
-import type { OcrOutput } from '../../../src/ocr/types.ts'
+import type { PdfPageInfo } from '../../../src/shared/pdf-types.ts'
+import type { OcrOutput } from '../../../src/engines/ocr/sdk/types.ts'
 
 const output: OcrOutput = { text: 'Full name\nEnglish', blocks: [], lines: [], confidence: null, status: 'complete', coverage: [], warnings: [],
   words: [

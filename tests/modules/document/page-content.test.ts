@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { appendPageRepresentation, buildNativePageContent, createPageRepresentation,
   MAX_PAGE_CONTENT_SPANS, MAX_PAGE_CONTENT_TEXT, nativePageContentText, PageContentSchema,
-  pageContentBlockId, pageContentDigest, pageRepresentationId, parsePageContent } from '../../../src/modules/document/index.ts'
+  pageContentBlockId, pageContentDigest, pageRepresentationId, parsePageContent } from '../../../src/layers/document/content/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 

@@ -1,6 +1,6 @@
 import { classicPdf, pdfArray, pdfDict, pdfStream, pdfString, ref } from './pdf-fixture-kit.ts'
 import { materializeFixturePdf } from './native-document.ts'
-import type { PdfWorkingCopyOperation } from '../../src/core/pdf-types.js'
+import type { PdfWorkingCopyOperation } from '../../src/shared/pdf-types.js'
 
 const mode = process.argv[2]
 if (!['history-clear', 'radio-only', 'plain-clear'].includes(mode)) throw new Error('Unknown form save scenario')

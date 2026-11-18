@@ -70,7 +70,7 @@ async function verifyFingerprint() {
 
 /** Node can emit JS line numbers under a TS source path unless source maps are enabled. */
 async function verifyNodeSourceMapAlignment() {
-  const source = await readFile(join(root, 'src/adapters/host/filesystem/local-files.ts'), 'utf8')
+  const source = await readFile(join(root, 'src/surfaces/host/io/local-files.ts'), 'utf8')
   const declaration = source.split(/\r?\n/).findIndex(line => /^\s*async function assertExpected\(/.test(line)) + 1
   const lcov = await readFile(nodeLcov, 'utf8')
   const section = lcov.split(/(?=^SF:)/m).find(record => /^SF:(?:.*\/)?src\/adapters\/host\/filesystem\/local-files\.ts$/m.test(record))

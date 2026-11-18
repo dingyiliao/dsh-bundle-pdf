@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { registerOcrAgentTool } from '../../../src/adapters/host/dsh/ocr-tool.ts'
-import { HostOcrService, type HostOcrBackend } from '../../../src/modules/ocr/index.ts'
-import { HostImageUnderstandingService } from '../../../src/modules/image-understanding/index.ts'
+import { registerOcrAgentTool } from '../../../src/surfaces/host/tools/ocr-tool.ts'
+import { HostOcrService, type HostOcrBackend } from '../../../src/engines/ocr/service/index.ts'
+import { HostImageUnderstandingService } from '../../../src/engines/image/service/index.ts'
 
 interface CapturedTool {
   name: string

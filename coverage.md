@@ -14,7 +14,7 @@ when a test or the 100% coverage gate fails.
 Runtime prerequisites and test commands are in the [testing guide](docs/testing.md).
 
 The TypeScript/TSX denominator is every source line that TypeScript maps to
-emitted JavaScript under `src/` and `src/engine/`, excluding standalone closing braces with no
+emitted JavaScript under `src/` and `src/native-boundary/`, excluding standalone closing braces with no
 independently executable operation and static `import` linkage that the shipped
 bundle resolves at build time. The report lists both kinds of excluded source
 lines per file for audit. The C++ denominator comes from LLVM's line

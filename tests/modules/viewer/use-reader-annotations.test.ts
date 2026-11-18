@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { PdfAnnotation, PdfAnnotationOperation } from '../../../src/core/pdf-types.ts'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+import type { PdfAnnotation, PdfAnnotationOperation } from '../../../src/shared/pdf-types.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderAnnotations, type ReaderAnnotationsOptions } from '../../../src/client/viewer/index.ts'
+import { useReaderAnnotations, type ReaderAnnotationsOptions } from '../../../src/surfaces/client/viewer/index.ts'
 
 const existing: PdfAnnotation = {
   id: 'existing', page: 1, subtype: 'Highlight', rect: [10, 20, 50, 30],

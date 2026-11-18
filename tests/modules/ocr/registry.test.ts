@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createOcrRegistry } from '../../../src/ocr/index.ts'
-import { mapImageBoxToPdf, mapResultToPdf } from '../../../src/ocr/mapping.ts'
-import { OcrRegistry } from '../../../src/ocr/registry.ts'
-import { OcrError, type OcrEngine, type OcrOutput, type OcrRequest, type OcrResult } from '../../../src/ocr/types.ts'
-import { validateOcrOutput, validateOcrRequest } from '../../../src/ocr/validation.ts'
+import { createOcrRegistry } from '../../../src/engines/ocr/sdk/index.ts'
+import { mapImageBoxToPdf, mapResultToPdf } from '../../../src/engines/ocr/sdk/mapping.ts'
+import { OcrRegistry } from '../../../src/engines/ocr/sdk/registry.ts'
+import { OcrError, type OcrEngine, type OcrOutput, type OcrRequest, type OcrResult } from '../../../src/engines/ocr/sdk/types.ts'
+import { validateOcrOutput, validateOcrRequest } from '../../../src/engines/ocr/sdk/validation.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 
 const request = (): OcrRequest => ({ image: new Uint8Array([1, 2]), width: 20, height: 10, languages: ['eng'] })

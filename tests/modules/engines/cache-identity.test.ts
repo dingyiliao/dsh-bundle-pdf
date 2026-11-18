@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { HostOcrService, type HostOcrBackend } from '../../../src/modules/ocr/index.js'
-import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../src/modules/image-understanding/index.js'
-import { canonicalEngineJson, engineCacheIdentity } from '../../../src/modules/engines/index.js'
+import { HostOcrService, type HostOcrBackend } from '../../../src/engines/ocr/service/index.js'
+import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../src/engines/image/service/index.js'
+import { canonicalEngineJson, engineCacheIdentity } from '../../../src/engines/spi/index.js'
 
 const signal = new AbortController().signal
 const descriptor = { id: 'fixture', name: 'Fixture', version: '1', execution: 'local' as const,

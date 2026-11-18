@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { createDocumentToolContext, type PdfToolContext } from '../../../../src/adapters/host/dsh/document-tools.ts'
+import { createDocumentToolContext, type PdfToolContext } from '../../../../src/surfaces/host/tools/document-tools.ts'
 
 const agent = { session: { id: 'session' } }
 const signal = new AbortController().signal

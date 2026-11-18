@@ -3,18 +3,18 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
-import { CapabilityRegistry, pdfCapabilities } from '../../../src/modules/capabilities/index.ts'
-import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
-import { selectionGeometryChunkSchema } from '../../../src/engine/protocol/selection.ts'
-import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
+import { createPdfService } from '../../../src/capabilities/pdfium/index.ts'
+import { CapabilityRegistry, pdfCapabilities } from '../../../src/capabilities/index.ts'
+import { NativeWorker } from '../../../src/native-boundary/host/native-worker.ts'
+import { selectionGeometryChunkSchema } from '../../../src/native-boundary/protocol/selection.ts'
+import type { PdfAgent } from '../../../src/contracts/rpc/pdf-dispatch.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 import { classicPdf, pdfDict, pdfHex, pdfStream, plainPdf, ref } from '../../fixtures/pdf-fixture-kit.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 import { recoverableOutlineFixture } from '../../fixtures/recoverable-outline.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
-import { encodePng } from '../../../src/adapters/host/pdfium/png.ts'
-import { withIndexPerformance, type IndexPerformanceMetric } from '../../../src/modules/retrieval/performance.ts'
+import { encodePng } from '../../../src/capabilities/pdfium/png.ts'
+import type { IndexPerformanceMetric } from '../../../src/shared/indexing-performance.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native tests require a built helper')
@@ -49,7 +49,9 @@ test('a visible tile overtakes queued indexing text and rasters at the native ha
     if (command === 'text' && pageIndex === 0) { active.resolve(); await hold.promise }
     return reply
   })
-  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess })
+  const metrics: IndexPerformanceMetric[] = []
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    onPerformance: metric => metrics.push(metric) })
   const outstanding: Promise<unknown>[] = []
   try {
     const opened = await open(service, sessionId)
@@ -58,9 +60,7 @@ test('a visible tile overtakes queued indexing text and rasters at the native ha
     await active.promise
 
     const backgroundText = service.readPageText(sessionId, opened.id, 2, signal, { recover: false })
-    const metrics: IndexPerformanceMetric[] = []
-    const backgroundImage = withIndexPerformance(metric => metrics.push(metric), () =>
-      service.renderOcrImage(sessionId, opened.id, 3, undefined, 512, signal, false))
+    const backgroundImage = service.renderOcrImage(sessionId, opened.id, 3, undefined, 512, signal, false)
     const cancelled = new AbortController()
     const obsolete = assert.rejects(service.readPageText(sessionId, opened.id, 4, cancelled.signal), { name: 'AbortError' })
     cancelled.abort()
@@ -517,13 +517,14 @@ test('slow OCR PNG compression releases the native lease for UI reads and handle
   const state = memoryWorkspace(await nativeFixture()), gate = deferred(), encoding = deferred()
   const metrics: IndexPerformanceMetric[] = []
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
+    onPerformance: metric => metrics.push(metric),
     async encodeOcrPng(...args) { encoding.resolve(); await gate.promise; return encodePng(...args) },
   })
   const sessionId = 'pdf-service-compression-lease'; let deadline: ReturnType<typeof setTimeout> | undefined
   let image: ReturnType<typeof service.renderOcrImage> | undefined
   try {
     const opened = await open(service, sessionId)
-    image = withIndexPerformance(metric => metrics.push(metric), () => service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal))
+    image = service.renderOcrImage(sessionId, opened.id, 1, undefined, 512, signal)
     await encoding.promise
     assert.equal(metrics.filter(metric => metric.stage === 'native-render').length, 1)
     assert.equal(metrics.filter(metric => metric.stage === 'png-encode').length, 0)

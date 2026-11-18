@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readPageWindow, createTextReferenceResolver, evidenceSha256, searchPageWindows,
-  type SavedReference, type EvidenceReferenceStore } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+  type SavedReference, type EvidenceReferenceStore } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 

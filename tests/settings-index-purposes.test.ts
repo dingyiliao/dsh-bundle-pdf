@@ -2,9 +2,9 @@ import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
-import type { EngineCatalogSnapshot, EngineDescriptor } from '../src/modules/engines/index.ts'
+import type { EngineCatalogSnapshot, EngineDescriptor } from '../src/engines/spi/index.ts'
 
 const imageEngines: EngineDescriptor[] = [
   { id: 'fixture.vision', name: 'Visual descriptions', version: '1', execution: 'local',

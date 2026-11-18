@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createEvidenceReferenceStore } from '../../../src/adapters/host/storage/evidence-references.ts'
+import { createEvidenceReferenceStore } from '../../../src/layers/facade/evidence/storage/evidence-references.ts'
 import { captureRenderedPageEvidence, createImageEvidenceRegistry,
   evidenceSha256, savedReferenceSchema, type DerivedPageValue, type ImageEvidenceCapture,
   type RenderedPageValue, type SavedReference,
-} from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+} from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 const png = Buffer.from('a rendered PNG, never to be stored in an evidence record')

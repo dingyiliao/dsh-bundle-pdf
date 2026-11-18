@@ -140,14 +140,14 @@ export async function collectCompatibilityManifest() {
   const patch = patchEntries(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
   const [reader, native, ocr, image, client, transport, infoRoute, tools, modelWriteTools,
     modelFormTools, imageTools, ocrTool, drafts, navigation] = await Promise.all([
-    source('src/entrypoints/reader-host.ts'), source('src/entrypoints/native-host.ts'), source('src/entrypoints/ocr-host.ts'),
-    source('src/entrypoints/image-understanding-host.ts'), source('src/entrypoints/reader-client.tsx'),
-    source('src/contracts/rpc/envelope.ts'), source('src/adapters/host/dsh/info-route.ts'),
-    source('src/adapters/host/dsh/agent-tools.ts'), source('src/adapters/host/dsh/model-write-tools.ts'),
-    source('src/adapters/host/dsh/model-form-tools.ts'),
-    source('src/adapters/host/dsh/image-tools.ts'),
-    source('src/adapters/host/dsh/ocr-tool.ts'),
-    source('src/adapters/host/storage/v1-drafts.ts'), source('src/adapters/host/storage/v1-navigation.ts'),
+    source('src/plugins/reader/host.ts'), source('src/plugins/native.ts'), source('src/plugins/ocr.ts'),
+    source('src/plugins/image-understanding.ts'), source('src/plugins/client.tsx'),
+    source('src/contracts/rpc/envelope.ts'), source('src/surfaces/host/routes/info.ts'),
+    source('src/surfaces/host/tools/agent-tools.ts'), source('src/surfaces/host/tools/model-write-tools.ts'),
+    source('src/surfaces/host/tools/model-form-tools.ts'),
+    source('src/surfaces/host/tools/image-tools.ts'),
+    source('src/surfaces/host/tools/ocr-tool.ts'),
+    source('src/layers/document/working-copy/storage/v1-drafts.ts'), source('src/layers/facade/navigation/storage/v1-navigation.ts'),
   ])
   const endpoints = [literal(exportedConstant(transport, 'PDF_ENDPOINT'))]
   for (const file of [reader, image]) {

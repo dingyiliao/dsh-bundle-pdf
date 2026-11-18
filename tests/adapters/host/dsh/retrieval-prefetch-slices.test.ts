@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalPrefetch } from '../../../../src/adapters/host/dsh/retrieval-prefetch.ts'
-import type { PrefetchDiagnosticEvent } from '../../../../src/adapters/host/dsh/indexing-diagnostics.ts'
-import type { RetrievalProgress } from '../../../../src/modules/retrieval/index.ts'
+import { createRetrievalPrefetch } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
+import type { PrefetchDiagnosticEvent } from '../../../../src/layers/facade/indexing/indexing-diagnostics.ts'
+import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {

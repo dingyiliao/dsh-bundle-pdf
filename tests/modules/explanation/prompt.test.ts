@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { buildMixedExplanationPrompt, type TextExplanationExcerpt, type ExplanationImageReferencePreparation,
   type ExplanationImageReferenceRequest, type PromptContentPart,
-  type RegionExplanationExcerpt } from '../../../src/modules/explanation/index.ts'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
-import { readerLocales } from '../../../src/client/viewer/locales.ts'
+  type RegionExplanationExcerpt } from '../../../src/layers/facade/explanation/index.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
+import { readerLocales } from '../../../src/surfaces/client/viewer/locales.ts'
 
 const t = (key: string): string => readerLocales.en[key] ?? key
 

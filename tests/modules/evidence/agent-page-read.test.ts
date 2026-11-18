@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { listPageAnnotations, readPageWindow, searchPageWindows, decodeToolCursor, encodeToolCursor,
-  type AgentPageReadPort } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/modules/working-copy/index.ts'
+  type AgentPageReadPort } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { createMemoryEvidenceReferenceStore,
-  type EvidenceReferenceStore } from '../../../src/modules/evidence/reference-store.ts'
+  type EvidenceReferenceStore } from '../../../src/layers/facade/evidence/reference-store.ts'
 
 const signal = new AbortController().signal
 

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
-import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
-import { digestPdfBytes } from '../../../src/modules/document/index.ts'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.ts'
+import type { PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
+import { digestPdfBytes } from '../../../src/layers/document/content/index.ts'
 import { createWorkingCopyService, type DraftRecord, type PdfDocumentPort,
-  type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.ts'
+  type WorkingCopyFilePort } from '../../../src/layers/document/working-copy/index.ts'
 
 const sessionId = 'service-test'
 const path = '/fake.pdf'

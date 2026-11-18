@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfApi, type PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createPdfApi, type PdfConnection } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 import type { WorkspaceSnapshot } from '../../../../src/shared/contracts.ts'
 
 const address = 'dsh-resource://file/session/session/document.pdf'

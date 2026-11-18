@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createDshVisionBackend, resolveSessionVisionModel, supportsSessionImages } from '../../../src/adapters/host/dsh/image-backends.js'
-import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.js'
-import { HostImageUnderstandingService, ImageUnderstandingError, type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
-import { HostOcrService } from '../../../src/modules/ocr/index.js'
+import { createDshVisionBackend, resolveSessionVisionModel, supportsSessionImages } from '../../../src/engines/image/backends/dsh.js'
+import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../src/engines/ocr/backends/session-llm.js'
+import { HostImageUnderstandingService, ImageUnderstandingError, type ImageUnderstandingRequest } from '../../../src/engines/image/service/index.js'
+import { HostOcrService } from '../../../src/engines/ocr/service/index.js'
 
 const signal = new AbortController().signal, data = new Uint8Array(24)
 data.set([137, 80, 78, 71, 13, 10, 26, 10]); data.set([73, 72, 68, 82], 12)

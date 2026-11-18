@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.js'
+import { registerPdfAgentTools } from '../../../../src/surfaces/host/tools/agent-tools.js'
 import { createMemoryEvidenceReferenceStore, createImageEvidenceRegistry, evidenceSha256,
-  type PdfImageEvidence, type SavedReference } from '../../../../src/modules/evidence/index.js'
-import { createAgentNavigation, createReaderContexts } from '../../../../src/modules/navigation/index.js'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.js'
+  type PdfImageEvidence, type SavedReference } from '../../../../src/layers/facade/evidence/index.js'
+import { createAgentNavigation, createReaderContexts } from '../../../../src/layers/facade/navigation/index.js'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.js'
 import type { AgentNavigationRequest } from '../../../../src/contracts/navigation.js'
 
 const signal = new AbortController().signal

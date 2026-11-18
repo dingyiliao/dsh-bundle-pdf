@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test, { type TestContext } from 'node:test'
-import { createRetrievalStore, type RetrievalStoreMetric } from '../../../../src/adapters/host/filesystem/retrieval-store.ts'
+import { createRetrievalStore, type RetrievalStoreMetric } from '../../../../src/layers/derived/storage/retrieval-store.ts'
 
 const hash = (key: string) => createHash('sha256').update(key).digest('hex')
 const envelope = (key: string, payload: unknown) => JSON.stringify({ version: 1, key, payload, checksum: hash(JSON.stringify(payload)) })
@@ -162,7 +162,7 @@ test('failed SQLite batch transactions roll back all records and never publish p
 
 test('durable transactions survive abrupt writer termination without dispose or a checkpoint', async t => {
   const f = await fixture(t)
-  const script = `import { createRetrievalStore } from ${JSON.stringify(new URL('../../../../src/adapters/host/filesystem/retrieval-store.ts', import.meta.url).href)}; const s=createRetrievalStore({directory:${JSON.stringify(f.directory)}}); await s.setMany([['ocr',{text:'already computed'}],['vectors',[1,0,1]]]); process.kill(process.pid,'SIGKILL')`
+  const script = `import { createRetrievalStore } from ${JSON.stringify(new URL('../../../../src/layers/derived/storage/retrieval-store.ts', import.meta.url).href)}; const s=createRetrievalStore({directory:${JSON.stringify(f.directory)}}); await s.setMany([['ocr',{text:'already computed'}],['vectors',[1,0,1]]]); process.kill(process.pid,'SIGKILL')`
   const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: process.cwd(), encoding: 'utf8', timeout: 15_000 })
   assert.equal(child.error, undefined)
   if (process.platform === 'win32') assert.ok(child.status !== null && child.status !== 0, child.stderr)

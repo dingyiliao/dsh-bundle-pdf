@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
 import test from 'node:test'
-import { recognizeLocally } from '../../../src/ocr/local.ts'
-import { OcrError } from '../../../src/ocr/types.ts'
+import { recognizeLocally } from '../../../src/engines/ocr/sdk/local.ts'
+import { OcrError } from '../../../src/engines/ocr/sdk/types.ts'
 
 test('LocalOCR reports a missing optional Tesseract package without starting recognition', async () => {
   registerHooks({

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { formValueType, validateFormChanges, FormValidationError, resolveFormField,
-  inspectFormPage, modelFormInspectionFields } from '../../../src/modules/forms/index.ts'
-import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
-import type { PdfDocumentInfo, PdfFormField } from '../../../src/core/pdf-types.ts'
+  inspectFormPage, modelFormInspectionFields } from '../../../src/layers/document/forms/index.ts'
+import { projectFormOperations } from '../../../src/layers/document/working-copy/index.ts'
+import type { PdfDocumentInfo, PdfFormField } from '../../../src/shared/pdf-types.ts'
 
 const field = (type: PdfFormField['type'], extra: Partial<PdfFormField> = {}): PdfFormField => ({
   id: `id-${type}`, name: type, type, value: '', required: false, readOnly: false,

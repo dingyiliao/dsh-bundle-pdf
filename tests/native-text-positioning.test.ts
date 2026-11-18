@@ -3,12 +3,12 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { classicPdf, plainPdf } from './fixtures/plain-pdf.ts'
-import { NativeWorker } from '../src/engine/host/native-worker.ts'
+import { NativeWorker } from '../src/native-boundary/host/native-worker.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 import type { NativeTextContent } from '../src/shared/native.ts'
-import { prepareTextSelectionEvidence } from '../src/modules/evidence/selection.ts'
-import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../src/modules/working-copy/index.ts'
+import { prepareTextSelectionEvidence } from '../src/layers/facade/evidence/selection.ts'
+import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../src/layers/document/working-copy/index.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (process.env.DSH_PDF_REQUIRE_NATIVE_TESTS === '1' && !existsSync(executable)) throw new Error('Native text tests require a built helper')

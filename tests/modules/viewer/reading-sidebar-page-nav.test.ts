@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ReadingSidebar } from '../../../src/client/viewer/components/ReadingSidebar.tsx'
-import { readerLocales } from '../../../src/client/viewer/index.js'
-import type { ReaderDocument } from '../../../src/client/viewer/ports/reader-document.ts'
+import { ReadingSidebar } from '../../../src/surfaces/client/viewer/components/ReadingSidebar.tsx'
+import { readerLocales } from '../../../src/surfaces/client/viewer/index.js'
+import type { ReaderDocument } from '../../../src/surfaces/client/viewer/ports/reader-document.ts'
 
 const t = (key: string) => (readerLocales.en as Record<string, string>)[key] ?? key
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { retainPdfDocument } from '../../../../src/adapters/host/dsh/transport.ts'
+import { retainPdfDocument } from '../../../../src/surfaces/host/routes/transport.ts'
 
 const agent = { session: { id: 'session', header: {} } }
 

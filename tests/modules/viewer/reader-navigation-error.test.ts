@@ -4,8 +4,8 @@ import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderProps } from '../../../src/client/contracts.ts'
-import { setWindowLayout, windowLayout } from '../../../src/client/viewer/index.ts'
+import type { ReaderProps } from '../../../src/surfaces/client/contracts.ts'
+import { setWindowLayout, windowLayout } from '../../../src/surfaces/client/viewer/index.ts'
 
 registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
@@ -42,7 +42,7 @@ test('Reader restores the origin and reports a non-timeout layout read failure d
   }
   installDom(values)
 
-  const { Reader } = await import('../../../src/client/Reader.tsx')
+  const { Reader } = await import('../../../src/surfaces/client/Reader.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
   const root = createRoot(container)

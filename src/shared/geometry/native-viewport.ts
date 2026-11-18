@@ -1,4 +1,4 @@
-import type { PdfPageInfo } from '../../core/pdf-types.js'
+import type { PdfPageInfo } from '../pdf-types.js'
 
 /** PDF user space to CSS pixels; crop, UserUnit, rotation and Y inversion occur once. */
 export class NativeViewport {

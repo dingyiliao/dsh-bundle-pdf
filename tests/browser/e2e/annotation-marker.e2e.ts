@@ -3,7 +3,7 @@ import { expect, it } from 'vitest'
 import { launchPdfBrowser } from '../launch.ts'
 
 it('keeps the page comment marker opaque on hover and press', async () => {
-  const css = await readFile(new URL('../../../src/client/reader.css', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../../../src/surfaces/client/reader.css', import.meta.url), 'utf8')
   const browser = await launchPdfBrowser()
   try {
     const page = await browser.newPage()

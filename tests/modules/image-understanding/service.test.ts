@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HostImageUnderstandingService, ImageUnderstandingError,
-  type ImageUnderstandingBackend, type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
-import type { EngineConfiguration } from '../../../src/modules/engines/index.js'
+  type ImageUnderstandingBackend, type ImageUnderstandingRequest } from '../../../src/engines/image/service/index.js'
+import type { EngineConfiguration } from '../../../src/engines/spi/index.js'
 
 function request(signal = new AbortController().signal): ImageUnderstandingRequest {
   const data = new Uint8Array(24)

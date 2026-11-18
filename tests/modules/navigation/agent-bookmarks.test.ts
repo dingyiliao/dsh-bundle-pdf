@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { listAgentBookmarks, summarizeOutline, type AgentOutlinePort } from '../../../src/modules/navigation/index.ts'
-import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/modules/working-copy/index.ts'
+import { listAgentBookmarks, summarizeOutline, type AgentOutlinePort } from '../../../src/layers/facade/navigation/index.ts'
+import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 

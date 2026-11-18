@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const sourceRoot = join(root, 'src')
-const moduleRoot = join(sourceRoot, 'modules')
+const layerRoot = join(sourceRoot, 'layers')
 
 async function sourceFiles(directory) {
   const files = []
@@ -40,7 +40,7 @@ function decisionPoints(node) {
 }
 
 function owner(path) {
-  const relativePath = relative(moduleRoot, path)
+  const relativePath = relative(layerRoot, path)
   return relativePath.startsWith('..') || relativePath === '' ? undefined : relativePath.split(sep)[0]
 }
 
@@ -51,13 +51,13 @@ const functions = []
 const edges = new Map()
 let hostToClient = 0
 let clientToHost = 0
-const isHost = path => path.startsWith(join(sourceRoot, 'host') + sep)
-  || path.startsWith(join(sourceRoot, 'adapters', 'host') + sep)
-  || ['reader-host.ts', 'native-host.ts', 'ocr-host.ts', 'image-understanding-host.ts']
-    .some(name => path === join(sourceRoot, 'entrypoints', name))
-const isClient = path => path.startsWith(join(sourceRoot, 'client') + sep)
-  || path.startsWith(join(sourceRoot, 'adapters', 'client') + sep)
-  || path === join(sourceRoot, 'entrypoints', 'reader-client.tsx')
+const isHost = path => path.startsWith(join(sourceRoot, 'surfaces', 'host') + sep)
+  || path.startsWith(join(sourceRoot, 'capabilities', 'pdfium') + sep)
+  || path.startsWith(join(sourceRoot, 'native-boundary', 'host') + sep)
+  || (path.startsWith(join(sourceRoot, 'plugins') + sep) && path !== join(sourceRoot, 'plugins', 'client.tsx'))
+const isClient = path => path.startsWith(join(sourceRoot, 'surfaces', 'client') + sep)
+  || path.startsWith(join(sourceRoot, 'native-boundary', 'client') + sep)
+  || path === join(sourceRoot, 'plugins', 'client.tsx')
 
 for (const path of paths) {
   const content = await readFile(path, 'utf8')

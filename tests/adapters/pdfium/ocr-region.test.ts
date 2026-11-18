@@ -3,7 +3,7 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { inflateSync } from 'node:zlib'
-import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
+import { createPdfService } from '../../../src/capabilities/pdfium/index.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 import { memoryWorkspace, nativeFixture } from '../../native-fixture.ts'
 

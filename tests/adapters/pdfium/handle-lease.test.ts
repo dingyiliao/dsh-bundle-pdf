@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createNativeHandleLease } from '../../../src/engine/host/handle-lease.ts'
+import { createNativeHandleLease } from '../../../src/native-boundary/host/handle-lease.ts'
 
 function gate() {
   let open!: () => void

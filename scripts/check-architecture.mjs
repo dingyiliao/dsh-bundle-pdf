@@ -41,22 +41,26 @@ function visit(name) {
 }
 for (const name of graph.keys()) visit(name)
 
-// The UI layer lives in client/; domain modules stay environment-neutral.
-try { await stat(join(sourceRoot, 'modules', 'viewer')) ; failures.push('src/modules/viewer returned') } catch { /* expected */ }
-try { await stat(join(sourceRoot, 'client', 'viewer', 'index.ts')) } catch { failures.push('src/client/viewer/index.ts is missing') }
-const moduleFiles = await walk(join(sourceRoot, 'modules'))
-for (const file of moduleFiles) {
+// Only the final architecture roots may own source. Prevent any legacy tree
+// from silently returning alongside its replacement.
+for (const legacy of ['adapters', 'client', 'core', 'embedding', 'engine', 'entrypoints', 'host', 'modules', 'ocr', 'translation']) {
+  try { await stat(join(sourceRoot, legacy)); failures.push(`legacy src/${legacy}/ returned`) } catch { /* expected */ }
+}
+try { await stat(join(sourceRoot, 'surfaces', 'client', 'viewer', 'index.ts')) } catch { failures.push('src/surfaces/client/viewer/index.ts is missing') }
+const layerFiles = await walk(join(sourceRoot, 'layers'))
+for (const file of layerFiles) {
   const text = await readFile(file, 'utf8')
   if (/(?:from|import)\s*\(?\s*['"]react(?:-dom)?(?:['"/])/.test(text)) {
-    failures.push(`Domain module imports React: ${file.slice(root.length + 1)}`)
+    failures.push(`Reusable layer imports React: ${file.slice(root.length + 1)}`)
   }
 }
 
 // Ratchet: the Client surface may shrink, not grow.
-const viewerFiles = (await walk(join(sourceRoot, 'client', 'viewer'))).length
-const viewerLines = (await Promise.all((await walk(join(sourceRoot, 'client', 'viewer'))).map(async file =>
+const viewerRoot = join(sourceRoot, 'surfaces', 'client', 'viewer')
+const viewerFiles = (await walk(viewerRoot)).length
+const viewerLines = (await Promise.all((await walk(viewerRoot)).map(async file =>
   (await readFile(file, 'utf8')).split(/\r?\n/).length))).reduce((sum, lines) => sum + lines, 0)
-const reader = report.complexityHotspots.find(item => item.file === 'src/client/Reader.tsx')
+const reader = report.complexityHotspots.find(item => item.file === 'src/surfaces/client/Reader.tsx')
 if (viewerFiles > 110) failures.push(`viewer file budget exceeded: ${viewerFiles} > 110`)
 if (viewerLines > 14000) failures.push(`viewer line budget exceeded: ${viewerLines} > 14000`)
 if (reader && reader.complexity > 80) failures.push(`Reader complexity grew: ${reader.complexity} > 80`)

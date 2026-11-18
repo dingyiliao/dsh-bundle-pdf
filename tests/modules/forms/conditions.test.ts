@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { checkFormConditions, FormConditionError, type FormCondition } from '../../../src/modules/forms/index.ts'
+import { checkFormConditions, FormConditionError, type FormCondition } from '../../../src/layers/document/forms/index.ts'
 import { inspectFixturePdf } from '../../fixtures/native-document.ts'
-import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
+import { projectFormOperations } from '../../../src/layers/document/working-copy/index.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 
 test('conditional details evaluate final values; false/unknown reject writes, clearing and existing values are preserved', async () => {

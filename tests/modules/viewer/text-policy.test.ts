@@ -3,7 +3,7 @@ import test from 'node:test'
 import {
   MAX_TEXT_PAGES, TEXT_GLYPH_MIN_SCALE, TEXT_RUN_MIN_SCALE,
   textFidelityForPage, textFidelityForScale,
-} from '../../../src/client/viewer/rendering/text-policy.ts'
+} from '../../../src/surfaces/client/viewer/rendering/text-policy.ts'
 
 test('text fidelity follows readable scale thresholds', () => {
   assert.equal(textFidelityForScale(0), 'none')
@@ -32,8 +32,8 @@ test('the per-window text cap is small and explicit', () => {
 })
 
 test('text page selection caps the window and prioritises pinned and current pages', async () => {
-  const { selectTextPages } = await import('../../../src/client/viewer/rendering/text-policy.ts')
-  const page = (index: number, extra: Partial<import('../../../src/client/viewer/rendering/text-policy.ts').TextPageCandidate> = {}) => ({
+  const { selectTextPages } = await import('../../../src/surfaces/client/viewer/rendering/text-policy.ts')
+  const page = (index: number, extra: Partial<import('../../../src/surfaces/client/viewer/rendering/text-policy.ts').TextPageCandidate> = {}) => ({
     index, page: index + 1, scale: 0.1, visible: true, current: false, pinned: false, ...extra,
   })
   // At 10% there is no text layer at all, even for the current page.

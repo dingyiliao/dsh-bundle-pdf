@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSharedRetrievalSource, type RetrievalBinding } from '../../../src/modules/retrieval/shared-source.ts'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import type { RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createSharedRetrievalSource, type RetrievalBinding } from '../../../src/layers/derived/indexing/shared-source.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import type { RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 function binding(sessionId: string): RetrievalBinding {
   return { sessionId, document: { id: sessionId, path: `/private/${sessionId}.pdf`, sourceDigest: 'same',

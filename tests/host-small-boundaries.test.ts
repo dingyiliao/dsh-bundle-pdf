@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBackgroundDocuments } from '../src/modules/working-copy/index.ts'
-import { createImageUnderstandingDispatch } from '../src/adapters/host/dsh/image-transport.ts'
-import { HostOcrService, type HostOcrRequest } from '../src/modules/ocr/index.js'
-import { createPdfOcrDispatch } from '../src/adapters/host/dsh/pdf-ocr-transport.ts'
-import { createReaderContexts } from '../src/modules/navigation/index.ts'
+import { createBackgroundDocuments } from '../src/layers/document/working-copy/index.ts'
+import { createImageUnderstandingDispatch } from '../src/surfaces/host/routes/image-transport.ts'
+import { HostOcrService, type HostOcrRequest } from '../src/engines/ocr/service/index.js'
+import { createPdfOcrDispatch } from '../src/surfaces/host/routes/ocr-transport.ts'
+import { createReaderContexts } from '../src/layers/facade/navigation/index.ts'
 
 const signal = () => new AbortController().signal
 const agent = { session: { id: 'session', header: {} } }

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { checkFormChoiceGroups, formChoiceGroupSchema, FormChoiceError } from '../../../src/modules/forms/index.ts'
+import { checkFormChoiceGroups, formChoiceGroupSchema, FormChoiceError } from '../../../src/layers/document/forms/index.ts'
 import { inspectFixturePdf } from '../../fixtures/native-document.ts'
-import { projectFormOperations } from '../../../src/modules/working-copy/index.ts'
+import { projectFormOperations } from '../../../src/layers/document/working-copy/index.ts'
 import { duplicateFieldNamesFixture } from '../../fixtures/acroform.ts'
 
 test('printed exclusive checkbox groups validate final values, including existing selections and explicit unchecks', async () => {

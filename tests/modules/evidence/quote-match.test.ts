@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { matchEvidenceQuote } from '../../../src/modules/evidence/quote-match.ts'
+import { matchEvidenceQuote } from '../../../src/layers/facade/evidence/quote-match.ts'
 
 test('exact remains the default and whitespace-only differences offer a scoped explicit retry', () => {
   const parent = 'A😀 result\r\n\t uses\u00a0evidence.'

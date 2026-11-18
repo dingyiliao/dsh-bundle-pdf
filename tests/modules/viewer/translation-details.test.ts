@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TranslationContent } from '../../../src/client/viewer/components/TranslationPanel.js'
-import { translationEn, translationZh } from '../../../src/translation/index.js'
+import { TranslationContent } from '../../../src/surfaces/client/viewer/components/TranslationPanel.js'
+import { translationEn, translationZh } from '../../../src/engines/translation/sdk/index.js'
 
 const translate = (dictionary: typeof translationEn) => (key: string) =>
   dictionary[key.replace(/^reader\./, '') as keyof typeof translationEn] ?? key

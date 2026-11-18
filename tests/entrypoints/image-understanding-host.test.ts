@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, Config, inject, name, provide } from '../../src/entrypoints/image-understanding-host.ts'
-import type { HostImageUnderstandingService } from '../../src/modules/image-understanding/index.js'
-import { registerPdfTransport } from '../../src/adapters/host/dsh/transport.ts'
-import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
-import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilities/index.ts'
+import { apply, Config, inject, name, provide } from '../../src/plugins/image-understanding.ts'
+import type { HostImageUnderstandingService } from '../../src/engines/image/service/index.js'
+import { registerPdfTransport } from '../../src/surfaces/host/routes/transport.ts'
+import { evidenceSha256 } from '../../src/layers/facade/evidence/index.ts'
+import { CapabilityRegistry, pdfCapabilities } from '../../src/capabilities/index.ts'
 
 type Route = Parameters<Parameters<typeof registerPdfTransport>[0]['connection']['fetch']['register']>[0]
 

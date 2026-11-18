@@ -1,4 +1,4 @@
-import type { PdfRect } from '../../core/pdf-types.js'
+import type { PdfRect } from '../pdf-types.js'
 import type { NativeTextContent } from '../native.js'
 import { joinPositionedText } from '../page-text.js'
 

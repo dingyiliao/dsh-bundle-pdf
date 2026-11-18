@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import test from 'node:test'
-import { NativeWorker } from '../src/engine/host/native-worker.ts'
+import { NativeWorker } from '../src/native-boundary/host/native-worker.ts'
 import { classicPdf } from './native-fixture.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createFixtureDocumentPort } from '../../fixtures/native-document.ts'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.js'
-import { digestPdfBytes } from '../../../src/modules/document/index.js'
-import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/modules/working-copy/index.js'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.js'
+import { digestPdfBytes } from '../../../src/layers/document/content/index.js'
+import { createWorkingCopyService, type DraftRecord, type WorkingCopyFilePort } from '../../../src/layers/document/working-copy/index.js'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 
 const sessionId = 'form-workflow'

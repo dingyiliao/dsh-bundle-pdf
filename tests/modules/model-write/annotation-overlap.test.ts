@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { annotationOverlaps } from '../../../src/modules/model-write/annotation-overlap.ts'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
+import { annotationOverlaps } from '../../../src/layers/facade/model-write/annotation-overlap.ts'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
 
 function mark(id: string, page: number, left: number, right: number,
   subtype = 'Highlight'): PdfAnnotation {

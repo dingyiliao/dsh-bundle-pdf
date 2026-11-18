@@ -3,14 +3,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
+import { createRetrievalStore } from '../../../src/layers/derived/storage/retrieval-store.ts'
 import { decodeCachedVector, digest, encodeCachedVector, retrievalCacheKey, RETRIEVAL_EXTRACTION_VERSION,
-  type CachedRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
+  type CachedRetrievalPage } from '../../../src/layers/derived/indexing/cache.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
 import { buildIndexPageEntries, storedIndexHeadKey, storedIndexPageKey,
-  type IndexPageSummary, type StoredIndexPage } from '../../../src/modules/retrieval/stored-index.ts'
-import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION } from '../../../src/modules/retrieval/text.ts'
-import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts, RetrievalProgress } from '../../../src/modules/retrieval/types.ts'
+  type IndexPageSummary, type StoredIndexPage } from '../../../src/layers/derived/indexing/stored-index.ts'
+import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION } from '../../../src/layers/derived/content/retrieval/text.ts'
+import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts, RetrievalProgress } from '../../../src/layers/derived/indexing/types.ts'
 
 const input = [0.275497866794467, -0.4411379941739142]
 const text = 'One durable searchable evidence paragraph.'

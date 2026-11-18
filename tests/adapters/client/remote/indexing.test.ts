@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfIndexingApi } from '../../../../src/adapters/client/remote/indexing.ts'
+import { createPdfIndexingApi } from '../../../../src/surfaces/client/adapters/remote/indexing.ts'
 import type { PdfIndexingSnapshot } from '../../../../src/contracts/indexing.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))

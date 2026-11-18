@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { freshSourceReader } from '../../../../src/adapters/host/dsh/fresh-source.ts'
+import { freshSourceReader } from '../../../../src/layers/facade/evidence/fresh-source.ts'
 
 test('fresh source reader rejects a request whose Session no longer matches its authorized agent', async () => {
   let reads = 0

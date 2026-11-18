@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createIndexingDiagnosticRoute } from '../../../../src/adapters/host/dsh/indexing-diagnostic-route.ts'
-import { createIndexingDiagnostics } from '../../../../src/adapters/host/dsh/indexing-diagnostics.ts'
+import { createIndexingDiagnosticRoute } from '../../../../src/surfaces/host/routes/indexing-diagnostic.ts'
+import { createIndexingDiagnostics } from '../../../../src/layers/facade/indexing/indexing-diagnostics.ts'
 
 const base = { sessionId: 'owner', documentId: 'document', occurrence: 1 }
 function fixture() {

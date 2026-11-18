@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import React, { act, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { PageView } from '../../../src/client/viewer/model/reader-selection.ts'
-import { clearWheelZoomReflow, setWheelZoomReflow, setWindowLayout } from '../../../src/client/viewer/rendering/window-layout.ts'
-import { useReaderPageTracking, useReaderScrollPreview } from '../../../src/client/viewer/controllers/use-reader-page-tracking.ts'
+import type { PageView } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
+import { clearWheelZoomReflow, setWheelZoomReflow, setWindowLayout } from '../../../src/surfaces/client/viewer/rendering/window-layout.ts'
+import { useReaderPageTracking, useReaderScrollPreview } from '../../../src/surfaces/client/viewer/controllers/use-reader-page-tracking.ts'
 
 test('page tracking follows the visible page but preserves a user-edited page number', async () => {
   const { dom, restore: restoreDom, install: installDom } = createDom('<!doctype html><html><body><div id="root"></div></body></html>', { globals: [] })

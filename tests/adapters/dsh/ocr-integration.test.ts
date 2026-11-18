@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { OcrError, type OcrOutput } from '../../../src/ocr/types.js'
-import { createSessionLlmOcrBackend, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.js'
-import { HostOcrService, type HostOcrRequest } from '../../../src/modules/ocr/index.js'
-import { resolveSessionModel } from '../../../src/adapters/host/dsh/session-model-route.js'
-import { Config as OcrConfig } from '../../../src/entrypoints/ocr-host.js'
+import { OcrError, type OcrOutput } from '../../../src/engines/ocr/sdk/types.js'
+import { createSessionLlmOcrBackend, type SessionOcrAttachmentStore, type SessionOcrLlm } from '../../../src/engines/ocr/backends/session-llm.js'
+import { HostOcrService, type HostOcrRequest } from '../../../src/engines/ocr/service/index.js'
+import { resolveSessionModel } from '../../../src/engines/spi/routing/session-model-route.js'
+import { Config as OcrConfig } from '../../../src/plugins/ocr.js'
 
 const request = (signal?: AbortSignal): HostOcrRequest => ({
   sessionId: 'session-1', image: new Uint8Array([137, 80, 78, 71]), mediaType: 'image/png',

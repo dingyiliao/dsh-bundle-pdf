@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createDshVisionBackend } from '../../../src/adapters/host/dsh/image-backends.ts'
+import { createDshVisionBackend } from '../../../src/engines/image/backends/dsh.ts'
 import { HostImageUnderstandingService, ImageUnderstandingError,
-  type ImageUnderstandingRequest } from '../../../src/modules/image-understanding/index.js'
-import type { SessionOcrAttachmentStore, SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.ts'
+  type ImageUnderstandingRequest } from '../../../src/engines/image/service/index.js'
+import type { SessionOcrAttachmentStore, SessionOcrLlm } from '../../../src/engines/ocr/backends/session-llm.ts'
 
 const image = new Uint8Array(24)
 image.set([137, 80, 78, 71, 13, 10, 26, 10], 0)

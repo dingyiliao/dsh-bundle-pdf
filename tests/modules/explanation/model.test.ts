@@ -4,8 +4,8 @@ import {
   addExplanationExcerpt, addExplanationRegion, explanationPages, updateExplanationExcerptQuestion,
   MAX_EXPLANATION_CHARACTERS, MAX_EXPLANATION_EXCERPTS, MAX_EXPLANATION_ITEM_QUESTION_CHARACTERS,
   MAX_EXPLANATION_REGION_IMAGE_BYTES, MAX_EXPLANATION_REGION_IMAGES,
-} from '../../../src/modules/explanation/index.ts'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+} from '../../../src/layers/facade/explanation/index.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
 
 function selection(text: string, page: number): ReaderSelection {
   return { kind: 'text', revision: 1, text, fragments: [

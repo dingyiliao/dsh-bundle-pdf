@@ -6,7 +6,7 @@ import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { locateTextRange, locateTextOffsetRange } from '../../../src/shared/geometry/text-target.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { NativeWorker } from '../../../src/engine/host/native-worker.ts'
+import { NativeWorker } from '../../../src/native-boundary/host/native-worker.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 
 function page(items: NativeTextContent['items']): NativeTextContent {

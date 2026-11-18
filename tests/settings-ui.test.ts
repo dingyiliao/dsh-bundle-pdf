@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
-import type { EngineCatalogSnapshot, EngineConfiguration } from '../src/modules/engines/index.ts'
+import type { EngineCatalogSnapshot, EngineConfiguration } from '../src/engines/spi/index.ts'
 
 test('PDF Settings omits the AI engine heading and explains each setting only once in both languages', () => {
   const snapshot: ConfigFormSnapshot = {

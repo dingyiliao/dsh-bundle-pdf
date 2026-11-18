@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
-import { attachTextRecoveryWorker } from '../../../src/adapters/host/ocr/text-recovery-worker.ts'
-import { createLocalTextRecovery } from '../../../src/adapters/host/ocr/local-text-recovery.ts'
+import { attachTextRecoveryWorker } from '../../../src/engines/ocr/backends/text-recovery-worker.ts'
+import { createLocalTextRecovery } from '../../../src/engines/ocr/backends/local-text-recovery.ts'
 
 test('local recovery worker wires one dispatcher, shipped core/language reads, and explicitly denies networking', async () => {
   let adapter!: Parameters<NonNullable<Parameters<typeof attachTextRecoveryWorker>[2]>['setAdapter']>[0]

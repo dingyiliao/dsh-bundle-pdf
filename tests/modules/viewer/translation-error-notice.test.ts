@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TranslationErrorNotice } from '../../../src/client/viewer/components/TranslationPanel.js'
-import { translationEn, translationZh } from '../../../src/translation/index.js'
-import { TranslationError, type TranslationErrorCode } from '../../../src/translation/types.js'
+import { TranslationErrorNotice } from '../../../src/surfaces/client/viewer/components/TranslationPanel.js'
+import { translationEn, translationZh } from '../../../src/engines/translation/sdk/index.js'
+import { TranslationError, type TranslationErrorCode } from '../../../src/engines/translation/sdk/types.js'
 
 function renderError(code: TranslationErrorCode, dictionary: Record<string, string>) {
   const t = (key: string) => dictionary[key.replace(/^reader\./, '')] ?? key

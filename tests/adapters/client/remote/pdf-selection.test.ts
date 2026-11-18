@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createTextSelectionEvidenceApi } from '../../../../src/adapters/client/remote/pdf-selection.ts'
-import type { PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createTextSelectionEvidenceApi } from '../../../../src/surfaces/client/adapters/remote/pdf-selection.ts'
+import type { PdfConnection } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const refId = 'pdfref_00000000-0000-4000-8000-000000000001'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSearchSessions } from '../../../src/modules/search/search-sessions.ts'
+import { createSearchSessions } from '../../../src/layers/facade/search/sessions/search-sessions.ts'
 
 type Start = { documentId: string; query: string; options?: { pages: number[]; limit: number } }
 type Page = { value: { page: number }; nextCursor?: string | null }

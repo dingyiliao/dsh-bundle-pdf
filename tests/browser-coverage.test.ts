@@ -7,8 +7,8 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-const source = join(root, 'src/client/Reader.tsx')
-const engineSource = join(root, 'src/engine/client/selection.ts')
+const source = join(root, 'src/surfaces/client/Reader.tsx')
+const engineSource = join(root, 'src/native-boundary/client/selection.ts')
 const converter = join(root, 'scripts/report-browser-coverage.mjs')
 
 test('browser coverage maps V8 ranges to source lines and rejects stale source maps', async () => {
@@ -24,7 +24,7 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
       url: 'http://127.0.0.1/plugins/??@dylanl1/dsh-plugin-pdf/client.js&rev=test',
       generatedSource: 'a();\nb();\nc();\n',
       sourceMap: {
-        version: 3, sources: ['/plugins/@dylanl1/src/client/Reader.tsx', '/plugins/@dylanl1/src/engine/client/selection.ts'],
+        version: 3, sources: ['/plugins/@dylanl1/src/surfaces/client/Reader.tsx', '/plugins/@dylanl1/src/native-boundary/client/selection.ts'],
         sourcesContent: [authored, engineAuthored], names: [], mappings: 'AAAA;AACA;ACDA',
       },
       functions: [
@@ -46,15 +46,15 @@ test('browser coverage maps V8 ranges to source lines and rejects stale source m
     assert.ok(engine, 'the engine Client source appears in the Browser lane')
     assert.match(engine, /^DA:1,1$/m)
     for (const relative of [
-      'src/client/viewer/controllers/search-controller.ts',
-      'src/adapters/client/remote/pdf-api.ts',
-      'src/entrypoints/reader-client.tsx',
+      'src/surfaces/client/viewer/controllers/search-controller.ts',
+      'src/surfaces/client/adapters/remote/pdf-api.ts',
+      'src/plugins/client.tsx',
     ]) {
       const seeded = report.split(`SF:${join(root, relative)}\n`)[1]?.split('end_of_record')[0]
       assert.ok(seeded, `${relative} participates in the Browser lane after the V2 move`)
       assert.match(seeded, /^DA:\d+,0$/m, 'unexecuted Client-owned code stays in the Browser denominator')
     }
-    assert.equal(report.includes(`SF:${join(root, 'src/entrypoints/reader-host.ts')}\n`), false,
+    assert.equal(report.includes(`SF:${join(root, 'src/plugins/reader/host.ts')}\n`), false,
       'the Browser lane does not seed Host-only code')
     data.entries.push({
       ...data.entries[0]!,

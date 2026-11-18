@@ -7,11 +7,11 @@ import { Context } from '@deepseek-ai/cordis'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility, defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
-import { createRetrievalStore } from '../../../../src/adapters/host/filesystem/retrieval-store.ts'
-import { retrievalCacheRecordSchema } from '../../../../src/adapters/host/storage/retrieval-cache.ts'
-import { digest, encodeCachedVector, pageCacheKey, retrievalCacheKey } from '../../../../src/modules/retrieval/cache.ts'
-import { createRetrievalService } from '../../../../src/modules/retrieval/service.ts'
-import type { RetrievalDocument, RetrievalEmbedding, RetrievalPorts } from '../../../../src/modules/retrieval/types.ts'
+import { createRetrievalStore } from '../../../../src/layers/derived/storage/retrieval-store.ts'
+import { retrievalCacheRecordSchema } from '../../../../src/layers/derived/storage/retrieval-cache.ts'
+import { digest, encodeCachedVector, pageCacheKey, retrievalCacheKey } from '../../../../src/layers/derived/indexing/cache.ts'
+import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
+import type { RetrievalDocument, RetrievalEmbedding, RetrievalPorts } from '../../../../src/layers/derived/indexing/types.ts'
 
 /** The retired Host's actual domain/JSON format, used only as an import source. */
 async function openLegacyDomain(root: string) {

@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderProps } from '../../../src/client/contracts.ts'
+import type { ReaderProps } from '../../../src/surfaces/client/contracts.ts'
 
 registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
@@ -50,7 +50,7 @@ test('Reader preserves explanation UI across native replacement and pending reso
   dom.HTMLCanvasElement.prototype.getContext = (() => ({
     fillRect() {}, drawImage() {}, save() {}, beginPath() {}, rect() {}, clip() {}, restore() {},
   })) as unknown as typeof oldContext
-  const { Reader } = await import('../../../src/client/Reader.tsx')
+  const { Reader } = await import('../../../src/surfaces/client/Reader.tsx')
   const { flushSync } = await import('react-dom')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!

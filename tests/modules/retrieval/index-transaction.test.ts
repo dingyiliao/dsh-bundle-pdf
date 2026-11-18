@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isIndexGenerationRetained, retainIndexGeneration, withIndexTransaction } from '../../../src/modules/retrieval/index-transaction.ts'
-import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
+import { isIndexGenerationRetained, retainIndexGeneration, withIndexTransaction } from '../../../src/layers/derived/indexing/index-transaction.ts'
+import type { RetrievalCache } from '../../../src/layers/derived/indexing/types.ts'
 
 const signal = () => new AbortController().signal
 const store = (): RetrievalCache => ({ async get() { return undefined }, async set() {} })

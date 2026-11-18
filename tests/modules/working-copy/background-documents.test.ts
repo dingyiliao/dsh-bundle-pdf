@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBackgroundDocuments } from '../../../src/modules/working-copy/index.ts'
-import type { DocumentResidency, DocumentRelease } from '../../../src/modules/working-copy/background-documents.ts'
+import { createBackgroundDocuments } from '../../../src/layers/document/working-copy/index.ts'
+import type { DocumentResidency, DocumentRelease } from '../../../src/layers/document/working-copy/background-documents.ts'
 
 function fixture(schedule = false) {
   const documents = new Map<string, DocumentResidency>()
@@ -72,7 +72,7 @@ test('idle/oversize eviction preserves registry identity and final UI release re
   const f = fixture()
   try {
     f.add('huge', { bytes: 129 * 1024 * 1024 })
-    await assert.rejects(f.policy.adopt('one', 'huge', 129 * 1024 * 1024), { code: 'pdf/background-size' })
+    assert.equal(await f.policy.adopt('one', 'huge', 129 * 1024 * 1024), 'background')
     assert.equal(f.documents.get('huge')!.resident, false)
     f.add('idle'); await f.policy.adopt('one', 'idle', 1024)
     f.advance(11 * 60_000)

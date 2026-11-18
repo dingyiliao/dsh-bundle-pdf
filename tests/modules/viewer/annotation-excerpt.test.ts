@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AnnotationList } from '../../../src/client/viewer/components/AnnotationList.tsx'
+import { AnnotationList } from '../../../src/surfaces/client/viewer/components/AnnotationList.tsx'
 import { annotationExcerpt } from '../../../src/shared/annotation-excerpt.ts'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 
 const annotation: PdfAnnotation = { id: 'highlight', page: 1, subtype: 'Highlight', flags: 4, supported: true, editable: true,

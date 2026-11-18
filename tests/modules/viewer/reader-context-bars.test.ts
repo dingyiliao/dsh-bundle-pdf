@@ -3,12 +3,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
 import {
   ReaderAnnotationBar, ReaderSelectionBar,
   type ReaderAnnotationBarProps, type ReaderSelectionBarProps,
-} from '../../../src/client/viewer/components/ReaderContextBars.tsx'
+} from '../../../src/surfaces/client/viewer/components/ReaderContextBars.tsx'
 
 async function withBars(run: (fixture: {
   container: HTMLElement

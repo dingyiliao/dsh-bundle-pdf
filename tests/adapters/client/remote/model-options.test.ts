@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createModelOptionsStore } from '../../../../src/adapters/client/remote/model-options.ts'
+import { createModelOptionsStore } from '../../../../src/surfaces/client/adapters/remote/model-options.ts'
 
 const catalog = { groups: [{ id: 'provider', name: 'Provider', models: [{ id: 'vision', name: 'Vision',
   reasoning: { efforts: [{ id: 'low', name: 'Low' }], defaultEffort: 'low' } }] }], failures: [] }

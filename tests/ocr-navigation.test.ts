@@ -4,7 +4,7 @@ import { NavigationHistory, type NavigationPosition } from '../src/shared/naviga
 import {
   createLocalOcrEngine, createNoneOcrEngine, mapImageBoxToPdf, normalizeTesseractOutput,
   OcrError, OcrRegistry, type LocalOcrDependencies, type OcrEngine, type OcrOutput, type OcrRequest,
-} from '../src/ocr/index.js'
+} from '../src/engines/ocr/sdk/index.js'
 
 const imageRequest = (): OcrRequest => ({ image: new Uint8Array([1, 2, 3]), width: 100, height: 200, languages: ['eng'] })
 const emptyOutput = (): OcrOutput => ({

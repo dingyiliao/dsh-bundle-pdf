@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { readIndexPage } from '../../../src/modules/retrieval/stored-index.ts'
+import { readIndexPage } from '../../../src/layers/derived/indexing/stored-index.ts'
 import test from 'node:test'
-import { digest, pageCacheKey, RETRIEVAL_EXTRACTION_VERSION, retrievalCacheKey, validateRetrievalPage } from '../../../src/modules/retrieval/cache.ts'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION } from '../../../src/modules/retrieval/text.ts'
-import type { RetrievalPage, RetrievalPageUnit, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { digest, pageCacheKey, RETRIEVAL_EXTRACTION_VERSION, retrievalCacheKey, validateRetrievalPage } from '../../../src/layers/derived/indexing/cache.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION } from '../../../src/layers/derived/content/retrieval/text.ts'
+import type { RetrievalPage, RetrievalPageUnit, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 const sha = (text: string) => `sha256:${digest(text)}`
 const unit = (id: string, kind: RetrievalPageUnit['kind'], text: string, extra: Partial<RetrievalPageUnit> = {}): RetrievalPageUnit =>

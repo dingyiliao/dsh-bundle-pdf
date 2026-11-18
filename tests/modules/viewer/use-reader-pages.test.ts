@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { namedPageActionTarget, readerPagePins } from '../../../src/client/viewer/index.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
+import { namedPageActionTarget, readerPagePins } from '../../../src/surfaces/client/viewer/index.ts'
 
 const selected: ReaderSelection = { revision: 1, kind: 'text', text: 'selected', fragments: [
   { page: 2, rect: [0, 0, 10, 10], quadPoints: [] },

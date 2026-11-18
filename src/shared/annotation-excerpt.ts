@@ -1,4 +1,4 @@
-import type { PdfAnnotation, PdfRect } from '../core/pdf-types.js'
+import type { PdfAnnotation, PdfRect } from './pdf-types.js'
 import type { NativeTextContent } from './native.js'
 import { joinPageText } from './page-text.js'
 

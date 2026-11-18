@@ -3,15 +3,15 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
 import { plainPdf } from '../../../fixtures/plain-pdf.ts'
-import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
-import { createPdfRetrieval } from '../../../../src/adapters/host/dsh/retrieval.ts'
-import { createPdfService } from '../../../../src/adapters/host/pdfium/index.ts'
-import { createMemoryEvidenceReferenceStore, describeEvidenceCapabilities, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
-import { projectPdfToolOutput } from '../../../../src/adapters/host/dsh/tool-output.ts'
-import { createAgentNavigation, createReaderContexts } from '../../../../src/modules/navigation/index.ts'
-import { EmbeddingError, EmbeddingRegistry, type EmbeddingEngine } from '../../../../src/embedding/index.ts'
-import { createOpenAiCompatibleEmbeddingEngine } from '../../../../src/adapters/host/embedding/openai-compatible.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+import { registerPdfAgentTools } from '../../../../src/surfaces/host/tools/agent-tools.ts'
+import { createPdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
+import { createPdfService } from '../../../../src/capabilities/pdfium/index.ts'
+import { createMemoryEvidenceReferenceStore, describeEvidenceCapabilities, type PdfTextEvidence } from '../../../../src/layers/facade/evidence/index.ts'
+import { projectPdfToolOutput } from '../../../../src/surfaces/host/tools/tool-output.ts'
+import { createAgentNavigation, createReaderContexts } from '../../../../src/layers/facade/navigation/index.ts'
+import { EmbeddingError, EmbeddingRegistry, type EmbeddingEngine } from '../../../../src/engines/embedding/sdk/index.ts'
+import { createOpenAiCompatibleEmbeddingEngine } from '../../../../src/engines/embedding/backends/openai-compatible.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 import { defaultSettings } from '../../../../src/shared/contracts.ts'
 import type { AgentNavigationRequest } from '../../../../src/contracts/navigation.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
@@ -690,7 +690,7 @@ test('scoped availability failures reach Host diagnostics before the unavailable
 })
 
 test('invalid document identity rejects malformed explicit fingerprints', async () => {
-  const { invalidDocumentIdentity } = await import('../../../../src/modules/retrieval/identity.ts')
+  const { invalidDocumentIdentity } = await import('../../../../src/layers/derived/indexing/identity.ts')
   const provider = (documentFingerprint?: unknown) => ({
     fingerprint: 'coverage', dimensions: 8, maxBatchSize: 8, embed: async () => [],
     ...(documentFingerprint === undefined ? {} : { documentFingerprint }),

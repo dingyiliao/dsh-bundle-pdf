@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PdfOutlineItem } from '../../core/pdf-types.js'
+import type { PdfOutlineItem } from '../../shared/pdf-types.js'
 
 const wireOutlineItemSchema: z.ZodType<PdfOutlineItem> = z.lazy(() => z.object({
   id: z.string(), title: z.string(), page: z.number().int().positive().optional(),

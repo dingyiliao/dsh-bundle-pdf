@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import { deflateSync } from 'node:zlib'
-import { NativeWorker } from '../src/engine/host/native-worker.ts'
+import { NativeWorker } from '../src/native-boundary/host/native-worker.ts'
 import { classicPdf } from './native-fixture.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 

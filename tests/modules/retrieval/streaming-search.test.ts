@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { searchStoredIndex, type SearchPage, type StoredIndexSearchOptions } from '../../../src/modules/retrieval/streaming-search.ts'
-import { createBm25Index, rankVectors, searchBm25 } from '../../../src/modules/retrieval/ranking.ts'
-import type { RetrievalChunk } from '../../../src/modules/retrieval/text.ts'
+import { searchStoredIndex, type SearchPage, type StoredIndexSearchOptions } from '../../../src/layers/derived/indexing/streaming-search.ts'
+import { createBm25Index, rankVectors, searchBm25 } from '../../../src/layers/derived/indexing/ranking.ts'
+import type { RetrievalChunk } from '../../../src/layers/derived/content/retrieval/text.ts'
 
 const chunk = (id: string, page: number, text: string): RetrievalChunk => ({ id, page, text,
   startUtf16: 0, endUtf16: text.length, pageTextDigest: 'a'.repeat(64), source: 'pdf-text' })

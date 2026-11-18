@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
-import { ReaderCommentEditor, type ReaderCommentEditorProps } from '../../../src/client/viewer/components/ReaderCommentEditor.tsx'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
+import { ReaderCommentEditor, type ReaderCommentEditorProps } from '../../../src/surfaces/client/viewer/components/ReaderCommentEditor.tsx'
 
 async function withEditor(run: (fixture: {
   container: HTMLElement

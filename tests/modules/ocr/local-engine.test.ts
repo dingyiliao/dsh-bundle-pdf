@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createLocalOcrEngine, normalizeTesseractOutput, recognizeLocally,
-  type LocalOcrDependencies } from '../../../src/ocr/local.ts'
-import { OcrError, type OcrRequest } from '../../../src/ocr/types.ts'
+  type LocalOcrDependencies } from '../../../src/engines/ocr/sdk/local.ts'
+import { OcrError, type OcrRequest } from '../../../src/engines/ocr/sdk/types.ts'
 
 const assets = { origin: 'https://app.example', bridgePath: '/ocr/bridge.js', workerPath: '/ocr/worker.js',
   corePath: '/ocr/core', langPath: '/ocr/lang' }

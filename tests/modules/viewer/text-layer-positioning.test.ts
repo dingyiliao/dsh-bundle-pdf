@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { positionedTextSegments } from '../../../src/client/viewer/rendering/text-layer.ts'
+import { positionedTextSegments } from '../../../src/surfaces/client/viewer/rendering/text-layer.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 
 const item: NativeTextContent['items'][number] = {
@@ -21,7 +21,7 @@ test('old or oversized native text replies retain the run-level fallback', () =>
 })
 
 test('text hit boxes come from native geometry instead of DOM measurement', async () => {
-  const { computeTextLayerBoxes } = await import('../../../src/client/viewer/rendering/text-layer.ts')
+  const { computeTextLayerBoxes } = await import('../../../src/surfaces/client/viewer/rendering/text-layer.ts')
   const { NativeViewport } = await import('../../../src/shared/geometry/native-viewport.ts')
   const geometry = { page: 1, cropBox: [0, 0, 300, 400] as [number, number, number, number], rotation: 0, userUnit: 1 }
   const viewport = new NativeViewport(geometry, 1, 0)

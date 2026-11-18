@@ -2,10 +2,10 @@ import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot, type SettingsProps } from '../src/client/settings/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot, type SettingsProps } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
-import { createModelOptionsStore, type ModelOptionsSnapshot, type ModelOptionsStore } from '../src/adapters/client/remote/model-options.ts'
-import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
+import { createModelOptionsStore, type ModelOptionsSnapshot, type ModelOptionsStore } from '../src/surfaces/client/adapters/remote/model-options.ts'
+import type { EngineCatalogSnapshot } from '../src/engines/spi/index.ts'
 
 const catalog: NonNullable<ModelOptionsSnapshot['catalog']> = { groups: [
   { id: 'provider/a', name: 'Provider A', models: [

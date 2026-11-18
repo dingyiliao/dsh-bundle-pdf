@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TranslationError, TranslationRegistry, type TranslationEngine, type TranslationOutput } from '../src/translation/index.ts'
+import { TranslationError, TranslationRegistry, type TranslationEngine, type TranslationOutput } from '../src/engines/translation/sdk/index.ts'
 
 const limits = { timeoutMs: 30_000, maxInputCharacters: 100, maxOutputCharacters: 100 }
 const instance = { id: 'account', engineId: 'mock', configurationRevision: 'r1', config: { token: 'original' } }

@@ -4,8 +4,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { Buffer } from 'node:buffer'
-import { createNativeRequestEnvelope, decodeNativeReplyEnvelope } from '../../src/engine/protocol/transport.ts'
-import type { NativeRequest } from '../../src/engine/protocol/commands.ts'
+import { createNativeRequestEnvelope, decodeNativeReplyEnvelope } from '../../src/native-boundary/protocol/transport.ts'
+import type { NativeRequest } from '../../src/native-boundary/protocol/commands.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixture = async (name: string): Promise<Record<string, unknown>> =>

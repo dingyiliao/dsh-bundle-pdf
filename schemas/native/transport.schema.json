@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "dsh-plugin-pdf/native-transport.schema.json",
   "title": "DSH PDF Native worker transport v2",
-  "description": "Flat request payload and correlated reply envelope. Command payload fields are owned by src/engine/protocol/commands.ts.",
+  "description": "Flat request payload and correlated reply envelope. Command payload fields are owned by src/native-boundary/protocol/commands.ts.",
   "oneOf": [
     {
       "title": "Request",

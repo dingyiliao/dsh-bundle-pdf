@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   readEncryptedAnnotations, saveEncryptedAnnotations, verifyEncryptedSave,
-} from '../../../src/adapters/host/pdfium/encrypted-annotations.ts'
-import { MAX_NATIVE_REPLY } from '../../../src/engine/host/framing.ts'
-import type { PdfAnnotation, PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
-import { decodeNativeReply, type NativeRequest } from '../../../src/engine/protocol/commands.ts'
-import type { NativePayloadFor, NativePdfPort } from '../../../src/engine/host/native-port.ts'
+} from '../../../src/capabilities/pdfium/encrypted-annotations.ts'
+import { MAX_NATIVE_REPLY } from '../../../src/native-boundary/host/framing.ts'
+import type { PdfAnnotation, PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
+import { decodeNativeReply, type NativeRequest } from '../../../src/native-boundary/protocol/commands.ts'
+import type { NativePayloadFor, NativePdfPort } from '../../../src/native-boundary/host/native-port.ts'
 
 const signal = new AbortController().signal
 const reply = (value: unknown, bytes = Buffer.alloc(0)) => ({ value, bytes })

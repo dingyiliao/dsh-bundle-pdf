@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createPageOcrArtifacts, pageOcrArtifactKey, type PageOcrArtifactRequest, type PageOcrInput,
-  type OcrProducerIdentity } from '../../../../src/adapters/host/ocr/page-ocr-artifacts.ts'
-import { createRetrievalStore } from '../../../../src/adapters/host/filesystem/retrieval-store.ts'
-import type { OcrOutput } from '../../../../src/ocr/types.ts'
+  type OcrProducerIdentity } from '../../../../src/layers/derived/content/cache/page-ocr-artifacts.ts'
+import { createRetrievalStore } from '../../../../src/layers/derived/storage/retrieval-store.ts'
+import type { OcrOutput } from '../../../../src/engines/ocr/sdk/types.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const input: PageOcrInput = { path: '/authorized.pdf', sourceDigest: digest, page: 1, render: {

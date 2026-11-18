@@ -3,7 +3,7 @@ import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSetti
 import { join } from 'node:path'
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
-import { type SessionOcrLlm } from '../../../src/adapters/host/dsh/ocr-session-llm.ts'
+import { type SessionOcrLlm } from '../../../src/engines/ocr/backends/session-llm.ts'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 import { FILE_NAME, sourcePdf } from '../support/documents.ts'
 import { openSidebarSection } from '../support/toolbar.ts'

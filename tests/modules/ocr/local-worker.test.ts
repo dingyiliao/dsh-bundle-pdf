@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createLocalWorkerMessageHandler } from '../../../src/ocr/local-worker.ts'
-import type { LocalOcrWorkerRequest, LocalOcrWorkerResponse } from '../../../src/ocr/bridge.ts'
-import { OcrError, type OcrOutput } from '../../../src/ocr/types.ts'
+import { createLocalWorkerMessageHandler } from '../../../src/engines/ocr/sdk/local-worker.ts'
+import type { LocalOcrWorkerRequest, LocalOcrWorkerResponse } from '../../../src/engines/ocr/sdk/bridge.ts'
+import { OcrError, type OcrOutput } from '../../../src/engines/ocr/sdk/types.ts'
 
 const assets = { workerPath: '/ocr/worker.js', corePath: '/ocr/core', langPath: '/ocr/lang', gzip: true }
 const image = new Uint8Array([1, 2, 3])

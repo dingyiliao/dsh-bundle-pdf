@@ -2,11 +2,11 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { Page, type PageProps } from '../../../src/client/viewer/rendering/Page.tsx'
+import { Page, type PageProps } from '../../../src/surfaces/client/viewer/rendering/Page.tsx'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import type { NativeDocument, NativePage } from '../../../src/client/viewer/rendering/document.ts'
-import type { PdfAnnotation, PdfPageInfo } from '../../../src/core/pdf-types.ts'
-import type { PdfOcrTextPart } from '../../../src/ocr/mapping.ts'
+import type { NativeDocument, NativePage } from '../../../src/surfaces/client/viewer/rendering/document.ts'
+import type { PdfAnnotation, PdfPageInfo } from '../../../src/shared/pdf-types.ts'
+import type { PdfOcrTextPart } from '../../../src/engines/ocr/sdk/mapping.ts'
 
 const geometry: PdfPageInfo = { page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }
 

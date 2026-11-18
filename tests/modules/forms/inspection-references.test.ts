@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createFormInspectionRegistry, inspectFormPage, modelFormInspectionFields,
-  type FormInspectionIdentity } from '../../../src/modules/forms/index.ts'
-import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
+  type FormInspectionIdentity } from '../../../src/layers/document/forms/index.ts'
+import type { PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
 
 const document: PdfDocumentInfo = { pageCount: 2, signed: false, encrypted: false, readOnly: false,
   pages: [1, 2].map(page => ({ page, cropBox: [0, 0, 200, 300], userUnit: 1, rotation: 0 })), annotations: [],

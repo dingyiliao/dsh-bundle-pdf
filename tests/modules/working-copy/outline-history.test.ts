@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { appendGroup, moveCursor, operationsThrough, projectedDocument, projectFormOperations, draftSchema,
-  type WorkspaceRecord } from '../../../src/modules/working-copy/index.ts'
-import { projectWorkingCopyOperations } from '../../../src/modules/working-copy/history.ts'
-import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../src/core/pdf-types.ts'
+  type WorkspaceRecord } from '../../../src/layers/document/working-copy/index.ts'
+import { projectWorkingCopyOperations } from '../../../src/layers/document/working-copy/history.ts'
+import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../src/shared/pdf-types.ts'
 
 const baseline: PdfDocumentInfo = {
   pageCount: 2, pages: [], annotations: [], signed: false, encrypted: false, readOnly: false, outline: [],

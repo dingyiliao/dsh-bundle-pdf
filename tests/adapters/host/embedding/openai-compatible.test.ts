@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EmbeddingError, EmbeddingRegistry } from '../../../../src/embedding/index.js'
-import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../../../../src/adapters/host/embedding/openai-compatible.js'
-import { withIndexPerformance, type IndexPerformanceMetric } from '../../../../src/modules/retrieval/performance.js'
+import { EmbeddingError, EmbeddingRegistry } from '../../../../src/engines/embedding/sdk/index.js'
+import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../../../../src/engines/embedding/backends/openai-compatible.js'
+import type { IndexPerformanceMetric } from '../../../../src/shared/indexing-performance.js'
 
 const FIXTURE_MODEL_REVISION = 'test-model-revision'
 const binding = { engineId: 'local-qwen3-embedding', config: { dimensions: 2, queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION } }
@@ -285,24 +285,22 @@ test('credential changes stay isolated until the service attests the same model 
 test('availability and successive embedding batches reuse only fresh successful model checks', async () => {
   let time = 0, gets = 0, posts = 0, revision = 'first'
   const metrics: IndexPerformanceMetric[] = []
-  const engine = createOpenAiCompatibleEmbeddingEngine({ now: () => time, fetch: (async url => {
+  const engine = createOpenAiCompatibleEmbeddingEngine({ now: () => time, onPerformance: metric => metrics.push(metric), fetch: (async url => {
     if (String(url).endsWith('/models')) { gets++; return reply(metadata({ revision })) }
     posts++; return reply({ model_revision: revision, data: [{ index: 0, embedding: [1, 0] }] })
   }) as typeof fetch })
   const registry = new EmbeddingRegistry(); registry.register(engine)
   try {
-    await withIndexPerformance(metric => metrics.push(metric), async () => {
-      assert.deepEqual(await registry.availability(binding), { status: 'available' })
-      for (let i = 0; i < 4; i++) await registry.embed({ texts: [`batch ${i}`], purpose: 'document' }, binding)
-      assert.equal(gets, 1); assert.equal(posts, 4)
-      time = 1999
-      await registry.availability(binding)
-      assert.equal(gets, 1, 'Fresh checks can be reused, but hits do not extend their expiry')
-      time = 2000; revision = 'second'
-      await registry.embed({ texts: ['next batch'], purpose: 'document' }, binding)
-      assert.equal(gets, 2); assert.equal(posts, 5)
-      assert.equal(registry.describe(binding).modelRevision, 'second')
-    })
+    assert.deepEqual(await registry.availability(binding), { status: 'available' })
+    for (let i = 0; i < 4; i++) await registry.embed({ texts: [`batch ${i}`], purpose: 'document' }, binding)
+    assert.equal(gets, 1); assert.equal(posts, 4)
+    time = 1999
+    await registry.availability(binding)
+    assert.equal(gets, 1, 'Fresh checks can be reused, but hits do not extend their expiry')
+    time = 2000; revision = 'second'
+    await registry.embed({ texts: ['next batch'], purpose: 'document' }, binding)
+    assert.equal(gets, 2); assert.equal(posts, 5)
+    assert.equal(registry.describe(binding).modelRevision, 'second')
     assert.equal(metrics.filter(metric => metric.stage === 'metadata-http').length, 2)
     assert.equal(metrics.filter(metric => metric.stage === 'embedding-http').length, 5)
     assert.ok(metrics.every(metric => metric.requests === 1 && metric.durationMs >= 0))

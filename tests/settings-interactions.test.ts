@@ -2,10 +2,10 @@ import { createDom } from './support/dom.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings, type PdfSettings } from '../src/shared/contracts.ts'
-import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
-import { SETTINGS_ACK_TIMEOUT_MS } from '../src/client/settings/settings-ack.ts'
+import type { EngineCatalogSnapshot } from '../src/engines/spi/index.ts'
+import { SETTINGS_ACK_TIMEOUT_MS } from '../src/surfaces/client/settings/settings-ack.ts'
 
 type Operations = Parameters<ConfigForm['mutate']>[0]
 const catalog: EngineCatalogSnapshot = { revision: 'fixture', engines: {

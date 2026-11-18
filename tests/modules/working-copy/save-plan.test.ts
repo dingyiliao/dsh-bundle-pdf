@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { expectedSaveVersion } from '../../../src/modules/working-copy/index.ts'
+import { expectedSaveVersion } from '../../../src/layers/document/working-copy/index.ts'
 
 const source = `sha256:${'a'.repeat(64)}`
 const observed = `sha256:${'b'.repeat(64)}`

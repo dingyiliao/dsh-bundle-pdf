@@ -3,8 +3,8 @@ import test from 'node:test'
 import {
   createDshModelTranslationEngine, type DshTranslationGenerateOptions,
   type DshTranslationChunk,
-} from '../../../src/adapters/host/dsh/translation-model.ts'
-import { TranslationError, type TranslationEngineRequest } from '../../../src/translation/types.ts'
+} from '../../../src/engines/translation/backends/session-model.ts'
+import { TranslationError, type TranslationEngineRequest } from '../../../src/engines/translation/sdk/types.ts'
 
 function request(text: string, maxOutputCharacters = 32768,
   adjacent: { selectionBefore?: string; selectionAfter?: string } = {}): TranslationEngineRequest {

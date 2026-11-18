@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { encodeExplanationImageBytes, MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../src/modules/explanation/index.ts'
+import { encodeExplanationImageBytes, MAX_EXPLANATION_REGION_IMAGE_BYTES } from '../../../src/layers/facade/explanation/index.ts'
 
 test('explanation image encodes verified PNG bytes without changing the payload', () => {
   const bytes = Uint8Array.from({ length: 16_385 }, (_, index) => index & 0xff)

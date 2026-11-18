@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { decodeFormFields, encodeFormEdits } from '../../../src/adapters/host/pdfium/document-forms.js'
-import { FormValidationError } from '../../../src/modules/forms/index.js'
+import { decodeFormFields, encodeFormEdits } from '../../../src/capabilities/pdfium/document-forms.js'
+import { FormValidationError } from '../../../src/layers/document/forms/index.js'
 
 const fields = decodeFormFields([
   { type: 'text', name: 'name', objectNumber: 14, generation: 3, value: '', multiline: false,

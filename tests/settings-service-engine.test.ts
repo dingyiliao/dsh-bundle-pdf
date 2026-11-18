@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
+import { Settings, settingsLocales, type ConfigForm, type ConfigFormSnapshot } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
-import type { EngineCatalogSnapshot } from '../src/modules/engines/index.ts'
+import type { EngineCatalogSnapshot } from '../src/engines/spi/index.ts'
 
 test('embedding service settings use one deployment-neutral badge and no badge for disabled retrieval', () => {
   const engineCatalog: EngineCatalogSnapshot = { revision: 'services', engines: { ocr: [], image: [], translation: [], embedding: [

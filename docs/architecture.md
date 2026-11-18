@@ -37,33 +37,26 @@ RPC 和模型工具共享领域能力与工作副本，不各自实现写入事�
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/entrypoints/` | Cordis 服务注册、配置、依赖与释放；组合 Host 和 Client |
-| `src/contracts/` | RPC、导航、索引、诊断及模型选择的跨端 schema |
-| `src/modules/working-copy/` | 文档登记表、UI/模型引用、驻留、操作队列、草稿、撤销/重做与保存 |
-| `src/modules/document/` | 不可变源、页面内容及原生/OCR 表示、渲染计划和文字恢复映射 |
-| `src/modules/annotations/`、`forms/`、`outlines/` | 标注投影、表单身份与校验、内置书签树操作；不直接写文件 |
-| `src/modules/evidence/`、`model-write/` | 来源引用、范围与几何验证、模型草稿编辑及保存审批 |
-| `src/modules/search/`、`retrieval/` | 搜索会话、分块、排名、索引策略、检查点与代次管理 |
-| `src/modules/navigation/`、`explanation/` | 阅读上下文、导航请求和阅读位置；解释材料与提词组合 |
-| `src/modules/capabilities/`、`engines/` | 能力规划、类型化引擎目录、配置与缓存身份 |
-| `src/modules/ocr/`、`image-understanding/` | 与 PDF 解耦的图像处理服务和任务生命周期 |
-| `src/client/viewer/` | `components` 视图、`controllers` 交互状态、`rendering` 窗口化绘制、`model` 纯展示逻辑、`ports` 外部依赖 |
-| `src/adapters/host/dsh/` | DSH RPC、工具、会话、模型、授权和后台任务装配 |
-| `src/adapters/host/dsh/indexing/` | 索引迁移读写屏障，以及文档检索、预建和任务状态的组合 |
-| `src/adapters/host/{filesystem,storage,pdfium,ocr,embedding}/` | 文件、存储、PDFium 适配和 AI 引擎实现 |
-| `src/adapters/client/{remote,dsh}/` | RPC 客户端、订阅、快照同步和会话发送 |
-| `src/client/`、`src/client/settings/` | Reader 组合、DSH 工具卡、会话生命周期；设置组件、确认和合并逻辑及样式集中于 `settings/` |
-| `src/shared/` | 共享契约、纯坐标换算、有界缓存和订阅辅助 |
-| `src/core/pdf-types.ts`、`src/shared/navigation-history.ts` | PDF 数据类型、跨运行环境的纯视口历史 |
-| `src/engine/` | PDF 引擎协议、进程适配和客户端选区；按 `client`、`host`、`protocol` 分层 |
-| `src/engine/host/` | 原生 worker、帧协议、队列、取消和句柄租约；不包含工作副本投影 |
-| `src/adapters/host/pdfium/` | PDFium 文档适配、标注、表单、书签和保存字节；组合工作副本操作后调用 native worker |
-| `src/{ocr,translation,embedding}/`、`src/host/` | 已发布 SDK、注册接口及 Host 类型入口；`src/host/*` 仅保留兼容类型 re-export |
-| `native/` | Worker runtime、稳定 Backend 接口、PDFium worker、构建依赖锁与原生回调测试；`native/pdfium/` 保存 SDK 补丁、扩展头文件和 SDK 构建脚本 |
+| `src/plugins/` | Cordis 服务注册、配置、依赖与释放；装配 Host 和 Client 入口 |
+| `src/contracts/` | RPC、文档操作、引擎与 native 协议的跨边界 schema；发布包入口保持稳定 |
+| `src/engines/spi/` | 引擎/provider 契约、目录、配置校验、路由与缓存身份 |
+| `src/engines/{ocr,image,translation,embedding}/` | 独立引擎 SDK、服务生命周期和可替换后端实现 |
+| `src/capabilities/` | 可执行能力注册；`pdfium/` 将工作副本操作接入 native boundary |
+| `src/layers/document/` | 源 PDF、页面表示、工作副本、标注、表单和内置书签领域状态 |
+| `src/layers/derived/content/` | 页面派生表示、OCR/图像描述生产、可复用产物及其缓存 |
+| `src/layers/derived/indexing/`、`src/layers/derived/storage/` | 检索分块、排名、向量与完整索引、检查点及缓存记录 |
+| `src/layers/facade/` | 证据、索引编排、检索会话、导航、模型写入、解释和翻译用例 |
+| `src/surfaces/host/routes/`、`tools/`、`io/` | 鉴权 RPC、模型工具、文件与 DSH 存储适配；不拥有领域写入规则 |
+| `src/surfaces/client/viewer/` | Reader 的组件、控制器、窗口化绘制、展示模型与外部端口 |
+| `src/surfaces/client/adapters/`、`settings/` | RPC/会话适配、设置 UI、确认和合并逻辑 |
+| `src/native-boundary/{client,host,protocol}/` | TypeScript↔Native API、双端进程适配和共享 wire contract；与 PDFium 领域适配分开 |
+| `src/shared/` | 跨运行时共享类型、几何、缓存与纯工具 |
+| `native/` | Worker runtime、稳定 Backend 接口、PDFium worker、构建依赖锁与原生回调测试 |
+| `native/pdfium/patches/` | 版本化 patchset 清单与说明；列出 `native/pdfium/*.mjs` 的有序源码变换和扩展源码，当前不是 unified `.patch` 队列 |
 
-`working-copy` 组合文档、标注、表单和目录算法；文件操作、PDF 物化与存储通过端口接入。Host 不导入 Client 运行时代码，Client 不导入 Host 实现。领域模块可脱离 DSH 装配测试，但并非全部模块都是无 Node 依赖的纯函数。
+Cordis 插件/服务是组合根：Host 服务经 capability 与 engine SPI 选择并调用引擎实现，依赖箭头从服务侧出发；provider 不反向依赖 Cordis。`working-copy` 组合文档、标注、表单和目录算法，文件操作、PDF 物化与存储通过端口接入。Host 不导入 Client 运行时代码，Client 不导入 Host 实现。领域模块可脱离 DSH 装配测试，但并非全部模块都是无 Node 依赖的纯函数。
 
-PDFium 文档进程负责检查、逐页指纹和写入，与前台渲染进程分开排队。`native/worker/worker-runtime.cpp` 只负责进程生命周期、二进制 framing、请求关联和错误 envelope；`native/backend/pdf-backend.h` 定义可替换的 Backend 边界，当前实现是 `PdfiumBackend`。两者共用 `src/engine/protocol/` 契约。文档进程接收 PDF 字节与类型化操作，返回元数据或经重开校验的 PDF 字节。Host 负责文件授权、工作副本修订和原子发布。
+PDFium 文档进程负责检查、逐页指纹和写入，与前台渲染进程分开排队。`native/worker/worker-runtime.cpp` 只负责进程生命周期、二进制 framing、请求关联和错误 envelope；`native/backend/pdf-backend.h` 定义可替换的 Backend 边界，当前实现是 `PdfiumBackend`。两者共用 `src/native-boundary/protocol/` 契约。文档进程接收 PDF 字节与类型化操作，返回元数据或经重开校验的 PDF 字节。Host 负责文件授权、工作副本修订和原子发布。
 
 加密文档的工作副本只由阅读器持有。Host 通过 PDFium 获取当前凭据的有效批注权限，复用标注投影和撤销历史，并将草稿与凭据留在内存。另存为在独立原生句柄上应用草稿，分块读回密文，并重新打开核对加密、原始权限和批注后再原子发布。
 
@@ -88,7 +81,7 @@ Host 从连接或工具执行上下文取得可信身份，再按文件资源会
 
 ## 写入、保存与恢复
 
-`modules/working-copy/service.ts` 拥有每会话串行队列和唯一写入事务。UI 与模型共用校验、投影、修订比较及撤销历史。模型编辑直接进入未保存草稿；模型保存独立经过 DSH 用户审批，不能用模型自报的确认字段代替批准。
+`src/layers/document/working-copy/service.ts` 拥有每会话串行队列和唯一写入事务。UI 与模型共用校验、投影、修订比较及撤销历史。模型编辑直接进入未保存草稿；模型保存独立经过 DSH 用户审批，不能用模型自报的确认字段代替批准。
 
 保存先持久化草稿和原始基线，再物化 PDF；发布前保存待写字节的 `renderedHash`。文件适配器执行规范路径队列、权限与观察版本检查、原子替换和最终摘要复核。恢复时只有磁盘摘要等于 `renderedHash` 才能认定此前已发布；否则保留草稿和冲突。成功发布后的清理失败只产生可重试警告，不把文件重新标成未保存。普通文件系统不能提供与无关外部写入者之间的跨进程事务，保存结果不确定时不冒充成功。
 
@@ -109,7 +102,7 @@ Host 从连接或工具执行上下文取得可信身份，再按文件资源会
 
 `PageContent` 保留页几何、原生文字、UTF-16 范围及带来源的内容表示。`native-text`、`ocr-text` 和 `image-description` 分别记录生产者、配置身份、输入摘要、状态、警告与可选位置。当前视觉后备块是整页区域，不推断独立插图、公式或表格结构。OCR 和视觉描述可同时参与索引；它们是派生内容，不能冒充精确原生文字。
 
-`adapters/host/dsh/page-content.ts` 从已授权工作副本组合原生提取和图像引擎；`modules/retrieval` 只拥有可重建索引，不拥有第二份 PDF 或草稿。原生文字、OCR 和图像描述按路径、页码、逐页正文指纹及各自引擎身份缓存，向量按文字及文档编码指纹复用。正文指纹排除标注、批注和书签，包含页几何、资源与共享渲染依赖。已就绪的索引在同正文保存后保持就绪，在途读取和结果引用仍按文件版本校验。无法验证的页按文件字节保守复用，其他页仍可独立命中缓存。
+`src/layers/derived/content/production/page-content.ts` 从已授权工作副本组合原生提取和图像引擎；`src/layers/derived/indexing/` 只拥有可重建索引，不拥有第二份 PDF 或草稿。原生文字、OCR 和图像描述按路径、页码、逐页正文指纹及各自引擎身份缓存，向量按文字及文档编码指纹复用。正文指纹排除标注、批注和书签，包含页几何、资源与共享渲染依赖。已就绪的索引在同正文保存后保持就绪，在途读取和结果引用仍按文件版本校验。无法验证的页按文件字节保守复用，其他页仍可独立命中缓存。
 
 读页的本地字符映射修复与新索引的内置 Tesseract OCR 共用 `page-ocr-artifacts` 原始产物链：相同源字节、路径、页、PDFium 构建、页几何、栅格参数和生产者身份才可复用。内置引擎统一使用不含标注和表单外观的 2048px 长边输入，保持读页修复密度；第三方 OCR 保留自己的引擎、配置、语言和 1024px 输入身份。产物只保存识别文字、图像坐标和来源，不保存图像或会话权限；每个订阅者独立复核授权与源，取消最后一个订阅者才取消共享生产。本地冷任务仍限制为一个 worker。历史 1024px 索引表示继续可读，不被强制重建，也不冒充新的原始产物。
 
@@ -145,6 +138,6 @@ SQLite 保存完整内容、向量和逐页检查点，内存只保留有界热�
 
 后台文档策略只对工作副本登记表执行空闲/容量回收，不另建文档表。操作 pin 防止执行中的副本被回收。被动状态订阅有有限等待上限，不能等待插件卸载才结束，从而阻塞 Desktop 重启更新。
 
-Reader 由 `src/client/Reader.tsx` 组合功能 controller；窗口化页面、tile 和文字层位于 `viewer/rendering`。数值页布局、缩放交接、导航和历史共享坐标，不依赖可能已卸载的 DOM 锚点。面板共用 `ScrollablePanel`，弹层共用 Reader 内部定位与焦点规则；样式位于 `src/client/`，不覆盖 DSH 全局选择器。
+Reader 由 `src/surfaces/client/Reader.tsx` 组合功能 controller；窗口化页面、tile 和文字层位于 `viewer/rendering`。数值页布局、缩放交接、导航和历史共享坐标，不依赖可能已卸载的 DOM 锚点。面板共用 `ScrollablePanel`，弹层共用 Reader 内部定位与焦点规则；样式位于 `src/surfaces/client/`，不覆盖 DSH 全局选择器。
 
 目录/非 React 文件使用 `kebab-case`，React 文件使用 `PascalCase.tsx`，hook 使用 `useXxx`；模型 PDF 工具使用 `pdf_*`，RPC 使用 `pdf.*`。公开包入口、声明生成及打包清单须随接口变化同步。架构边界与复杂度可通过 `npm run arch:report` 检查；当前测试与覆盖率口径见[测试指南](./testing.md)。

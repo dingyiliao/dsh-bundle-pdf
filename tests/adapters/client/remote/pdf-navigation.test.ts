@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createPdfAgentNavigationApi } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createPdfAgentNavigationApi } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const request = { requestId: '4a0c121b-80b5-441b-91a0-0f3baf471e84', documentId: 'doc', page: 2, contentVersion: 'v',

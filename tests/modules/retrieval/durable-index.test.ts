@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test, { type TestContext } from 'node:test'
-import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { chunkRetrievalPage, tokenizeRetrievalText } from '../../../src/modules/retrieval/text.ts'
-import type { RetrievalEmbedding, RetrievalPage, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalStore } from '../../../src/layers/derived/storage/retrieval-store.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { chunkRetrievalPage, tokenizeRetrievalText } from '../../../src/layers/derived/content/retrieval/text.ts'
+import type { RetrievalEmbedding, RetrievalPage, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 async function directory(t: TestContext) {

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfOcrDispatch } from '../../../src/adapters/host/dsh/pdf-ocr-transport.ts'
-import { HostOcrService } from '../../../src/modules/ocr/index.js'
-import type { OcrOutput } from '../../../src/ocr/types.ts'
+import { createPdfOcrDispatch } from '../../../src/surfaces/host/routes/ocr-transport.ts'
+import { HostOcrService } from '../../../src/engines/ocr/service/index.js'
+import type { OcrOutput } from '../../../src/engines/ocr/sdk/types.ts'
 
 const agent = { session: { id: 'session-1', header: { cwd: '/workspace' } } }
 const signal = () => new AbortController().signal

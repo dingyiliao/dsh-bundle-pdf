@@ -4,11 +4,11 @@ import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderProps } from '../../../src/client/contracts.ts'
+import type { ReaderProps } from '../../../src/surfaces/client/contracts.ts'
 import type { NativeTextContent, NativeTile, NativeTileRequest } from '../../../src/shared/native.ts'
-import { readerLifetime } from '../../../src/client/viewer/controllers/reader-lifetime.ts'
-import { TranslationRegistry, type TranslationRequest } from '../../../src/translation/index.ts'
-import type { VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
+import { readerLifetime } from '../../../src/surfaces/client/viewer/controllers/reader-lifetime.ts'
+import { TranslationRegistry, type TranslationRequest } from '../../../src/engines/translation/sdk/index.ts'
+import type { VisiblePdfReader } from '../../../src/surfaces/client/toolview/pdf-evidence-navigation.ts'
 
 // The shipped Client bundles CSS as text. The Node component test only needs
 // the actual Reader implementation; stylesheet contents are irrelevant here.
@@ -121,7 +121,7 @@ async function withReader(run: (fixture: {
     IS_REACT_ACT_ENVIRONMENT: true,
   }
   installDom(values)
-  const { Reader } = await import('../../../src/client/Reader.tsx')
+  const { Reader } = await import('../../../src/surfaces/client/Reader.tsx')
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!
   const root = createRoot(container)

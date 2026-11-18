@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TranslationPanel, type TranslationPanelProps } from '../../../src/client/viewer/components/TranslationPanel.tsx'
-import { TranslationError, translationEn, type TranslationRequest, type TranslationResult } from '../../../src/translation/index.ts'
+import { TranslationPanel, type TranslationPanelProps } from '../../../src/surfaces/client/viewer/components/TranslationPanel.tsx'
+import { TranslationError, translationEn, type TranslationRequest, type TranslationResult } from '../../../src/engines/translation/sdk/index.ts'
 
 const t = (key: string) => translationEn[key.replace(/^reader\./, '') as keyof typeof translationEn] ?? key
 const result = (text = 'Translated'): TranslationResult => ({ text, status: 'complete', warnings: [],

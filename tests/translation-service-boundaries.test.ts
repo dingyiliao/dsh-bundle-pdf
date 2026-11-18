@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TranslationRegistry } from '../src/translation/registry.ts'
-import { TranslationService } from '../src/translation/service.ts'
-import { TranslationError, type TranslationEngine, type TranslationRequest } from '../src/translation/types.ts'
+import { TranslationRegistry } from '../src/engines/translation/sdk/registry.ts'
+import { TranslationService } from '../src/engines/translation/sdk/service.ts'
+import { TranslationError, type TranslationEngine, type TranslationRequest } from '../src/engines/translation/sdk/types.ts'
 
 const request = (signal?: AbortSignal): TranslationRequest => ({ text: 'hello', targetLanguage: 'zh', signal })
 const hasCode = (code: string) => (error: unknown) => error instanceof TranslationError && error.code === code

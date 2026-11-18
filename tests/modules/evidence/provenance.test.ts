@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { evidenceSha256, imageEvidenceSource } from '../../../src/modules/evidence/provenance.ts'
+import { evidenceSha256, imageEvidenceSource } from '../../../src/layers/facade/evidence/provenance.ts'
 
 test('image provenance distinguishes direct sight, OCR, and another model description', () => {
   const pdfBytes = Buffer.from('pdf'), imageBytes = Buffer.from('rendered page')

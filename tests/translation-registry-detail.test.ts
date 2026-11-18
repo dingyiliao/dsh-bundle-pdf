@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TranslationError, TranslationRegistry, type TranslationLimits, type TranslationOutput } from '../src/translation/index.ts'
+import { TranslationError, TranslationRegistry, type TranslationLimits, type TranslationOutput } from '../src/engines/translation/sdk/index.ts'
 
 function registryWith(output: TranslationOutput, limits: Partial<TranslationLimits> = {}): TranslationRegistry {
   const registry = new TranslationRegistry({ timeoutMs: 30_000, maxInputCharacters: 8192, maxOutputCharacters: 32768, ...limits })

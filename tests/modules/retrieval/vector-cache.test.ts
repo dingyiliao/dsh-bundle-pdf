@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { cacheDerived, decodeCachedVector, encodeCachedVector, readCachedPage, readCachedVector, readCachedVectorRecord } from '../../../src/modules/retrieval/cache.ts'
-import { cosineSimilarity } from '../../../src/modules/retrieval/ranking.ts'
-import type { RetrievalCache } from '../../../src/modules/retrieval/types.ts'
+import { cacheDerived, decodeCachedVector, encodeCachedVector, readCachedPage, readCachedVector, readCachedVectorRecord } from '../../../src/layers/derived/indexing/cache.ts'
+import { cosineSimilarity } from '../../../src/layers/derived/indexing/ranking.ts'
+import type { RetrievalCache } from '../../../src/layers/derived/indexing/types.ts'
 
 function cacheWith(value: unknown) {
   const stored = new Map<string, unknown>([['vector', structuredClone(value)]])

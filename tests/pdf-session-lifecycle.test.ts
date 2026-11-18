@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfSessionLifecycle, type PdfSessionOwner } from '../src/client/pdf-session-lifecycle.ts'
+import { createPdfSessionLifecycle, type PdfSessionOwner } from '../src/surfaces/client/pdf-session-lifecycle.ts'
 import type { WorkspaceSnapshot } from '../src/shared/contracts.ts'
 
 const address = (sessionId: string, file = 'paper.pdf') => `dsh-resource://file/session/${sessionId}//books/${file}`

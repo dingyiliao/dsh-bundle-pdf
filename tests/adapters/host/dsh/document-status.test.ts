@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { documentCapabilities } from '../../../../src/adapters/host/dsh/document-status.ts'
-import { registerPdfAgentTools } from '../../../../src/adapters/host/dsh/agent-tools.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+import { documentCapabilities } from '../../../../src/surfaces/host/routes/document-status.ts'
+import { registerPdfAgentTools } from '../../../../src/surfaces/host/tools/agent-tools.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 function snapshot(): HostWorkspaceSnapshot {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { adoptLegacyPageContents, pageContentAggregateKey } from '../../../../src/adapters/host/dsh/page-content-legacy.js'
+import { adoptLegacyPageContents, pageContentAggregateKey } from '../../../../src/layers/derived/content/production/page-content-legacy.js'
 import { appendPageRepresentation, buildNativePageContent, createPageRepresentation,
   NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, pageContentBlockId, pageContentCacheIdentity, pageContentDigest, parsePageContent,
-  type PageContent, type PageRepresentation } from '../../../../src/modules/document/index.js'
-import type { RetrievalCache } from '../../../../src/modules/retrieval/index.js'
+  type PageContent, type PageRepresentation } from '../../../../src/layers/document/content/index.js'
+import type { RetrievalCache } from '../../../../src/layers/derived/indexing/index.js'
 import type { NativeTextContent } from '../../../../src/shared/native.js'
 
 type Target = Parameters<typeof adoptLegacyPageContents>[1]

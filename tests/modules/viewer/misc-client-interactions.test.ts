@@ -3,23 +3,23 @@ import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
-import { AnnotationColorBar } from '../../../src/client/viewer/components/AnnotationColorBar.tsx'
-import { AnnotationList } from '../../../src/client/viewer/components/AnnotationList.tsx'
-import { BookmarkPanel } from '../../../src/client/viewer/components/BookmarkPanel.tsx'
-import { ExplanationQuestionEditor } from '../../../src/client/viewer/components/ExplanationQuestionEditor.tsx'
-import { FloatingToolbar } from '../../../src/client/viewer/components/FloatingToolbar.tsx'
-import { FloatingStatusRail } from '../../../src/client/viewer/components/FloatingStatusRail.tsx'
-import { OcrTranscriptPanel } from '../../../src/client/viewer/components/OcrTranscriptPanel.tsx'
-import { ReadingSidebar, type ReadingSidebarSection } from '../../../src/client/viewer/components/ReadingSidebar.tsx'
-import { ReaderNoteEditor } from '../../../src/client/viewer/components/ReaderNoteEditor.tsx'
-import { ScreenshotPreview } from '../../../src/client/viewer/components/ScreenshotPreview.tsx'
-import { SplitActionControl } from '../../../src/client/viewer/components/SplitActionControl.tsx'
-import { TranslationPanel } from '../../../src/client/viewer/components/TranslationPanel.tsx'
-import { ToolbarTooltip } from '../../../src/client/viewer/components/ToolbarTooltip.tsx'
-import { TranslationError, type TranslationResult } from '../../../src/translation/index.ts'
-import type { HostOcrRecognition } from '../../../src/adapters/client/remote/host-ocr-api.ts'
-import type { ReaderDocument, ReaderOutlineItem } from '../../../src/client/viewer/ports/reader-document.ts'
-import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/client/viewer/model/highlight-colors.ts'
+import { AnnotationColorBar } from '../../../src/surfaces/client/viewer/components/AnnotationColorBar.tsx'
+import { AnnotationList } from '../../../src/surfaces/client/viewer/components/AnnotationList.tsx'
+import { BookmarkPanel } from '../../../src/surfaces/client/viewer/components/BookmarkPanel.tsx'
+import { ExplanationQuestionEditor } from '../../../src/surfaces/client/viewer/components/ExplanationQuestionEditor.tsx'
+import { FloatingToolbar } from '../../../src/surfaces/client/viewer/components/FloatingToolbar.tsx'
+import { FloatingStatusRail } from '../../../src/surfaces/client/viewer/components/FloatingStatusRail.tsx'
+import { OcrTranscriptPanel } from '../../../src/surfaces/client/viewer/components/OcrTranscriptPanel.tsx'
+import { ReadingSidebar, type ReadingSidebarSection } from '../../../src/surfaces/client/viewer/components/ReadingSidebar.tsx'
+import { ReaderNoteEditor } from '../../../src/surfaces/client/viewer/components/ReaderNoteEditor.tsx'
+import { ScreenshotPreview } from '../../../src/surfaces/client/viewer/components/ScreenshotPreview.tsx'
+import { SplitActionControl } from '../../../src/surfaces/client/viewer/components/SplitActionControl.tsx'
+import { TranslationPanel } from '../../../src/surfaces/client/viewer/components/TranslationPanel.tsx'
+import { ToolbarTooltip } from '../../../src/surfaces/client/viewer/components/ToolbarTooltip.tsx'
+import { TranslationError, type TranslationResult } from '../../../src/engines/translation/sdk/index.ts'
+import type { HostOcrRecognition } from '../../../src/surfaces/client/adapters/remote/host-ocr-api.ts'
+import type { ReaderDocument, ReaderOutlineItem } from '../../../src/surfaces/client/viewer/ports/reader-document.ts'
+import { HIGHLIGHT_QUICK_COLORS_KEY } from '../../../src/surfaces/client/viewer/model/highlight-colors.ts'
 
 async function withDom(run: (dom: Window & typeof globalThis, container: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>) => Promise<void>) {
@@ -250,7 +250,7 @@ test('page comment card stays attached above its mark and tolerates transient mi
       return nextLoad(url, context)
     },
   })
-  const { AnnotationCommentCard } = await import('../../../src/client/viewer/components/AnnotationCommentCard.tsx')
+  const { AnnotationCommentCard } = await import('../../../src/surfaces/client/viewer/components/AnnotationCommentCard.tsx')
   await withDom(async (dom, _container, render) => {
     const rect = (left: number, top: number, width: number, height: number) => ({
       left, top, right: left + width, bottom: top + height, width, height,

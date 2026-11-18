@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/client/settings/Settings.tsx'
+import { Settings, type ConfigForm, type ConfigFormSnapshot } from '../src/surfaces/client/settings/Settings.tsx'
 import { defaultSettings } from '../src/shared/contracts.ts'
 
 const ready = (): ConfigFormSnapshot => ({ status: 'ready', value: { ...defaultSettings },

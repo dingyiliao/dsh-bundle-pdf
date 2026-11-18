@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readingPositionRecordSchema } from '../../../src/modules/navigation/index.ts'
+import { readingPositionRecordSchema } from '../../../src/layers/facade/navigation/index.ts'
 import { readingPositionSchema } from '../../../src/contracts/rpc/index.ts'
 
 test('reading-position V1 records preserve the existing strict location schema', () => {

@@ -1,5 +1,7 @@
 # PDF 插件重构计划 v2
 
+历史快照：本文描述早期 `src/client` / `src/modules` 布局下的渲染计划；源码现行分层见[架构文档](./architecture.md)，不要将本文路径当作当前源码位置。
+
 状态：**Phase 0–1 完成；Phase 2 仅完成窗口上限与 preview 范围；完整 RenderStore/单调度器未实施；Phase 3 的 Native 契约清理已完成**。本文取代 [refactor-plan.md](./refactor-plan.md) 中与 Client 渲染、契约治理相关的部分；v1 的 Host 事务、Native patch queue、索引与迁移结论仍然有效。
 
 范围：**Client 渲染管线重写 + 契约单一事实源 + 架构门禁**。Host 工作副本、保存事务和 Native 协议语义不做行为性改动。
@@ -102,7 +104,7 @@
 其他基线：
 
 - **100%**：3–4 页、5.2k–7.1k span；慢速滚动 p95 16.8ms，快速滚动 p95 约 100ms、最大 166ms。即高缩放也有可感知卡顿，只是没有 10% 那么致命。
-- 10% 是当前缩放下限（[use-pdf-wheel-zoom.ts:261](../src/client/viewer/controllers/use-pdf-wheel-zoom.ts#L261)），所以它是必须通过的真实最坏场景，而不是人为构造的极端值。
+- 10% 是当前缩放下限（[use-pdf-wheel-zoom.ts:261](../src/surfaces/client/viewer/controllers/use-pdf-wheel-zoom.ts#L261)），所以它是必须通过的真实最坏场景，而不是人为构造的极端值。
 - **10% 的缩放提交本身**：一次手势整体约 12.1s，其中 32 个 long task 合计阻塞约 10.9s。
 - 14 次 `TileSurface.reconcile` 的 `getBoundingClientRect` 各约 670ms；CPU profile 的样本几乎全部落在该原生调用上。
 
@@ -203,7 +205,7 @@ interface ReaderRenderKernel {
 约束：
 
 - 帧内不允许“写 DOM 后再读布局”。需要尺寸时用数值布局或上一帧缓存。
-- 现有热点代码的落点：[WindowedPages](../src/client/viewer/rendering/WindowedPages.tsx#L95-L117)、[Page](../src/client/viewer/rendering/Page.tsx#L110-L229)、[TileSurface](../src/client/viewer/rendering/TileSurface.tsx#L91-L122)、[windowForViewport](../src/client/viewer/rendering/page-layout.ts#L78-L86)。
+- 现有热点代码的落点：[WindowedPages](../src/surfaces/client/viewer/rendering/WindowedPages.tsx#L95-L117)、[Page](../src/surfaces/client/viewer/rendering/Page.tsx#L110-L229)、[TileSurface](../src/surfaces/client/viewer/rendering/TileSurface.tsx#L91-L122)、[windowForViewport](../src/surfaces/client/viewer/rendering/page-layout.ts#L78-L86)。
 - `invalidate` 合并到下一帧；同一帧多次滚动只处理最后一次。
 - 文本构建、tile 完成都通过 store 更新，不直接触发父级全量 render。
 - 页面组件不注册 `scroll` 监听；`scrollPreview` 由内核计算，不再由单独的 hook 驱动窗口。
@@ -251,7 +253,7 @@ interface WindowPolicy {
 
 文本层 DOM 的约束：
 
-- 每个 span 仍绝对定位，但不再参与滚动路径上的测量（替换现在 [Page.tsx:215-219](../src/client/viewer/rendering/Page.tsx#L215-L219) 的逐 span 测量）。
+- 每个 span 仍绝对定位，但不再参与滚动路径上的测量（替换现在 [Page.tsx:215-219](../src/surfaces/client/viewer/rendering/Page.tsx#L215-L219) 的逐 span 测量）。
 - `run` 精度下每个 span 覆盖一个 run/行，不再逐字符；50%–90% 的选区是行级近似。
 - 文本层只在 `PageSurface` 内部，由 store 的 `text` 模式决定是否挂载；不会随每次滚动重新创建。
 
@@ -320,7 +322,7 @@ interface WindowPolicy {
 
 ### 5.3 模块归属与命名
 
-- `src/modules/viewer` → `src/client/viewer`（或 `src/ui/reader`）：`modules/` 只保留与运行环境无关的领域模块，`client/` 放 UI 应用。**Phase 0 已完成移动**，避免 kernel 写完后再次搬迁。现状参考 [viewer/index.ts](../src/client/viewer/index.ts)。
+- `src/modules/viewer` → `src/client/viewer`（或 `src/ui/reader`）：`modules/` 只保留与运行环境无关的领域模块，`client/` 放 UI 应用。**Phase 0 已完成移动**，避免 kernel 写完后再次搬迁。现状参考 [viewer/index.ts](../src/surfaces/client/viewer/index.ts)。
 - `src/modules/engines` → `src/modules/ai-providers`（或 `engine-directory`）：与 `src/engine`（PDF 引擎/协议）区分。
 - `src/host`（5 行 SDK 类型）→ 合并到 `src/entrypoints` 或 `src/sdk/host.ts`。
 - 可选：`src/engine` → `src/pdf-engine`，让“PDF 引擎”和“AI provider”在名字上不再冲突。

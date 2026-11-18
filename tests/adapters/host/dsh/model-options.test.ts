@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfModelOptions } from '../../../../src/adapters/host/dsh/model-options.ts'
+import { createPdfModelOptions } from '../../../../src/surfaces/host/routes/model-options.ts'
 import { modelOptionsRequestSchema, visionModelCatalogSchema } from '../../../../src/contracts/model-options.ts'
 
 const signal = new AbortController().signal

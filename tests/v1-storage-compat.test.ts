@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import type { PdfAgent } from '../src/adapters/host/dsh/index.ts'
-import { draftSchema, type DraftRecord } from '../src/modules/working-copy/index.ts'
+import type { PdfAgent } from '../src/contracts/rpc/pdf-dispatch.ts'
+import { draftSchema, type DraftRecord } from '../src/layers/document/working-copy/index.ts'
 import { createWorkspaces } from './fixtures/working-copy-service.ts'
 
 // These JSON records are frozen, synthetic V1 committed-format examples. They

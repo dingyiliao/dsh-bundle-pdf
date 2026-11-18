@@ -1,7 +1,7 @@
 import { expect, it, onTestFailed } from 'vitest'
 import { launchWebScaffold, seedSession, watchConsole, newEnglishPage, openSettings, saveFailureShot, ROOT, SESSION } from '../support/scaffold.ts'
 import { type Browser } from 'playwright'
-import { type EmbeddingRegistry } from '../../../src/embedding/index.ts'
+import { type EmbeddingRegistry } from '../../../src/engines/embedding/sdk/index.ts'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { join } from 'node:path'

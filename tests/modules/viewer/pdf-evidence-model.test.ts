@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { pdfEvidenceCardModel } from '../../../src/client/toolview/pdf-evidence-model.ts'
+import { pdfEvidenceCardModel } from '../../../src/surfaces/client/toolview/pdf-evidence-model.ts'
 
 const digest = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`
 

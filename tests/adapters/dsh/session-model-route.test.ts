@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveSessionModel, SessionModelRouteError, type SessionModelRouteContext } from '../../../src/adapters/host/dsh/session-model-route.js'
+import { resolveSessionModel, SessionModelRouteError, type SessionModelRouteContext } from '../../../src/engines/spi/routing/session-model-route.js'
 
 const signal = () => new AbortController().signal
 

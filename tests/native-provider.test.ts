@@ -7,8 +7,8 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import * as nativeProvider from '../src/entrypoints/native-host.ts'
-import { resolveNativeDistribution, verifyNativeDistribution } from '../src/entrypoints/native-host.ts'
+import * as nativeProvider from '../src/plugins/native.ts'
+import { resolveNativeDistribution, verifyNativeDistribution } from '../src/plugins/native.ts'
 
 const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
 const executableName = `dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`

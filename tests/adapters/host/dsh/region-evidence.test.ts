@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AttachmentId, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { createPdfRegionDispatch, prepareRegionImageEvidence } from '../../../../src/adapters/host/dsh/region-evidence.ts'
-import { registerPdfTransport } from '../../../../src/adapters/host/dsh/transport.ts'
-import { ocrRegionRenderPlan } from '../../../../src/modules/document/index.ts'
+import { createPdfRegionDispatch, prepareRegionImageEvidence } from '../../../../src/surfaces/host/routes/evidence/region.ts'
+import { registerPdfTransport } from '../../../../src/surfaces/host/routes/transport.ts'
+import { ocrRegionRenderPlan } from '../../../../src/layers/document/content/index.ts'
 import { createImageEvidenceRegistry, createMemoryEvidenceReferenceStore,
-  evidenceSha256 } from '../../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+  evidenceSha256 } from '../../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 
 const signal = new AbortController().signal
 const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3])

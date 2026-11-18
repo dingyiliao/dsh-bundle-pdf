@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createV1DraftRepository } from '../../../src/adapters/host/storage/v1-drafts.ts'
-import { digestPdfBytes, encodePdfBaseline } from '../../../src/modules/document/index.ts'
-import type { DraftRecord, V1DraftPort, WorkspaceRecord } from '../../../src/modules/working-copy/index.ts'
+import { createV1DraftRepository } from '../../../src/layers/document/working-copy/storage/v1-drafts.ts'
+import { digestPdfBytes, encodePdfBaseline } from '../../../src/layers/document/content/index.ts'
+import type { DraftRecord, V1DraftPort, WorkspaceRecord } from '../../../src/layers/document/working-copy/index.ts'
 
 const bytes = Uint8Array.from([37, 80, 68, 70])
 const sourceHash = digestPdfBytes(bytes)

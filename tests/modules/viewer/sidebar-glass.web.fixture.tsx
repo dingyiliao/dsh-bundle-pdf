@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { readerStyles } from '../../../src/client/reader-styles.js'
-import { ReadingSidebar } from '../../../src/client/viewer/components/ReadingSidebar.js'
-import { ScrollablePanel } from '../../../src/client/viewer/components/ScrollablePanel.js'
-import { readerLocales } from '../../../src/client/viewer/locales.js'
+import { readerStyles } from '../../../src/surfaces/client/reader-styles.js'
+import { ReadingSidebar } from '../../../src/surfaces/client/viewer/components/ReadingSidebar.js'
+import { ScrollablePanel } from '../../../src/surfaces/client/viewer/components/ScrollablePanel.js'
+import { readerLocales } from '../../../src/surfaces/client/viewer/locales.js'
 
 const style = document.createElement('style')
 style.textContent = readerStyles

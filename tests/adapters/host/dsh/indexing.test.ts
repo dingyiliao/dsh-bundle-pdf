@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfIndexing } from '../../../../src/adapters/host/dsh/indexing.ts'
-import { createRetrievalPrefetch } from '../../../../src/adapters/host/dsh/retrieval-prefetch.ts'
-import type { OpenWorkingCopyDocument } from '../../../../src/modules/working-copy/index.ts'
-import type { RetrievalProgress } from '../../../../src/modules/retrieval/index.ts'
+import { createPdfIndexing } from '../../../../src/layers/facade/indexing/indexing.ts'
+import { createRetrievalPrefetch } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
+import type { OpenWorkingCopyDocument } from '../../../../src/layers/document/working-copy/index.ts'
+import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function fixture() {

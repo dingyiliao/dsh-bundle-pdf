@@ -7,12 +7,12 @@ import { PassThrough } from 'node:stream'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
 import { plainPdf } from '../fixtures/plain-pdf.ts'
-import { apply } from '../../src/entrypoints/reader-host.ts'
-import { Config, type HostConfig } from '../../src/entrypoints/reader-host-config.ts'
-import { evidenceSha256 } from '../../src/modules/evidence/index.ts'
-import type { EmbeddingRegistry } from '../../src/embedding/index.ts'
-import { FrameDecoder, encodeFrame } from '../../src/engine/host/framing.ts'
-import type { NativeProcessRuntime } from '../../src/engine/host/native-worker.ts'
+import { apply } from '../../src/plugins/reader/host.ts'
+import { Config, type HostConfig } from '../../src/plugins/reader/config.ts'
+import { evidenceSha256 } from '../../src/layers/facade/evidence/index.ts'
+import type { EmbeddingRegistry } from '../../src/engines/embedding/sdk/index.ts'
+import { FrameDecoder, encodeFrame } from '../../src/native-boundary/host/framing.ts'
+import type { NativeProcessRuntime } from '../../src/native-boundary/host/native-worker.ts'
 
 type Tool = { name: string; execute(input: unknown, execution: unknown): Promise<unknown> }
 

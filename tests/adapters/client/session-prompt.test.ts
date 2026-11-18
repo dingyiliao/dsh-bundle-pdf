@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { sendExplanationPrompt, type CurrentSessionSource } from '../../../src/adapters/client/dsh/index.ts'
+import { sendExplanationPrompt, type CurrentSessionSource } from '../../../src/surfaces/client/adapters/dsh/index.ts'
 
 describe('explanation prompt admission', () => {
   it('queues exactly one text prompt to the owning selected Session', async () => {

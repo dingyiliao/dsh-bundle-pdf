@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PdfDocumentInfo, PdfOutlineItem } from '../../../src/core/pdf-types.ts'
+import type { PdfDocumentInfo, PdfOutlineItem } from '../../../src/shared/pdf-types.ts'
 import type { NativeOutlineItem } from '../../../src/shared/native.ts'
-import { projectedReaderOutline } from '../../../src/modules/outlines/reader-outline.ts'
+import { projectedReaderOutline } from '../../../src/layers/document/outlines/reader-outline.ts'
 
 const chapterView = [{ num: 17, gen: 0 }, { name: 'XYZ' }, 32, 700, 1.25]
 const namedView = 'named-section'

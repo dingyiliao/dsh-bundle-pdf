@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
-import { createNativeDocumentPort } from '../../src/adapters/host/pdfium/document-port.ts'
-import type { PdfWorkingCopyOperation } from '../../src/core/pdf-types.ts'
-import type { PdfDocumentPort } from '../../src/modules/working-copy/index.ts'
+import { createNativeDocumentPort } from '../../src/capabilities/pdfium/document-port.ts'
+import type { PdfWorkingCopyOperation } from '../../src/shared/pdf-types.ts'
+import type { PdfDocumentPort } from '../../src/layers/document/working-copy/index.ts'
 import { NativeTestSubprocess } from '../native-test-subprocess.ts'
 
 export const fixtureDocumentExecutable = process.env.DSH_PDF_NATIVE_HELPER

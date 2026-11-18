@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
-import { buildIndexPageEntries } from '../../../src/modules/retrieval/stored-index.ts'
+import { buildIndexPageEntries } from '../../../src/layers/derived/indexing/stored-index.ts'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { encodeCachedVector } from '../../../src/modules/retrieval/cache.ts'
-import { chunkRetrievalPage } from '../../../src/modules/retrieval/text.ts'
-import type { StoredIndexPage } from '../../../src/modules/retrieval/stored-index.ts'
-import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { encodeCachedVector } from '../../../src/layers/derived/indexing/cache.ts'
+import { chunkRetrievalPage } from '../../../src/layers/derived/content/retrieval/text.ts'
+import type { StoredIndexPage } from '../../../src/layers/derived/indexing/stored-index.ts'
+import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function gate() {

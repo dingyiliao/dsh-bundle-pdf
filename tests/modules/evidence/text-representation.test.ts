@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createMemoryEvidenceReferenceStore, createTextRangeReferences, createTextReferenceResolver,
-  describeEvidenceCapabilities, evidenceSha256, rememberTextEvidence } from '../../../src/modules/evidence/index.ts'
-import type { AgentPageReadPort } from '../../../src/modules/evidence/agent-page-read.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+  describeEvidenceCapabilities, evidenceSha256, rememberTextEvidence } from '../../../src/layers/facade/evidence/index.ts'
+import type { AgentPageReadPort } from '../../../src/layers/facade/evidence/agent-page-read.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 
 const signal = new AbortController().signal

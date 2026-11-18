@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { excerptAround, findExactInPage, findNormalizedInPage } from '../../../src/modules/search/index.ts'
+import { excerptAround, findExactInPage, findNormalizedInPage } from '../../../src/layers/facade/search/sessions/index.ts'
 
 test('exact search is case-sensitive, bounded, and keeps overlapping UTF-16 offsets', () => {
   const first = findExactInPage('Banana banana', 'ana', 0, 2)

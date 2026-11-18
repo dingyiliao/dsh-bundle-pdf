@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PdfPageInfo } from '../../../src/core/pdf-types.ts'
-import { ocrRegionRenderPlan, pageRenderPlan } from '../../../src/modules/document/index.ts'
+import type { PdfPageInfo } from '../../../src/shared/pdf-types.ts'
+import { ocrRegionRenderPlan, pageRenderPlan } from '../../../src/layers/document/content/index.ts'
 
 const page: PdfPageInfo = { page: 1, cropBox: [20, 40, 220, 440], rotation: 0, userUnit: 1 }
 

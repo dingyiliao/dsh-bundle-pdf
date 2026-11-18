@@ -2,14 +2,14 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act, useState } from 'react'
-import { usePdfViewportSize, type PdfViewportSize } from '../../../src/client/viewer/controllers/use-pdf-viewport-size.ts'
-import { usePdfWheelZoom } from '../../../src/client/viewer/controllers/use-pdf-wheel-zoom.ts'
-import { WindowedPages } from '../../../src/client/viewer/rendering/WindowedPages.tsx'
-import { buildPageLayout, capPageWindow, readingPageProbe, windowForViewport } from '../../../src/client/viewer/rendering/page-layout.ts'
+import { usePdfViewportSize, type PdfViewportSize } from '../../../src/surfaces/client/viewer/controllers/use-pdf-viewport-size.ts'
+import { usePdfWheelZoom } from '../../../src/surfaces/client/viewer/controllers/use-pdf-wheel-zoom.ts'
+import { WindowedPages } from '../../../src/surfaces/client/viewer/rendering/WindowedPages.tsx'
+import { buildPageLayout, capPageWindow, readingPageProbe, windowForViewport } from '../../../src/surfaces/client/viewer/rendering/page-layout.ts'
 import { clearWheelZoomReflow, pageIndexAtOffset, setWheelZoomReflow, setWindowLayout, wheelZoomReflow, windowLayout,
-  type WheelZoomReflow } from '../../../src/client/viewer/rendering/window-layout.ts'
-import { readerPageScale } from '../../../src/client/viewer/controllers/navigation-position.ts'
-import { readingViewportBounds } from '../../../src/client/viewer/rendering/pdf-viewport-geometry.ts'
+  type WheelZoomReflow } from '../../../src/surfaces/client/viewer/rendering/window-layout.ts'
+import { readerPageScale } from '../../../src/surfaces/client/viewer/controllers/navigation-position.ts'
+import { readingViewportBounds } from '../../../src/surfaces/client/viewer/rendering/pdf-viewport-geometry.ts'
 
 async function withDom(run: (dom: Window & typeof globalThis, viewport: HTMLElement,
   render: (element: React.ReactElement) => Promise<void>, frames: Map<number, FrameRequestCallback>) => Promise<void>) {

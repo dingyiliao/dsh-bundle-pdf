@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createTextEvidence, describeEvidenceCapabilities, evidenceSha256, savedTextRangeReferenceSchema,
-  textEvidenceSchema } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+  textEvidenceSchema } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { imageEvidenceSchema } from '../../../src/modules/evidence/reference-store.ts'
+import { imageEvidenceSchema } from '../../../src/layers/facade/evidence/reference-store.ts'
 
 const snapshot = { id: 'doc', path: '/paper.pdf', bytes: Buffer.from('source'), sourceVersion: 'fs-1',
   contentVersion: 'v1', revision: 0, document: { pageCount: 1, pages: [] } } as unknown as HostWorkspaceSnapshot

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { currentTranslationSelection } from '../../../src/client/viewer/model/translation-selection.ts'
-import { TranslationError } from '../../../src/translation/types.ts'
+import { currentTranslationSelection } from '../../../src/surfaces/client/viewer/model/translation-selection.ts'
+import { TranslationError } from '../../../src/engines/translation/sdk/types.ts'
 
 test('a captured translation selection belongs to its reader and source document', () => {
   const selection = { owner: 7, documentId: 'pdf-a', contentVersion: 'v1', text: 'hello' }

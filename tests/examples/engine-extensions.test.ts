@@ -7,9 +7,9 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { build } from 'esbuild'
-import { HostOcrService, type HostOcrBackend } from '../../src/modules/ocr/index.js'
-import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../src/modules/image-understanding/index.js'
-import { EngineCatalog } from '../../src/modules/engines/index.js'
+import { HostOcrService, type HostOcrBackend } from '../../src/engines/ocr/service/index.js'
+import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../src/engines/image/service/index.js'
+import { EngineCatalog } from '../../src/engines/spi/index.js'
 
 const root = new URL('../../', import.meta.url)
 // Compile and execute the actual example, while keeping its public SDK imports

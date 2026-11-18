@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfSelectionDispatch, selectionEvidenceRequestSchema } from '../../../../src/adapters/host/dsh/selection-evidence.ts'
-import { registerPdfTransport } from '../../../../src/adapters/host/dsh/transport.ts'
+import { createPdfSelectionDispatch, selectionEvidenceRequestSchema } from '../../../../src/surfaces/host/routes/evidence/selection.ts'
+import { registerPdfTransport } from '../../../../src/surfaces/host/routes/transport.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256,
-  type SelectionRevalidationResult } from '../../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../../src/modules/working-copy/index.ts'
+  type SelectionRevalidationResult } from '../../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../../src/shared/native.ts'
-import { createTextSelectionEvidenceApi } from '../../../../src/adapters/client/remote/pdf-selection.ts'
-import type { PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createTextSelectionEvidenceApi } from '../../../../src/surfaces/client/adapters/remote/pdf-selection.ts'
+import type { PdfConnection } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 
 type Route = Parameters<Parameters<typeof registerPdfTransport>[0]['connection']['fetch']['register']>[0]
 const content: NativeTextContent = { items: [{ str: 'Hello',

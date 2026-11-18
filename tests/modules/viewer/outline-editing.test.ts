@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PdfDocumentInfo, PdfOutlineItem } from '../../../src/core/pdf-types.ts'
-import { projectOutlineOperations } from '../../../src/modules/outlines/index.ts'
-import { outlineDrop, outlineKeyboardMove, outlineLocations } from '../../../src/client/viewer/model/outline-editing.ts'
+import type { PdfDocumentInfo, PdfOutlineItem } from '../../../src/shared/pdf-types.ts'
+import { projectOutlineOperations } from '../../../src/layers/document/outlines/index.ts'
+import { outlineDrop, outlineKeyboardMove, outlineLocations } from '../../../src/surfaces/client/viewer/model/outline-editing.ts'
 
 const items: PdfOutlineItem[] = [
   { id: 'a', title: 'A', page: 1, children: [{ id: 'child', title: 'Child', page: 2, children: [] }] },

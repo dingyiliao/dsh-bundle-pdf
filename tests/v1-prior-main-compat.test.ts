@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { fixturePdfDocument } from './fixtures/working-copy-service.ts'
-import { createV1DraftRepository } from '../src/adapters/host/storage/v1-drafts.ts'
-import { createV1NavigationStore } from '../src/adapters/host/storage/v1-navigation.ts'
+import { createV1DraftRepository } from '../src/layers/document/working-copy/storage/v1-drafts.ts'
+import { createV1NavigationStore } from '../src/layers/facade/navigation/storage/v1-navigation.ts'
 import { createReadingPositions,
-  type ReadingPositionRecord } from '../src/modules/navigation/index.ts'
-import { createWorkingCopyService, type DraftRecord, type HostWorkspaceSnapshot } from '../src/modules/working-copy/index.ts'
+  type ReadingPositionRecord } from '../src/layers/facade/navigation/index.ts'
+import { createWorkingCopyService, type DraftRecord, type HostWorkspaceSnapshot } from '../src/layers/document/working-copy/index.ts'
 import { priorMainDraftSchema,
   priorMainPositionSchema } from './fixtures/v1-storage/prior-main-schemas.ts'
 

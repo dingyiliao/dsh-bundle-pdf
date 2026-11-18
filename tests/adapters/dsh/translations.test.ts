@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createHostTranslations, type TranslationHostContext } from '../../../src/adapters/host/dsh/index.ts'
+import { createHostTranslations, type TranslationHostContext } from '../../../src/layers/facade/translation/host-translations.ts'
 import { defaultSettings } from '../../../src/shared/contracts.ts'
-import { translationContextLimit, TranslationError } from '../../../src/translation/types.ts'
-import { createHostTranslationEngine } from '../../../src/adapters/client/remote/translation-api.ts'
+import { translationContextLimit, TranslationError } from '../../../src/engines/translation/sdk/types.ts'
+import { createHostTranslationEngine } from '../../../src/surfaces/client/adapters/remote/translation-api.ts'
 
 const input = { sessionId: 'session', engineId: 'dsh-model', text: 'A complete sentence.',
   sourceLanguage: 'auto', targetLanguage: 'zh', timeoutMs: 30_000 }

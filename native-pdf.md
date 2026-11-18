@@ -12,7 +12,7 @@
 - `libpdfium.dylib`、`libpdfium.so` 或 `pdfium.dll`；
 - `manifest.json`、PDFium 与 JSON 依赖许可证。
 
-`src/entrypoints/native-host.ts` 从主包安装位置解析平台包，核对包版本、平台、协议、helper/动态库 SHA-256 及执行权限。源码 checkout 可使用 `dist/native/`；发布主包不包含该回退路径所需的原生源码清单。文件缺失或损坏时明确失败，不切换阅读引擎。
+`src/plugins/native.ts` 从主包安装位置解析平台包，核对包版本、平台、协议、helper/动态库 SHA-256 及执行权限。源码 checkout 可使用 `dist/native/`；发布主包不包含该回退路径所需的原生源码清单。文件缺失或损坏时明确失败，不切换阅读引擎。
 
 Host 管理员可用 `DSH_PDF_NATIVE_HELPER` 指向可信 helper；这是显式覆盖正常分发校验的部署入口，启动时仍须通过协议握手。Client 不能指定可执行文件。
 
@@ -32,7 +32,7 @@ npm run build
 
 ## Host 与 worker 边界
 
-`src/adapters/host/pdfium/pdf-service.ts` 从已授权工作副本取得源字节，拥有 native handle、缓存和渲染租约。`native-worker.ts` 使用 DSH `subprocess` 服务解析并启动进程，运行目录为 helper 所在目录。Host 持有文件与会话权限，worker 仅接收 PDF 字节和不透明文档 ID，不接收 Host 文件路径或暴露 native 指针。
+`src/capabilities/pdfium/pdf-service.ts` 从已授权工作副本取得源字节，拥有 native handle、缓存和渲染租约。`native-worker.ts` 使用 DSH `subprocess` 服务解析并启动进程，运行目录为 helper 所在目录。Host 持有文件与会话权限，worker 仅接收 PDF 字节和不透明文档 ID，不接收 Host 文件路径或暴露 native 指针。
 
 PDFium 的所有调用在 C++ 的单一命令循环中执行；输入字节与文档 handle 同寿命。页面、form environment 和文档按依赖顺序释放。进程隔离用于控制故障与资源寿命，不等于另加操作系统级沙箱。
 
@@ -40,7 +40,7 @@ Host 的打开/读取租约保证 mutable native document ID 不在一次读取�
 
 ## 帧协议
 
-协议定义位于 `src/engine/host/framing.ts`、`native/worker/worker-runtime.cpp` 与 `native/backend/pdfium/pdfium-worker.cpp`。stdin/stdout 都使用二进制帧：
+协议定义位于 `src/native-boundary/host/framing.ts`、`native/worker/worker-runtime.cpp` 与 `native/backend/pdfium/pdfium-worker.cpp`。stdin/stdout 都使用二进制帧：
 
 ```text
 uint32le JSON字节数 | uint32le 二进制字节数 | UTF-8 JSON | 二进制载荷

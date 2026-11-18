@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chunkPage, tokenizeRetrievalText } from '../../../src/modules/retrieval/text.ts'
+import { chunkPage, tokenizeRetrievalText } from '../../../src/layers/derived/content/retrieval/text.ts'
 
 test('chunks retain original UTF-16 ranges, whitespace and distinct repeated occurrences', () => {
   const repeated = '  A repeated paragraph with exact spelling.\n'.repeat(40)

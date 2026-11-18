@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import test from 'node:test'
 import { blankPdf } from './fixtures/plain-pdf.ts'
-import { NativeWorker } from '../src/engine/host/native-worker.ts'
+import { NativeWorker } from '../src/native-boundary/host/native-worker.ts'
 import { nativeTestSubprocess } from './native-test-subprocess.ts'
 
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)

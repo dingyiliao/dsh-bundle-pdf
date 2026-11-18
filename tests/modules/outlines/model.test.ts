@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PdfDocumentInfo, PdfOutlineItem, PdfOutlineOperation } from '../../../src/core/pdf-types.ts'
+import type { PdfDocumentInfo, PdfOutlineItem, PdfOutlineOperation } from '../../../src/shared/pdf-types.ts'
 import {
   isOutlineOperation, projectOutlineOperations, MAX_OUTLINE_ITEMS, MAX_OUTLINE_DEPTH,
-} from '../../../src/modules/outlines/index.ts'
+} from '../../../src/layers/document/outlines/index.ts'
 import { outlineOperationSchema, workingCopyOperationSchema } from '../../../src/contracts/rpc/requests.ts'
 
 const document = (outline: PdfOutlineItem[] = []): PdfDocumentInfo => ({

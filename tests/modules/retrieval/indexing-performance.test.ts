@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { measureIndexOperation, recordIndexPerformance, withIndexPerformance, type IndexPerformanceMetric } from '../../../src/modules/retrieval/performance.ts'
-import type { RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { measureIndexOperation, recordIndexPerformance, withIndexPerformance, type IndexPerformanceMetric } from '../../../src/layers/derived/indexing/performance.ts'
+import type { RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 function fixture(pages = 32, maxBatchSize = 16) {
   const records = new Map<string, unknown>(), batches: string[][] = [], transactions: string[][] = []

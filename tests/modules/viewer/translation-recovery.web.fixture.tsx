@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TranslationPanel } from '../../../src/client/viewer/components/TranslationPanel.js'
-import { readerLocales } from '../../../src/client/viewer/locales.js'
-import { TranslationRegistry } from '../../../src/translation/registry.js'
-import { createDshModelTranslationEngine } from '../../../src/adapters/host/dsh/translation-model.js'
+import { TranslationPanel } from '../../../src/surfaces/client/viewer/components/TranslationPanel.js'
+import { readerLocales } from '../../../src/surfaces/client/viewer/locales.js'
+import { TranslationRegistry } from '../../../src/engines/translation/sdk/registry.js'
+import { createDshModelTranslationEngine } from '../../../src/engines/translation/backends/session-model.js'
 
 interface ControlledCase {
   text: string

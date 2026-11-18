@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { evidenceReadPresentationMeta, keywordSearchPresentationMeta, readPagePresentationMeta } from
-  '../../../../src/adapters/host/dsh/pdf-evidence-meta.ts'
-import { evidenceSha256, type PdfTextEvidence } from '../../../../src/modules/evidence/index.ts'
+  '../../../../src/surfaces/host/tools/evidence-meta.ts'
+import { evidenceSha256, type PdfTextEvidence } from '../../../../src/layers/facade/evidence/index.ts'
 
 const evidence = (text: string, refId = 'pdfref_test'): PdfTextEvidence => ({
   refId, documentId: 'document-1', sourcePath: '/paper.pdf', sourceDigest: 'sha256:source',

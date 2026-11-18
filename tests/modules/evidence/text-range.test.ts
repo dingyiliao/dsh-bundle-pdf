@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createMemoryEvidenceReferenceStore, createTextRangeReferences, createTextReferenceResolver,
   describeEvidenceCapabilities, evidenceSha256, readPageWindow, savedReferenceSchema,
-  type EvidenceReferenceStore, type SavedReference } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+  type EvidenceReferenceStore, type SavedReference } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { isSavedImageReference } from '../../../src/modules/evidence/reference-store.ts'
+import { isSavedImageReference } from '../../../src/layers/facade/evidence/reference-store.ts'
 
 const signal = new AbortController().signal
 function fixture(texts = ['first START alpha', 'middle evidence', 'omega END last']) {

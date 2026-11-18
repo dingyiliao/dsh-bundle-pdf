@@ -4,8 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, s
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import test from 'node:test'
-import { createLocalFiles, PdfFileError } from '../../../src/adapters/host/filesystem/local-files.ts'
-import type { PdfAgent } from '../../../src/adapters/host/dsh/index.ts'
+import { createLocalFiles, PdfFileError } from '../../../src/surfaces/host/io/local-files.ts'
+import type { PdfAgent } from '../../../src/contracts/rpc/pdf-dispatch.ts'
 
 type Context = Parameters<typeof createLocalFiles>[0]
 type Options = NonNullable<Parameters<typeof createLocalFiles>[1]>

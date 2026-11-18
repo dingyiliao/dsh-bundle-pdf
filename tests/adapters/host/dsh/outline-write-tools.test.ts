@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { blankPdf } from '../../../fixtures/plain-pdf.ts'
-import { registerPdfModelWriteTools, questionDetail } from '../../../../src/adapters/host/dsh/model-write-tools.ts'
+import { registerPdfModelWriteTools, questionDetail } from '../../../../src/surfaces/host/tools/model-write-tools.ts'
 import { memoryWorkspace } from '../../../native-fixture.ts'
 
 test('pdf_bookmark_edit is discoverable and writes only the session-owned, unsaved draft', async () => {

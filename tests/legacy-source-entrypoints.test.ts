@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import * as legacyImageHost from '../src/host/image-understanding-plugin.ts'
-import * as imageHost from '../src/entrypoints/image-understanding-host.ts'
-import * as legacyOcrHost from '../src/host/ocr-plugin.ts'
-import * as ocrHost from '../src/entrypoints/ocr-host.ts'
+import * as legacyImageHost from '../src/plugins/public/image-understanding-host.ts'
+import * as imageHost from '../src/plugins/image-understanding.ts'
+import * as legacyOcrHost from '../src/plugins/public/ocr-host.ts'
+import * as ocrHost from '../src/plugins/ocr.ts'
 
 test('published Host SDK entrypoints retain their runtime exports', () => {
   for (const key of ['name', 'provide', 'inject', 'Config', 'HostImageUnderstandingService', 'apply'] as const) {

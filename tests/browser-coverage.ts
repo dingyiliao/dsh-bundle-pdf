@@ -60,7 +60,7 @@ async function collectPage(page: Page) {
       const end = sourceMap.sections[index + 1]
         ? sectionOffset(starts, sourceMap.sections[index + 1]!)
         : entry.source.length
-      // A source-map URL like ../src/client/Reader.tsx resolves under the package scope.
+      // A source-map URL like ../src/surfaces/client/Reader.tsx resolves under the package scope.
       // in DSH's combo map, so use the factory registration rather than its relocated path.
       if (!entry.source.slice(start, Math.min(start + 300, end)).includes(`id: "${PACKAGE_ID}"`)) continue
       matchedSection = true

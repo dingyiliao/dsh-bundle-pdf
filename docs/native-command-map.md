@@ -1,6 +1,6 @@
 # Native 命令映射
 
-状态：P1/P2 已完成。现有 command 仍是运行时事实；请求/回复关联已由 `src/engine/protocol/transport.ts` 收敛，PDFium service 的现有调用方已迁移到 `NativePdfPort` 显式方法。`native/worker/worker-runtime.{h,cpp}` 与 `native/backend/pdf-backend.h` 已将 framing/进程生命周期和 PDF 行为分离。
+状态：P1/P2 已完成。现有 command 仍是运行时事实；请求/回复关联已由 `src/native-boundary/protocol/transport.ts` 收敛，PDFium service 的现有调用方已迁移到 `NativePdfPort` 显式方法。`native/worker/worker-runtime.{h,cpp}` 与 `native/backend/pdf-backend.h` 已将 framing/进程生命周期和 PDF 行为分离。
 
 ## 传输层
 

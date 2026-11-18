@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { classicPdf } from '../../fixtures/plain-pdf.ts'
 import { materializeFixturePdf, inspectFixturePdf } from '../../fixtures/native-document.ts'
-import { projectPdfOperations } from '../../../src/modules/annotations/index.ts'
-import type { NewPdfAnnotation, PdfAnnotation, PdfDocumentInfo, PdfAnnotationOperation } from '../../../src/core/pdf-types.ts'
+import { projectPdfOperations } from '../../../src/layers/document/annotations/index.ts'
+import type { NewPdfAnnotation, PdfAnnotation, PdfDocumentInfo, PdfAnnotationOperation } from '../../../src/shared/pdf-types.ts'
 
 const when = '2026-09-30T08:15:30.000Z'
 

@@ -2,9 +2,9 @@ import { createDom } from '../../support/dom.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React, { act } from 'react'
-import type { OutlineAccess } from '../../../src/client/viewer/ports/outline.ts'
-import type { PdfOutlineItem, PdfOutlineOperation } from '../../../src/core/pdf-types.ts'
-import type { ReaderDocument } from '../../../src/client/viewer/ports/reader-document.ts'
+import type { OutlineAccess } from '../../../src/surfaces/client/viewer/ports/outline.ts'
+import type { PdfOutlineItem, PdfOutlineOperation } from '../../../src/shared/pdf-types.ts'
+import type { ReaderDocument } from '../../../src/surfaces/client/viewer/ports/reader-document.ts'
 
 const t = (key: string) => key
 const initial: PdfOutlineItem[] = [
@@ -26,7 +26,7 @@ async function withPanel(run: (fixture: {
     requestAnimationFrame: (fn: FrameRequestCallback) => setTimeout(() => fn(Date.now()), 0),
     cancelAnimationFrame: clearTimeout, IS_REACT_ACT_ENVIRONMENT: true }
   installDom(globals)
-  const { BookmarkPanel } = await import('../../../src/client/viewer/components/BookmarkPanel.tsx')
+  const { BookmarkPanel } = await import('../../../src/surfaces/client/viewer/components/BookmarkPanel.tsx')
   const { createRoot } = await import('react-dom/client')
   const root = dom.document.getElementById('root')!, view = createRoot(root)
   const calls: PdfOutlineOperation[][] = []

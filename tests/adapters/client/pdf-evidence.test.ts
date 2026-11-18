@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createPdfEvidenceRevalidator } from '../../../src/adapters/client/remote/pdf-evidence.ts'
-import type { PdfConnection } from '../../../src/adapters/client/remote/pdf-api.ts'
-import type { EvidenceRevalidationRequest } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
+import { createPdfEvidenceRevalidator } from '../../../src/surfaces/client/adapters/remote/pdf-evidence.ts'
+import type { PdfConnection } from '../../../src/surfaces/client/adapters/remote/pdf-api.ts'
+import type { EvidenceRevalidationRequest } from '../../../src/surfaces/client/toolview/pdf-evidence-navigation.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const request: EvidenceRevalidationRequest = { action: 'revalidate', sessionId: 'session-1',

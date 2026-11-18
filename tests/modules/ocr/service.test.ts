@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { HostOcrService, type HostOcrBackend, type HostOcrRequest } from '../../../src/modules/ocr/index.js'
-import { OcrError, type OcrOutput } from '../../../src/ocr/types.js'
-import type { EngineConfiguration } from '../../../src/modules/engines/index.js'
+import { HostOcrService, type HostOcrBackend, type HostOcrRequest } from '../../../src/engines/ocr/service/index.js'
+import { OcrError, type OcrOutput } from '../../../src/engines/ocr/sdk/types.js'
+import type { EngineConfiguration } from '../../../src/engines/spi/index.js'
 
 const descriptor = {
   id: 'test-backend', name: 'Test OCR', version: '1', execution: 'local' as const,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createPdfApi } from '../src/adapters/client/remote/pdf-api.ts'
+import { createPdfApi } from '../src/surfaces/client/adapters/remote/pdf-api.ts'
 import { sessionFile } from '../src/shared/address.ts'
 
 test('accepts native snapshots without transferring PDF bytes or inventing a MediaBox', async () => {

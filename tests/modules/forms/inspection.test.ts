@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { inspectFormPage } from '../../../src/modules/forms/index.ts'
-import { paintFormLabels } from '../../../src/adapters/host/pdfium/form-labels.ts'
-import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
+import { inspectFormPage } from '../../../src/layers/document/forms/index.ts'
+import { paintFormLabels } from '../../../src/capabilities/pdfium/form-labels.ts'
+import type { PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
 
 function document(rotation = 0): PdfDocumentInfo {
   return { pageCount: 1, pages: [{ page: 1, cropBox: [10, 20, 210, 420], userUnit: 2, rotation }],

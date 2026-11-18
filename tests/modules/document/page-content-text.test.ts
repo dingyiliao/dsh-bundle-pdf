@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { nativePageContentText } from '../../../src/modules/document/index.ts'
-import { chunkPage } from '../../../src/modules/retrieval/text.ts'
+import { nativePageContentText } from '../../../src/layers/document/content/index.ts'
+import { chunkPage } from '../../../src/layers/derived/content/retrieval/text.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
 import { joinPageText } from '../../../src/shared/page-text.ts'
 

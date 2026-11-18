@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { migrateEngineConfigurations } from '../../src/shared/engine-configuration-migration.ts'
-import type { EngineConfigurations } from '../../src/modules/engines/index.ts'
+import type { EngineConfigurations } from '../../src/engines/spi/index.ts'
 
 test('following the conversation removes orphan effort overrides without mutating saved settings', () => {
   for (const id of ['dsh-vision', 'session-vision']) {

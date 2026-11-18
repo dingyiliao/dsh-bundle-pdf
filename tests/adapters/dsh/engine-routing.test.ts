@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfEngineRouting } from '../../../src/adapters/host/dsh/engine-routing.ts'
-import { createHostTranslations } from '../../../src/adapters/host/dsh/translations.ts'
-import { HostOcrService } from '../../../src/modules/ocr/index.ts'
-import { HostImageUnderstandingService } from '../../../src/modules/image-understanding/index.ts'
+import { createPdfEngineRouting } from '../../../src/engines/spi/routing/engine-routing.ts'
+import { createHostTranslations } from '../../../src/layers/facade/translation/host-translations.ts'
+import { HostOcrService } from '../../../src/engines/ocr/service/index.ts'
+import { HostImageUnderstandingService } from '../../../src/engines/image/service/index.ts'
 import { defaultSettings, type PdfSettings } from '../../../src/shared/contracts.ts'
 
 test('PDF OCR and image availability use their independent consumer bindings without changing generic defaults', async () => {

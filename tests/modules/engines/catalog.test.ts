@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { EngineCatalog, EngineDirectory, engineProbe, validateEngineConfiguration, engineBinding,
-  engineConfigurationsSchema, engineConfigurationSchema, engineCatalogSchema, engineDescriptorSchema } from '../../../src/modules/engines/index.ts'
-import { HostOcrService, type HostOcrRequest } from '../../../src/modules/ocr/index.ts'
-import { HostImageUnderstandingService } from '../../../src/modules/image-understanding/index.ts'
-import { TranslationRegistry } from '../../../src/translation/index.ts'
-import { EmbeddingRegistry } from '../../../src/embedding/index.ts'
-import type { OcrOutput } from '../../../src/ocr/types.ts'
+  engineConfigurationsSchema, engineConfigurationSchema, engineCatalogSchema, engineDescriptorSchema } from '../../../src/engines/spi/index.ts'
+import { HostOcrService, type HostOcrRequest } from '../../../src/engines/ocr/service/index.ts'
+import { HostImageUnderstandingService } from '../../../src/engines/image/service/index.ts'
+import { TranslationRegistry } from '../../../src/engines/translation/sdk/index.ts'
+import { EmbeddingRegistry } from '../../../src/engines/embedding/sdk/index.ts'
+import type { OcrOutput } from '../../../src/engines/ocr/sdk/types.ts'
 
 const descriptor = { id: 'fixture.ocr', name: 'Fixture OCR', version: '1', execution: 'local' as const,
   geometry: [] as const, confidence: false }

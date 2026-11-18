@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { encodeFrame, FrameDecoder } from '../src/engine/host/framing.ts'
-import { NativeWorker, type NativeProcessRuntime } from '../src/engine/host/native-worker.ts'
+import { encodeFrame, FrameDecoder } from '../src/native-boundary/host/framing.ts'
+import { NativeWorker, type NativeProcessRuntime } from '../src/native-boundary/host/native-worker.ts'
 
 type Request = { command: string; requestId: string; documentId?: string }
 type Reply = { requestId: string; ok: boolean; value?: unknown; error?: { code: string; message: string }; bytes?: Uint8Array }

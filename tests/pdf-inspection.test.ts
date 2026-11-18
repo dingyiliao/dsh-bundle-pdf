@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { blankPdf } from './fixtures/plain-pdf.ts'
 import { inspectFixturePdf } from './fixtures/native-document.ts'
-import { PdfDocumentError } from '../src/core/pdf-types.ts'
+import { PdfDocumentError } from '../src/shared/pdf-types.ts'
 import { createWorkspaces } from './fixtures/working-copy-service.ts'
 
 async function fixture(name: string): Promise<Uint8Array> {

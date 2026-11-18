@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PdfClientApi, WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { useReaderSave, type ReaderSaveOptions } from '../../../src/client/viewer/index.ts'
+import { useReaderSave, type ReaderSaveOptions } from '../../../src/surfaces/client/viewer/index.ts'
 
 async function withSave(run: (fixture: {
   state(): ReturnType<typeof useReaderSave>

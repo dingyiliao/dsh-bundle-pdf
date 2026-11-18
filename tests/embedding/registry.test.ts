@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDisabledEmbeddingEngine, EmbeddingError, EmbeddingRegistry,
-  type EmbeddingEngine, type EmbeddingEngineRequest } from '../../src/embedding/index.js'
+  type EmbeddingEngine, type EmbeddingEngineRequest } from '../../src/engines/embedding/sdk/index.js'
 
 const binding = { engineId: 'test-embedding' }
 function engine(embed: EmbeddingEngine['embed'] = async request => request.texts.map(() => [3, 4])): EmbeddingEngine {

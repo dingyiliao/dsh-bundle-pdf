@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { NativeWorker } from '../src/engine/host/native-worker.js'
+import { NativeWorker } from '../src/native-boundary/host/native-worker.js'
 import { recoverableOutlineFixture } from './fixtures/recoverable-outline.js'
 import { nativeTestSubprocess } from './native-test-subprocess.js'
 

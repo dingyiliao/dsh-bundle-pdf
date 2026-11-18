@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EmbeddingError } from '../../../../src/embedding/types.ts'
-import { OcrError } from '../../../../src/ocr/types.ts'
-import { ImageUnderstandingError } from '../../../../src/modules/image-understanding/service.ts'
-import { createIndexingDiagnostics, type PrefetchDiagnosticEvent } from '../../../../src/adapters/host/dsh/indexing-diagnostics.ts'
+import { EmbeddingError } from '../../../../src/engines/embedding/sdk/types.ts'
+import { OcrError } from '../../../../src/engines/ocr/sdk/types.ts'
+import { ImageUnderstandingError } from '../../../../src/engines/image/service/service.ts'
+import { createIndexingDiagnostics, type PrefetchDiagnosticEvent } from '../../../../src/layers/facade/indexing/indexing-diagnostics.ts'
 import { indexingDiagnosticsResultSchema } from '../../../../src/contracts/indexing-diagnostics.ts'
-import { recordIndexPerformance } from '../../../../src/modules/retrieval/performance.ts'
+import { recordIndexPerformance } from '../../../../src/layers/derived/indexing/performance.ts'
 
 const base = { sessionId: 'session', documentId: 'document', occurrence: 1 }
 

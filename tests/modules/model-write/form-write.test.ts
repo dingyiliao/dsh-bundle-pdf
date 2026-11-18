@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createModelWriteService, modelFillFormSchema } from '../../../src/modules/model-write/index.ts'
+import { createModelWriteService, modelFillFormSchema } from '../../../src/layers/facade/model-write/index.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 import { classicPdf, pdfArray, pdfDict, pdfStream, pdfString, ref } from '../../fixtures/pdf-fixture-kit.ts'

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PdfAnnotation } from '../../../src/core/pdf-types.ts'
+import type { PdfAnnotation } from '../../../src/shared/pdf-types.ts'
 import {
   annotationAtPoint, createAnnotationHitTester, createRectHitIndex, nativeAppearancePatchBoxes, visibleAnnotation,
-} from '../../../src/client/viewer/model/reader-annotations.ts'
-import type { PageViewport } from '../../../src/client/viewer/model/reader-selection.ts'
+} from '../../../src/surfaces/client/viewer/model/reader-annotations.ts'
+import type { PageViewport } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
 
 const viewport = {
   width: 300, height: 300,

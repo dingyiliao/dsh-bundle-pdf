@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
-import { PDF_INTENT_PROMPT, READER_PROMPT_SECTION, registerPdfSystemPrompt } from '../src/adapters/host/dsh/system-prompt.ts'
-import { FORM_CONTEXT_GUIDANCE, FORM_CONTROL_AVAILABILITY_GUIDANCE, FORM_FILLING_GUIDANCE, FORM_VERIFICATION_CHECKS } from '../src/adapters/host/dsh/form-guidance.ts'
+import { PDF_INTENT_PROMPT, READER_PROMPT_SECTION, registerPdfSystemPrompt } from '../src/surfaces/host/tools/system-prompt.ts'
+import { FORM_CONTEXT_GUIDANCE, FORM_CONTROL_AVAILABILITY_GUIDANCE, FORM_FILLING_GUIDANCE, FORM_VERIFICATION_CHECKS } from '../src/surfaces/host/tools/form-guidance.ts'
 
 test('printed-only options are reported as unavailable, not fabricated, substituted or declared completed', () => {
   assert.ok(FORM_FILLING_GUIDANCE.includes(FORM_CONTROL_AVAILABILITY_GUIDANCE))

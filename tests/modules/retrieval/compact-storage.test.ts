@@ -3,11 +3,11 @@ import test from 'node:test'
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { compactRetrievalVector } from '../../../src/modules/retrieval/vector.ts'
-import { cosineSimilarity, rankVectors } from '../../../src/modules/retrieval/ranking.ts'
-import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
-import { createRetrievalStore } from '../../../src/adapters/host/filesystem/retrieval-store.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { compactRetrievalVector } from '../../../src/layers/derived/indexing/vector.ts'
+import { cosineSimilarity, rankVectors } from '../../../src/layers/derived/indexing/ranking.ts'
+import type { RetrievalCache, RetrievalEmbedding, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
+import { createRetrievalStore } from '../../../src/layers/derived/storage/retrieval-store.ts'
 
 function fixture(text: string[], options: { dimensions?: number; limits?: RetrievalPorts['limits']; cache?: boolean | RetrievalCache } = {}) {
   const dimensions = options.dimensions ?? 1024

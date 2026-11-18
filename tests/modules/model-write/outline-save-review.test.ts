@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildSaveReview } from '../../../src/modules/model-write/save-review.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
-import type { PdfOutlineItem } from '../../../src/core/pdf-types.ts'
+import { buildSaveReview } from '../../../src/layers/facade/model-write/save-review.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
+import type { PdfOutlineItem } from '../../../src/shared/pdf-types.ts'
 
 const item = (id: string, children: PdfOutlineItem[] = [], page = 1): PdfOutlineItem => ({ id, title: id, page, children })
 const snapshot = (before: PdfOutlineItem[], after: PdfOutlineItem[]): HostWorkspaceSnapshot => ({

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { appendGroup, moveCursor, operationsThrough, projectedDocument,
-  type WorkspaceRecord } from '../../../src/modules/working-copy/index.ts'
-import type { PdfDocumentInfo } from '../../../src/core/pdf-types.ts'
+  type WorkspaceRecord } from '../../../src/layers/document/working-copy/index.ts'
+import type { PdfDocumentInfo } from '../../../src/shared/pdf-types.ts'
 
 const first = { type: 'delete' as const, id: 'one' }
 const second = { type: 'delete' as const, id: 'two' }

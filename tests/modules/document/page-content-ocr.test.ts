@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ocrPageContentSpans } from '../../../src/modules/document/index.ts'
+import { ocrPageContentSpans } from '../../../src/layers/document/content/index.ts'
 import { NativeViewport } from '../../../src/shared/geometry/native-viewport.ts'
-import type { OcrOutput } from '../../../src/ocr/types.ts'
+import type { OcrOutput } from '../../../src/engines/ocr/sdk/types.ts'
 
 const output: OcrOutput = { text: 'North South', blocks: [], lines: [], words: [
   { id: 'a', text: 'North', parentId: 'line', box: { x0: 10, y0: 20, x1: 40, y1: 30 }, confidence: null },

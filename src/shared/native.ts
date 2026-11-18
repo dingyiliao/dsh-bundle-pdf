@@ -1,4 +1,4 @@
-import type { SelectionGeometryChunk } from '../engine/protocol/selection.js'
+import type { SelectionGeometryChunk } from '../native-boundary/protocol/selection.js'
 
 export interface ReaderDescriptor {
   bytesHash: string

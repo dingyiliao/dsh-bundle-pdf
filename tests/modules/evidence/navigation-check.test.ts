@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { evidenceNavigationRequestSchema, evidenceSha256,
-  createMemoryEvidenceReferenceStore, revalidateEvidenceNavigation } from '../../../src/modules/evidence/index.ts'
-import type { AgentPageReadPort } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/modules/working-copy/index.ts'
+  createMemoryEvidenceReferenceStore, revalidateEvidenceNavigation } from '../../../src/layers/facade/evidence/index.ts'
+import type { AgentPageReadPort } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot, WorkingCopyReadPort } from '../../../src/layers/document/working-copy/index.ts'
 
 const text = 'A useful sentence about the result.'
 const startUtf16 = 2

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createWorkspaces } from './fixtures/working-copy-service.ts'
 import { classicPdf, plainPdf } from './fixtures/plain-pdf.ts'
 export { classicPdf } from './fixtures/plain-pdf.ts'
-import type { DraftRecord } from '../src/modules/working-copy/index.ts'
+import type { DraftRecord } from '../src/layers/document/working-copy/index.ts'
 
 export const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 

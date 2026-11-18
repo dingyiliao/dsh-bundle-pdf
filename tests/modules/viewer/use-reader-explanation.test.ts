@@ -4,10 +4,10 @@ import { test } from 'node:test'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderSelection } from '../../../src/client/viewer/model/reader-selection.ts'
-import type { NativeDocument } from '../../../src/client/viewer/rendering/document.ts'
-import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/client/viewer/index.ts'
-import { readerLocales } from '../../../src/client/viewer/locales.ts'
+import type { ReaderSelection } from '../../../src/surfaces/client/viewer/model/reader-selection.ts'
+import type { NativeDocument } from '../../../src/surfaces/client/viewer/rendering/document.ts'
+import { useReaderExplanation, type ReaderExplanationOptions } from '../../../src/surfaces/client/viewer/index.ts'
+import { readerLocales } from '../../../src/surfaces/client/viewer/locales.ts'
 
 type TextEvidenceApi = NonNullable<ReaderExplanationOptions['textSelectionEvidence']>
 type TextRevalidationRequest = Parameters<TextEvidenceApi['revalidate']>[0]

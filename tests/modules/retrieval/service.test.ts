@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import { digest, pageCacheKey, retrievalCacheKey } from '../../../src/modules/retrieval/cache.ts'
-import { RETRIEVAL_TEXT_VERSION } from '../../../src/modules/retrieval/text.ts'
-import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress, RetrievalResult } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import { digest, pageCacheKey, retrievalCacheKey } from '../../../src/layers/derived/indexing/cache.ts'
+import { RETRIEVAL_TEXT_VERSION } from '../../../src/layers/derived/content/retrieval/text.ts'
+import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress, RetrievalResult } from '../../../src/layers/derived/indexing/types.ts'
 
 const document = (): RetrievalDocument => ({ id: 'doc', path: '/synthetic.pdf', sourceDigest: 'source-1', contentVersion: 'content-1', pageCount: 3 })
 const turn = () => new Promise<void>(resolve => setTimeout(resolve, 0))

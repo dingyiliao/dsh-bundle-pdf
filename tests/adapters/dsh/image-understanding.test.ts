@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Config } from '../../../src/entrypoints/image-understanding-host.ts'
-import { HostImageUnderstandingService, ImageUnderstandingError } from '../../../src/modules/image-understanding/index.js'
-import { createImageUnderstandingDispatch, createPdfImageEvidenceResolver } from '../../../src/adapters/host/dsh/image-transport.ts'
-import { registerPdfTransport } from '../../../src/adapters/host/dsh/transport.ts'
-import type { PdfImageEvidenceResolver } from '../../../src/adapters/host/dsh/image-transport.ts'
-import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../../../src/modules/evidence/index.ts'
-import type { HostWorkspaceSnapshot } from '../../../src/modules/working-copy/index.ts'
+import { Config } from '../../../src/plugins/image-understanding.ts'
+import { HostImageUnderstandingService, ImageUnderstandingError } from '../../../src/engines/image/service/index.js'
+import { createImageUnderstandingDispatch, createPdfImageEvidenceResolver } from '../../../src/surfaces/host/routes/image-transport.ts'
+import { registerPdfTransport } from '../../../src/surfaces/host/routes/transport.ts'
+import type { PdfImageEvidenceResolver } from '../../../src/surfaces/host/routes/image-transport.ts'
+import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../../../src/layers/facade/evidence/index.ts'
+import type { HostWorkspaceSnapshot } from '../../../src/layers/document/working-copy/index.ts'
 
 function png(width = 12, height = 9): Uint8Array {
   const bytes = new Uint8Array(24)

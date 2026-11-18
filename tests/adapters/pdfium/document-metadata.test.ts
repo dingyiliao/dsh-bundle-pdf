@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { nativeOutlineEditRows, readNativeDocumentMetadata } from '../../../src/adapters/host/pdfium/document-metadata.js'
-import type { NativeReply } from '../../../src/engine/protocol/commands.js'
-import type { PdfOutlineItem } from '../../../src/core/pdf-types.js'
+import { nativeOutlineEditRows, readNativeDocumentMetadata } from '../../../src/capabilities/pdfium/document-metadata.js'
+import type { NativeReply } from '../../../src/native-boundary/protocol/commands.js'
+import type { PdfOutlineItem } from '../../../src/shared/pdf-types.js'
 
 type Options = Parameters<typeof readNativeDocumentMetadata>[0]
 const hash = (hex: string) => `sha256:${hex.repeat(64)}`

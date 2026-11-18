@@ -4,8 +4,8 @@ import { registerHooks } from 'node:module'
 import { test } from 'node:test'
 import React, { act } from 'react'
 import { defaultSettings, type PdfClientApi, type WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderProps } from '../../../src/client/contracts.ts'
-import { NativeDocument } from '../../../src/client/viewer/index.ts'
+import type { ReaderProps } from '../../../src/surfaces/client/contracts.ts'
+import { NativeDocument } from '../../../src/surfaces/client/viewer/index.ts'
 
 registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: 'export default ""', shortCircuit: true }
@@ -53,7 +53,7 @@ test('document cleanup faults do not fail a loaded replacement or a closing tab'
   let root: import('react-dom/client').Root | undefined
   const tab = new AbortController()
   try {
-    const { Reader } = await import('../../../src/client/Reader.tsx')
+    const { Reader } = await import('../../../src/surfaces/client/Reader.tsx')
     const { createRoot } = await import('react-dom/client')
     const container = dom.document.getElementById('root')!
     root = createRoot(container)

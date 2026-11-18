@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentNavigation, createReaderContexts } from '../../../src/modules/navigation/index.ts'
-import { evidenceSha256 } from '../../../src/modules/evidence/index.ts'
+import { createAgentNavigation, createReaderContexts } from '../../../src/layers/facade/navigation/index.ts'
+import { evidenceSha256 } from '../../../src/layers/facade/evidence/index.ts'
 import type { TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 
 const signal = new AbortController().signal

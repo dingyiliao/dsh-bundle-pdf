@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfApi, type PdfConnection } from '../../../../src/adapters/client/remote/pdf-api.ts'
+import { createPdfApi, type PdfConnection } from '../../../../src/surfaces/client/adapters/remote/pdf-api.ts'
 import type { NativeTextContent, ReaderDescriptor } from '../../../../src/shared/native.ts'
 
 const reader: ReaderDescriptor = { bytesHash: `sha256:${'a'.repeat(64)}`, protocolVersion: 1, generation: 1 }

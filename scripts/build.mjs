@@ -31,11 +31,21 @@ await new Promise((resolveBuild, rejectBuild) => {
 // Preserve the published declaration entry paths while keeping the emitted
 // relative imports between src modules intact.
 const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'))
+const declarationSources = new Map([
+  ['./dist/types/host/ocr-plugin.d.ts', 'src/plugins/public/ocr-host.d.ts'],
+  ['./dist/types/host/image-understanding-plugin.d.ts', 'src/plugins/public/image-understanding-host.d.ts'],
+  ['./dist/types/ocr/index.d.ts', 'src/engines/ocr/sdk/index.d.ts'],
+  ['./dist/types/translation/index.d.ts', 'src/engines/translation/sdk/index.d.ts'],
+  ['./dist/types/modules/capabilities/index.d.ts', 'src/capabilities/index.d.ts'],
+  ['./dist/types/modules/engines/index.d.ts', 'src/engines/spi/index.d.ts'],
+  ['./dist/types/embedding/index.d.ts', 'src/engines/embedding/sdk/index.d.ts'],
+])
 for (const entry of Object.values(manifest.exports)) {
-  const prefix = './dist/types/'
-  if (typeof entry !== 'object' || !entry.types?.startsWith(prefix)) continue
+  if (typeof entry !== 'object' || !entry.types) continue
+  const source = declarationSources.get(entry.types)
+  if (!source) throw new Error(`No declaration source mapping for ${entry.types}`)
   const target = join(project, entry.types)
-  const emitted = join(dist, 'types', 'src', entry.types.slice(prefix.length))
+  const emitted = join(dist, 'types', source)
   const specifier = relative(dirname(target), emitted).split(sep).join('/').replace(/\.d\.ts$/, '.js')
   await mkdir(dirname(target), { recursive: true })
   await writeFile(target, `export * from ${JSON.stringify(specifier.startsWith('.') ? specifier : `./${specifier}`)};\n`)
@@ -58,20 +68,20 @@ const browser = {
 
 // Host imports belong to the installed Harness profile, not to a second bundled runtime.
 const hostBuild = await build({
-  ...common, entryPoints: ['src/entrypoints/reader-host.ts'], outfile: 'dist/index.js',
+  ...common, entryPoints: ['src/plugins/reader/host.ts'], outfile: 'dist/index.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
   banner: { js: 'import { createRequire as __pdfCreateRequire } from "node:module";\nconst require = __pdfCreateRequire(import.meta.url);' },
 })
 const nativeProviderBuild = await build({
-  ...common, entryPoints: ['src/entrypoints/native-host.ts'], outfile: 'dist/native-provider.js',
+  ...common, entryPoints: ['src/plugins/native.ts'], outfile: 'dist/native-provider.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const ocrHostBuild = await build({
-  ...common, entryPoints: ['src/entrypoints/ocr-host.ts'], outfile: 'dist/ocr-host.js',
+  ...common, entryPoints: ['src/plugins/ocr.ts'], outfile: 'dist/ocr-host.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const imageHostBuild = await build({
-  ...common, entryPoints: ['src/entrypoints/image-understanding-host.ts'], outfile: 'dist/image-host.js',
+  ...common, entryPoints: ['src/plugins/image-understanding.ts'], outfile: 'dist/image-host.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 
@@ -82,7 +92,7 @@ const clientWrapperStart = 'window.__ModuleLoader__.load({\n  id: "@dylanl1/dsh-
 const clientWrapperEnd = '\n    return module.exports;\n  }\n});\n'
 const browserCoverage = process.env.DSH_PDF_BROWSER_COVERAGE === '1'
 const clientBuild = await build({
-  ...browser, entryPoints: ['src/entrypoints/reader-client.tsx'], outfile: 'dist/client.js',
+  ...browser, entryPoints: ['src/plugins/client.tsx'], outfile: 'dist/client.js',
   write: false, format: 'cjs', external: [
     'react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/cordis',
   ],
@@ -111,27 +121,27 @@ if (browserCoverage) {
 }
 
 const ocrBuild = await build({
-  ...browser, entryPoints: ['src/ocr/index.ts'], outfile: 'dist/ocr.js', format: 'esm',
+  ...browser, entryPoints: ['src/engines/ocr/sdk/index.ts'], outfile: 'dist/ocr.js', format: 'esm',
 })
 const translationBuild = await build({
-  ...browser, entryPoints: ['src/translation/index.ts'], outfile: 'dist/translation.js', format: 'esm',
+  ...browser, entryPoints: ['src/engines/translation/sdk/index.ts'], outfile: 'dist/translation.js', format: 'esm',
 })
 const embeddingBuild = await build({
-  ...common, entryPoints: ['src/embedding/index.ts'], outfile: 'dist/embedding.js',
+  ...common, entryPoints: ['src/engines/embedding/sdk/index.ts'], outfile: 'dist/embedding.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const capabilityBuild = await build({
-  ...common, entryPoints: ['src/modules/capabilities/index.ts'], outfile: 'dist/capabilities.js',
+  ...common, entryPoints: ['src/capabilities/index.ts'], outfile: 'dist/capabilities.js',
   platform: 'node', target: 'node22', format: 'esm', external: ['@deepseek-ai/*'],
 })
 const enginesBuild = await build({
-  ...browser, entryPoints: ['src/modules/engines/index.ts'], outfile: 'dist/engines.js', format: 'esm',
+  ...browser, entryPoints: ['src/engines/spi/index.ts'], outfile: 'dist/engines.js', format: 'esm',
 })
 const bridgeBuild = await build({
-  ...browser, entryPoints: ['src/ocr/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
+  ...browser, entryPoints: ['src/engines/ocr/sdk/local-worker.ts'], outfile: 'dist/assets/ocr/bridge.js', format: 'esm',
 })
 const recoveryBuild = await build({
-  ...common, entryPoints: ['src/adapters/host/ocr/text-recovery-worker.ts'],
+  ...common, entryPoints: ['src/engines/ocr/backends/text-recovery-worker.ts'],
   outfile: 'dist/assets/ocr/text-recovery.mjs', platform: 'node', target: 'node22', format: 'esm',
   banner: { js: 'import { createRequire as __pdfWorkerRequire } from "node:module";\nconst require = __pdfWorkerRequire(import.meta.url);' },
 })

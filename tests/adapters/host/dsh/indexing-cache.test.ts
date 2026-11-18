@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createIndexingCache } from '../../../../src/adapters/host/dsh/indexing/cache.ts'
+import { createIndexingCache } from '../../../../src/surfaces/host/io/indexing-cache.ts'
 
 function deferred() {
   let resolve!: () => void

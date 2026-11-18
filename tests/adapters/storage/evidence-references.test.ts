@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createEvidenceReferenceStore } from '../../../src/adapters/host/storage/evidence-references.ts'
-import { savedReferenceSchema, type SavedReference } from '../../../src/modules/evidence/index.ts'
+import { createEvidenceReferenceStore } from '../../../src/layers/facade/evidence/storage/evidence-references.ts'
+import { savedReferenceSchema, type SavedReference } from '../../../src/layers/facade/evidence/index.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 function saved(refId: string, createdAt: number): SavedReference {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { migrateEngineConfigurations, migrateImageEngine } from '../src/shared/engine-configuration-migration.js'
-import { Config, readConfig, type HostConfig } from '../src/entrypoints/reader-host-config.ts'
-import { createHostTranslations, type TranslationHostContext } from '../src/adapters/host/dsh/translations.ts'
+import { Config, readConfig, type HostConfig } from '../src/plugins/reader/config.ts'
+import { createHostTranslations, type TranslationHostContext } from '../src/layers/facade/translation/host-translations.ts'
 import { defaultSettings, translationTargetLanguages } from '../src/shared/contracts.ts'
-import { TranslationError } from '../src/translation/index.ts'
-import type { EngineConfiguration } from '../src/modules/engines/index.ts'
+import { TranslationError } from '../src/engines/translation/sdk/index.ts'
+import type { EngineConfiguration } from '../src/engines/spi/index.ts'
 import z from '@deepseek-ai/schemastery'
 
 const validate = Config as unknown as (value: Record<string, unknown>) => Record<string, { get(): unknown }>

@@ -5,9 +5,9 @@ import { resolve } from 'node:path'
 import { plainPdf } from '../../fixtures/plain-pdf.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, prepareTextSelectionEvidence,
   revalidateTextSelectionEvidence, type AgentPageReadPort, type FreshSourceRead,
-  type SelectionRevalidationRequest } from '../../../src/modules/evidence/index.ts'
+  type SelectionRevalidationRequest } from '../../../src/layers/facade/evidence/index.ts'
 import type { NativeTextContent } from '../../../src/shared/native.ts'
-import { createPdfService } from '../../../src/adapters/host/pdfium/index.ts'
+import { createPdfService } from '../../../src/capabilities/pdfium/index.ts'
 import { memoryWorkspace } from '../../native-fixture.ts'
 import { nativeTestSubprocess } from '../../native-test-subprocess.ts'
 

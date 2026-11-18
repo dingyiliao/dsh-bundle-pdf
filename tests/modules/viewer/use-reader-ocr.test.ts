@@ -5,8 +5,8 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { NavigationHistory } from '../../../src/shared/navigation-history.ts'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import type { ReaderLifetime } from '../../../src/client/viewer/controllers/reader-lifetime.ts'
-import { useReaderOcr, type ReaderOcrOptions } from '../../../src/client/viewer/index.ts'
+import type { ReaderLifetime } from '../../../src/surfaces/client/viewer/controllers/reader-lifetime.ts'
+import { useReaderOcr, type ReaderOcrOptions } from '../../../src/surfaces/client/viewer/index.ts'
 
 const snapshot = { id: 'doc-1', revision: 7, contentVersion: 'content-1' } as WorkspaceSnapshot
 

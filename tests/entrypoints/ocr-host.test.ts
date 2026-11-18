@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, Config, inject, name, provide } from '../../src/entrypoints/ocr-host.ts'
-import type { HostOcrService } from '../../src/modules/ocr/index.js'
-import { CapabilityRegistry, pdfCapabilities } from '../../src/modules/capabilities/index.js'
+import { apply, Config, inject, name, provide } from '../../src/plugins/ocr.ts'
+import type { HostOcrService } from '../../src/engines/ocr/service/index.js'
+import { CapabilityRegistry, pdfCapabilities } from '../../src/capabilities/index.js'
 import { defaultSettings } from '../../src/shared/contracts.ts'
 
 test('OCR plugin wires its session-model backend, agent tool and Fiber disposal', async () => {

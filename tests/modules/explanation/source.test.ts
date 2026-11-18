@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { explanationSourceIdentity, sameExplanationSource } from '../../../src/modules/explanation/index.ts'
+import { explanationSourceIdentity, sameExplanationSource } from '../../../src/layers/facade/explanation/index.ts'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const snapshot = { id: 'pdf-1', path: '/book.pdf', sourceVersion: 'fs-1', contentVersion: 'content-1',

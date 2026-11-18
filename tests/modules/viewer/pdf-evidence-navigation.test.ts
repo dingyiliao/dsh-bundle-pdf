@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import type { WorkspaceSnapshot } from '../../../src/shared/contracts.ts'
-import { pdfEvidenceCardModel, type PdfEvidenceEntry } from '../../../src/client/toolview/pdf-evidence-model.ts'
+import { pdfEvidenceCardModel, type PdfEvidenceEntry } from '../../../src/surfaces/client/toolview/pdf-evidence-model.ts'
 import { createPdfEvidenceNavigation, type EvidenceRevalidationRequest, type RevalidateEvidence,
-  type VisiblePdfReader } from '../../../src/client/toolview/pdf-evidence-navigation.ts'
+  type VisiblePdfReader } from '../../../src/surfaces/client/toolview/pdf-evidence-navigation.ts'
 import type { TextNavigationTarget } from '../../../src/contracts/navigation.ts'
 
 const hash = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`

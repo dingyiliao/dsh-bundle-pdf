@@ -1,4 +1,4 @@
-import type { PageGeometry } from '../../src/client/viewer/rendering/page-layout.js'
+import type { PageGeometry } from '../../src/surfaces/client/viewer/rendering/page-layout.js'
 
 export interface ZoomHandoffScenario {
   name: string

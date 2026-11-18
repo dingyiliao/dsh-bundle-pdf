@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../src/modules/retrieval/service.ts'
-import type { RetrievalDocument, RetrievalPorts } from '../../../src/modules/retrieval/types.ts'
+import { createRetrievalService } from '../../../src/layers/derived/indexing/service.ts'
+import type { RetrievalDocument, RetrievalPorts } from '../../../src/layers/derived/indexing/types.ts'
 
 function fixture() {
   const document: RetrievalDocument = { id: 'document', path: '/fixture/content.pdf', sourceDigest: 'raw-source-one',

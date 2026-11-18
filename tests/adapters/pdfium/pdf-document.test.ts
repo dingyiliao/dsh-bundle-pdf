@@ -3,7 +3,7 @@ import test from 'node:test'
 import { inspectFixturePdf, materializeFixturePdf } from '../../fixtures/native-document.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 import { onePagePdf, pdfArray, pdfDict, pdfHex, pdfString, pdfStream, ref } from '../../fixtures/pdf-fixture-kit.ts'
-import { PdfDocumentError, type NewPdfAnnotation } from '../../../src/core/pdf-types.ts'
+import { PdfDocumentError, type NewPdfAnnotation } from '../../../src/shared/pdf-types.ts'
 
 function fixture() {
   const extra = [
