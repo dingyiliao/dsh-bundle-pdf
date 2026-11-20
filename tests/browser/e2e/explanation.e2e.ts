@@ -353,7 +353,9 @@ it('requires a question before saving an explanation passage, then edits or remo
     } finally { await page.clock.resume() }
     await status.waitFor({ state: 'hidden' })
     await editor.waitFor({ state: 'hidden' })
-    await reader.getByText('The page is not ready yet. Please retry.', { exact: true }).waitFor({ state: 'visible' })
+    // The rail keeps the same text in its trigger summary and its detail card.
+    await expect.poll(async () => reader.locator('.dsh-pdf-activity-trigger[data-kind="error"] .dsh-pdf-activity-summary').textContent())
+      .toBe('The page is not ready yet. Please retry.')
     // Failure preserves the uncounted question and unlocks ordinary reading.
     // Explicit mode entry can then resume it after the newer navigation ends.
     await expect.poll(() => pendingPage.isEnabled()).toBe(true)

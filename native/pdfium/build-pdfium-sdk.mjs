@@ -141,9 +141,9 @@ const gnArgs = [
   'treat_warnings_as_errors=false',
   ...(os === 'mac' ? ['use_lld=false', 'use_system_xcode=true'] : []),
 ]
-/** Windows checkouts arrive with CRLF while the patch queue is authored with LF. */
+/** A Windows checkout can hand both the patch and its targets CRLF; git apply compares bytes. */
 async function normalizePatchTargets(patch) {
-  for (const [, file] of (await readFile(patch, 'utf8')).matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+  for (const [, file] of patch.matchAll(/^\+\+\+ b\/(.+)\r?$/gm)) {
     const target = join(checkout, file)
     let source
     try { source = await readFile(target, 'utf8') }
@@ -155,11 +155,15 @@ async function normalizePatchTargets(patch) {
   }
 }
 
+function applyPatch(args, patch) {
+  execFileSync('git', args, { cwd: checkout, input: patch, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true })
+}
+
 for (const step of patchset.steps) {
-  const patch = join(root, 'native/pdfium', step.patch)
+  const patch = (await readFile(join(root, 'native/pdfium', step.patch), 'utf8')).replaceAll('\r\n', '\n')
   await normalizePatchTargets(patch)
-  run('git', ['apply', '--check', '--whitespace=error-all', patch])
-  run('git', ['apply', '--whitespace=error-all', patch])
+  applyPatch(['apply', '--check', '--whitespace=error-all', '-'], patch)
+  applyPatch(['apply', '--whitespace=error-all', '-'], patch)
 }
 run('git', ['diff', '--check'])
 const patchDigest = await patchsetDigest()
