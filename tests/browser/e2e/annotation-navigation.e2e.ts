@@ -51,7 +51,7 @@ it('renders a distant note page when a wide PDF leaves it outside the horizontal
     await expect.poll(() => target.locator('.dsh-pdf-page-loading').count()).toBe(0)
     await expect.poll(() => reader.locator('.dsh-pdf-toolbar-zoom > summary').getAttribute('aria-disabled')).toBe('false')
     await expect.poll(() => scroll.evaluate(root => root.scrollLeft)).toBeGreaterThan(1000)
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -203,7 +203,7 @@ it('renders a distant highlight after navigating from the Annotations sidebar', 
     await target.locator('canvas[data-pdf-raster-ready="true"]').first().waitFor({ state: 'visible', timeout: 15_000 })
     await expect.poll(() => target.locator('.dsh-pdf-page-loading').count()).toBe(0)
     await expect.poll(() => reader.locator('.dsh-pdf-toolbar-zoom > summary').getAttribute('aria-disabled')).toBe('false')
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -260,7 +260,7 @@ it('jumps from a distant page to a highlight in a book-length PDF', async () => 
       return !!root && box.bottom > root.top && box.top < root.bottom && box.right > root.left && box.left < root.right
     })).toBe(true)
     await expect.poll(() => target.locator('.dsh-pdf-page-loading').count()).toBe(0)
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -346,7 +346,7 @@ it('renders an annotation destination after scrolling deep into a book-length PD
         return false
       })
     }), { timeout: 20_000 }).toBe(true)
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     await browser?.close()
@@ -414,7 +414,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
             scrollWidth: scroll?.clientWidth,
             pages: [...element.querySelectorAll<HTMLElement>('[data-page-number]')]
               .slice(0, 12).map(page => ({ page: page.dataset.pageNumber, top: page.getBoundingClientRect().top })),
-            error: element.querySelector('.dsh-pdf-error')?.textContent,
+            error: element.querySelector('.dsh-pdf-activity-trigger[data-kind="error"] .dsh-pdf-activity-summary')?.textContent,
           }
         })
         throw new Error(`${String(failure)}\nReader state: ${JSON.stringify(state)}\nPage errors: ${tripwire.pageErrors.join('\n')}`)
@@ -427,7 +427,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
         sidebar: element.querySelector('.dsh-pdf-sidebar')?.className,
         inputs: [...element.querySelectorAll<HTMLInputElement>('.dsh-pdf-sidebar-page-nav input')]
           .map(input => ({ value: input.value, disabled: input.disabled, visible: input.getClientRects().length > 0 })),
-        error: element.querySelector('.dsh-pdf-error')?.textContent,
+        error: element.querySelector('.dsh-pdf-activity-trigger[data-kind="error"] .dsh-pdf-activity-summary')?.textContent,
         scrollTop: element.querySelector('.dsh-pdf-scroll')?.scrollTop,
         current: [...element.querySelectorAll<HTMLElement>('[aria-current="page"]')]
           .map(node => node.getAttribute('aria-label')),
@@ -456,7 +456,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
     expect(await reader.locator('[data-page-number]').count()).toBeLessThan(20)
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
       .toContain(`Browser PDF page ${LARGE_PAGE_COUNT}`)
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
     await expect.poll(() => reader.locator('[data-pdf-page="1"]').count()).toBe(0)
 
@@ -475,7 +475,7 @@ it('keeps active pages bounded while navigating to a distant page through the in
     await reader.locator('[data-pdf-page="1"] canvas').first().waitFor({ state: 'visible', timeout: 20_000 })
     await expect.poll(() => reader.locator('[data-pdf-text="active"]').allTextContents())
       .toContain('Browser PDF page 1')
-    expect(await reader.locator('.dsh-pdf-error').count()).toBe(0)
+    expect(await reader.locator('.dsh-pdf-activity-trigger[data-kind="error"]').count()).toBe(0)
     expect(await reader.locator('.dsh-pdf-page').count()).toBeLessThan(20)
 
     // Select across two visible PDF text layers. A DOM Range avoids relying on

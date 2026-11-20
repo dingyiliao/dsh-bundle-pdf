@@ -125,7 +125,7 @@ function coverage() {
 }
 
 function checkError() {
-  const error = document.querySelector('.dsh-pdf-error')?.textContent?.trim()
+  const error = document.querySelector('.dsh-pdf-activity-trigger[data-kind="error"] .dsh-pdf-activity-summary')?.textContent?.trim()
   if (error) throw new Error(error)
 }
 async function waitQuality(start: number, timeout: number, response = () => true, committed = () => true) {
@@ -245,7 +245,7 @@ window.__PDF_BENCH__ = {
       visiblePages: current.visible.map(page => ({ number: page.dataset.pdfPage, width: page.clientWidth, height: page.clientHeight, transform: page.style.transform,
         canvases: [...page.querySelectorAll('canvas')].map(canvas => ({ width: canvas.width, height: canvas.height, ready: canvas.dataset.pdfRasterReady })) })),
       scroll: scroll ? { width: scroll.clientWidth, height: scroll.clientHeight, top: scroll.scrollTop } : null,
-      message: document.querySelector('.dsh-pdf-error')?.textContent ?? null, stages }
+      message: document.querySelector('.dsh-pdf-activity-trigger[data-kind="error"] .dsh-pdf-activity-summary')?.textContent ?? null, stages }
   },
   async run(scenario, timeout) {
     scenarioValidation = scenario

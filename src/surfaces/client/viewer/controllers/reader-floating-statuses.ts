@@ -1,3 +1,4 @@
+import type { WorkspaceSnapshot } from '../../../../shared/contracts.js'
 import type { FloatingStatus } from '../components/FloatingStatusRail.js'
 import type { ReaderModeStatus } from '../components/ReaderModeControl.js'
 import type { SaveFeedbackState } from './use-reader-save.js'
@@ -16,6 +17,61 @@ export interface ReaderFloatingStatusesOptions {
   onCancelScreenshot(): void
   onCancelOcr(): void
   t(key: string): string
+}
+
+export interface ReaderNoticeStatusesOptions {
+  snapshot: WorkspaceSnapshot | null
+  error: string
+  positionNotice: string
+  editable: boolean
+  saveAsOpen: boolean
+  editPasswordRequired: boolean
+  editPasswordPromptOpen: boolean
+  dismissError(): void
+  dismissPositionNotice(): void
+  beginEditUnlock(): void
+  beginSaveAs(): void
+  t(key: string): string
+}
+
+/** Persistent, non-blocking document feedback belongs in the activity/status rail. */
+export function readerNoticeStatuses(options: ReaderNoticeStatusesOptions): FloatingStatus[] {
+  const { snapshot, t } = options
+  const document = snapshot?.document
+  const statuses: FloatingStatus[] = []
+  if (document?.readOnly) {
+    const message = t(document.readOnlyReason === 'encrypted-document'
+      ? options.editPasswordRequired ? 'reader.encryptedAnnotationLocked' : 'reader.encryptedReadOnly'
+      : 'reader.signedReadOnly')
+    const actions = options.editPasswordRequired && !options.editPasswordPromptOpen
+      ? [{ label: t('reader.unlockEditing'), onClick: options.beginEditUnlock }] : undefined
+    statuses.push({ id: 'document-read-only', kind: 'notice', tone: 'neutral', activity: 'dot', content: message,
+      ...(actions ? { actions } : {}) })
+  }
+  if (document?.annotationEditing === 'allowed') statuses.push({
+    id: 'document-annotation-editable', kind: 'notice', tone: 'neutral', activity: 'dot',
+    content: t('reader.encryptedAnnotationEditable'),
+  })
+  if (options.error && !options.saveAsOpen) statuses.push({
+    id: 'reader-error', kind: 'error', tone: 'error', activity: 'dot', content: options.error,
+    dismiss: { label: t('reader.dismiss'), onClick: options.dismissError },
+  })
+  if (snapshot?.warning) statuses.push({
+    id: 'document-warning', kind: 'warning', tone: 'neutral', activity: 'dot', content: snapshot.warning,
+  })
+  if (options.positionNotice) statuses.push({
+    id: 'position-notice', kind: 'notice', tone: 'neutral', activity: 'dot', content: options.positionNotice,
+    dismiss: { label: t('reader.dismiss'), onClick: options.dismissPositionNotice },
+  })
+  if (snapshot?.conflict) {
+    const canSaveAs = !document?.encrypted || document.annotationEditing === 'allowed'
+    statuses.push({
+      id: 'document-conflict', kind: 'warning', tone: 'neutral', activity: 'dot',
+      content: t(document?.encrypted ? 'reader.protectedSourceChanged' : 'reader.conflict'),
+      ...(canSaveAs ? { actions: [{ label: t('reader.saveAs'), disabled: !options.editable, onClick: options.beginSaveAs }] } : {}),
+    })
+  }
+  return statuses
 }
 
 /** Mutually exclusive input mode, placed in the toolbar rather than the activity list. */

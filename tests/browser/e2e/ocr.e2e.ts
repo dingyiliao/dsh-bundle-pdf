@@ -116,7 +116,8 @@ it.skipIf(!MODEL_FIXTURE_AVAILABLE)('recognizes the current PDF page through Hos
     await recognizePage.click()
     await expect.poll(() => modelCalls.length).toBe(2)
     const ocrStatus = reader.locator('[data-status-id="ocr"]')
-    await reader.locator('.dsh-pdf-activity-trigger').click()
+    const statusRail = reader.locator('.dsh-pdf-activity-trigger')
+    await statusRail.click()
     await ocrStatus.waitFor({ state: 'visible' })
     await ocrStatus.getByRole('button', { name: 'Cancel' }).click()
     await ocrStatus.waitFor({ state: 'hidden', timeout: 10_000 })
@@ -124,7 +125,9 @@ it.skipIf(!MODEL_FIXTURE_AVAILABLE)('recognizes the current PDF page through Hos
     holdNextOcr = false
     failNextOcr = true
     await recognizePage.click()
-    const ocrError = reader.locator('.dsh-pdf-error[role="alert"]')
+    await expect.poll(() => statusRail.getAttribute('data-kind')).toBe('error')
+    if (await statusRail.getAttribute('aria-expanded') !== 'true') await statusRail.click()
+    const ocrError = reader.locator('.dsh-pdf-floating-status[data-status-id="reader-error"]')
     await expect.poll(() => ocrError.textContent()).toContain('request or usage limit')
     expect(await reader.locator('.dsh-pdf-ocr-transcript').textContent()).toBe(recognizedText)
     await ocrError.getByRole('button', { name: 'Dismiss' }).click()

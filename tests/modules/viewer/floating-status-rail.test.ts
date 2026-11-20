@@ -44,6 +44,16 @@ test('task outcomes have independent tones without changing task identity or lab
   assert.match(html, /data-status-id="failed" data-kind="error" data-tone="error"/)
   assert.match(html, /data-status-id="cancelled" data-kind="indexing" data-tone="neutral"/)
   assert.match(html, /dsh-pdf-activity-trigger" data-kind="error" data-tone="error"/)
+  assert.match(html, /dsh-pdf-activity-summary" role="alert" aria-live="assertive"/)
+})
+
+test('a detailed Reader error takes precedence over the generic failed-save label in the summary', () => {
+  const html = renderToStaticMarkup(React.createElement(FloatingStatusRail, { t: key => key, statuses: [
+    { id: 'save', kind: 'error', tone: 'error', activity: 'dot', content: 'reader.saveFailed' },
+    { id: 'reader-error', kind: 'error', tone: 'error', activity: 'dot', content: 'Writing the PDF failed' },
+  ] }))
+  const summary = html.match(/<span class="dsh-pdf-activity-summary"[^>]*>(.*?)<\/span>/)?.[1]
+  assert.equal(summary, 'Writing the PDF failed')
 })
 
 test('the task badge counts active work, including saves, without counting retained ready states', () => {

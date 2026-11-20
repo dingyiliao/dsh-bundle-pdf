@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react'
-import type { WorkspaceSnapshot } from '../../../../shared/contracts.js'
 import { SaveAsDialog, type SaveAsDialogProps } from './SaveAsDialog.js'
 
 export interface ReaderPasswordPromptProps {
@@ -12,23 +11,15 @@ export interface ReaderPasswordPromptProps {
 }
 
 interface ReaderEditPasswordProps {
-  begin(): void
   prompt?: Omit<ReaderPasswordPromptProps, 'retry' | 'status'> & { status: 'required' | 'incorrect' }
 }
 
 export interface ReaderAlertsProps {
-  snapshot: WorkspaceSnapshot | null
-  error: string
-  positionNotice: string
-  editable: boolean
   saveAs?: SaveAsDialogProps
   password?: ReaderPasswordPromptProps
   editPassword?: ReaderEditPasswordProps
   reloadConfirm: boolean
-  setError(value: string): void
-  setPositionNotice(value: string): void
   setReloadConfirm(value: boolean): void
-  beginSaveAs(): void
   reload(): void
   t(key: string): string
 }
@@ -68,31 +59,12 @@ function ReaderPasswordPrompt({ status, busy, unlock, cancel, retry, edit = fals
   </form>
 }
 
-/** Save As owns its modal feedback; document notices remain in the Reader. */
+/** Blocking prompts stay here; non-blocking document feedback is in the status rail. */
 export function ReaderAlerts(props: ReaderAlertsProps) {
-  const { snapshot, error, positionNotice, editable, saveAs, password, editPassword, reloadConfirm, setError, setPositionNotice,
-    setReloadConfirm, beginSaveAs, reload, t } = props
-  const document = snapshot?.document
+  const { saveAs, password, editPassword, reloadConfirm, setReloadConfirm, reload, t } = props
   return <>
     {password && <ReaderPasswordPrompt key={password.identity} {...password} t={t} />}
-    {document?.readOnly && <div className="dsh-pdf-notice">
-      <span>{t(document.readOnlyReason === 'encrypted-document'
-        ? editPassword ? 'reader.encryptedAnnotationLocked' : 'reader.encryptedReadOnly'
-        : 'reader.signedReadOnly')}</span>
-      {editPassword && !editPassword.prompt && <button type="button" onClick={editPassword.begin}>{t('reader.unlockEditing')}</button>}
-    </div>}
     {editPassword?.prompt && <ReaderPasswordPrompt key={editPassword.prompt.identity} {...editPassword.prompt} edit t={t} />}
-    {document?.annotationEditing === 'allowed' && <div className="dsh-pdf-notice">
-      {t('reader.encryptedAnnotationEditable')}</div>}
-    {error && !saveAs && <div className="dsh-pdf-error" role="alert"><span>{error}</span><button aria-label={t('reader.dismiss')} onClick={() => setError('')}>×</button></div>}
-    {snapshot?.warning && <div className="dsh-pdf-notice" role="status">{snapshot.warning}</div>}
-    {positionNotice && <div className="dsh-pdf-notice" role="status">{positionNotice}
-      <button aria-label={t('reader.dismiss')} onClick={() => setPositionNotice('')}>×</button></div>}
-    {snapshot?.conflict && <div className="dsh-pdf-notice" role="status">
-      {t(snapshot.document.encrypted ? 'reader.protectedSourceChanged' : 'reader.conflict')}
-      {(!snapshot.document.encrypted || snapshot.document.annotationEditing === 'allowed')
-        && <button disabled={!editable} onClick={beginSaveAs}>{t('reader.saveAs')}</button>}
-    </div>}
     {saveAs && <SaveAsDialog {...saveAs} />}
     {reloadConfirm && <div className="dsh-pdf-dialog"><p>{t('reader.reloadConfirm')}</p>
       <button onClick={() => { reload(); setReloadConfirm(false) }}>{t('reader.reload')}</button>

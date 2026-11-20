@@ -146,8 +146,9 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
   }, [open, rail])
   const byId = new Map(statuses.map(status => [status.id, status]))
   const visible = ordered.map(id => byId.get(id)).filter((status): status is FloatingStatus => !!status)
-  const primary = visible.find(status => status.kind === 'error')
-    ?? visible.find(status => status.activity === 'progress') ?? visible.at(-1)
+  const primary = visible.find(status => status.id === 'reader-error')
+    ?? visible.find(status => status.kind === 'error') ?? visible.find(status => status.activity === 'progress') ?? visible.at(-1)
+  const primaryIsError = primary?.kind === 'error'
   const running = visible.filter(status => status.activity === 'progress' || status.kind === 'saving').length
   const content = visible.length ? visible.map(status => <FloatingStatusCard key={status.id} status={status} active={open} t={t}
     onDismissFocus={() => trigger.current?.focus({ preventScroll: true })} />)
@@ -162,7 +163,8 @@ export function FloatingStatusRail({ statuses, t }: { statuses: readonly Floatin
       onClick={() => setOpen(value => !value)}>
       {primary?.activity === 'progress' ? <span className="dsh-pdf-floating-status-spinner" aria-hidden="true" />
         : <ToolbarIcon name="activity" />}
-      <span className="dsh-pdf-activity-summary" role="status" aria-live="polite" aria-atomic="true">
+      <span className="dsh-pdf-activity-summary" role={primaryIsError ? 'alert' : 'status'}
+         aria-live={primaryIsError ? 'assertive' : 'polite'} aria-atomic="true">
         {primary?.summary ?? primary?.content ?? t('reader.activity')}
       </span>
       {running > 0 && <span className="dsh-pdf-activity-count" aria-hidden="true">{running}</span>}

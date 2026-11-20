@@ -178,8 +178,10 @@ it('resumes the remembered reading position on a fresh client and skips it after
     await page.getByRole('treeitem').filter({ hasText: 'PDF resume position test' }).click()
     reader = await openReader()
     await expect.poll(() => reportedPage(reader), { timeout: 20_000 }).toBe('1')
-    await expect.poll(async () => (await reader.locator('.dsh-pdf-notice[role="status"]').allTextContents()).join(' '))
-      .toContain('changed on disk')
+    const statusRail = reader.locator('.dsh-pdf-activity-trigger')
+    if (await statusRail.getAttribute('aria-expanded') !== 'true') await statusRail.click()
+    const positionStatus = reader.locator('.dsh-pdf-floating-status[data-status-id="position-notice"]')
+    await expect.poll(async () => positionStatus.textContent()).toContain('changed on disk')
     expect(tripwire.pageErrors).toEqual([])
   } finally {
     releaseInitialLookup?.()

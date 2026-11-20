@@ -8,7 +8,7 @@ import { readerLifetime, ReaderPage, ReaderView, useReaderContextLease, useReade
   useReaderTranslation, useReaderDocument, useReaderSelection, useReaderMutations, useReaderPageTracking, useReaderScrollPreview,
   usePdfWheelZoom, usePdfViewportSize, useReaderIndexing, useReaderFormCommits, ReaderFormCommitProvider,
   clampPdfRectToBounds, movePdfNoteRectByMarker, noteMarkerViewportPosition, pdfRectToViewport, NativeViewport, readingViewportBounds,
-  readerToolbarModel, readerFloatingStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels, textFidelityForScale,
+  readerToolbarModel, readerFloatingStatuses, readerNoticeStatuses, readerModeStatus, readerOverlayModel, readerSidebarPanels, textFidelityForScale,
   navigateAgentRequest,
   type ReaderSelection,
   } from './viewer/index.js'
@@ -503,7 +503,14 @@ export function Reader(props: ReaderProps) {
     explanation: { sending: explanation.sending, error: explanation.error,
       review: () => startExplanation(), dismiss: explanation.dismissError },
   }
-  const floatingStatuses = [...readerFloatingStatuses(floatingOptions), ...indexing.statuses]
+  const noticeStatuses = readerNoticeStatuses({
+    snapshot, error, positionNotice, editable, saveAsOpen,
+    editPasswordRequired: snapshot?.document.annotationEditing === 'owner-password-required',
+    editPasswordPromptOpen: !!editPasswordPrompt,
+    dismissError: () => setError(''), dismissPositionNotice: () => setPositionNotice(''),
+    beginEditUnlock, beginSaveAs: beginSaveAsAfterFormFlush, t,
+  })
+  const floatingStatuses = [...readerFloatingStatuses(floatingOptions), ...noticeStatuses, ...indexing.statuses]
   const activeModeStatus = readerModeStatus(floatingOptions)
   const overlays = readerOverlayModel({
     explanation, annotations, viewport: scrollRoot, documentPath: snapshot?.path, mode, regionPurpose: regionPurpose.current,
@@ -542,12 +549,11 @@ export function Reader(props: ReaderProps) {
       openCommentEditor, deleteAnnotation: () => { void deleteAnnotation() }, clearAnnotation, t,
     }}
     alerts={{
-      snapshot, error, positionNotice, editable, reloadConfirm, setError, setPositionNotice, setReloadConfirm,
+      reloadConfirm, setReloadConfirm,
       password: passwordPrompt ? { identity: `${sessionId}:${props.resourceAddress}:${ownerSequence.current}`,
         status: passwordPrompt, busy: unlocking, unlock: password => { setError(''); void unlock(password) },
         cancel: cancelUnlock, retry: retryUnlock } : undefined,
       editPassword: snapshot?.document.annotationEditing === 'owner-password-required' ? {
-        begin: beginEditUnlock,
         prompt: editPasswordPrompt ? { identity: `${snapshot.id}:edit`, status: editPasswordPrompt, busy: unlocking,
           unlock: password => { setError(''); void unlockEditing(password) }, cancel: cancelEditUnlock } : undefined,
       } : undefined,
@@ -561,7 +567,6 @@ export function Reader(props: ReaderProps) {
         onChooseDirectory: () => { void chooseSaveDirectory() }, onSubmit: () => { void submitSaveAs() },
         onCancel: closeSaveAs, onBack: backToSaveAs, t,
       } : undefined,
-      beginSaveAs: beginSaveAsAfterFormFlush,
       reload: () => {
         if (protectedDocument) void discardChanges().then(discarded => { if (discarded) documentState.reopen() })
         else void actAfterFormFlush(current => api.reload(sessionId, current.id, current.revision, tab.signal))
