@@ -456,7 +456,7 @@ it('lets the left tool rail coexist with selection actions, full annotation acti
 it('keeps all six real sidebar panel headings above scrolling content at narrow widths and low heights (layout regression)', async () => {
   const bundle = await build({ entryPoints: [join(ROOT, 'tests', 'modules', 'viewer', 'sidebar-panel-layout.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
-  const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+  const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const screenshots = join(ROOT, '.test-output', 'sidebar-panel-layout')
   await mkdir(screenshots, { recursive: true })
   const browser = await launchBrowser()

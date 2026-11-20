@@ -8,7 +8,7 @@ it('keeps OCR translation labels and copy aligned at actual 234px and 260px side
   const { build } = await import('esbuild')
   const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/ocr-toolbar-layout.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
-  const css = await Promise.all(['reader.css', 'reading-sidebar.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+  const css = await Promise.all(['reader.css', 'reading-sidebar.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const opened = await browser()
   try {
     const page = await opened.newPage({ viewport: { width: 900, height: 620 }, reducedMotion: 'reduce' })
@@ -149,7 +149,7 @@ it('keeps the Save As sheet focused and usable in a narrow short reader', async 
   const { build } = await import('esbuild')
   const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/save-as-dialog.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
-  const css = await Promise.all(['reader.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+  const css = await Promise.all(['reader.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const opened = await browser()
   try {
     const page = await opened.newPage({ viewport: { width: 760, height: 600 }, reducedMotion: 'reduce' })

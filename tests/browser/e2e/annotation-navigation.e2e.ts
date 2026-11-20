@@ -65,8 +65,8 @@ it('virtualizes annotation rows while keeping filters and heading fixed through 
     platform: 'browser', format: 'iife', target: 'chrome120', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   })
-  const css = await readFile(join(ROOT, 'src', 'client', 'reader.css'), 'utf8')
-  const sidebarCss = await readFile(join(ROOT, 'src', 'client', 'reading-sidebar.css'), 'utf8')
+  const css = await readFile(join(ROOT, 'src', 'surfaces', 'client', 'reader.css'), 'utf8')
+  const sidebarCss = await readFile(join(ROOT, 'src', 'surfaces', 'client', 'reading-sidebar.css'), 'utf8')
   const browser = await launchBrowser()
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 900 } })

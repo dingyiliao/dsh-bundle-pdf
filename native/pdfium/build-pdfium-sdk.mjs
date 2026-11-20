@@ -141,8 +141,23 @@ const gnArgs = [
   'treat_warnings_as_errors=false',
   ...(os === 'mac' ? ['use_lld=false', 'use_system_xcode=true'] : []),
 ]
+/** Windows checkouts arrive with CRLF while the patch queue is authored with LF. */
+async function normalizePatchTargets(patch) {
+  for (const [, file] of (await readFile(patch, 'utf8')).matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+    const target = join(checkout, file)
+    let source
+    try { source = await readFile(target, 'utf8') }
+    catch (error) {
+      if (error.code === 'ENOENT') continue
+      throw error
+    }
+    if (source.includes('\r\n')) await writeFile(target, source.replaceAll('\r\n', '\n'))
+  }
+}
+
 for (const step of patchset.steps) {
   const patch = join(root, 'native/pdfium', step.patch)
+  await normalizePatchTargets(patch)
   run('git', ['apply', '--check', '--whitespace=error-all', patch])
   run('git', ['apply', '--whitespace=error-all', patch])
 }

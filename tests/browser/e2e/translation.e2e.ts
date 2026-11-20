@@ -23,7 +23,7 @@ it('forwards exact selections through the real translation adapter and renders c
       body: '<div class="dsh-pdf-reader"><div class="dsh-pdf-body"><aside class="dsh-pdf-sidebar" style="inset:0;width:100%;max-width:100%"><div class="dsh-pdf-sidebar-shell" style="width:100%"><div class="dsh-pdf-sidebar-main"><div class="dsh-pdf-sidebar-panels" id="translation-root"></div></div></div></aside></div></div>',
     }))
     await page.goto('http://localhost/translation-recovery')
-    const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+    const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
     await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f5f5f5; --dsw-alias-bg-layer-1:#fff; --dsw-alias-bg-layer-2:#f6f6f6; --dsw-alias-label-primary:#222; --dsw-alias-label-secondary:#666; --dsw-alias-border-l2:#ddd; --dsw-alias-link:#4278ed; --dsw-alias-bg-document-preview:#edf0f3; } html,body { margin:0; height:100%; } ${css.join('\n')}` })
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
     expect(browserErrors, 'translation fixture must register its real engine without browser runtime errors').toEqual([])
@@ -139,7 +139,7 @@ it('forwards exact selections through the real translation adapter and renders c
 it('connects region capture, controlled OCR and full or selected transcript translation through production browser boundaries', async () => {
   const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/ocr-translation.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
-  const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+  const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const browser = await launchBrowser()
   try {
     const page = await browser.newPage({ viewport: { width: 900, height: 720 } }), errors: string[] = []

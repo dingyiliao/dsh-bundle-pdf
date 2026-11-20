@@ -20,7 +20,7 @@ export async function mountIndexingControls(page: BrowserPage) {
   const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/indexing-controls.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const css = await Promise.all(['reader.css', 'reading-sidebar.css', 'glass.css']
-    .map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))
+    .map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   await page.setContent('<div id="indexing-root" style="height:100%;width:100%"></div>')
   await page.addStyleTag({ content: `:root { --dsw-alias-bg-base:#f5f5f5; --dsw-alias-bg-layer-1:#fff; --dsw-alias-label-primary:#222; --dsw-alias-label-secondary:#666; --dsw-alias-border-l2:#ddd; --dsw-alias-link:#4278ed; --dsw-alias-button-primary-fill:#161718; --dsw-alias-label-primary-foreground:#fff; --dsw-alias-bg-document-preview:#edf0f3; --dsw-alias-interactive-bg-hover:#e7e9ed; } html,body { margin:0; height:100%; } ${css.join('\n')}` })
   await page.addScriptTag({ content: bundle.outputFiles[0]!.text })

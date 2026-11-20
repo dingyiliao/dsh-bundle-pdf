@@ -13,7 +13,7 @@ it('keeps the same PDF point and painted pixels through wheel zoom commits, cent
   const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/wheel-zoom-handoff.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': JSON.stringify('production') } })
-  const css = (await Promise.all(['reader.css', 'windowed-pages.css'].map(file => readFile(join(ROOT, 'src/client', file), 'utf8')))).join('\n')
+  const css = (await Promise.all(['reader.css', 'windowed-pages.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))).join('\n')
   const browser = await launchBrowser()
   try {
     const page = await browser.newPage({ viewport: { width: 1000, height: 720 } })
