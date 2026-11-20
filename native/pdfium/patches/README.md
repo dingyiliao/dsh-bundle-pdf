@@ -1,14 +1,7 @@
 # PDFium patch queue
 
-The plugin is built from the locked PDFium source revision in
-`native/dependencies.json`. The queue is deliberately represented as
-deterministic source transforms rather than a long-lived fork: the entry
-scripts apply the same ordered changes to a clean checkout, and
-`patchset.json` records every transform and extension source that contributes
-to the resulting SDK.
+The SDK is built from the PDFium source revision locked in `native/dependencies.json`. Every source change, including DSH extension files and GN registration, is carried by the ordered unified-diff `.patch` files listed in `patchset.json`; there are no source-transform or copy scripts in the patch pipeline.
 
-`node native/pdfium/patchset.mjs` prints the patchset digest. A PDFium SDK
-built by `build-pdfium-sdk.mjs` contains that digest in `DSH_PATCHSET`; the
-worker build rejects an SDK whose source revision or patchset does not match
-the checkout. Any upstream change must therefore either apply cleanly and
-produce a reviewed new digest, or fail before the SDK is used.
+The build requires a clean checkout at the locked revision. For each entry it runs `git apply --check` and then `git apply` from the checkout root. The queue is intentionally not idempotent: apply it once to a fresh checkout. A changed upstream revision or patch context fails instead of being fuzzed into place.
+
+`node native/pdfium/patchset.mjs` prints the patchset digest. The digest covers the locked source revision, ordered patch IDs/paths, and exact patch bytes. A built SDK stores it in `DSH_PATCHSET`; Native build rejects an SDK with a mismatched revision or digest.

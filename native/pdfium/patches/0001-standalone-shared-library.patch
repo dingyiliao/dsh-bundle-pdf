@@ -1,0 +1,26 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index cf5541afebdc8ab1db9e5ebeb28ffde51ffd5820..a7dd6102472c59b2aff94c9ae6a3cbb699593a3d 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -227,7 +227,7 @@ group("pdfium_public_headers") {
+   ]
+ }
+ 
+-component("pdfium") {
++shared_library("pdfium") {
+   output_name = "pdfium"
+   libs = []
+   configs += [ ":pdfium_strict_config" ]
+diff --git a/public/fpdfview.h b/public/fpdfview.h
+index 7c9328021a3e6459f42cd8feb08e6bac5d275324..7afb9689f3fc7cdc2c15e649cabf2bc0c472c97d 100644
+--- a/public/fpdfview.h
++++ b/public/fpdfview.h
+@@ -203,7 +203,7 @@ typedef int FPDF_ANNOT_APPEARANCEMODE;
+ // Dictionary value types.
+ typedef int FPDF_OBJECT_TYPE;
+ 
+-#if defined(COMPONENT_BUILD)
++#if 1  // DSH standalone shared SDK
+ // FPDF_EXPORT should be consistent with |export| in the pdfium_fuzzer
+ // template in testing/fuzzers/BUILD.gn.
+ #if defined(WIN32)

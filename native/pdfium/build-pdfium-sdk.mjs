@@ -66,6 +66,9 @@ async function buildTool(option, name, localPath) {
 if (await exists(sdk)) throw new Error(`SDK destination already exists: ${sdk}`)
 const sourceRevision = output('git', ['rev-parse', 'HEAD'])
 if (sourceRevision !== lock.sourceRevision) throw new Error(`Check out locked PDFium revision ${lock.sourceRevision}`)
+if (output('git', ['status', '--porcelain', '--untracked-files=all'])) {
+  throw new Error('PDFium source checkout must be clean before applying the patch queue')
+}
 if (!await exists(archive)) throw new Error(`Missing locked stock PDFium archive: ${archive}`)
 if (createHash('sha256').update(await readFile(archive)).digest('hex') !== lock.assets[platform]) {
   throw new Error(`Stock PDFium archive checksum does not match ${platform}`)
@@ -138,7 +141,12 @@ const gnArgs = [
   'treat_warnings_as_errors=false',
   ...(os === 'mac' ? ['use_lld=false', 'use_system_xcode=true'] : []),
 ]
-run(process.execPath, [fileURLToPath(new URL('./apply-pdfium-extensions.mjs', import.meta.url)), checkout])
+for (const step of patchset.steps) {
+  const patch = join(root, 'native/pdfium', step.patch)
+  run('git', ['apply', '--check', '--whitespace=error-all', patch])
+  run('git', ['apply', '--whitespace=error-all', patch])
+}
+run('git', ['diff', '--check'])
 const patchDigest = await patchsetDigest()
 await useLocalMacSdk(() => {
   run(gn, ['gen', buildRelative, `--args=${gnArgs.join(' ')}`])

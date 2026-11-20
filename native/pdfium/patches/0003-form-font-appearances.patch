@@ -1,0 +1,534 @@
+diff --git a/core/fpdfdoc/cpdf_bafontmap.cpp b/core/fpdfdoc/cpdf_bafontmap.cpp
+index 55c4eae62bb5d4570e568f8513e9eeda63a57dcc..82c733519d021d33639cd6f57cff509222bd2548 100644
+--- a/core/fpdfdoc/cpdf_bafontmap.cpp
++++ b/core/fpdfdoc/cpdf_bafontmap.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "core/fpdfdoc/cpdf_bafontmap.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <utility>
+ 
+@@ -26,6 +27,7 @@
+ #include "core/fpdfdoc/ipvt_fontmap.h"
+ #include "core/fxcrt/fx_codepage.h"
+ #include "core/fxcrt/stl_util.h"
++#include "core/fxcrt/utf16.h"
+ #include "core/fxge/cfx_fontmapper.h"
+ #include "core/fxge/cfx_fontmgr.h"
+ #include "core/fxge/cfx_gemodule.h"
+@@ -33,6 +35,18 @@
+ 
+ namespace {
+ 
++thread_local CPDF_Document* dsh_font_document = nullptr;
++thread_local CPDF_Font* dsh_form_font = nullptr;
++thread_local const std::vector<uint32_t>* dsh_form_supplementary = nullptr;
++
++uint32_t GetDshFormCode(uint16_t word) {
++  if (pdfium::IsHighSurrogate(word) || pdfium::IsLowSurrogate(word)) {
++    const auto index = static_cast<size_t>(word - pdfium::kMinimumHighSurrogateCodeUnit);
++    return dsh_form_supplementary && index < dsh_form_supplementary->size() ? word : 0;
++  }
++  return dsh_form_font->CharCodeFromUnicode(word);
++}
++
+ bool FindNativeTrueTypeFont(ByteStringView sFontFaceName) {
+   CFX_FontMgr* font_mgr = CFX_GEModule::Get()->GetFontMgr();
+   CFX_FontMapper* font_mapper = font_mgr->GetBuiltinMapper();
+@@ -64,6 +78,56 @@ ByteString EncodeFontAlias(ByteString sFontName, FX_Charset nCharset) {
+ 
+ }  // namespace
+ 
++void CPDF_BAFontMap::SetDshFormFont(CPDF_Document* document, CPDF_Font* font,
++                                     const std::vector<uint32_t>* supplementary) {
++  dsh_font_document = document;
++  dsh_form_font = font;
++  dsh_form_supplementary = supplementary;
++}
++
++uint32_t CPDF_BAFontMap::DshNextFormScalar(WideStringView text, size_t& index) {
++  const auto first = static_cast<uint32_t>(text[index++]);
++  if (pdfium::IsHighSurrogate(first) && index < text.GetLength() &&
++      pdfium::IsLowSurrogate(text[index])) {
++    return pdfium::SurrogatePair(static_cast<char16_t>(first),
++                                static_cast<char16_t>(text[index++])).ToCodePoint();
++  }
++  return first;
++}
++
++WideString CPDF_BAFontMap::DshLayoutText(const WideString& text) const {
++  if (dsh_font_document != document_.get()) {
++    return text;
++  }
++  const auto& characters = *dsh_form_supplementary;
++  const auto view = text.AsStringView();
++  WideString result;
++  size_t index = 0;
++  size_t pending = 0;
++  while (index < view.GetLength()) {
++    const size_t start = index;
++    const uint32_t scalar = DshNextFormScalar(view, index);
++    wchar_t replacement = 0;
++    if (scalar == '\f') {
++      replacement = L'\n';
++    } else if (pdfium::IsSupplementary(scalar)) {
++      const auto character = std::ranges::lower_bound(characters, scalar);
++      if (character == characters.end() || *character != scalar) continue;
++      replacement = static_cast<wchar_t>(pdfium::kMinimumHighSurrogateCodeUnit +
++                                         (character - characters.begin()));
++    } else if (scalar != '\b' && scalar != '\v') {
++      continue;
++    }
++    // Nonprinting controls are kept in /V and omitted from the appearance.
++    result += view.Substr(pending, start - pending);
++    if (replacement) result += replacement;
++    pending = index;
++  }
++  if (!pending) return text;
++  result += view.Substr(pending);
++  return result;
++}
++
+ CPDF_BAFontMap::Data::Data() = default;
+ 
+ CPDF_BAFontMap::Data::~Data() = default;
+@@ -116,6 +180,29 @@ ByteString CPDF_BAFontMap::GetPDFFontAlias(int32_t nFontIndex) {
+ int32_t CPDF_BAFontMap::GetWordFontIndex(uint16_t word,
+                                          FX_Charset nCharset,
+                                          int32_t nFontIndex) {
++  if (word > 0x7e && dsh_font_document == document_.get() && dsh_form_font &&
++      GetDshFormCode(word) != 0) {
++    for (size_t index = 0; index < data_.size(); ++index) {
++      if (data_[index]->font.Get() == dsh_form_font) {
++        return static_cast<int32_t>(index);
++      }
++    }
++    const auto font = pdfium::WrapRetain(dsh_form_font);
++    ByteString alias = ByteString::Format("DSHUnicode%u", font->GetFontDictObjNum());
++    if (const auto ap = annot_dict_->GetDictFor(pdfium::annotation::kAP)) {
++      if (const auto stream = ap->GetStreamFor(ap_type_.AsStringView())) {
++        if (const auto resources = stream->GetDict()->GetDictFor("Resources")) {
++          if (const auto fonts = resources->GetDictFor("Font")) {
++            while (fonts->KeyExist(alias.AsStringView())) {
++              alias += "_";
++            }
++          }
++        }
++      }
++    }
++    AddFontToAnnotDict(font, alias);
++    return AddFontData(font, alias, FX_Charset::kDefault);
++  }
+   if (nFontIndex > 0) {
+     if (KnowWord(nFontIndex, word)) {
+       return nFontIndex;
+@@ -160,6 +247,11 @@ int32_t CPDF_BAFontMap::CharCodeFromUnicode(int32_t nFontIndex, uint16_t word) {
+     return -1;
+   }
+ 
++  if (pData->font.Get() == dsh_form_font) {
++    const uint32_t code = GetDshFormCode(word);
++    return code ? static_cast<int32_t>(code) : -1;
++  }
++
+   if (pData->font->IsUnicodeCompatible()) {
+     return pData->font->CharCodeFromUnicode(word);
+   }
+diff --git a/core/fpdfdoc/cpdf_bafontmap.h b/core/fpdfdoc/cpdf_bafontmap.h
+index d49285cb053106b303c681313c9269ee5a182d5e..24cddbcf6fedc8e96ccfeef76fe37f9434e54007 100644
+--- a/core/fpdfdoc/cpdf_bafontmap.h
++++ b/core/fpdfdoc/cpdf_bafontmap.h
+@@ -21,6 +21,10 @@ class CPDF_Document;
+ class CPDF_BAFontMap final : public IPVT_FontMap {
+  public:
+   static FX_Charset GetNativeCharset();
++  static void SetDshFormFont(CPDF_Document* document, CPDF_Font* font,
++                             const std::vector<uint32_t>* supplementary);
++  static uint32_t DshNextFormScalar(WideStringView text, size_t& index);
++  WideString DshLayoutText(const WideString& text) const;
+ 
+   CPDF_BAFontMap(CPDF_Document* document,
+                  RetainPtr<CPDF_Dictionary> pAnnotDict,
+diff --git a/core/fxge/cfx_face.cpp b/core/fxge/cfx_face.cpp
+index a2895d72f7bf13d3182c607e65b848b55b850ff5..7b85a0cc4fe1645a68f4e046aa339dab365f98d4 100644
+--- a/core/fxge/cfx_face.cpp
++++ b/core/fxge/cfx_face.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "core/fxge/cfx_face.h"
+ 
++#include FT_CID_H
++
+ #include <algorithm>
+ #include <array>
+ #include <cmath>
+@@ -1373,6 +1375,14 @@ ByteString CFX_Face::GetGlyphName(uint32_t glyph_index) {
+   return ByteString(name);
+ }
+ 
++std::optional<uint16_t> CFX_Face::GetDshCharacterId(uint32_t glyph_index) {
++  unsigned int cid = 0;
++  if (!GetRec() || FT_Get_CID_From_Glyph_Index(GetRec(), glyph_index, &cid) || cid > 65535) {
++    return std::nullopt;
++  }
++  return static_cast<uint16_t>(cid);
++}
++
+ int CFX_Face::GetCharIndex(uint32_t code) {
+ #if defined(PDF_ENABLE_FONTATIONS)
+   if (CFX_GEModule::IsFontations()) {
+diff --git a/core/fxge/cfx_face.h b/core/fxge/cfx_face.h
+index a4b0199b1cf7706833136b6d862301fc61745474..c101e123804e16ec0eb4fec3f4362d48d50a12c3 100644
+--- a/core/fxge/cfx_face.h
++++ b/core/fxge/cfx_face.h
+@@ -121,6 +121,7 @@ class CFX_Face final : public Retainable, public Observable {
+   ByteString GetGlyphName(uint32_t glyph_index);
+ 
+   int GetCharIndex(uint32_t code);
++  std::optional<uint16_t> GetDshCharacterId(uint32_t glyph_index);
+   int GetNameIndex(const char* name);
+ 
+   FX_RECT GetCharBBox(uint32_t code, int glyph_index);
+diff --git a/fpdfsdk/BUILD.gn b/fpdfsdk/BUILD.gn
+index c291ae28065a94d1ce52d38eb4374f732429e619..9f77abe1a2faecbd5c253115c62c6097da60734f 100644
+--- a/fpdfsdk/BUILD.gn
++++ b/fpdfsdk/BUILD.gn
+@@ -36,6 +36,8 @@ source_set("fpdfsdk") {
+     "cpdfsdk_widget.cpp",
+     "cpdfsdk_widget.h",
+     "fpdf_annot.cpp",
++    "dsh_form_font.cc",
++    "dsh_form_font.h",
+     "fpdf_attachment.cpp",
+     "fpdf_catalog.cpp",
+     "fpdf_dataavail.cpp",
+@@ -69,6 +71,7 @@ source_set("fpdfsdk") {
+     "../:pdfium_public_headers",
+     "../constants",
+     "../core/fdrm",
++    "//third_party/harfbuzz",
+     "../core/fpdfapi/edit",
+     "../core/fpdfapi/font",
+     "../core/fpdfapi/page",
+diff --git a/fpdfsdk/cpdfsdk_appstream.cpp b/fpdfsdk/cpdfsdk_appstream.cpp
+index 6afe55baea8e0d1d011cc3535fa18c40efd0cd32..c55eee7efeffd5ad1b406d33a811204fe7667140 100644
+--- a/fpdfsdk/cpdfsdk_appstream.cpp
++++ b/fpdfsdk/cpdfsdk_appstream.cpp
+@@ -1564,13 +1564,13 @@ void CPDFSDK_AppStream::SetAsComboBox(std::optional<WideString> sValue) {
+   pEdit->Initialize();
+   pEdit->SetTextDirection(widget_->GetTextDirection());
+   if (sValue.has_value()) {
+-    pEdit->SetText(sValue.value());
++    pEdit->SetText(font_map.DshLayoutText(sValue.value()));
+   } else {
+     int32_t nCurSel = pField->GetSelectedIndex(0);
+     if (nCurSel < 0) {
+-      pEdit->SetText(pField->GetValue());
++      pEdit->SetText(font_map.DshLayoutText(pField->GetValue()));
+     } else {
+-      pEdit->SetText(pField->GetOptionLabel(nCurSel));
++      pEdit->SetText(font_map.DshLayoutText(pField->GetOptionLabel(nCurSel)));
+     }
+   }
+   pEdit->Paint();
+@@ -1637,7 +1637,7 @@ void CPDFSDK_AppStream::SetAsListBox() {
+       }
+     }
+ 
+-    pEdit->SetText(pField->GetOptionLabel(i));
++    pEdit->SetText(font_map.DshLayoutText(pField->GetOptionLabel(i)));
+     pEdit->Paint();
+ 
+     CFX_FloatRect rcContent = pEdit->GetContentRect();
+@@ -1749,7 +1749,7 @@ void CPDFSDK_AppStream::SetAsTextField(std::optional<WideString> sValue) {
+ 
+   pEdit->Initialize();
+   pEdit->SetTextDirection(widget_->GetTextDirection());
+-  pEdit->SetText(sValue.value_or(pField->GetValue()));
++  pEdit->SetText(font_map.DshLayoutText(sValue.value_or(pField->GetValue())));
+   pEdit->Paint();
+ 
+   CFX_FloatRect rcContent = pEdit->GetContentRect();
+diff --git a/fpdfsdk/dsh_form_font.cc b/fpdfsdk/dsh_form_font.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..c063a9d929d270e08ee790fc59ede3d08c4f24c0
+--- /dev/null
++++ b/fpdfsdk/dsh_form_font.cc
+@@ -0,0 +1,201 @@
++#include "fpdfsdk/dsh_form_font.h"
++
++#include <algorithm>
++#include <array>
++#include <memory>
++#include <vector>
++
++#include "core/fpdfapi/font/cpdf_font.h"
++#include "core/fpdfapi/page/cpdf_docpagedata.h"
++#include "core/fpdfapi/parser/cpdf_array.h"
++#include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
++#include "core/fpdfapi/parser/cpdf_number.h"
++#include "core/fpdfapi/parser/cpdf_reference.h"
++#include "core/fpdfapi/parser/cpdf_stream.h"
++#include "core/fpdfapi/parser/cpdf_string.h"
++#include "core/fpdfdoc/cpdf_bafontmap.h"
++#include "core/fxcrt/compiler_specific.h"
++#include "core/fxcrt/numerics/safe_conversions.h"
++#include "core/fxcrt/utf16.h"
++#include "core/fxge/cfx_face.h"
++#include "core/fxge/cfx_font.h"
++#include "third_party/harfbuzz/src/src/hb-ot.h"
++#include "third_party/harfbuzz/src/src/hb-subset.h"
++#include "third_party/harfbuzz/src/src/hb.h"
++
++namespace {
++
++constexpr size_t kMaxFontSize = 32 * 1024 * 1024;
++constexpr size_t kCMapBatchSize = 100;
++
++template <typename T, void (*Destroy)(T*)>
++using HbHandle = std::unique_ptr<T, decltype(Destroy)>;
++
++struct Character {
++  uint32_t unicode;
++  uint16_t code;
++  uint16_t cid;
++  int width;
++};
++
++ByteString MakeCMap(const std::vector<Character>& characters, bool unicode) {
++  ByteString stream = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n";
++  stream += unicode
++      ? "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
++        "/CMapName /DSHFormUnicode def\n/CMapType 2 def\n"
++      : "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def\n"
++        "/CMapName /DSHFormEncoding def\n/CMapType 1 def\n";
++  stream += "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n";
++  for (size_t start = 0; start < characters.size(); start += kCMapBatchSize) {
++    const size_t count = std::min(kCMapBatchSize, characters.size() - start);
++    stream += ByteString::Format("%zu begin%schar\n", count, unicode ? "bf" : "cid");
++    for (size_t index = start; index < start + count; ++index) {
++      const auto& character = characters[index];
++      // Each scalar gets a different character code, even when the font
++      // uses one glyph for two distinct Unicode characters.
++      const auto code = static_cast<unsigned>(character.code);
++      if (!unicode) {
++        stream += ByteString::Format("<%04X> %u\n", code, static_cast<unsigned>(character.cid));
++      } else if (pdfium::IsSupplementary(character.unicode)) {
++        const pdfium::SurrogatePair pair(character.unicode);
++        stream += ByteString::Format("<%04X> <%04X%04X>\n", code,
++            static_cast<unsigned>(pair.high()), static_cast<unsigned>(pair.low()));
++      } else {
++        stream += ByteString::Format("<%04X> <%04X>\n", code, static_cast<unsigned>(character.unicode));
++      }
++    }
++    stream += unicode ? "endbfchar\n" : "endcidchar\n";
++  }
++  stream += "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
++  return stream;
++}
++
++ByteString SubsetName(uint32_t object_number, const CFX_Font& original) {
++  std::array<char, 7> prefix{'A', 'A', 'A', 'A', 'A', 'A', '+'};
++  for (size_t i = 0; i < 6; ++i) {
++    prefix[i] = static_cast<char>('A' + object_number % 26);
++    object_number /= 26;
++  }
++  ByteString name(prefix.data(), prefix.size());
++  name += original.GetPsName();
++  return name;
++}
++
++RetainPtr<CPDF_Font> Embed(CPDF_Document* document,
++                          const CFX_Font& original,
++                          const std::vector<Character>& characters,
++                          pdfium::span<const uint8_t> cff) {
++  auto font = document->NewIndirect<CPDF_Dictionary>();
++  const auto name = SubsetName(font->GetObjNum(), original);
++  auto cid_font = document->NewIndirect<CPDF_Dictionary>();
++  cid_font->SetNewFor<CPDF_Name>("Type", "Font");
++  cid_font->SetNewFor<CPDF_Name>("Subtype", "CIDFontType0");
++  cid_font->SetNewFor<CPDF_Name>("BaseFont", name);
++  auto system = cid_font->SetNewFor<CPDF_Dictionary>("CIDSystemInfo");
++  system->SetNewFor<CPDF_String>("Registry", "Adobe");
++  system->SetNewFor<CPDF_String>("Ordering", "Identity");
++  system->SetNewFor<CPDF_Number>("Supplement", 0);
++  auto widths = cid_font->SetNewFor<CPDF_Array>("W");
++  std::set<uint16_t> recorded;
++  for (const auto& character : characters) {
++    if (!recorded.insert(character.cid).second) continue;
++    widths->AppendNew<CPDF_Number>(static_cast<int>(character.cid));
++    widths->AppendNew<CPDF_Array>()->AppendNew<CPDF_Number>(character.width);
++  }
++
++  auto descriptor = document->NewIndirect<CPDF_Dictionary>();
++  descriptor->SetNewFor<CPDF_Name>("Type", "FontDescriptor");
++  descriptor->SetNewFor<CPDF_Name>("FontName", name);
++  descriptor->SetNewFor<CPDF_Number>("Flags", 4);
++  descriptor->SetRectFor("FontBBox", CFX_FloatRect(original.GetBBox().value_or(FX_RECT())));
++  descriptor->SetNewFor<CPDF_Number>("Ascent", original.GetAscent());
++  descriptor->SetNewFor<CPDF_Number>("Descent", original.GetDescent());
++  descriptor->SetNewFor<CPDF_Number>("CapHeight", original.GetAscent());
++  descriptor->SetNewFor<CPDF_Number>("ItalicAngle", 0);
++  descriptor->SetNewFor<CPDF_Number>("StemV", 80);
++  auto data = document->NewIndirect<CPDF_Stream>(cff);
++  data->GetMutableDict()->SetNewFor<CPDF_Name>("Subtype", "CIDFontType0C");
++  descriptor->SetNewFor<CPDF_Reference>("FontFile3", document, data->GetObjNum());
++  cid_font->SetNewFor<CPDF_Reference>("FontDescriptor", document, descriptor->GetObjNum());
++
++  font->SetNewFor<CPDF_Name>("Type", "Font");
++  font->SetNewFor<CPDF_Name>("Subtype", "Type0");
++  font->SetNewFor<CPDF_Name>("BaseFont", name);
++  font->SetNewFor<CPDF_Array>("DescendantFonts")->AppendNew<CPDF_Reference>(document, cid_font->GetObjNum());
++  const auto encoding = document->NewIndirect<CPDF_Stream>(MakeCMap(characters, false).unsigned_span());
++  const auto unicode = document->NewIndirect<CPDF_Stream>(MakeCMap(characters, true).unsigned_span());
++  font->SetNewFor<CPDF_Reference>("Encoding", document, encoding->GetObjNum());
++  font->SetNewFor<CPDF_Reference>("ToUnicode", document, unicode->GetObjNum());
++  auto loaded = CPDF_DocPageData::FromDocument(document)->GetFont(font);
++  return loaded && loaded->IsEmbedded() ? loaded : nullptr;
++}
++
++}  // namespace
++
++ScopedDshFormFont::ScopedDshFormFont() = default;
++
++ScopedDshFormFont::~ScopedDshFormFont() {
++  if (active_) CPDF_BAFontMap::SetDshFormFont(nullptr, nullptr, nullptr);
++}
++
++bool ScopedDshFormFont::Initialize(CPDF_Document* document,
++                                    pdfium::span<const uint8_t> font_data,
++                                    const std::set<uint32_t>& characters) {
++  if (characters.empty()) {
++    CPDF_BAFontMap::SetDshFormFont(document, nullptr, &supplementary_);
++    active_ = true;
++    return true;
++  }
++  if (font_data.empty() || font_data.size() > kMaxFontSize) return false;
++  CFX_Font original;
++  if (!original.LoadFaceZeroFromSpan(font_data, false, 0)) return false;
++
++  HbHandle<hb_blob_t, hb_blob_destroy> blob(
++      hb_blob_create(reinterpret_cast<const char*>(font_data.data()),
++                     pdfium::checked_cast<unsigned>(font_data.size()),
++                     HB_MEMORY_MODE_READONLY, nullptr, nullptr), hb_blob_destroy);
++  HbHandle<hb_face_t, hb_face_destroy> face(hb_face_create(blob.get(), 0), hb_face_destroy);
++  HbHandle<hb_font_t, hb_font_destroy> font(hb_font_create(face.get()), hb_font_destroy);
++  hb_ot_font_set_funcs(font.get());
++  hb_font_set_scale(font.get(), 1000, 1000);
++  HbHandle<hb_subset_input_t, hb_subset_input_destroy> input(hb_subset_input_create_or_fail(),
++                                                           hb_subset_input_destroy);
++  if (!input) return false;
++  auto* unicodes = hb_subset_input_unicode_set(input.get());
++  std::vector<Character> selected;
++  selected.reserve(characters.size());
++  for (uint32_t unicode : characters) {
++    hb_codepoint_t glyph = 0;
++    if (!hb_font_get_nominal_glyph(font.get(), unicode, &glyph) || !glyph) return false;
++    const auto cid = original.GetFace()->GetDshCharacterId(glyph);
++    if (!cid || !*cid) return false;
++    size_t code = unicode;
++    if (pdfium::IsSupplementary(unicode)) {
++      // PDFium's widget formatter uses 16-bit layout units. Surrogate
++      // slots are otherwise invalid as individual scalar values.
++      code = pdfium::kMinimumHighSurrogateCodeUnit + supplementary_.size();
++      if (code > pdfium::kMaximumLowSurrogateCodeUnit) return false;
++      supplementary_.push_back(unicode);
++    }
++    selected.push_back({unicode, pdfium::checked_cast<uint16_t>(code), *cid,
++                        hb_font_get_glyph_h_advance(font.get(), glyph)});
++    hb_set_add(unicodes, unicode);
++  }
++
++  HbHandle<hb_face_t, hb_face_destroy> subset(hb_subset_or_fail(face.get(), input.get()), hb_face_destroy);
++  if (!subset) return false;
++  HbHandle<hb_blob_t, hb_blob_destroy> cff(hb_face_reference_table(subset.get(), HB_TAG('C', 'F', 'F', ' ')),
++                                          hb_blob_destroy);
++  unsigned size = 0;
++  const char* data = hb_blob_get_data(cff.get(), &size);
++  if (!data || !size) return false;
++  // SAFETY: HarfBuzz owns this byte range for the lifetime of the blob.
++  const auto bytes = UNSAFE_BUFFERS(pdfium::span(reinterpret_cast<const uint8_t*>(data), size));
++  font_ = Embed(document, original, selected, bytes);
++  if (!font_) return false;
++  CPDF_BAFontMap::SetDshFormFont(document, font_.Get(), &supplementary_);
++  active_ = true;
++  return true;
++}
+diff --git a/fpdfsdk/dsh_form_font.h b/fpdfsdk/dsh_form_font.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccc44949492ea7eba45a4f17c58b60853fc6dbac
+--- /dev/null
++++ b/fpdfsdk/dsh_form_font.h
+@@ -0,0 +1,34 @@
++#ifndef FPDFSDK_DSH_FORM_FONT_H_
++#define FPDFSDK_DSH_FORM_FONT_H_
++
++#include <stdint.h>
++
++#include <set>
++#include <vector>
++
++#include "core/fxcrt/retain_ptr.h"
++#include "core/fxcrt/span.h"
++
++class CPDF_Document;
++class CPDF_Font;
++
++// Adds one portable CID font subset shared by all edited widgets. Keeps the
++// native widget formatter's existing layout, clipping, borders and alignment.
++class ScopedDshFormFont {
++ public:
++  ScopedDshFormFont();
++  ~ScopedDshFormFont();
++  ScopedDshFormFont(const ScopedDshFormFont&) = delete;
++  ScopedDshFormFont& operator=(const ScopedDshFormFont&) = delete;
++
++  bool Initialize(CPDF_Document* document,
++                  pdfium::span<const uint8_t> font_data,
++                  const std::set<uint32_t>& characters);
++
++ private:
++  RetainPtr<CPDF_Font> font_;
++  std::vector<uint32_t> supplementary_;
++  bool active_ = false;
++};
++
++#endif  // FPDFSDK_DSH_FORM_FONT_H_
+diff --git a/third_party/BUILD.gn b/third_party/BUILD.gn
+index cb24885dc6e9748e8b29faedb319800ec5060be7..3174d1e4cf39b7e355690f51dae6b5ed4835b8be 100644
+--- a/third_party/BUILD.gn
++++ b/third_party/BUILD.gn
+@@ -172,6 +172,7 @@ if (pdf_bundle_freetype) {
+       "//third_party/freetype/src/src/base/ftbase.c",
+       "//third_party/freetype/src/src/base/ftbase.h",
+       "//third_party/freetype/src/src/base/ftbitmap.c",
++      "//third_party/freetype/src/src/base/ftcid.c",
+       "//third_party/freetype/src/src/base/ftdebug.c",
+       "//third_party/freetype/src/src/base/ftfstype.c",
+       "//third_party/freetype/src/src/base/ftglyph.c",
+diff --git a/third_party/harfbuzz/BUILD.gn b/third_party/harfbuzz/BUILD.gn
+index a7aea21b804861aaab47f3a2557f2cc85444d078..11240977737b3f3789611c2f5c4224f6b43bf6f2 100644
+--- a/third_party/harfbuzz/BUILD.gn
++++ b/third_party/harfbuzz/BUILD.gn
+@@ -386,7 +386,7 @@ if (use_system_harfbuzz) {
+ 
+       # SkPDF needs subsetting but does not require subsetting of layout or CFF tables.
+       "HB_NO_SUBSET_LAYOUT",
+-      "HB_NO_SUBSET_CFF",
++      # DSH enables CFF subsetting for portable form appearances.
+ 
+       # Fallback shaper not required, we only use the HarfBuzz internal OT shaper.
+       "HB_NO_FALLBACK_SHAPE",
+@@ -439,7 +439,7 @@ if (use_system_harfbuzz) {
+       # Paint Previews make use of CFF subsetting. However, enabling this is
+       # expensive for binary size so only compile it when Paint Previews are
+       # compiled.
+-      defines -= [ "HB_NO_SUBSET_CFF" ]
++      # CFF subsetting is already enabled for DSH form appearances.
+     }
+ 
+     if (is_component_build) {

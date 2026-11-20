@@ -411,7 +411,7 @@ Client 不负责 PDF 解析、索引有效性判断、表单写入或独立文�
 
 ### P3：建立 PDFium Patch Queue
 
-已完成：`native/pdfium/patches/patchset.json` 固定有序转换步骤和所有扩展源，`patchset.mjs` 生成摘要；SDK 写入 `DSH_PATCHSET`，Native 构建与发布 manifest 验证 PDFium source revision + patchset。升级仍必须在 clean checkout 上运行转换脚本；后续 upstream 接受某个变更时，删除对应步骤并重新冻结摘要。
+已完成：`native/pdfium/patches/patchset.json` 固定锁定 revision 上的有序 unified `.patch` 队列，扩展源码也作为补丁新增文件；`patchset.mjs` 对补丁字节生成摘要。SDK 写入 `DSH_PATCHSET`，Native 构建验证 PDFium source revision + patchset。升级需在 clean checkout 上逐个校验并应用补丁；若 upstream 接受某项改动，删除对应补丁并重新冻结摘要。
 
 ### P4：统一 Host 领域层
 

@@ -1,0 +1,2459 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index a7dd6102472c59b2aff94c9ae6a3cbb699593a3d..d060566dda72b9cf863b1b18541ee39cf75a80bc 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -196,6 +196,10 @@ source_set("pdfium_public_headers_impl") {
+     "public/cpp/fpdf_deleters.h",
+     "public/cpp/fpdf_scopers.h",
+     "public/fpdf_annot.h",
++    "public/dsh_annotations.h",
++    "public/dsh_forms.h",
++    "public/dsh_metadata.h",
++    "public/dsh_outlines.h",
+     "public/fpdf_attachment.h",
+     "public/fpdf_catalog.h",
+     "public/fpdf_dataavail.h",
+diff --git a/fpdfsdk/BUILD.gn b/fpdfsdk/BUILD.gn
+index 9f77abe1a2faecbd5c253115c62c6097da60734f..7f9d54b73bb884a16bafe5056b732707a87e6364 100644
+--- a/fpdfsdk/BUILD.gn
++++ b/fpdfsdk/BUILD.gn
+@@ -36,6 +36,10 @@ source_set("fpdfsdk") {
+     "cpdfsdk_widget.cpp",
+     "cpdfsdk_widget.h",
+     "fpdf_annot.cpp",
++    "dsh_annotations.cc",
++    "dsh_forms.cc",
++    "dsh_metadata.cc",
++    "dsh_outlines.cc",
+     "dsh_form_font.cc",
+     "dsh_form_font.h",
+     "fpdf_attachment.cpp",
+@@ -71,6 +75,7 @@ source_set("fpdfsdk") {
+     "../:pdfium_public_headers",
+     "../constants",
+     "../core/fdrm",
++    "../third_party:zlib",
+     "//third_party/harfbuzz",
+     "../core/fpdfapi/edit",
+     "../core/fpdfapi/font",
+diff --git a/fpdfsdk/dsh_annotations.cc b/fpdfsdk/dsh_annotations.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1407c232ead1445086497383dc8790e0999b76a
+--- /dev/null
++++ b/fpdfsdk/dsh_annotations.cc
+@@ -0,0 +1,229 @@
++#include "public/dsh_annotations.h"
++
++#include <cmath>
++#include <utility>
++
++#include "core/fpdfapi/page/cpdf_annotcontext.h"
++#include "core/fpdfapi/page/cpdf_page.h"
++#include "core/fpdfapi/parser/cpdf_array.h"
++#include "core/fpdfapi/parser/cpdf_boolean.h"
++#include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
++#include "core/fpdfapi/parser/cpdf_number.h"
++#include "core/fpdfapi/parser/cpdf_reference.h"
++#include "core/fpdfapi/parser/cpdf_stream.h"
++#include "core/fpdfdoc/cpdf_color_utils.h"
++#include "core/fxcrt/compiler_specific.h"
++#include "core/fxge/cfx_color.h"
++#include "fpdfsdk/cpdfsdk_helpers.h"
++#include "public/fpdf_annot.h"
++
++namespace {
++
++RetainPtr<CPDF_Stream> AddForm(CPDF_Document& doc,
++                               const CFX_FloatRect& bounds,
++                               RetainPtr<CPDF_Dictionary> resources,
++                               ByteStringView paint,
++                               bool group) {
++  auto dict = doc.New<CPDF_Dictionary>();
++  dict->SetNewFor<CPDF_Name>("Type", "XObject");
++  dict->SetNewFor<CPDF_Name>("Subtype", "Form");
++  dict->SetNewFor<CPDF_Number>("FormType", 1);
++  dict->SetRectFor("BBox", bounds);
++  dict->SetFor("Resources", std::move(resources));
++  if (group) {
++    dict->SetNewFor<CPDF_Dictionary>("Group")
++        ->SetNewFor<CPDF_Name>("S", "Transparency");
++  }
++  auto stream = doc.NewIndirect<CPDF_Stream>(std::move(dict));
++  stream->SetData(paint.unsigned_span());
++  return stream;
++}
++
++bool Channel(float value) {
++  return std::isfinite(value) && value >= 0 && value <= 1;
++}
++
++}  // namespace
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetAnnotationDetails(FPDF_ANNOTATION annotation,
++                             FPDF_DSH_ANNOTATION_DETAILS* details) {
++  const auto* context = CPDFAnnotContextFromFPDFAnnotation(annotation);
++  if (!context || !details)
++    return false;
++  const auto* dict = context->GetAnnotDict();
++  *details = {};
++  details->identity = dict;
++  details->object_number = dict->GetObjNum();
++  details->generation = dict->GetGenNum();
++  if (dict->KeyExist("IRT")) {
++    const auto relation = dict->GetNameFor("RT");
++    details->reply_type = !dict->KeyExist("RT") || relation == "R"
++        ? 1 : relation == "Group" ? 2 : -1;
++    details->reply_parent = dict->GetDictFor("IRT").Get();
++  }
++  details->popup = dict->GetDictFor("Popup").Get();
++  if (const auto action = dict->GetDictFor("A");
++      action && dict->GetNameFor("Subtype") == "Link" && action->GetNameFor("S") == "Named") {
++    const auto name = action->GetNameFor("N");
++    details->named_action = name == "FirstPage" ? 1 : name == "LastPage" ? 2
++        : name == "NextPage" ? 3 : name == "PrevPage" ? 4 : 0;
++  }
++  details->rich_text = dict->KeyExist("RC");
++  if (auto color = dict->GetArrayFor("C"); color &&
++      (color->size() == 1 || color->size() == 3 || color->size() == 4)) {
++    bool valid = true;
++    for (size_t index = 0; index < color->size(); ++index)
++      valid = valid && !!color->GetNumberAt(index);
++    if (valid) {
++      const auto rgb = fpdfdoc::CFXColorFromArray(*color).ConvertColorType(CFX_Color::Type::kRGB);
++      details->has_color = true;
++      details->color[0] = rgb.fColor1;
++      details->color[1] = rgb.fColor2;
++      details->color[2] = rgb.fColor3;
++    }
++  }
++  if (const auto opacity = dict->GetNumberFor("CA")) {
++    details->opacity = opacity->GetNumber();
++    details->has_opacity = std::isfinite(details->opacity);
++  }
++  if (const auto position = dict->GetArrayFor("DSHCommentPosition");
++      position && position->size() == 2 && position->GetNumberAt(0) && position->GetNumberAt(1)) {
++    details->comment_position = {position->GetFloatAt(0), position->GetFloatAt(1)};
++    details->has_comment_position = std::isfinite(details->comment_position.x)
++        && std::isfinite(details->comment_position.y);
++  }
++  return true;
++}
++
++FPDF_EXPORT int FPDF_CALLCONV
++FPDF_DSH_GetPageAnnotationCount(FPDF_DOCUMENT document, int page_index) {
++  auto* doc = CPDFDocumentFromFPDFDocument(document);
++  const auto page = doc ? doc->GetPageDictionary(page_index) : nullptr;
++  if (!page) return -1;
++  const auto annotations = page->GetArrayFor("Annots");
++  return annotations ? static_cast<int>(annotations->size()) : 0;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationContents(FPDF_ANNOTATION annotation, FPDF_WIDESTRING contents) {
++  auto* context = CPDFAnnotContextFromFPDFAnnotation(annotation);
++  if (!context || !contents || !FPDFAnnot_SetStringValue(annotation, "Contents", contents))
++    return false;
++  context->GetMutableAnnotDict()->RemoveFor("RC");
++  return true;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationAppearance(FPDF_ANNOTATION annotation,
++                                 const char* paint,
++                                 size_t paint_size,
++                                 const float color[3],
++                                 float opacity,
++                                 FPDF_BOOL multiply) {
++  auto* context = CPDFAnnotContextFromFPDFAnnotation(annotation);
++  if (!context || !paint || !paint_size || paint_size > 1024 * 1024 ||
++      !Channel(opacity)) {
++    return false;
++  }
++  // SAFETY: The C ABI requires paint_size bytes and either three channels
++  // or a null color pointer to keep the original annotation color.
++  const auto channels = color ? UNSAFE_BUFFERS(pdfium::span(color, size_t{3}))
++                              : pdfium::span<const float>();
++  const auto commands = UNSAFE_BUFFERS(ByteStringView(paint, paint_size));
++  for (float channel : channels) {
++    if (!Channel(channel))
++      return false;
++  }
++  auto dict = context->GetMutableAnnotDict();
++  auto* doc = context->GetPage()->GetDocument();
++  const auto rect = dict->GetRectFor("Rect");
++  if (!doc || !std::isfinite(rect.Width()) || !std::isfinite(rect.Height()) ||
++      rect.Width() <= 0 || rect.Height() <= 0) {
++    return false;
++  }
++  const CFX_FloatRect bounds(0, 0, rect.Width(), rect.Height());
++  auto resources = doc->New<CPDF_Dictionary>();
++  auto states = resources->SetNewFor<CPDF_Dictionary>("ExtGState");
++  auto alpha = states->SetNewFor<CPDF_Dictionary>("GS0");
++  alpha->SetNewFor<CPDF_Name>("Type", "ExtGState");
++  alpha->SetNewFor<CPDF_Boolean>("AIS", false);
++  alpha->SetNewFor<CPDF_Number>("ca", opacity);
++  alpha->SetNewFor<CPDF_Number>("CA", opacity);
++  ByteString appearance;
++  if (multiply) {
++    states->SetNewFor<CPDF_Dictionary>("GS1")
++        ->SetNewFor<CPDF_Name>("BM", "Multiply");
++    auto group = AddForm(*doc, bounds, doc->New<CPDF_Dictionary>(), commands, true);
++    resources->SetNewFor<CPDF_Dictionary>("XObject")
++        ->SetNewFor<CPDF_Reference>("Mark", doc, group->GetObjNum());
++    appearance = "q\n/GS0 gs\n/GS1 gs\n/Mark Do\nQ\n";
++  } else {
++    appearance = "q\n/GS0 gs\n";
++    appearance += commands;
++    appearance += "\nQ\n";
++  }
++  auto stream = AddForm(*doc, bounds, std::move(resources),
++                        appearance.AsStringView(), false);
++  if (!channels.empty()) {
++    auto array = dict->SetNewFor<CPDF_Array>("C");
++    for (float channel : channels)
++      array->AppendNew<CPDF_Number>(channel);
++  }
++  if (multiply)
++    dict->SetNewFor<CPDF_Number>("CA", opacity);
++  dict->SetNewFor<CPDF_Dictionary>("AP")
++      ->SetNewFor<CPDF_Reference>("N", doc, stream->GetObjNum());
++  dict->RemoveFor("AS");
++  return true;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationReply(FPDF_PAGE handle,
++                            FPDF_ANNOTATION reply,
++                            FPDF_ANNOTATION parent) {
++  auto* page = CPDFPageFromFPDFPage(handle);
++  auto* child = CPDFAnnotContextFromFPDFAnnotation(reply);
++  auto* root = CPDFAnnotContextFromFPDFAnnotation(parent);
++  if (!page || !child || !root || child == root || child->GetPage() != page ||
++      root->GetPage() != page || FPDFAnnot_GetSubtype(reply) != FPDF_ANNOT_TEXT) {
++    return false;
++  }
++  auto dict = root->GetMutableAnnotDict();
++  auto annotation = child->GetMutableAnnotDict();
++  auto* doc = page->GetDocument();
++  auto annots = page->GetOrCreateAnnotsArray();
++  const auto position = annots->Find(dict.Get());
++  if (!dict->GetObjNum()) {
++    if (!position)
++      return false;
++    // Find() resolves references. Replace every direct alias before saving.
++    doc->AddIndirectObject(dict);
++    for (size_t index = 0; index < annots->size(); ++index) {
++      if (annots->GetObjectAt(index).Get() == dict.Get())
++        annots->SetNewAt<CPDF_Reference>(index, doc, dict->GetObjNum());
++    }
++  }
++  annotation->SetNewFor<CPDF_Reference>("IRT", doc, dict->GetObjNum());
++  annotation->SetNewFor<CPDF_Name>("RT", "R");
++  annotation->SetNewFor<CPDF_Number>("F", FPDF_ANNOT_FLAG_NOVIEW);
++  return true;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetCommentPosition(FPDF_ANNOTATION annotation, const FS_POINTF* point) {
++  auto* context = CPDFAnnotContextFromFPDFAnnotation(annotation);
++  if (!context || (point && (!std::isfinite(point->x) || !std::isfinite(point->y))))
++    return false;
++  auto dict = context->GetMutableAnnotDict();
++  if (!point) {
++    dict->RemoveFor("DSHCommentPosition");
++  } else {
++    auto array = dict->SetNewFor<CPDF_Array>("DSHCommentPosition");
++    array->AppendNew<CPDF_Number>(point->x);
++    array->AppendNew<CPDF_Number>(point->y);
++  }
++  return true;
++}
+diff --git a/fpdfsdk/dsh_forms.cc b/fpdfsdk/dsh_forms.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..6643a8cada20938017008cfa1e2f7ab558b1e159
+--- /dev/null
++++ b/fpdfsdk/dsh_forms.cc
+@@ -0,0 +1,571 @@
++#include "public/dsh_forms.h"
++
++#include <algorithm>
++#include <cmath>
++#include <map>
++#include <optional>
++#include <set>
++#include <utility>
++#include <vector>
++
++#include "constants/annotation_flags.h"
++#include "constants/form_flags.h"
++#include "core/fpdfapi/parser/cpdf_array.h"
++#include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
++#include "core/fpdfapi/parser/cpdf_string.h"
++#include "core/fpdfdoc/cpdf_bafontmap.h"
++#include "core/fpdfdoc/cpdf_formcontrol.h"
++#include "core/fpdfdoc/cpdf_formfield.h"
++#include "core/fpdfdoc/cpdf_interactiveform.h"
++#include "core/fxcrt/compiler_specific.h"
++#include "core/fxcrt/utf16.h"
++#include "fpdfsdk/cpdfsdk_formfillenvironment.h"
++#include "fpdfsdk/cpdfsdk_helpers.h"
++#include "fpdfsdk/cpdfsdk_interactiveform.h"
++#include "fpdfsdk/dsh_form_font.h"
++#include "public/fpdf_formfill.h"
++
++namespace {
++
++constexpr size_t kMaxEdits = 5000;
++constexpr size_t kMaxValueBytes = 1024 * 1024;
++constexpr auto kSilent = NotificationOption::kDoNotNotify;
++using WidgetPages = std::map<const CPDF_Dictionary*, int>;
++using FieldKey = std::pair<uint32_t, uint32_t>;
++
++DSHPDF_FORM_KIND GetKind(const CPDF_FormField& field) {
++  switch (field.GetType()) {
++    case CPDF_FormField::kText: return DSHPDF_FORM_TEXT_FIELD;
++    case CPDF_FormField::kCheckBox: return DSHPDF_FORM_CHECKBOX;
++    case CPDF_FormField::kRadioButton: return DSHPDF_FORM_RADIO;
++    case CPDF_FormField::kComboBox: return DSHPDF_FORM_DROPDOWN;
++    case CPDF_FormField::kListBox: return DSHPDF_FORM_OPTION_LIST;
++    default: return DSHPDF_FORM_UNSUPPORTED;
++  }
++}
++
++bool IsButton(DSHPDF_FORM_KIND kind) {
++  return kind == DSHPDF_FORM_CHECKBOX || kind == DSHPDF_FORM_RADIO;
++}
++
++bool IsChoice(DSHPDF_FORM_KIND kind) {
++  return kind == DSHPDF_FORM_DROPDOWN || kind == DSHPDF_FORM_OPTION_LIST;
++}
++
++FieldKey GetKey(const CPDF_FormField& field) {
++  const auto dictionary = field.GetFieldDict();
++  return {dictionary->GetObjNum(), dictionary->GetGenNum()};
++}
++
++bool HasCanonicalControls(const CPDF_FormField& field) {
++  const auto owner = field.GetFieldDict();
++  const auto kids = owner->GetArrayFor("Kids");
++  for (int index = 0; index < field.CountControls(); ++index) {
++    const auto widget = field.GetControl(index)->GetWidgetDict();
++    if (widget == owner) {
++      continue;
++    }
++    const auto parent = widget->GetDictFor("Parent");
++    if (parent ? parent != owner : !kids || !kids->Contains(widget.Get())) {
++      return false;
++    }
++  }
++  return true;
++}
++
++WidgetPages FindWidgetPages(CPDF_Document* document,
++                            const std::set<const CPDF_Dictionary*>& widgets) {
++  WidgetPages pages;
++  for (int index = 0; index < document->GetPageCount() && pages.size() < widgets.size(); ++index) {
++    const auto page = document->GetPageDictionary(index);
++    const auto annotations = page ? page->GetArrayFor("Annots") : nullptr;
++    if (!annotations) {
++      continue;
++    }
++    for (size_t position = 0; position < annotations->size(); ++position) {
++      const auto annotation = annotations->GetDictAt(position);
++      if (widgets.contains(annotation.Get())) {
++        pages.emplace(annotation.Get(), index);
++      }
++    }
++  }
++  return pages;
++}
++
++DSHPDF_FORM_TEXT Borrow(const ByteString& text) {
++  return {text.c_str(), text.GetLength()};
++}
++
++std::vector<DSHPDF_FORM_TEXT> BorrowAll(const std::vector<ByteString>& texts) {
++  std::vector<DSHPDF_FORM_TEXT> borrowed;
++  borrowed.reserve(texts.size());
++  for (const auto& text : texts) {
++    borrowed.push_back(Borrow(text));
++  }
++  return borrowed;
++}
++
++std::vector<ByteString> ChoiceValues(const CPDF_FormField& field) {
++  std::vector<ByteString> values;
++  const auto value = field.GetFieldAttr("V");
++  if (value && value->IsString() && !value->GetString().IsEmpty()) {
++    values.push_back(value->GetUnicodeText().ToUTF8());
++  } else if (value && value->IsArray()) {
++    const auto* array = value->AsArray();
++    for (size_t index = 0; index < array->size(); ++index) {
++      const auto selected = array->GetStringAt(index);
++      if (selected) {
++        values.push_back(selected->GetUnicodeText().ToUTF8());
++      }
++    }
++  }
++  // The transport represents choices as printed labels. The PDF stores
++  // export values, which can differ from the label displayed on the page.
++  for (auto& selected : values) {
++    const int index = field.FindOption(WideString::FromUTF8(selected.AsStringView()));
++    if (index >= 0) {
++      selected = field.GetOptionLabel(index).ToUTF8();
++    }
++  }
++  return values;
++}
++
++const CPDF_FormControl* SelectedButton(const CPDF_FormField& field) {
++  const auto value = field.GetFieldAttr("V");
++  if (!value || !value->IsName() || value->GetString() == "Off") {
++    return nullptr;
++  }
++  const auto state = value->GetString();
++  const CPDF_FormControl* named_state = nullptr;
++  for (int index = 0; index < field.CountControls(); ++index) {
++    const auto* control = field.GetControl(index);
++    if (state == control->GetCheckedAPState()) {
++      return control;
++    }
++    if (!named_state && state == control->GetOnStateName()) {
++      named_state = control;
++    }
++  }
++  return named_state;
++}
++
++void VisitField(const CPDF_FormField& field,
++                const WidgetPages& widget_pages,
++                DSHPDF_FORM_VISITOR visitor,
++                void* context) {
++  const auto [object, generation] = GetKey(field);
++  const auto kind = GetKind(field);
++  const auto flags = field.GetFieldFlags();
++  const auto name = field.GetFullName().ToUTF8();
++  const auto hint = field.GetFieldAttr("TU");
++  auto hint_text = hint && hint->IsString() ? hint->GetUnicodeText() : WideString();
++  if (hint_text.GetLength() > 256) {
++    // Do not split a supplementary character on 16-bit wchar_t platforms.
++    hint_text = hint_text.First(pdfium::IsHighSurrogate(hint_text[255]) ? 255 : 256);
++  }
++  const auto description = hint_text.ToUTF8();
++  const auto* checked = IsButton(kind) ? SelectedButton(field) : nullptr;
++  std::vector<ByteString> values;
++  std::vector<ByteString> options;
++  if (kind == DSHPDF_FORM_TEXT_FIELD) {
++    values.push_back(field.GetValue().ToUTF8());
++  } else if (IsChoice(kind)) {
++    values = ChoiceValues(field);
++    for (int index = 0; index < field.CountOptions(); ++index) {
++      options.push_back(field.GetOptionLabel(index).ToUTF8());
++    }
++  } else if (kind == DSHPDF_FORM_RADIO) {
++    values.push_back(checked ? checked->GetExportValue().ToUTF8() : ByteString());
++    for (int index = 0; index < field.CountControls(); ++index) {
++      options.push_back(field.GetControl(index)->GetExportValue().ToUTF8());
++    }
++  }
++
++  std::vector<DSHPDF_FORM_WIDGET> widgets;
++  for (int index = 0; index < field.CountControls(); ++index) {
++    const auto* control = field.GetControl(index);
++    const auto dictionary = control->GetWidgetDict();
++    const uint32_t annotation_flags = dictionary->GetIntegerFor("F");
++    if (annotation_flags & (pdfium::annotation_flags::kHidden | pdfium::annotation_flags::kNoView)) {
++      continue;
++    }
++    const auto page = widget_pages.find(dictionary.Get());
++    if (page == widget_pages.end()) {
++      continue;
++    }
++    const auto rect = control->GetRect();
++    if (!std::isfinite(rect.left) || !std::isfinite(rect.bottom) ||
++        !std::isfinite(rect.right) || !std::isfinite(rect.top) ||
++        rect.left >= rect.right || rect.bottom >= rect.top) {
++      continue;
++    }
++    widgets.push_back({page->second, rect.left, rect.bottom, rect.right, rect.top,
++                       kind == DSHPDF_FORM_RADIO ? Borrow(options[index]) : DSHPDF_FORM_TEXT{}});
++  }
++
++  const auto borrowed_values = BorrowAll(values);
++  const auto borrowed_options = BorrowAll(options);
++  const DSHPDF_FORM_FIELD row{
++      object, generation, kind,
++      kind == DSHPDF_FORM_UNSUPPORTED || bool(flags & pdfium::form_flags::kReadOnly) ||
++          !HasCanonicalControls(field),
++      field.IsRequired(),
++      kind == DSHPDF_FORM_TEXT_FIELD && bool(flags & pdfium::form_flags::kTextMultiline),
++      kind == DSHPDF_FORM_OPTION_LIST && bool(flags & pdfium::form_flags::kChoiceMultiSelect),
++      kind == DSHPDF_FORM_TEXT_FIELD ? field.GetMaxLen() : 0,
++      Borrow(name), Borrow(description), borrowed_values.data(), borrowed_values.size(),
++      borrowed_options.data(), borrowed_options.size(),
++      kind == DSHPDF_FORM_CHECKBOX && checked,
++      widgets.data(), widgets.size()};
++  visitor(context, &row);
++}
++
++struct FormSession : FPDF_FORMFILLINFO {
++  explicit FormSession(FPDF_DOCUMENT document_handle)
++      : FPDF_FORMFILLINFO{}, document(document_handle) {
++    version = 2;
++    xfa_disabled = true;
++    FFI_GetPage = [](FPDF_FORMFILLINFO* info, FPDF_DOCUMENT, int index) -> FPDF_PAGE {
++      const auto& loaded = static_cast<FormSession*>(info)->pages;
++      const auto found = loaded.find(index);
++      return found == loaded.end() ? nullptr : found->second;
++    };
++    FFI_Invalidate = [](FPDF_FORMFILLINFO*, FPDF_PAGE, double, double, double, double) {};
++    handle = FPDFDOC_InitFormFillEnvironment(document, this);
++  }
++
++  FormSession(const FormSession&) = delete;
++  FormSession& operator=(const FormSession&) = delete;
++
++  ~FormSession() {
++    while (!pages.empty()) {
++      const auto entry = pages.begin();
++      const auto page = entry->second;
++      FORM_OnBeforeClosePage(page, handle);
++      pages.erase(entry);
++      FPDF_ClosePage(page);
++    }
++    FPDFDOC_ExitFormFillEnvironment(handle);
++  }
++
++  bool LoadPage(int index) {
++    if (pages.contains(index)) {
++      return true;
++    }
++    const FPDF_PAGE page = FPDF_LoadPage(document, index);
++    if (!page) {
++      return false;
++    }
++    pages.emplace(index, page);
++    FORM_OnAfterLoadPage(page, handle);
++    return true;
++  }
++
++  FPDF_DOCUMENT document;
++  FPDF_FORMHANDLE handle = nullptr;
++  std::map<int, FPDF_PAGE> pages;
++};
++
++struct FormEdit {
++  CPDF_FormField* field;
++  RetainPtr<CPDF_Dictionary> dictionary;
++  DSHPDF_FORM_KIND kind;
++  std::vector<int> selected_indices;
++  std::vector<int> checked_controls;
++  WideString text;
++};
++
++std::optional<WideString> ReadInput(DSHPDF_FORM_TEXT input) {
++  if (input.size > kMaxValueBytes || (!input.data && input.size != 0)) {
++    return std::nullopt;
++  }
++  const ByteString bytes(input.data, input.size);
++  auto value = WideString::FromUTF8(bytes.AsStringView());
++  return value.ToUTF8() == bytes ? std::optional<WideString>(std::move(value)) : std::nullopt;
++}
++
++const char* PrepareEdit(const DSHPDF_FORM_EDIT& input, FormEdit* edit) {
++  auto& field = *edit->field;
++  const auto kind = edit->kind;
++  if ((field.GetFieldFlags() & pdfium::form_flags::kReadOnly) || !HasCanonicalControls(field)) {
++    return "The PDF form field is read-only or has ambiguous widgets.";
++  }
++  if (input.value_count > kMaxEdits || (input.value_count && !input.values)) {
++    return "Invalid PDF form value array.";
++  }
++  if (kind == DSHPDF_FORM_TEXT_FIELD) {
++    if (input.value_count != 1) {
++      return "The PDF text field requires one string.";
++    }
++    auto text = ReadInput(input.values[0]);
++    if (!text) {
++      return "Invalid UTF-8 PDF form text.";
++    }
++    const auto bytes = text->ToUTF8();
++    const auto length = std::count_if(bytes.begin(), bytes.end(), [](unsigned char ch) {
++      return (ch & 0xc0) != 0x80;
++    });
++    const int limit = field.GetMaxLen();
++    if (limit > 0 && length > limit) {
++      return "The PDF form text exceeds its maximum length.";
++    }
++    edit->text = std::move(*text);
++    return nullptr;
++  }
++  if (IsChoice(kind)) {
++    if (input.value_count > 1 && (kind == DSHPDF_FORM_DROPDOWN ||
++        !(field.GetFieldFlags() & pdfium::form_flags::kChoiceMultiSelect))) {
++      return "The PDF choice field accepts one option.";
++    }
++    std::set<int> seen;
++    for (size_t index = 0; index < input.value_count; ++index) {
++      const auto value = ReadInput(input.values[index]);
++      if (!value) {
++        return "Invalid UTF-8 PDF form option.";
++      }
++      int selected = -1;
++      for (int option = 0; option < field.CountOptions(); ++option) {
++        if (field.GetOptionLabel(option) != *value) {
++          continue;
++        }
++        if (selected >= 0) {
++          return "The PDF choice label has multiple export options.";
++        }
++        selected = option;
++      }
++      if (selected < 0 || !seen.insert(selected).second) {
++        return "The PDF choice value is unavailable or repeated.";
++      }
++    }
++    edit->selected_indices.assign(seen.begin(), seen.end());
++    return nullptr;
++  }
++  if (!IsButton(kind)) {
++    return "The PDF form field type is unsupported.";
++  }
++  std::optional<WideString> value;
++  if (kind == DSHPDF_FORM_RADIO && input.value_count == 1) {
++    value = ReadInput(input.values[0]);
++  }
++  if ((kind == DSHPDF_FORM_CHECKBOX && input.value_count != 0) ||
++      (kind == DSHPDF_FORM_RADIO && !value)) {
++    return "Invalid PDF button value.";
++  }
++  const bool should_select = kind == DSHPDF_FORM_CHECKBOX ? input.checked : !value->IsEmpty();
++  if (!should_select) {
++    return nullptr;
++  }
++  ByteString selected_state;
++  for (int index = 0; index < field.CountControls(); ++index) {
++    const auto* control = field.GetControl(index);
++    if (value && control->GetExportValue() != *value) {
++      continue;
++    }
++    const auto state = control->GetOnStateName();
++    if (state.IsEmpty() || (!selected_state.IsEmpty() && state != selected_state)) {
++      return "The PDF button has missing or ambiguous appearance states.";
++    }
++    selected_state = state;
++    edit->checked_controls.push_back(index);
++  }
++  if (edit->checked_controls.empty()) {
++    return "The PDF button has no matching control.";
++  }
++  if (edit->checked_controls.size() > 1 &&
++      ((kind == DSHPDF_FORM_RADIO &&
++        !(field.GetFieldFlags() & pdfium::form_flags::kButtonRadiosInUnison)) ||
++       (field.GetFieldAttr("Opt") && field.GetFieldAttr("Opt")->IsArray()))) {
++    return "The PDF button selection refers to multiple independent controls.";
++  }
++  return nullptr;
++}
++
++bool CollectCharacters(const WideString& text, std::set<uint32_t>& characters) {
++  size_t index = 0;
++  while (index < text.GetLength()) {
++    const auto scalar = CPDF_BAFontMap::DshNextFormScalar(text.AsStringView(), index);
++    if (scalar > pdfium::kMaximumSupplementaryCodePoint ||
++        pdfium::IsHighSurrogate(scalar) || pdfium::IsLowSurrogate(scalar)) {
++      return false;
++    }
++    if (scalar > 0x7e) characters.insert(scalar);
++  }
++  return true;
++}
++
++bool CollectAppearanceCharacters(const FormEdit& edit, std::set<uint32_t>& characters) {
++  const auto& field = *edit.field;
++  if (!field.CountControls() || IsButton(edit.kind)) return true;
++  if (edit.kind == DSHPDF_FORM_TEXT_FIELD) {
++    return (field.GetFieldFlags() & pdfium::form_flags::kTextPassword) ||
++        CollectCharacters(edit.text, characters);
++  }
++  if (edit.kind == DSHPDF_FORM_OPTION_LIST) {
++    for (int index = 0; index < field.CountOptions(); ++index) {
++      if (!CollectCharacters(field.GetOptionLabel(index), characters)) return false;
++    }
++  } else if (!edit.selected_indices.empty()) {
++    return CollectCharacters(field.GetOptionLabel(edit.selected_indices.front()), characters);
++  }
++  return true;
++}
++
++void WriteEdit(FormEdit& edit) {
++  auto& field = *edit.field;
++  if (edit.kind == DSHPDF_FORM_TEXT_FIELD) {
++    field.SetValue(edit.text, kSilent);
++    return;
++  }
++  if (IsChoice(edit.kind)) {
++    field.ClearSelection(kSilent);
++    for (const int index : edit.selected_indices) {
++      field.SetItemSelection(index, kSilent);
++    }
++    if (edit.selected_indices.empty()) {
++      // Explicitly clear the field, even when /DV or inherited /V exists.
++      edit.dictionary->SetNewFor<CPDF_Array>("V");
++      edit.dictionary->SetNewFor<CPDF_Array>("I");
++    }
++    return;
++  }
++  for (int index = 0; index < field.CountControls(); ++index) {
++    field.GetControl(index)->CheckControl(std::binary_search(
++        edit.checked_controls.begin(), edit.checked_controls.end(), index));
++  }
++  const ByteString state = edit.checked_controls.empty()
++      ? ByteString("Off")
++      : field.GetControl(edit.checked_controls.front())->GetCheckedAPState();
++  edit.dictionary->SetNewFor<CPDF_Name>("V", state);
++}
++
++}  // namespace
++
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_VisitFormFields(FPDF_DOCUMENT document,
++                     DSHPDF_FORM_VISITOR visitor,
++                     void* context) {
++  auto* pdf = CPDFDocumentFromFPDFDocument(document);
++  if (!pdf || !visitor) {
++    return "Invalid PDF form visitor.";
++  }
++  CPDF_InteractiveForm form(pdf, /*distinct_fields=*/true);
++  std::set<const CPDF_Dictionary*> widgets;
++  const size_t count = form.CountFields(WideString());
++  for (size_t index = 0; index < count; ++index) {
++    const auto* field = form.GetField(index, WideString());
++    if (!field || field->GetFieldDict()->IsInline()) {
++      return "The PDF form contains a field without a stable object identity.";
++    }
++    for (int control = 0; control < field->CountControls(); ++control) {
++      widgets.insert(field->GetControl(control)->GetWidgetDict().Get());
++    }
++  }
++  const auto pages = FindWidgetPages(pdf, widgets);
++  for (size_t index = 0; index < count; ++index) {
++    VisitField(*form.GetField(index, WideString()), pages, visitor, context);
++  }
++  return nullptr;
++}
++
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_ApplyFormFields(FPDF_DOCUMENT document,
++                     const DSHPDF_FORM_EDIT* edits,
++                     size_t count,
++                     const uint8_t* font_data,
++                     size_t font_size) {
++  auto* pdf = CPDFDocumentFromFPDFDocument(document);
++  if (!pdf || count > kMaxEdits || (count && !edits) || (font_size && !font_data)) {
++    return "Invalid PDF form edits.";
++  }
++  if (!count) {
++    return nullptr;
++  }
++  FormSession session(document);
++  if (!session.handle) {
++    return "The PDF form editing environment could not initialize.";
++  }
++  auto* interactive = CPDFSDKFormFillEnvironmentFromFPDFFormHandle(session.handle)->GetInteractiveForm(
++      /*distinct_fields=*/true);
++  auto* form = interactive->GetInteractiveForm();
++  std::map<FieldKey, CPDF_FormField*> fields;
++  for (size_t index = 0; index < form->CountFields(WideString()); ++index) {
++    auto* field = form->GetField(index, WideString());
++    if (field) {
++      fields.emplace(GetKey(*field), field);
++    }
++  }
++
++  std::vector<FormEdit> prepared;
++  std::set<const CPDF_Dictionary*> appearance_widgets;
++  for (size_t index = 0; index < count; ++index) {
++    const auto& input = edits[index];
++    const auto found = fields.find({input.object_number, input.generation});
++    if (found == fields.end() || GetKind(*found->second) != input.kind) {
++      return "The PDF form field identity or type has changed.";
++    }
++    auto* field = found->second;
++    auto object = pdf->GetOrParseIndirectObject(input.object_number);
++    auto dictionary = object ? object->GetMutableDict() : nullptr;
++    if (!dictionary || field->GetFieldDict() != dictionary) {
++      return "The PDF form field has no stable object identity.";
++    }
++    FormEdit edit{field, std::move(dictionary), input.kind, {}, {}, {}};
++    if (const char* error = PrepareEdit(input, &edit)) {
++      return error;
++    }
++    if (!IsButton(edit.kind)) {
++      for (int control = 0; control < field->CountControls(); ++control) {
++        appearance_widgets.insert(field->GetControl(control)->GetWidgetDict().Get());
++      }
++    }
++    prepared.push_back(std::move(edit));
++  }
++
++  const auto pages = FindWidgetPages(pdf, appearance_widgets);
++  for (const auto& [widget, page] : pages) {
++    if (!session.LoadPage(page)) {
++      return "A PDF form widget page could not be opened for appearance updates.";
++    }
++  }
++  for (const auto& widget : appearance_widgets) {
++    auto* control = form->GetControlByDict(widget);
++    if (!pages.contains(widget) || !interactive->GetWidget(control)) {
++      return "A PDF form widget could not be opened for appearance updates.";
++    }
++  }
++
++  std::map<CPDF_FormField*, const FormEdit*> final_edits;
++  for (const auto& edit : prepared) final_edits[edit.field] = &edit;
++  std::set<uint32_t> characters;
++  for (const auto& entry : final_edits) {
++    if (!CollectAppearanceCharacters(*entry.second, characters)) {
++      return "The PDF widget text contains unsupported Unicode characters.";
++    }
++  }
++  ScopedDshFormFont appearance_font;
++  // SAFETY: The native caller supplies the font bytes and length together.
++  if (!appearance_font.Initialize(pdf, UNSAFE_BUFFERS(pdfium::span(font_data, font_size)), characters)) {
++    return "The bundled PDF form font does not cover the widget text.";
++  }
++
++  std::set<CPDF_FormField*> changed;
++  for (auto& edit : prepared) {
++    WriteEdit(edit);
++    if (!IsButton(edit.kind)) {
++      changed.insert(edit.field);
++    }
++  }
++  for (auto* field : changed) {
++    interactive->ResetFieldAppearance(field, std::nullopt);
++    for (int index = 0; index < field->CountControls(); ++index) {
++      const auto widget = field->GetControl(index)->GetWidgetDict();
++      const auto appearance = widget->GetDictFor("AP");
++      if (!appearance || !appearance->GetStreamFor("N")) {
++        return "A PDF form widget appearance could not be generated.";
++      }
++    }
++  }
++  return nullptr;
++}
+diff --git a/fpdfsdk/dsh_metadata.cc b/fpdfsdk/dsh_metadata.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..28aa65dcbd12caaaecb77dd3efbbfaa186d1efaf
+--- /dev/null
++++ b/fpdfsdk/dsh_metadata.cc
+@@ -0,0 +1,911 @@
++#include "public/dsh_metadata.h"
++
++#include <algorithm>
++#include <array>
++#include <bit>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <map>
++#include <memory>
++#include <optional>
++#include <set>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "core/fdrm/fx_crypt_sha.h"
++#include "core/fpdfapi/parser/cpdf_array.h"
++#include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
++#include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_number.h"
++#include "core/fpdfapi/parser/cpdf_parser.h"
++#include "core/fpdfapi/parser/cpdf_stream.h"
++#include "core/fpdfapi/parser/cpdf_stream_acc.h"
++#include "core/fpdfapi/parser/fpdf_parser_utility.h"
++#include "core/fxcrt/fx_coordinates.h"
++#include "core/fxcrt/scoped_set_insertion.h"
++#include "fpdfsdk/cpdfsdk_helpers.h"
++
++#if defined(USE_SYSTEM_ZLIB)
++#include <zlib.h>
++#else
++#include "third_party/zlib/zlib.h"
++#endif
++
++namespace {
++
++constexpr unsigned kMaxDepth = 64;
++constexpr size_t kMaxObjects = 500'000;
++constexpr size_t kMaxStreamBytes = 32 * 1024 * 1024;
++constexpr size_t kMaxPageBytes = 256 * 1024 * 1024;
++constexpr size_t kMaxDocumentBytes = 1024 * 1024 * 1024;
++
++using Object = RetainPtr<const CPDF_Object>;
++using Dictionary = RetainPtr<const CPDF_Dictionary>;
++using Digest = std::array<uint8_t, 32>;
++
++// Distinguish an absent attribute from malformed ancestry or a broken reference.
++std::optional<Object> Resolve(Object object) {
++  if (object && object->IsReference()) {
++    object = object->GetDirect();
++    if (!object || object->IsReference()) {
++      return std::nullopt;
++    }
++  }
++  if (object && object->IsNull()) {
++    object.Reset();
++  }
++  return object;
++}
++
++std::optional<Object> InheritedAttribute(Dictionary page, ByteStringView key) {
++  for (unsigned depth = 0; depth <= kMaxDepth; ++depth) {
++    if (page->KeyExist(key)) {
++      return Resolve(page->GetObjectFor(key));
++    }
++    auto parent = Resolve(page->GetObjectFor("Parent"));
++    if (!parent) {
++      return std::nullopt;
++    }
++    if (!*parent) {
++      return Object();
++    }
++    page = ToDictionary(*parent);
++    if (!page) {
++      return std::nullopt;
++    }
++  }
++  return std::nullopt;
++}
++
++std::optional<CFX_FloatRect> ReadBox(const Object& value,
++                                     const CFX_FloatRect& default_box) {
++  if (!value) {
++    return default_box;
++  }
++  const CPDF_Array* array = value->AsArray();
++  if (!array || array->size() != 4) {
++    return std::nullopt;
++  }
++  std::array<float, 4> points;
++  for (size_t i = 0; i < points.size(); ++i) {
++    auto item = Resolve(array->GetObjectAt(i));
++    if (!item || !*item || !(*item)->IsNumber()) {
++      return std::nullopt;
++    }
++    points[i] = (*item)->GetNumber();
++    if (!std::isfinite(points[i])) {
++      return std::nullopt;
++    }
++  }
++  CFX_FloatRect box(points[0], points[1], points[2], points[3]);
++  box.Normalize();
++  if (box.IsEmpty()) {
++    return std::nullopt;
++  }
++  return box;
++}
++
++FS_RECTF PublicBox(const CFX_FloatRect& box) {
++  return {box.left, box.top, box.right, box.bottom};
++}
++
++std::optional<FPDF_DSH_PAGE_GEOMETRY> PageGeometry(const Dictionary& page) {
++  auto media = InheritedAttribute(page, "MediaBox");
++  auto crop = InheritedAttribute(page, "CropBox");
++  auto rotate = InheritedAttribute(page, "Rotate");
++  auto unit = Resolve(page->GetObjectFor("UserUnit"));
++  if (!media || !crop || !rotate || !unit) {
++    return std::nullopt;
++  }
++  auto media_box = ReadBox(*media, CFX_FloatRect(0, 0, 612, 792));
++  auto crop_box = media_box ? ReadBox(*crop, *media_box) : std::nullopt;
++  if (!crop_box || (*rotate && !(*rotate)->IsNumber()) ||
++      (*unit && !(*unit)->IsNumber())) {
++    return std::nullopt;
++  }
++  int rotation = *rotate ? (*rotate)->GetInteger() % 360 : 0;
++  const double user_unit = *unit ? (*unit)->GetNumber() : 1;
++  if (rotation % 90 != 0 || !std::isfinite(user_unit) || user_unit <= 0) {
++    return std::nullopt;
++  }
++  if (rotation < 0) {
++    rotation += 360;
++  }
++  return FPDF_DSH_PAGE_GEOMETRY{PublicBox(*media_box), PublicBox(*crop_box),
++                                rotation, user_unit};
++}
++
++bool HasNonNullEntry(const CPDF_Dictionary& dictionary, ByteStringView key) {
++  // Treat a broken reference in a signature slot as possible signature data.
++  auto value = Resolve(dictionary.GetObjectFor(key));
++  return !value || !!*value;
++}
++
++std::optional<ByteString> ReadName(const CPDF_Dictionary& dictionary,
++                                  ByteStringView key) {
++  auto value = Resolve(dictionary.GetObjectFor(key));
++  if (!value) {
++    return std::nullopt;
++  }
++  return *value && (*value)->IsName() ? (*value)->GetString() : ByteString();
++}
++
++// Each indirect object is inspected from the cross-reference table below.
++// Follow inline containers here, without following the page tree's backlinks.
++int ScanSignatureObjects(const CPDF_Object& object,
++                         unsigned depth,
++                         size_t& remaining) {
++  if (depth > kMaxDepth || remaining == 0) {
++    return -1;
++  }
++  --remaining;
++  if (const CPDF_Array* array = object.AsArray()) {
++    for (size_t i = 0; i < array->size(); ++i) {
++      auto child = array->GetObjectAt(i);
++      if (child) {
++        const int result = ScanSignatureObjects(*child, depth + 1, remaining);
++        if (result != 0) {
++          return result;
++        }
++      }
++    }
++    return 0;
++  }
++  if (object.IsReference()) {
++    return 0;
++  }
++  auto dictionary = object.GetDict();
++  if (!dictionary) {
++    return 0;
++  }
++  const auto type = ReadName(*dictionary, "Type");
++  const auto field_type = ReadName(*dictionary, "FT");
++  if ((type && (*type == "Sig" || *type == "DocTimeStamp")) ||
++      (field_type && *field_type == "Sig" &&
++       HasNonNullEntry(*dictionary, "V")) ||
++      (dictionary->GetArrayFor("ByteRange") &&
++       HasNonNullEntry(*dictionary, "Contents"))) {
++    return 1;
++  }
++  if (!type || !field_type) {
++    return -1;
++  }
++  for (const auto& key : dictionary->GetKeys()) {
++    auto child = dictionary->GetObjectFor(key.AsStringView());
++    if (child) {
++      const int result = ScanSignatureObjects(*child, depth + 1, remaining);
++      if (result != 0) {
++        return result;
++      }
++    }
++  }
++  return 0;
++}
++
++// Only a balanced, known page program can be proven equivalent when a PDF
++// editor has added standalone outer graphics-state streams.
++bool IsNumericOperand(std::string_view token) {
++  if (token.starts_with('+') || token.starts_with('-'))
++    token.remove_prefix(1);
++  bool has_digit = false;
++  bool has_dot = false;
++  for (char ch : token) {
++    if (ch >= '0' && ch <= '9') {
++      has_digit = true;
++    } else if (ch == '.' && !has_dot) {
++      has_dot = true;
++    } else {
++      return false;
++    }
++  }
++  return has_digit;
++}
++
++bool IsBalancedPageProgram(std::string_view program) {
++  constexpr std::string_view operators[] = {
++      "q", "Q", "cm", "w", "J", "j", "M", "d", "ri", "i", "gs", "m", "l",
++      "c", "v", "y", "h", "re", "S", "s", "f", "F", "f*", "B", "B*",
++      "b", "b*", "n", "W", "W*", "BT", "ET", "Tc", "Tw", "Tz", "TL", "Tf",
++      "Tr", "Ts", "Td", "TD", "Tm", "T*", "Tj", "TJ", "'", "\"", "d0",
++      "d1", "CS", "cs", "SC", "SCN", "sc", "scn", "G", "g", "RG", "rg",
++      "K", "k", "sh", "Do", "MP", "DP", "BMC", "BDC", "EMC", "BX", "EX"};
++  const auto delimiter = [](uint8_t ch) {
++    return PDFCharIsWhitespace(ch) || PDFCharIsDelimiter(ch);
++  };
++  std::string containers;
++  size_t index = 0;
++  int saves = 0;
++  while (index < program.size()) {
++    const uint8_t ch = program[index++];
++    if (PDFCharIsWhitespace(ch))
++      continue;
++    if (ch == '%') {
++      while (index < program.size() && !PDFCharIsLineEnding(program[index]))
++        ++index;
++      // PDFium joins streams with a space. An unterminated comment would
++      // consume the closing wrapper as part of the original page program.
++      if (index == program.size())
++        return false;
++    } else if (ch == '(') {
++      size_t nesting = 1;
++      while (index < program.size() && nesting) {
++        const auto value = program[index++];
++        if (value == '(')
++          ++nesting;
++        else if (value == ')')
++          --nesting;
++        else if (value == '\\') {
++          if (index == program.size())
++            return false;
++          ++index;
++        }
++      }
++      if (nesting)
++        return false;
++    } else if (ch == '/') {
++      while (index < program.size() && !delimiter(program[index]))
++        ++index;
++    } else if (ch == '<' && (index == program.size() || program[index] != '<')) {
++      while (index < program.size() && program[index] != '>') {
++        const uint8_t hex = program[index++];
++        if (!PDFCharIsWhitespace(hex) && !(hex >= '0' && hex <= '9') &&
++            !(hex >= 'a' && hex <= 'f') && !(hex >= 'A' && hex <= 'F'))
++          return false;
++      }
++      if (index == program.size())
++        return false;
++      ++index;
++    } else if (ch == '[' || ch == '<') {
++      if (ch == '<')
++        ++index;
++      if (containers.size() == kMaxDepth)
++        return false;
++      containers.push_back(ch == '[' ? ']' : '>');
++    } else if (ch == ']' || ch == '>') {
++      if (containers.empty() || containers.back() != ch)
++        return false;
++      containers.pop_back();
++      if (ch == '>' && (index == program.size() || program[index++] != '>'))
++        return false;
++    } else {
++      if (delimiter(ch))
++        return false;
++      const size_t start = index - 1;
++      while (index < program.size() && !delimiter(program[index]))
++        ++index;
++      const auto token = program.substr(start, index - start);
++      if (!containers.empty()) {
++        if (token != "true" && token != "false" && token != "null" &&
++            !IsNumericOperand(token))
++          return false;
++      } else {
++        if (std::ranges::find(operators, token) == std::end(operators) &&
++            !IsNumericOperand(token))
++          return false;
++        if (token == "q")
++          ++saves;
++        if (token == "Q" && --saves < 0)
++          return false;
++      }
++    }
++  }
++  return saves == 0 && containers.empty();
++}
++
++std::optional<std::string> DecodePageProgram(const Object& raw, size_t limit) {
++  auto object = Resolve(raw);
++  if (!object)
++    return std::nullopt;
++  auto stream = ToStream(*object);
++  if (!stream || stream->GetRawSize() > limit + 64)
++    return std::nullopt;
++  const auto dictionary = stream->GetDict();
++  auto filter = Resolve(dictionary->GetObjectFor("Filter"));
++  auto parameters = Resolve(dictionary->GetObjectFor("DecodeParms"));
++  if (!filter || !parameters || *parameters)
++    return std::nullopt;
++  auto access = pdfium::MakeRetain<CPDF_StreamAcc>(stream);
++  access->LoadAllDataRaw();
++  const auto bytes = access->GetSpan();
++  if (bytes.size() != stream->GetRawSize())
++    return std::nullopt;
++  if (!*filter && bytes.size() <= limit)
++    return std::string(bytes.begin(), bytes.end());
++  if (!*filter || !(*filter)->IsName() ||
++      ((*filter)->GetString() != "FlateDecode" && (*filter)->GetString() != "Fl"))
++    return std::nullopt;
++  std::string output(limit, '\0');
++  uLongf size = output.size();
++  uLong consumed = bytes.size();
++  if (uncompress2(reinterpret_cast<Bytef*>(output.data()), &size, bytes.data(),
++                  &consumed) != Z_OK || consumed != bytes.size())
++    return std::nullopt;
++  output.resize(size);
++  return output;
++}
++
++bool IsGraphicsWrapper(const Object& stream, char op) {
++  const auto program = DecodePageProgram(stream, 128);
++  if (!program)
++    return false;
++  auto view = std::string_view(*program);
++  while (!view.empty() && PDFCharIsWhitespace(view.front()))
++    view.remove_prefix(1);
++  while (!view.empty() && PDFCharIsWhitespace(view.back()))
++    view.remove_suffix(1);
++  return view.size() == 1 && view.front() == op;
++}
++
++class Sha256 {
++ public:
++  Sha256() { CryptSha256Start(&context_); }
++
++  void Write(pdfium::span<const uint8_t> bytes) {
++    CryptSha256Update(&context_, bytes);
++  }
++
++  void Integer(uint64_t value) {
++    std::array<uint8_t, 8> bytes;
++    for (auto& byte : bytes) {
++      byte = static_cast<uint8_t>(value);
++      value >>= 8;
++    }
++    Write(bytes);
++  }
++
++  void Number(double value) {
++    // Match numerical equality, including the two representations of zero.
++    Integer(std::bit_cast<uint64_t>(value == 0 ? 0.0 : value));
++  }
++
++  void String(ByteStringView value) {
++    Integer(value.GetLength());
++    Write(value.unsigned_span());
++  }
++
++  Digest Finish() {
++    Digest output;
++    CryptSha256Finish(&context_, output);
++    return output;
++  }
++
++ private:
++  CryptSha2Context context_;
++};
++
++bool IsResourceCategory(ByteStringView key) {
++  return key == "Font" || key == "XObject" || key == "ExtGState" ||
++         key == "ColorSpace" || key == "Pattern" || key == "Shading" ||
++         key == "Properties";
++}
++
++}  // namespace
++
++struct fpdf_dsh_content_fingerprint_t__ {
++  explicit fpdf_dsh_content_fingerprint_t__(CPDF_Document* document)
++      : document_(document) {}
++
++  bool Initialize() {
++    const CPDF_Dictionary* root = document_->GetRoot();
++    if (!root) {
++      return false;
++    }
++    auto optional = Resolve(root->GetObjectFor("OCProperties"));
++    if (!optional) {
++      return false;
++    }
++    if (*optional) {
++      auto dictionary = ToDictionary(*optional);
++      if (!dictionary) {
++        return false;
++      }
++      auto groups = Resolve(dictionary->GetObjectFor("OCGs"));
++      if (!groups || (*groups && !(*groups)->IsArray())) {
++        return false;
++      }
++      if (*groups) {
++        const CPDF_Array* array = (*groups)->AsArray();
++        if (array->size() > kMaxObjects) {
++          return false;
++        }
++        for (size_t i = 0; i < array->size(); ++i) {
++          auto group = Resolve(array->GetObjectAt(i));
++          if (!group || !*group || !(*group)->IsDictionary() ||
++              !groups_.emplace(group->Get(), i).second) {
++            return false;
++          }
++        }
++      }
++    }
++    Sha256 hash;
++    hash.String("pdfium-index-shared-v1");
++    if (!Append(hash, *optional, 0) ||
++        !Append(hash, root->GetObjectFor("OutputIntents"), 0)) {
++      return false;
++    }
++    shared_ = hash.Finish();
++    return true;
++  }
++
++  std::optional<Digest> Page(int index) {
++    if (auto it = pages_.find(index); it != pages_.end()) {
++      return it->second;
++    }
++    page_bytes_ = 0;
++    if (objects_ >= kMaxObjects || total_bytes_ >= kMaxDocumentBytes) {
++      return std::nullopt;
++    }
++    const Dictionary page = document_->GetPageDictionary(index);
++    if (!page) {
++      return std::nullopt;
++    }
++    auto geometry = PageGeometry(page);
++    auto resources = InheritedAttribute(page, "Resources");
++    auto contents = Resolve(page->GetObjectFor("Contents"));
++    if (!geometry || !resources || !contents ||
++        (*resources && !(*resources)->IsDictionary())) {
++      return std::nullopt;
++    }
++    Sha256 hash;
++    hash.String("pdfium-index-page-v1");
++    hash.Write(shared_);
++    for (const auto& box : {geometry->media_box, geometry->crop_box}) {
++      hash.Number(box.left);
++      hash.Number(box.bottom);
++      hash.Number(box.right);
++      hash.Number(box.top);
++    }
++    hash.Integer(geometry->rotation);
++    hash.Number(geometry->user_unit);
++    if (!Append(hash, page->GetObjectFor("Group"), 0) ||
++        !HashDictionary(hash, ToDictionary(*resources).Get(), 0,
++                        DictionaryKind::kResources) ||
++        !HashPageContents(hash, *contents)) {
++      return std::nullopt;
++    }
++    auto digest = hash.Finish();
++    pages_.emplace(index, digest);
++    return digest;
++  }
++
++ private:
++  enum class DictionaryKind { kOrdinary, kResources, kRawStream, kPlainStream };
++
++  bool Charge(size_t bytes) {
++    if (bytes > kMaxPageBytes - page_bytes_ ||
++        bytes > kMaxDocumentBytes - total_bytes_) {
++      return false;
++    }
++    page_bytes_ += bytes;
++    total_bytes_ += bytes;
++    return true;
++  }
++
++  bool Append(Sha256& hash, Object object, unsigned depth) {
++    auto digest = HashObject(std::move(object), depth);
++    if (!digest) {
++      return false;
++    }
++    hash.Write(*digest);
++    return true;
++  }
++
++  std::optional<Digest> HashObject(Object raw, unsigned depth) {
++    if (objects_ >= kMaxObjects || depth > kMaxDepth) {
++      return std::nullopt;
++    }
++    ++objects_;
++    auto resolved = Resolve(std::move(raw));
++    if (!resolved) {
++      return std::nullopt;
++    }
++    Sha256 hash;
++    const auto& object = *resolved;
++    if (!object) {
++      hash.String("null");
++      return hash.Finish();
++    }
++    const auto type = object->GetType();
++    if (type == CPDF_Object::kNumber) {
++      const CPDF_Number* number = object->AsNumber();
++      double value = number->GetNumber();
++      if (number->IsInteger()) {
++        const int integer = number->GetInteger();
++        // PDFium can store unsigned 32-bit values. GetInteger() exposes their
++        // signed bits, whereas GetNumber() loses precision at that magnitude.
++        value = integer < 0 && value >= 0
++                    ? static_cast<double>(static_cast<uint32_t>(integer))
++                    : static_cast<double>(integer);
++      }
++      if (!std::isfinite(value)) {
++        return std::nullopt;
++      }
++      hash.String("number");
++      hash.Number(value);
++      return hash.Finish();
++    }
++    if (type == CPDF_Object::kBoolean) {
++      hash.String("boolean");
++      hash.Integer(object->GetInteger() != 0);
++      return hash.Finish();
++    }
++    if (type == CPDF_Object::kName || type == CPDF_Object::kString) {
++      const ByteString value = object->GetString();
++      if (!Charge(value.GetLength())) {
++        return std::nullopt;
++      }
++      hash.String(type == CPDF_Object::kName ? "name" : "string");
++      hash.String(value.AsStringView());
++      return hash.Finish();
++    }
++    if (active_.contains(object.Get())) {
++      return std::nullopt;
++    }
++    if (auto it = memo_.find(object.Get()); it != memo_.end()) {
++      return it->second;
++    }
++    ScopedSetInsertion active(&active_, object.Get());
++    bool ok = false;
++    if (const auto* array = object->AsArray()) {
++      hash.String("array");
++      hash.Integer(array->size());
++      ok = true;
++      for (size_t i = 0; i < array->size() && ok; ++i) {
++        ok = Append(hash, array->GetObjectAt(i), depth + 1);
++      }
++    } else if (const auto* dictionary = object->AsDictionary()) {
++      ok = HashDictionary(hash, dictionary, depth, DictionaryKind::kOrdinary);
++    } else if (object->IsStream()) {
++      ok = HashStream(hash, ToStream(object), depth);
++    }
++    if (!ok) {
++      return std::nullopt;
++    }
++    auto digest = hash.Finish();
++    memo_.emplace(object.Get(), digest);
++    return digest;
++  }
++
++  bool HashDictionary(Sha256& hash,
++                      const CPDF_Dictionary* dictionary,
++                      unsigned depth,
++                      DictionaryKind kind) {
++    hash.String("dictionary");
++    if (!dictionary) {
++      hash.String("end");
++      return true;
++    }
++    const auto type = ReadName(*dictionary, "Type");
++    if (!type || *type == "Page" || *type == "Pages" || *type == "Catalog") {
++      return false;
++    }
++    if (*type == "OCG") {
++      auto group = groups_.find(dictionary);
++      if (group == groups_.end()) {
++        return false;
++      }
++      hash.String("optional-content-group");
++      hash.Integer(group->second);
++    }
++    if (dictionary->size() > kMaxObjects - objects_) {
++      return false;
++    }
++    auto keys = dictionary->GetKeys();
++    std::sort(keys.begin(), keys.end());
++    for (const auto& name : keys) {
++      const auto key = name.AsStringView();
++      if (key == "Metadata" ||
++          (kind == DictionaryKind::kResources && key == "ProcSet") ||
++          ((kind == DictionaryKind::kRawStream ||
++            kind == DictionaryKind::kPlainStream) && key == "Length") ||
++          (kind == DictionaryKind::kPlainStream &&
++           (key == "Filter" || key == "DecodeParms"))) {
++        continue;
++      }
++      if (kind == DictionaryKind::kResources && !IsResourceCategory(key)) {
++        return false;
++      }
++      auto value = Resolve(dictionary->GetObjectFor(key));
++      if (!value) {
++        return false;
++      }
++      if (!*value ||
++          (kind == DictionaryKind::kResources &&
++           (*value)->IsDictionary() && (*value)->AsDictionary()->IsEmpty())) {
++        continue;
++      }
++      if (!Charge(key.GetLength())) {
++        return false;
++      }
++      hash.String("entry");
++      hash.String(key);
++      if (!Append(hash, *value, depth + 1)) {
++        return false;
++      }
++    }
++    hash.String("end");
++    return true;
++  }
++
++  // CPDF_FlateEncoder compresses previously unfiltered streams even when a
++  // save only changes annotations. Hash the decoded payload for these two
++  // equivalent representations, without retaining expanded streams.
++  bool HashStream(Sha256& hash,
++                  RetainPtr<const CPDF_Stream> stream,
++                  unsigned depth) {
++    const auto dictionary = stream->GetDict();
++    auto filter = Resolve(dictionary->GetObjectFor("Filter"));
++    if (!filter) {
++      return false;
++    }
++    Object single_filter = *filter;
++    if (const auto array = ToArray(single_filter); array && array->size() == 1) {
++      auto only = Resolve(array->GetObjectAt(0));
++      if (!only || !*only) {
++        return false;
++      }
++      single_filter = *only;
++    }
++    const bool flate = single_filter && single_filter->IsName() &&
++        (single_filter->GetString() == "FlateDecode" ||
++         single_filter->GetString() == "Fl");
++    const bool plain = !*filter || flate;
++    hash.String(plain ? "plain-stream" : "encoded-stream");
++    if (!HashDictionary(hash, dictionary.Get(), depth,
++                        plain ? DictionaryKind::kPlainStream
++                              : DictionaryKind::kRawStream)) {
++      return false;
++    }
++    if (plain) {
++      Object parameters;
++      if (flate) {
++        auto resolved = Resolve(dictionary->GetObjectFor("DecodeParms"));
++        if (!resolved) {
++          return false;
++        }
++        parameters = *resolved;
++        if (const auto array = ToArray(parameters); array && array->size() == 1) {
++          parameters = array->GetObjectAt(0);
++        }
++      }
++      if (!Append(hash, std::move(parameters), depth + 1)) {
++        return false;
++      }
++    }
++    const size_t size = stream->GetRawSize();
++    if (size > kMaxStreamBytes || !Charge(size)) {
++      return false;
++    }
++    auto access = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(stream));
++    access->LoadAllDataRaw();
++    const auto bytes = access->GetSpan();
++    if (bytes.size() != size) {
++      return false;
++    }
++    Sha256 payload;
++    if (flate) {
++      if (!HashFlate(payload, bytes)) {
++        return false;
++      }
++    } else {
++      payload.Write(bytes);
++    }
++    hash.Write(payload.Finish());
++    return true;
++  }
++
++  bool HashFlate(Sha256& hash, pdfium::span<const uint8_t> bytes) {
++    z_stream stream = {};
++    stream.next_in = const_cast<uint8_t*>(bytes.data());
++    stream.avail_in = static_cast<uInt>(bytes.size());
++    if (inflateInit(&stream) != Z_OK) {
++      return false;
++    }
++    std::array<uint8_t, 16 * 1024> buffer;
++    int result;
++    do {
++      stream.next_out = buffer.data();
++      stream.avail_out = static_cast<uInt>(buffer.size());
++      result = inflate(&stream, Z_NO_FLUSH);
++      const size_t size = buffer.size() - stream.avail_out;
++      if (stream.total_out > kMaxStreamBytes || !Charge(size)) {
++        inflateEnd(&stream);
++        return false;
++      }
++      hash.Write(pdfium::span(buffer).first(size));
++    } while (result == Z_OK);
++    inflateEnd(&stream);
++    return result == Z_STREAM_END;
++  }
++
++  bool HasBalancedContents(const CPDF_Array& streams, size_t first, size_t end) {
++    constexpr size_t kMaxProgramBytes = 1024 * 1024;
++    size_t remaining = std::min(kMaxProgramBytes, wrapper_bytes_);
++    if (!remaining)
++      return false;
++    std::string combined;
++    for (size_t index = first; index < end; ++index) {
++      if (remaining <= 1)
++        return false;
++      auto program = DecodePageProgram(streams.GetObjectAt(index), remaining - 1);
++      if (!program) {
++        // Even a failed inflate can consume its output budget.
++        wrapper_bytes_ -= remaining;
++        return false;
++      }
++      const size_t bytes = program->size() + 1;
++      remaining -= bytes;
++      wrapper_bytes_ -= bytes;
++      combined += *program;
++      combined += ' ';
++    }
++    return IsBalancedPageProgram(combined);
++  }
++
++  bool HashPageContents(Sha256& hash, const Object& contents) {
++    if (!contents) {
++      hash.Integer(0);
++      return true;
++    }
++    if (const CPDF_Array* array = contents->AsArray()) {
++      size_t first = 0, end = array->size();
++      while (end - first >= 2 && wrapper_bytes_ &&
++             IsGraphicsWrapper(array->GetObjectAt(first), 'q') &&
++             IsGraphicsWrapper(array->GetObjectAt(end - 1), 'Q') &&
++             HasBalancedContents(*array, first + 1, end - 1)) {
++        // Bound work even for a chain of empty nested wrappers.
++        --wrapper_bytes_;
++        ++first;
++        --end;
++      }
++      hash.Integer(end - first);
++      for (size_t i = first; i < end; ++i) {
++        auto stream = Resolve(array->GetObjectAt(i));
++        if (!stream || !*stream || !(*stream)->IsStream() ||
++            !Append(hash, *stream, 0)) {
++          return false;
++        }
++      }
++      return true;
++    }
++    hash.Integer(1);
++    return contents->IsStream() && Append(hash, contents, 0);
++  }
++
++  CPDF_Document* const document_;
++  std::map<int, Digest> pages_;
++  std::map<const CPDF_Object*, size_t> groups_;
++  std::map<const CPDF_Object*, Digest> memo_;
++  std::set<const CPDF_Object*> active_;
++  Digest shared_;
++  size_t wrapper_bytes_ = 32 * 1024 * 1024;
++  size_t objects_ = 0;
++  size_t page_bytes_ = 0;
++  size_t total_bytes_ = 0;
++};
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetPageGeometry(FPDF_DOCUMENT handle,
++                        int page_index,
++                        FPDF_DSH_PAGE_GEOMETRY* geometry) {
++  CPDF_Document* document = CPDFDocumentFromFPDFDocument(handle);
++  if (!document || !geometry) {
++    return false;
++  }
++  const Dictionary page = document->GetPageDictionary(page_index);
++  const auto result = page ? PageGeometry(page) : std::nullopt;
++  if (!result) {
++    return false;
++  }
++  *geometry = *result;
++  return true;
++}
++
++FPDF_EXPORT int FPDF_CALLCONV FPDF_DSH_GetSignatureStatus(FPDF_DOCUMENT handle) {
++  CPDF_Document* document = CPDFDocumentFromFPDFDocument(handle);
++  if (!document || !document->GetRoot() || !document->GetParser()) {
++    return -1;
++  }
++  const CPDF_Dictionary* root = document->GetRoot();
++  CPDF_Parser* parser = document->GetParser();
++  auto permissions = Resolve(root->GetObjectFor("Perms"));
++  if (permissions && *permissions) {
++    auto dictionary = ToDictionary(*permissions);
++    if (!dictionary) {
++      permissions = std::nullopt;
++    } else if (HasNonNullEntry(*dictionary, "DocMDP") ||
++               HasNonNullEntry(*dictionary, "UR") ||
++               HasNonNullEntry(*dictionary, "UR3")) {
++      return 1;
++    }
++  }
++  size_t remaining = kMaxObjects;
++  const int root_result = ScanSignatureObjects(*root, 0, remaining);
++  if (root_result != 0) {
++    return root_result;
++  }
++  // PDFium can reconstruct a missing cross-reference table by scanning the
++  // file, including the objects inside object streams. A reconstructed table
++  // still needs the same complete object inspection before enabling writes.
++  bool complete = permissions.has_value();
++  // This internal accessor exposes the sparse table, including objects stored
++  // in object streams. Parsing uncached objects directly keeps them out of the
++  // document's long-lived indirect-object cache.
++  const auto* table = parser->GetCrossRefTableForTesting();
++  for (const auto& [number, entry] : table->objects_info()) {
++    if (entry.type == CPDF_CrossRefTable::ObjectType::kFree ||
++        number == root->GetObjNum()) {
++      continue;
++    }
++    if (remaining == 0) {
++      return -1;
++    }
++    --remaining;
++    auto object = document->GetIndirectObject(number);
++    if (!object) {
++      object = parser->ParseIndirectObject(number);
++    }
++    if (!object) {
++      complete = false;
++      continue;
++    }
++    const int result = ScanSignatureObjects(*object, 0, remaining);
++    if (result != 0) {
++      return result;
++    }
++  }
++  return complete ? 0 : -1;
++}
++
++FPDF_EXPORT FPDF_DSH_CONTENT_FINGERPRINT FPDF_CALLCONV
++FPDF_DSH_CreateContentFingerprint(FPDF_DOCUMENT handle) {
++  CPDF_Document* document = CPDFDocumentFromFPDFDocument(handle);
++  if (!document) {
++    return nullptr;
++  }
++  auto fingerprint = std::make_unique<fpdf_dsh_content_fingerprint_t__>(document);
++  return fingerprint->Initialize() ? fingerprint.release() : nullptr;
++}
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetPageFingerprint(FPDF_DSH_CONTENT_FINGERPRINT fingerprint,
++                           int page_index,
++                           unsigned char digest[32]) {
++  if (!fingerprint || !digest) {
++    return false;
++  }
++  auto result = fingerprint->Page(page_index);
++  if (!result) {
++    return false;
++  }
++  std::copy(result->begin(), result->end(), digest);
++  return true;
++}
++
++FPDF_EXPORT void FPDF_CALLCONV FPDF_DSH_CloseContentFingerprint(
++    FPDF_DSH_CONTENT_FINGERPRINT fingerprint) {
++  delete fingerprint;
++}
+diff --git a/fpdfsdk/dsh_outlines.cc b/fpdfsdk/dsh_outlines.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..93634431515c83b14ca6781be3d57579364cd697
+--- /dev/null
++++ b/fpdfsdk/dsh_outlines.cc
+@@ -0,0 +1,401 @@
++#include "public/dsh_outlines.h"
++
++#include <algorithm>
++#include <map>
++#include <set>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "core/fpdfapi/parser/cpdf_array.h"
++#include "core/fpdfapi/parser/cpdf_dictionary.h"
++#include "core/fpdfapi/parser/cpdf_document.h"
++#include "core/fpdfapi/parser/cpdf_name.h"
++#include "core/fpdfapi/parser/cpdf_number.h"
++#include "core/fpdfapi/parser/cpdf_reference.h"
++#include "core/fpdfapi/parser/cpdf_string.h"
++#include "core/fpdfdoc/cpdf_bookmark.h"
++#include "core/fxcrt/fx_stream.h"
++#include "fpdfsdk/cpdfsdk_helpers.h"
++
++namespace {
++
++constexpr size_t kMaxItems = 5000;
++constexpr size_t kMaxDepth = 64;
++constexpr size_t kMaxIdBytes = 2048;
++constexpr size_t kMaxIdUtf16 = 512;
++constexpr size_t kMaxTitleUtf16 = 1024;
++constexpr char kStableIdKey[] = "DSHPDFOutlineId";
++
++struct OutlineItem {
++  RetainPtr<CPDF_Dictionary> dict;
++  ByteString id;
++  ByteString title;
++  int parent;
++  int page;
++  bool open;
++};
++
++struct StaleLink {
++  RetainPtr<const CPDF_Dictionary> actual;
++  const CPDF_Dictionary* expected;
++};
++
++struct OutlineTree {
++  RetainPtr<CPDF_Dictionary> root;
++  std::vector<OutlineItem> items;
++  std::set<const CPDF_Dictionary*> seen;
++  std::set<ByteString> ids;
++  std::vector<StaleLink> stale_links;
++  bool needs_relink = false;
++};
++
++bool Absent(const CPDF_Object* object) {
++  return !object || object->IsNull();
++}
++
++bool IsValidId(const ByteString& id) {
++  if (id.IsEmpty() || id.GetLength() > kMaxIdBytes ||
++      std::find(id.begin(), id.end(), '\0') != id.end()) {
++    return false;
++  }
++  auto text = WideString::FromUTF8(id.AsStringView());
++  if (text.ToUTF16LE().GetLength() > (kMaxIdUtf16 + 1) * 2) {
++    return false;
++  }
++  text.Trim(L" \t\r\n\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
++            L"\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff");
++  return !text.IsEmpty();
++}
++
++int LocalPage(CPDF_Document* document,
++              RetainPtr<const CPDF_Dictionary> dictionary) {
++  auto destination = dictionary->GetDirectObjectFor("Dest");
++  if (Absent(destination.Get())) {
++    const auto action = CPDF_Bookmark(dictionary).GetAction();
++    if (action.GetType() == CPDF_Action::Type::kGoTo) {
++      destination = action.GetDict()->GetDirectObjectFor("D");
++    }
++  }
++  for (size_t depth = 0; destination && destination->IsDictionary() &&
++                         depth < kMaxDepth; ++depth) {
++    destination = destination->AsDictionary()->GetDirectObjectFor("D");
++  }
++  const int page = CPDF_Dest::Create(document, destination).GetDestPageIndex(document);
++  return page >= 0 && page < document->GetPageCount() ? page : -1;
++}
++
++void CheckBacklink(OutlineTree* tree,
++                   const CPDF_Dictionary& owner,
++                   ByteStringView key,
++                   const CPDF_Dictionary* expected) {
++  const auto raw = owner.GetObjectFor(key);
++  const auto actual = owner.GetDictFor(key);
++  if (actual.Get() == expected && (expected || Absent(raw.Get()))) {
++    return;
++  }
++  tree->needs_relink = true;
++  if (actual) {
++    tree->stale_links.push_back({actual, expected});
++  }
++}
++
++class BoundedArchive final : public IFX_ArchiveStream {
++ public:
++  bool WriteBlock(pdfium::span<const uint8_t> bytes) override {
++    if (bytes.size() > 256 * 1024 - contents.size()) {
++      return false;
++    }
++    contents.insert(contents.end(), bytes.begin(), bytes.end());
++    return true;
++  }
++
++  FX_FILESIZE CurrentOffset() const override { return contents.size(); }
++
++  std::vector<uint8_t> contents;
++};
++
++bool WriteOutlinePayload(const CPDF_Dictionary& dictionary,
++                         BoundedArchive* output) {
++  for (const auto& [key, value] : CPDF_DictionaryLocker(&dictionary)) {
++    if (key == "Parent" || key == "Prev" || key == "Last") {
++      continue;
++    }
++    if (!output->WriteString(key.AsStringView()) || !output->WriteByte(0) ||
++        !value->WriteTo(output, nullptr)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool SameOutlinePayload(const CPDF_Dictionary& actual,
++                        const CPDF_Dictionary* expected) {
++  if (!expected) {
++    return false;
++  }
++  BoundedArchive actual_payload;
++  BoundedArchive expected_payload;
++  return WriteOutlinePayload(actual, &actual_payload) &&
++         WriteOutlinePayload(*expected, &expected_payload) &&
++         actual_payload.contents == expected_payload.contents;
++}
++
++const char* WalkOutline(CPDF_Document* document,
++                        OutlineTree* tree,
++                        const CPDF_Dictionary& parent,
++                        int parent_index,
++                        size_t depth) {
++  auto current = parent.GetObjectFor("First");
++  if (Absent(current.Get())) {
++    return Absent(parent.GetObjectFor("Last").Get())
++               ? nullptr
++               : "The PDF outline has a last-item link but no first-item link.";
++  }
++  if (depth > kMaxDepth) {
++    return "The PDF outline exceeds the supported nesting depth.";
++  }
++  const CPDF_Dictionary* previous = nullptr;
++  while (!Absent(current.Get())) {
++    if (!current->IsReference()) {
++      return "The PDF outline contains a direct item without a stable object identity.";
++    }
++    const auto dictionary =
++        document->GetOrParseIndirectObject(current->AsReference()->GetRefObjNum());
++    auto item = dictionary && dictionary->IsDictionary() ? dictionary->GetMutableDict() : nullptr;
++    if (!item || item->IsInline() || item->GetObjNum() == CPDF_Object::kInvalidObjNum) {
++      return "The PDF outline contains a missing or invalid item.";
++    }
++    if (!tree->seen.insert(item.Get()).second) {
++      return "The PDF outline contains a cycle or a shared item.";
++    }
++    if (tree->items.size() >= kMaxItems) {
++      return "The PDF outline exceeds the supported item count.";
++    }
++    CheckBacklink(tree, *item, "Parent", &parent);
++    CheckBacklink(tree, *item, "Prev", previous);
++    const auto stored_id = item->GetStringFor(kStableIdKey);
++    auto id = stored_id ? stored_id->GetUnicodeText().ToUTF8()
++                        : ByteString::Format("pdf-outline:%u:%u",
++                                             item->GetObjNum(), item->GetGenNum());
++    if (!IsValidId(id) || !tree->ids.insert(id).second) {
++      return "The PDF outline has invalid or duplicate item identities.";
++    }
++    const auto title = item->GetStringFor("Title");
++    if (!title) {
++      return "The PDF outline contains an invalid title.";
++    }
++    const int index = static_cast<int>(tree->items.size());
++    tree->items.push_back({item, std::move(id), title->GetUnicodeText().ToUTF8(),
++                           parent_index, LocalPage(document, item),
++                           item->GetIntegerFor("Count") >= 0});
++    if (const char* error = WalkOutline(document, tree, *item, index, depth + 1)) {
++      return error;
++    }
++    previous = item.Get();
++    current = item->GetObjectFor("Next");
++  }
++  CheckBacklink(tree, parent, "Last", previous);
++  return nullptr;
++}
++
++const char* ReadOutline(CPDF_Document* document, OutlineTree* tree) {
++  const auto catalog = document->GetMutableRoot();
++  if (!catalog) {
++    return "The PDF has no catalog.";
++  }
++  if (Absent(catalog->GetObjectFor("Outlines").Get())) {
++    return nullptr;
++  }
++  const auto root = catalog->GetMutableDirectObjectFor("Outlines");
++  if (!root || !root->IsDictionary()) {
++    return "The PDF outline root is not a dictionary.";
++  }
++  tree->root = root->GetMutableDict();
++  tree->seen.insert(tree->root.Get());
++  if (const char* error = WalkOutline(document, tree, *tree->root, -1, 1)) {
++    return error;
++  }
++  for (const auto& [actual, expected] : tree->stale_links) {
++    if (!tree->seen.contains(actual.Get()) && actual->KeyExist("Title") &&
++        !SameOutlinePayload(*actual, expected)) {
++      return "The PDF outline links reference an item missing from its forward tree.";
++    }
++  }
++  return nullptr;
++}
++
++void SetLocalPage(CPDF_Document* document,
++                  CPDF_Dictionary& dictionary,
++                  const CPDF_Dictionary& page) {
++  auto dest = dictionary.SetNewFor<CPDF_Array>("Dest");
++  dest->Append(page.MakeReference(document));
++  dest->AppendNew<CPDF_Name>("Fit");
++  dictionary.RemoveFor("A");
++}
++
++int RelinkOutline(CPDF_Document* document,
++                  const std::vector<OutlineItem>& items,
++                  const std::vector<std::vector<size_t>>& children,
++                  CPDF_Dictionary& parent,
++                  size_t parent_index) {
++  const auto& siblings = children[parent_index];
++  if (siblings.empty()) {
++    parent.RemoveFor("First");
++    parent.RemoveFor("Last");
++    return 0;
++  }
++  parent.SetFor("First", items[siblings.front()].dict->MakeReference(document));
++  parent.SetFor("Last", items[siblings.back()].dict->MakeReference(document));
++  int visible = 0;
++  for (size_t index = 0; index < siblings.size(); ++index) {
++    const auto& item = items[siblings[index]];
++    auto& dictionary = *item.dict;
++    dictionary.SetFor("Parent", parent.MakeReference(document));
++    if (index != 0) {
++      dictionary.SetFor("Prev", items[siblings[index - 1]].dict->MakeReference(document));
++    } else {
++      dictionary.RemoveFor("Prev");
++    }
++    if (index + 1 < siblings.size()) {
++      dictionary.SetFor("Next", items[siblings[index + 1]].dict->MakeReference(document));
++    } else {
++      dictionary.RemoveFor("Next");
++    }
++    const int descendants = RelinkOutline(document, items, children, dictionary, siblings[index]);
++    if (descendants) {
++      dictionary.SetNewFor<CPDF_Number>("Count", item.open ? descendants : -descendants);
++    } else {
++      dictionary.RemoveFor("Count");
++    }
++    visible += 1 + (item.open ? descendants : 0);
++  }
++  return visible;
++}
++
++struct ProjectedItem {
++  size_t original;
++  WideString id;
++  WideString title;
++  RetainPtr<const CPDF_Dictionary> page;
++};
++
++}  // namespace
++
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_VisitOutlines(FPDF_DOCUMENT document,
++                    DSHPDF_OUTLINE_VISITOR visitor,
++                    void* context) {
++  auto* pdf = CPDFDocumentFromFPDFDocument(document);
++  if (!pdf || !visitor) {
++    return "Invalid PDF outline visitor.";
++  }
++  OutlineTree tree;
++  if (const char* error = ReadOutline(pdf, &tree)) {
++    return error;
++  }
++  for (const auto& item : tree.items) {
++    visitor(context, item.id.c_str(), item.title.c_str(), item.title.GetLength(),
++            item.parent, item.page);
++  }
++  return nullptr;
++}
++
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_ApplyOutlines(FPDF_DOCUMENT document,
++                    const DSHPDF_OUTLINE_EDIT* edits,
++                    size_t count) {
++  auto* pdf = CPDFDocumentFromFPDFDocument(document);
++  if (!pdf || count > kMaxItems || (count != 0 && !edits)) {
++    return "Invalid PDF outline projection.";
++  }
++  OutlineTree tree;
++  if (const char* error = ReadOutline(pdf, &tree)) {
++    return error;
++  }
++  std::map<ByteString, size_t> existing;
++  for (size_t index = 0; index < tree.items.size(); ++index) {
++    existing.emplace(tree.items[index].id, index);
++  }
++  std::set<ByteString> seen;
++  std::vector<ProjectedItem> projected;
++  std::vector<size_t> path;
++  std::vector<std::vector<size_t>> children(count + 1);
++  bool structural = tree.needs_relink || count != tree.items.size();
++  for (size_t index = 0; index < count; ++index) {
++    const auto& edit = edits[index];
++    const auto parent = static_cast<size_t>(edit.parent_index);
++    if (edit.parent_index < -1 || (edit.parent_index >= 0 && parent >= index)) {
++      return "Invalid PDF outline parent index.";
++    }
++    while (!path.empty() && path.back() != parent) {
++      path.pop_back();
++    }
++    if ((edit.parent_index >= 0 && path.empty()) || path.size() >= kMaxDepth) {
++      return "Invalid PDF outline preorder or nesting depth.";
++    }
++    path.push_back(index);
++    children[edit.parent_index == -1 ? count : parent].push_back(index);
++    const ByteString id(edit.id);
++    if (!IsValidId(id) || !seen.insert(id).second) {
++      return "Invalid or duplicate PDF outline identity.";
++    }
++    const auto old = existing.find(id);
++    const bool added = old == existing.end();
++    if (added && (!edit.title || edit.page_index < 0)) {
++      return "New PDF outline items require a title and destination.";
++    }
++    const auto wide_id = WideString::FromUTF8(id.AsStringView());
++    if (wide_id.ToUTF8() != id) {
++      return "The PDF outline identity is not valid UTF-8.";
++    }
++    const ByteString title(edit.title);
++    auto wide_title = WideString::FromUTF8(title.AsStringView());
++    if (edit.title && (wide_title.IsEmpty() || wide_title.ToUTF8() != title ||
++                       wide_title.ToUTF16LE().GetLength() > (kMaxTitleUtf16 + 1) * 2)) {
++      return "Invalid PDF outline title.";
++    }
++    if (edit.page_index < -1 || edit.page_index >= pdf->GetPageCount()) {
++      return "The PDF outline destination does not exist.";
++    }
++    auto page = edit.page_index >= 0 ? pdf->GetPageDictionary(edit.page_index) : nullptr;
++    if (edit.page_index >= 0 && (!page || page->IsInline())) {
++      return "The PDF outline destination has no stable page identity.";
++    }
++    structural = structural || added || old->second != index ||
++                 tree.items[old->second].parent != edit.parent_index;
++    projected.push_back({added ? tree.items.size() : old->second, wide_id,
++                         std::move(wide_title), std::move(page)});
++  }
++
++  std::vector<OutlineItem> items;
++  for (size_t index = 0; index < projected.size(); ++index) {
++    const auto& value = projected[index];
++    const bool added = value.original == tree.items.size();
++    auto item = added ? OutlineItem{pdf->NewIndirect<CPDF_Dictionary>(), {}, {}, -1, -1, true}
++                      : tree.items[value.original];
++    if (added) {
++      item.dict->SetNewFor<CPDF_String>(kStableIdKey, value.id.AsStringView());
++    }
++    if (edits[index].title) {
++      item.dict->SetNewFor<CPDF_String>("Title", value.title.AsStringView());
++    }
++    if (value.page) {
++      SetLocalPage(pdf, *item.dict, *value.page);
++    }
++    items.push_back(std::move(item));
++  }
++  if (structural) {
++    auto catalog = pdf->GetMutableRoot();
++    if (!tree.root) {
++      tree.root = pdf->NewIndirect<CPDF_Dictionary>();
++      tree.root->SetNewFor<CPDF_Name>("Type", "Outlines");
++      catalog->SetFor("Outlines", tree.root->MakeReference(pdf));
++    } else if (tree.root->IsInline()) {
++      catalog->ConvertToIndirectObjectFor("Outlines", pdf);
++    }
++    tree.root->SetNewFor<CPDF_Number>(
++        "Count", RelinkOutline(pdf, items, children, *tree.root, count));
++  }
++  return nullptr;
++}
+diff --git a/public/dsh_annotations.h b/public/dsh_annotations.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9873c55d0ae99acb6292e4da04a55024719b104
+--- /dev/null
++++ b/public/dsh_annotations.h
+@@ -0,0 +1,67 @@
++#ifndef PUBLIC_DSH_ANNOTATIONS_H_
++#define PUBLIC_DSH_ANNOTATIONS_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "fpdfview.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++  // Borrowed dictionary identities. Compare inside the same open document.
++  // Do not serialize these pointers or dereference them in the caller.
++  const void* identity;
++  const void* reply_parent;
++  const void* popup;
++  uint32_t object_number;
++  uint32_t generation;
++  int reply_type;  // 0 absent, 1 ordinary reply, 2 group, -1 malformed.
++  FPDF_BOOL rich_text;
++  FPDF_BOOL has_color;
++  float color[3];
++  FPDF_BOOL has_opacity;
++  float opacity;
++  FPDF_BOOL has_comment_position;
++  FS_POINTF comment_position;
++  int named_action;  // 0 absent, then FirstPage, LastPage, NextPage, PrevPage.
++} FPDF_DSH_ANNOTATION_DETAILS;
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetAnnotationDetails(FPDF_ANNOTATION annotation,
++                             FPDF_DSH_ANNOTATION_DETAILS* details);
++
++FPDF_EXPORT int FPDF_CALLCONV
++FPDF_DSH_GetPageAnnotationCount(FPDF_DOCUMENT document, int page_index);
++
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationContents(FPDF_ANNOTATION annotation, FPDF_WIDESTRING contents);
++
++// Replace the normal appearance of a markup annotation. The caller provides
++// the local-coordinate paint operators. PDFium owns the form and its resources.
++// A null color keeps the original annotation's color entry.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationAppearance(FPDF_ANNOTATION annotation,
++                                 const char* paint,
++                                 size_t paint_size,
++                                 const float color[3],
++                                 float opacity,
++                                 FPDF_BOOL multiply);
++
++// Store a reply to another annotation on the same page using a PDF reference.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetAnnotationReply(FPDF_PAGE page,
++                            FPDF_ANNOTATION reply,
++                            FPDF_ANNOTATION parent);
++
++// Update the reader-only comment anchor. A null point clears it.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_SetCommentPosition(FPDF_ANNOTATION annotation, const FS_POINTF* point);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  // PUBLIC_DSH_ANNOTATIONS_H_
+diff --git a/public/dsh_forms.h b/public/dsh_forms.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..253cc3fbbcc8aef21e03a23d21c94f157460d6e3
+--- /dev/null
++++ b/public/dsh_forms.h
+@@ -0,0 +1,94 @@
++#ifndef PUBLIC_DSH_FORMS_H_
++#define PUBLIC_DSH_FORMS_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "fpdfview.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef enum DSHPDF_FORM_KIND_ {
++  DSHPDF_FORM_UNSUPPORTED = 0,
++  DSHPDF_FORM_TEXT_FIELD = 1,
++  DSHPDF_FORM_CHECKBOX = 2,
++  DSHPDF_FORM_RADIO = 3,
++  DSHPDF_FORM_DROPDOWN = 4,
++  DSHPDF_FORM_OPTION_LIST = 5,
++} DSHPDF_FORM_KIND;
++
++typedef struct DSHPDF_FORM_TEXT_ {
++  const char* data;
++  size_t size;
++} DSHPDF_FORM_TEXT;
++
++typedef struct DSHPDF_FORM_WIDGET_ {
++  int page_index;
++  float left;
++  float bottom;
++  float right;
++  float top;
++  DSHPDF_FORM_TEXT radio_option;
++} DSHPDF_FORM_WIDGET;
++
++typedef struct DSHPDF_FORM_FIELD_ {
++  uint32_t object_number;
++  uint32_t generation;
++  DSHPDF_FORM_KIND kind;
++  FPDF_BOOL read_only;
++  FPDF_BOOL required;
++  FPDF_BOOL multiline;
++  FPDF_BOOL multiple;
++  int max_length;
++  DSHPDF_FORM_TEXT name;
++  DSHPDF_FORM_TEXT description;
++  const DSHPDF_FORM_TEXT* values;
++  size_t value_count;
++  const DSHPDF_FORM_TEXT* options;
++  size_t option_count;
++  FPDF_BOOL checked;
++  const DSHPDF_FORM_WIDGET* widgets;
++  size_t widget_count;
++} DSHPDF_FORM_FIELD;
++
++typedef struct DSHPDF_FORM_EDIT_ {
++  uint32_t object_number;
++  uint32_t generation;
++  DSHPDF_FORM_KIND kind;
++  const DSHPDF_FORM_TEXT* values;
++  size_t value_count;
++  FPDF_BOOL checked;
++} DSHPDF_FORM_EDIT;
++
++typedef void (*DSHPDF_FORM_VISITOR)(void* context,
++                                    const DSHPDF_FORM_FIELD* field);
++
++// Visits AcroForm fields with their native identities and visible widgets.
++// All strings are UTF-8 and borrowed for the duration of the callback.
++// Choices are exposed using display labels, with page indices zero based.
++// Returns NULL on success, otherwise a static diagnostic.
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_VisitFormFields(FPDF_DOCUMENT document,
++                       DSHPDF_FORM_VISITOR visitor,
++                       void* context);
++
++// Applies canonical AcroForm changes to an isolated document without executing
++// actions or JavaScript. Text and radio take one string, checkbox uses checked,
++// and choice fields take display labels (zero to clear). The caller must
++// discard the isolated document on error and save only on success.
++// Optional CID-keyed OpenType bytes provide portable glyphs for widget text.
++// Returns NULL on success, otherwise a static diagnostic.
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_ApplyFormFields(FPDF_DOCUMENT document,
++                       const DSHPDF_FORM_EDIT* edits,
++                       size_t count,
++                       const uint8_t* font_data,
++                       size_t font_size);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  // PUBLIC_DSH_FORMS_H_
+diff --git a/public/dsh_metadata.h b/public/dsh_metadata.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..64d575d4722b8b683104a0ae234c0ca1616d9344
+--- /dev/null
++++ b/public/dsh_metadata.h
+@@ -0,0 +1,51 @@
++// DSH extension to PDFium's public C API.
++#ifndef PUBLIC_DSH_METADATA_H_
++#define PUBLIC_DSH_METADATA_H_
++
++#include "fpdfview.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++  FS_RECTF media_box;
++  FS_RECTF crop_box;
++  int rotation;
++  double user_unit;
++} FPDF_DSH_PAGE_GEOMETRY;
++
++// Reads inherited page boxes and rotation in degrees, and the page's UserUnit.
++// CropBox defaults to MediaBox. It is reported before clipping to MediaBox.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetPageGeometry(FPDF_DOCUMENT document,
++                        int page_index,
++                        FPDF_DSH_PAGE_GEOMETRY* geometry);
++
++// Returns 1 for signature data, 0 for none, and -1 if inspection is incomplete.
++// This does not validate a signature's cryptographic authenticity.
++FPDF_EXPORT int FPDF_CALLCONV
++FPDF_DSH_GetSignatureStatus(FPDF_DOCUMENT document);
++
++typedef struct fpdf_dsh_content_fingerprint_t__* FPDF_DSH_CONTENT_FINGERPRINT;
++
++// The fingerprint context is valid while its document stays open and unchanged.
++// Page digests include shared resources and exclude page annotation objects.
++// Returns NULL if the document's shared state cannot be fingerprinted.
++FPDF_EXPORT FPDF_DSH_CONTENT_FINGERPRINT FPDF_CALLCONV
++FPDF_DSH_CreateContentFingerprint(FPDF_DOCUMENT document);
++
++// A false result leaves the output untouched. The caller may inspect other pages.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDF_DSH_GetPageFingerprint(FPDF_DSH_CONTENT_FINGERPRINT fingerprint,
++                           int page_index,
++                           unsigned char digest[32]);
++
++FPDF_EXPORT void FPDF_CALLCONV
++FPDF_DSH_CloseContentFingerprint(FPDF_DSH_CONTENT_FINGERPRINT fingerprint);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  // PUBLIC_DSH_METADATA_H_
+diff --git a/public/dsh_outlines.h b/public/dsh_outlines.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7cc89d05bf6f85f189e159ecad5f9f922bdf6e12
+--- /dev/null
++++ b/public/dsh_outlines.h
+@@ -0,0 +1,49 @@
++#ifndef PUBLIC_DSH_OUTLINES_H_
++#define PUBLIC_DSH_OUTLINES_H_
++
++#include <stddef.h>
++
++#include "fpdfview.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef void (*DSHPDF_OUTLINE_VISITOR)(void* context,
++                                       const char* id,
++                                       const char* title,
++                                       size_t title_length,
++                                       int parent_index,
++                                       int page_index);
++
++typedef struct DSHPDF_OUTLINE_EDIT_ {
++  const char* id;
++  int parent_index;
++  const char* title;
++  int page_index;
++} DSHPDF_OUTLINE_EDIT;
++
++// Visits an unambiguous outline in preorder. Parent and page indices are zero
++// based, with -1 indicating no parent or local destination. Callback strings
++// use UTF-8 and are borrowed for the duration of the callback.
++// Returns NULL on success, otherwise a static diagnostic. No rows are visited
++// when validation fails.
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_VisitOutlines(FPDF_DOCUMENT document,
++                     DSHPDF_OUTLINE_VISITOR visitor,
++                     void* context);
++
++// Applies a complete projected outline with stable IDs. NULL title and -1 page
++// keep an existing item's title and destination. New items need both values.
++// Validation precedes mutation. Call on the document being prepared for save.
++// Returns NULL on success, otherwise a static diagnostic.
++FPDF_EXPORT const char* FPDF_CALLCONV
++DSHPDF_ApplyOutlines(FPDF_DOCUMENT document,
++                      const DSHPDF_OUTLINE_EDIT* edits,
++                      size_t count);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  // PUBLIC_DSH_OUTLINES_H_

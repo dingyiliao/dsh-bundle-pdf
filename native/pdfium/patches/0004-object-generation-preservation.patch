@@ -1,0 +1,547 @@
+diff --git a/core/fpdfapi/edit/cpdf_creator.cpp b/core/fpdfapi/edit/cpdf_creator.cpp
+index 31e004f9bec3eba25f870ec8d32b58d04afadb38..7c70efaf71adfff48c67b85f0cc989e2c30b4b9d 100644
+--- a/core/fpdfapi/edit/cpdf_creator.cpp
++++ b/core/fpdfapi/edit/cpdf_creator.cpp
+@@ -6,10 +6,12 @@
+ 
+ #include "core/fpdfapi/edit/cpdf_creator.h"
+ 
++#include <inttypes.h>
+ #include <stdint.h>
+ 
+ #include <algorithm>
+ #include <array>
++#include <limits>
+ #include <map>
+ #include <set>
+ #include <utility>
+@@ -111,12 +113,17 @@ bool FileBufferArchive::WriteBlock(pdfium::span<const uint8_t> buffer) {
+   return true;
+ }
+ 
+-bool OutputIndex(IFX_ArchiveStream* archive, FX_FILESIZE offset) {
+-  return archive->WriteByte(static_cast<uint8_t>(offset >> 24)) &&
++bool OutputIndex(IFX_ArchiveStream* archive,
++                 FX_FILESIZE offset,
++                 uint32_t generation) {
++  return offset >= 0 &&
++         static_cast<uint64_t>(offset) <= std::numeric_limits<uint32_t>::max() &&
++         archive->WriteByte(static_cast<uint8_t>(offset >> 24)) &&
+          archive->WriteByte(static_cast<uint8_t>(offset >> 16)) &&
+          archive->WriteByte(static_cast<uint8_t>(offset >> 8)) &&
+          archive->WriteByte(static_cast<uint8_t>(offset)) &&
+-         archive->WriteByte(0);
++         archive->WriteByte(static_cast<uint8_t>(generation >> 8)) &&
++         archive->WriteByte(static_cast<uint8_t>(generation));
+ }
+ 
+ }  // namespace
+@@ -132,40 +139,59 @@ CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
+ 
+ CPDF_Creator::~CPDF_Creator() = default;
+ 
+-bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
+-  if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" 0 obj\r\n")) {
++bool CPDF_Creator::WriteIndirectObj(uint32_t objnum,
++                                    uint32_t generation,
++                                    const CPDF_Object* object) {
++  if (generation > UINT16_MAX) {
++    return false;
++  }
++  object_locations_[objnum] = {archive_->CurrentOffset(), generation};
++  if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" ") ||
++      !archive_->WriteDWord(generation) ||
++      !archive_->WriteString(" obj\r\n")) {
+     return false;
+   }
+ 
+   std::unique_ptr<CPDF_Encryptor> encryptor;
+-  if (GetCryptoHandler() && pObj != encrypt_dict_) {
+-    encryptor = std::make_unique<CPDF_Encryptor>(GetCryptoHandler(), objnum);
++  if (GetCryptoHandler() && object != encrypt_dict_) {
++    encryptor = std::make_unique<CPDF_Encryptor>(GetCryptoHandler(), objnum,
++                                                generation);
+   }
+ 
+-  if (!pObj->WriteTo(archive_.get(), encryptor.get())) {
++  if (!object->WriteTo(archive_.get(), encryptor.get())) {
+     return false;
+   }
+ 
+   return archive_->WriteString("\r\nendobj\r\n");
+ }
+ 
++bool CPDF_Creator::WriteCrossRefTableEntry(uint32_t objnum) {
++  const auto it = object_locations_.find(objnum);
++  if (it == object_locations_.end() || it->second.offset < 0 ||
++      it->second.offset > INT64_C(9999999999)) {
++    return false;
++  }
++  const auto& location = it->second;
++  const auto entry = ByteString::Format(
++      "%010" PRId64 " %05" PRIu32 " n\r\n",
++      static_cast<int64_t>(location.offset), location.generation);
++  return archive_->WriteString(entry.AsStringView());
++}
++
+ bool CPDF_Creator::WriteOldIndirectObject(uint32_t objnum) {
+   if (parser_->IsObjectFree(objnum)) {
+     return true;
+   }
+ 
+-  object_offsets_[objnum] = archive_->CurrentOffset();
+-
+-  bool bExistInMap = !!document_->GetIndirectObject(objnum);
++  const bool already_loaded = !!document_->GetIndirectObject(objnum);
+   RetainPtr<CPDF_Object> pObj = document_->GetOrParseIndirectObject(objnum);
+   if (!pObj) {
+-    object_offsets_.erase(objnum);
+     return true;
+   }
+-  if (!WriteIndirectObj(pObj->GetObjNum(), pObj.Get())) {
++  if (!WriteIndirectObj(objnum, pObj->GetGenNum(), pObj.Get())) {
+     return false;
+   }
+-  if (!bExistInMap) {
++  if (!already_loaded) {
+     document_->DeleteIndirectObject(objnum);
+   }
+   return true;
+@@ -213,12 +239,10 @@ bool CPDF_Creator::WriteNewObjs() {
+       continue;
+     }
+ 
+-    object_offsets_[objnum] = archive_->CurrentOffset();
+-
+-    auto it = font_obj_overrides.find(objnum);
++    const auto it = font_obj_overrides.find(objnum);
+     const CPDF_Object* obj_to_write =
+         it != font_obj_overrides.end() ? it->second.Get() : obj.Get();
+-    if (!WriteIndirectObj(objnum, obj_to_write)) {
++    if (!WriteIndirectObj(objnum, obj->GetGenNum(), obj_to_write)) {
+       return false;
+     }
+   }
+@@ -285,7 +309,11 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
+           continue;
+         }
+ 
+-        object_offsets_[num] = parser_->GetObjectPositionOrZero(num);
++        const FX_FILESIZE offset = parser_->GetObjectPositionOrZero(num);
++        if (offset <= 0) {
++          return Stage::kInvalid;
++        }
++        object_locations_[num] = {offset, parser_->GetObjectGenerationOrZero(num)};
+       }
+     }
+     stage_ = Stage::kInitWriteObjs20;
+@@ -326,12 +354,9 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage2() {
+   if (stage_ == Stage::kWriteEncryptDict27) {
+     if (encrypt_dict_ && encrypt_dict_->IsInline()) {
+       last_obj_num_ += 1;
+-      FX_FILESIZE saveOffset = archive_->CurrentOffset();
+-      if (!WriteIndirectObj(last_obj_num_, encrypt_dict_.Get())) {
++      if (!WriteIndirectObj(last_obj_num_, 0, encrypt_dict_.Get())) {
+         return Stage::kInvalid;
+       }
+-
+-      object_offsets_[last_obj_num_] = saveOffset;
+       if (is_incremental_) {
+         new_obj_num_array_.push_back(last_obj_num_);
+       }
+@@ -351,7 +376,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+     if (!is_incremental_ || !parser_->IsXRefStream()) {
+       if (!is_incremental_ || parser_->GetLastXRefOffset() == 0) {
+         ByteString str;
+-        str = pdfium::Contains(object_offsets_, 1)
++        str = pdfium::Contains(object_locations_, 1)
+                   ? "xref\r\n"
+                   : "xref\r\n0 1\r\n0000000000 65535 f\r\n";
+         if (!archive_->WriteString(str.AsStringView())) {
+@@ -377,7 +402,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+     uint32_t i = cur_obj_num_;
+     uint32_t j;
+     while (i <= dwLastObjNum) {
+-      while (i <= dwLastObjNum && !pdfium::Contains(object_offsets_, i)) {
++      while (i <= dwLastObjNum && !pdfium::Contains(object_locations_, i)) {
+         i++;
+       }
+ 
+@@ -386,7 +411,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+       }
+ 
+       j = i;
+-      while (j <= dwLastObjNum && pdfium::Contains(object_offsets_, j)) {
++      while (j <= dwLastObjNum && pdfium::Contains(object_locations_, j)) {
+         j++;
+       }
+ 
+@@ -401,8 +426,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+       }
+ 
+       while (i < j) {
+-        str = ByteString::Format("%010d 00000 n\r\n", object_offsets_[i++]);
+-        if (!archive_->WriteString(str.AsStringView())) {
++        if (!WriteCrossRefTableEntry(i++)) {
+           return Stage::kInvalid;
+         }
+       }
+@@ -442,8 +466,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+ 
+       while (i < j) {
+         objnum = new_obj_num_array_[i++];
+-        str = ByteString::Format("%010d 00000 n\r\n", object_offsets_[objnum]);
+-        if (!archive_->WriteString(str.AsStringView())) {
++        if (!WriteCrossRefTableEntry(objnum)) {
+           return Stage::kInvalid;
+         }
+       }
+@@ -456,13 +479,14 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
+ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+   DCHECK_GE(stage_, Stage::kWriteTrailerAndFinish90);
+ 
+-  bool bXRefStream = is_incremental_ && parser_->IsXRefStream();
++  const bool bXRefStream = is_incremental_ && parser_->IsXRefStream();
++  const uint32_t xref_objnum = last_obj_num_ + 1;
+   if (!bXRefStream) {
+     if (!archive_->WriteString("trailer\r\n<<")) {
+       return Stage::kInvalid;
+     }
+   } else {
+-    if (!archive_->WriteDWord(document_->GetLastObjNum() + 1) ||
++    if (!archive_->WriteDWord(xref_objnum) ||
+         !archive_->WriteString(" 0 obj <<")) {
+       return Stage::kInvalid;
+     }
+@@ -490,13 +514,17 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+   } else {
+     if (!archive_->WriteString("\r\n/Root ") ||
+         !archive_->WriteDWord(document_->GetRoot()->GetObjNum()) ||
+-        !archive_->WriteString(" 0 R\r\n")) {
++        !archive_->WriteString(" ") ||
++        !archive_->WriteDWord(document_->GetRoot()->GetGenNum()) ||
++        !archive_->WriteString(" R\r\n")) {
+       return Stage::kInvalid;
+     }
+     if (document_->GetInfo()) {
+       if (!archive_->WriteString("/Info ") ||
+           !archive_->WriteDWord(document_->GetInfo()->GetObjNum()) ||
+-          !archive_->WriteString(" 0 R\r\n")) {
++          !archive_->WriteString(" ") ||
++          !archive_->WriteDWord(document_->GetInfo()->GetGenNum()) ||
++          !archive_->WriteString(" R\r\n")) {
+         return Stage::kInvalid;
+       }
+     }
+@@ -508,10 +536,15 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+ 
+     uint32_t dwObjNum = encrypt_dict_->GetObjNum();
+     if (dwObjNum == 0) {
+-      dwObjNum = document_->GetLastObjNum() + 1;
++      dwObjNum = last_obj_num_;
+     }
++    const auto location = object_locations_.find(dwObjNum);
++    const uint32_t generation = location != object_locations_.end()
++                                    ? location->second.generation
++                                    : encrypt_dict_->GetGenNum();
+     if (!archive_->WriteString(" ") || !archive_->WriteDWord(dwObjNum) ||
+-        !archive_->WriteString(" 0 R ")) {
++        !archive_->WriteString(" ") || !archive_->WriteDWord(generation) ||
++        !archive_->WriteString(" R ")) {
+       return Stage::kInvalid;
+     }
+   }
+@@ -539,53 +572,26 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+       return Stage::kInvalid;
+     }
+   } else {
+-    if (!archive_->WriteString("/W[0 4 1]/Index[")) {
++    constexpr uint32_t kEntryWidth = 6;
++    object_locations_[xref_objnum] = {xref_start_, 0};
++    if (!archive_->WriteString("/W[0 4 2]/Index[")) {
+       return Stage::kInvalid;
+     }
+-    if (is_incremental_ && parser_ && parser_->GetLastXRefOffset() == 0) {
+-      uint32_t i = 0;
+-      for (i = 0; i < last_obj_num_; i++) {
+-        if (!pdfium::Contains(object_offsets_, i)) {
+-          continue;
+-        }
+-        if (!archive_->WriteDWord(i) || !archive_->WriteString(" 1 ")) {
+-          return Stage::kInvalid;
+-        }
+-      }
+-      if (!archive_->WriteString("]/Length ") ||
+-          !archive_->WriteDWord(last_obj_num_ * 5) ||
+-          !archive_->WriteString(">>stream\r\n")) {
++    for (const auto& [objnum, location] : object_locations_) {
++      if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" 1 ")) {
+         return Stage::kInvalid;
+       }
+-      for (i = 0; i < last_obj_num_; i++) {
+-        auto it = object_offsets_.find(i);
+-        if (it == object_offsets_.end()) {
+-          continue;
+-        }
+-        if (!OutputIndex(archive_.get(), it->second)) {
+-          return Stage::kInvalid;
+-        }
+-      }
+-    } else {
+-      int count = fxcrt::CollectionSize<int>(new_obj_num_array_);
+-      int i = 0;
+-      for (i = 0; i < count; i++) {
+-        if (!archive_->WriteDWord(new_obj_num_array_[i]) ||
+-            !archive_->WriteString(" 1 ")) {
+-          return Stage::kInvalid;
+-        }
+-      }
+-      if (!archive_->WriteString("]/Length ") ||
+-          !archive_->WriteDWord(count * 5) ||
+-          !archive_->WriteString(">>stream\r\n")) {
++    }
++    if (!archive_->WriteString("]/Length ") ||
++        !archive_->WriteDWord(
++            fxcrt::CollectionSize<uint32_t>(object_locations_) * kEntryWidth) ||
++        !archive_->WriteString(">>stream\r\n")) {
++      return Stage::kInvalid;
++    }
++    for (const auto& [objnum, location] : object_locations_) {
++      if (!OutputIndex(archive_.get(), location.offset, location.generation)) {
+         return Stage::kInvalid;
+       }
+-      for (i = 0; i < count; ++i) {
+-        if (!OutputIndex(archive_.get(),
+-                         object_offsets_[new_obj_num_array_[i]])) {
+-          return Stage::kInvalid;
+-        }
+-      }
+     }
+     if (!archive_->WriteString("\r\nendstream")) {
+       return Stage::kInvalid;
+@@ -626,7 +632,7 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
+ 
+   stage_ = Stage::kInit0;
+   last_obj_num_ = document_->GetLastObjNum();
+-  object_offsets_.clear();
++  object_locations_.clear();
+   new_obj_num_array_.clear();
+ 
+   InitID();
+diff --git a/core/fpdfapi/edit/cpdf_creator.h b/core/fpdfapi/edit/cpdf_creator.h
+index 55f95245c93a4607bca0cc6f8bbf6ad471b1d01d..2ed71db6552c8a689de9b180937e4e4dba638a83 100644
+--- a/core/fpdfapi/edit/cpdf_creator.h
++++ b/core/fpdfapi/edit/cpdf_creator.h
+@@ -75,7 +75,10 @@ class CPDF_Creator {
+   bool WriteOldIndirectObject(uint32_t objnum);
+   bool WriteOldObjs();
+   bool WriteNewObjs();
+-  bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
++  bool WriteIndirectObj(uint32_t objnum,
++                        uint32_t generation,
++                        const CPDF_Object* object);
++  bool WriteCrossRefTableEntry(uint32_t objnum);
+ 
+   void RemoveSecurity();
+ 
+@@ -92,7 +95,11 @@ class CPDF_Creator {
+   Stage stage_ = Stage::kInvalid;
+   uint32_t cur_obj_num_ = 0;
+   FX_FILESIZE xref_start_ = 0;
+-  std::map<uint32_t, FX_FILESIZE> object_offsets_;
++  struct ObjectLocation {
++    FX_FILESIZE offset;
++    uint32_t generation;
++  };
++  std::map<uint32_t, ObjectLocation> object_locations_;
+   std::vector<uint32_t> new_obj_num_array_;  // Sorted, ascending.
+   RetainPtr<CPDF_Array> id_array_;
+   int32_t file_version_ = 0;
+diff --git a/core/fpdfapi/parser/cpdf_encryptor.cpp b/core/fpdfapi/parser/cpdf_encryptor.cpp
+index c15c8268ce27b14fe154c1b9766e97bad4c724db..9458558a606ea2c2008762126b17167d611fd96f 100644
+--- a/core/fpdfapi/parser/cpdf_encryptor.cpp
++++ b/core/fpdfapi/parser/cpdf_encryptor.cpp
+@@ -12,8 +12,10 @@
+ #include "core/fxcrt/check.h"
+ #include "core/fxcrt/data_vector.h"
+ 
+-CPDF_Encryptor::CPDF_Encryptor(const CPDF_CryptoHandler* pHandler, int objnum)
+-    : handler_(pHandler), obj_num_(objnum) {
++CPDF_Encryptor::CPDF_Encryptor(const CPDF_CryptoHandler* pHandler,
++                               uint32_t objnum,
++                               uint32_t generation)
++    : handler_(pHandler), obj_num_(objnum), generation_(generation) {
+   DCHECK(handler_);
+ }
+ 
+@@ -22,7 +24,7 @@ DataVector<uint8_t> CPDF_Encryptor::Encrypt(
+   if (src_data.empty()) {
+     return DataVector<uint8_t>();
+   }
+-  return handler_->EncryptContent(obj_num_, 0, src_data);
++  return handler_->EncryptContent(obj_num_, generation_, src_data);
+ }
+ 
+ CPDF_Encryptor::~CPDF_Encryptor() = default;
+diff --git a/core/fpdfapi/parser/cpdf_encryptor.h b/core/fpdfapi/parser/cpdf_encryptor.h
+index 3a25fe34992b08096b53f8f7f2dcbcc71b6da5bf..42635e9a63b253d9d4e04cbc3437dec03cf69716 100644
+--- a/core/fpdfapi/parser/cpdf_encryptor.h
++++ b/core/fpdfapi/parser/cpdf_encryptor.h
+@@ -17,14 +17,17 @@ class CPDF_CryptoHandler;
+ 
+ class CPDF_Encryptor {
+  public:
+-  CPDF_Encryptor(const CPDF_CryptoHandler* pHandler, int objnum);
++  CPDF_Encryptor(const CPDF_CryptoHandler* pHandler,
++                 uint32_t objnum,
++                 uint32_t generation);
+   ~CPDF_Encryptor();
+ 
+   DataVector<uint8_t> Encrypt(pdfium::span<const uint8_t> src_data) const;
+ 
+  private:
+   UnownedPtr<const CPDF_CryptoHandler> const handler_;
+-  const int obj_num_;
++  const uint32_t obj_num_;
++  const uint32_t generation_;
+ };
+ 
+ #endif  // CORE_FPDFAPI_PARSER_CPDF_ENCRYPTOR_H_
+diff --git a/core/fpdfapi/parser/cpdf_parser.cpp b/core/fpdfapi/parser/cpdf_parser.cpp
+index 6f89380920241b5a766850377e1cd8cc2e5a8697..91773afc2710df8ca1def4bd22f8b6d63ef58e1b 100644
+--- a/core/fpdfapi/parser/cpdf_parser.cpp
++++ b/core/fpdfapi/parser/cpdf_parser.cpp
+@@ -189,6 +189,11 @@ FX_FILESIZE CPDF_Parser::GetObjectPositionOrZero(uint32_t objnum) const {
+   return (info && info->type == ObjectType::kNormal) ? info->pos : 0;
+ }
+ 
++uint16_t CPDF_Parser::GetObjectGenerationOrZero(uint32_t objnum) const {
++  const auto* info = cross_ref_table_->GetObjectInfo(objnum);
++  return info ? info->gennum : 0;
++}
++
+ bool CPDF_Parser::IsObjectFree(uint32_t objnum) const {
+   DCHECK(IsValidObjectNumber(objnum));
+   const auto* info = cross_ref_table_->GetObjectInfo(objnum);
+diff --git a/core/fpdfapi/parser/cpdf_parser.h b/core/fpdfapi/parser/cpdf_parser.h
+index 76cfa708060370f7c217cea3cf81fed69008b356..c235eebe8f06567b5ae341d7a510245ecd9e9725 100644
+--- a/core/fpdfapi/parser/cpdf_parser.h
++++ b/core/fpdfapi/parser/cpdf_parser.h
+@@ -100,6 +100,7 @@ class CPDF_Parser {
+   uint32_t GetLastObjNum() const;
+   bool IsValidObjectNumber(uint32_t objnum) const;
+   FX_FILESIZE GetObjectPositionOrZero(uint32_t objnum) const;
++  uint16_t GetObjectGenerationOrZero(uint32_t objnum) const;
+   const RetainPtr<CPDF_SecurityHandler>& GetSecurityHandler() const {
+     return security_handler_;
+   }
+diff --git a/core/fpdfapi/parser/cpdf_reference.cpp b/core/fpdfapi/parser/cpdf_reference.cpp
+index 8dc56d52817e460d9180f6f055c05c295117f872..8cbc64f47fa8cf02cb1120264c03a82e255fce60 100644
+--- a/core/fpdfapi/parser/cpdf_reference.cpp
++++ b/core/fpdfapi/parser/cpdf_reference.cpp
+@@ -12,8 +12,10 @@
+ #include "core/fxcrt/containers/contains.h"
+ #include "core/fxcrt/fx_stream.h"
+ 
+-CPDF_Reference::CPDF_Reference(CPDF_IndirectObjectHolder* doc, uint32_t objnum)
+-    : obj_list_(doc), ref_obj_num_(objnum) {}
++CPDF_Reference::CPDF_Reference(CPDF_IndirectObjectHolder* doc,
++                               uint32_t objnum,
++                               std::optional<uint32_t> ref_generation)
++    : obj_list_(doc), ref_obj_num_(objnum), ref_generation_(ref_generation) {}
+ 
+ CPDF_Reference::~CPDF_Reference() = default;
+ 
+@@ -54,7 +56,7 @@ RetainPtr<CPDF_Object> CPDF_Reference::CloneNonCyclic(
+     std::set<const CPDF_Object*>* pVisited) const {
+   pVisited->insert(this);
+   if (!bDirect) {
+-    return pdfium::MakeRetain<CPDF_Reference>(obj_list_, ref_obj_num_);
++    return pdfium::MakeRetain<CPDF_Reference>(obj_list_, ref_obj_num_, ref_generation_);
+   }
+   RetainPtr<const CPDF_Object> pDirect = GetDirect();
+   return pDirect && !pdfium::Contains(*pVisited, pDirect.Get())
+@@ -74,6 +76,7 @@ const CPDF_Object* CPDF_Reference::FastGetDirect() const {
+ void CPDF_Reference::SetRef(CPDF_IndirectObjectHolder* doc, uint32_t objnum) {
+   obj_list_ = doc;
+   ref_obj_num_ = objnum;
++  ref_generation_.reset();
+ }
+ 
+ const CPDF_Object* CPDF_Reference::GetDirectInternal() const {
+@@ -83,8 +86,19 @@ const CPDF_Object* CPDF_Reference::GetDirectInternal() const {
+ 
+ bool CPDF_Reference::WriteTo(IFX_ArchiveStream* archive,
+                              const CPDF_Encryptor* encryptor) const {
+-  return archive->WriteString(" ") && archive->WriteDWord(GetRefObjNum()) &&
+-         archive->WriteString(" 0 R ");
++  uint32_t generation = 0;
++  if (ref_generation_) {
++    generation = *ref_generation_;
++  } else if (obj_list_) {
++    const CPDF_Object* target =
++        obj_list_->GetOrParseIndirectObjectInternal(ref_obj_num_);
++    if (target) {
++      generation = target->GetGenNum();
++    }
++  }
++  return generation <= UINT16_MAX && archive->WriteString(" ") &&
++         archive->WriteDWord(GetRefObjNum()) && archive->WriteString(" ") &&
++         archive->WriteDWord(generation) && archive->WriteString(" R ");
+ }
+ 
+ RetainPtr<CPDF_Reference> CPDF_Reference::MakeReference(
+@@ -92,5 +106,5 @@ RetainPtr<CPDF_Reference> CPDF_Reference::MakeReference(
+   DCHECK_EQ(holder, obj_list_);
+   // Do not allow reference to reference, just create other reference for same
+   // object.
+-  return pdfium::MakeRetain<CPDF_Reference>(holder, GetRefObjNum());
++  return pdfium::MakeRetain<CPDF_Reference>(holder, GetRefObjNum(), ref_generation_);
+ }
+diff --git a/core/fpdfapi/parser/cpdf_reference.h b/core/fpdfapi/parser/cpdf_reference.h
+index 63baff1b0a4b7ec6afbcbda222883735fd72e094..21f1559f8e284a9e0d6453498b7973cc7026e655 100644
+--- a/core/fpdfapi/parser/cpdf_reference.h
++++ b/core/fpdfapi/parser/cpdf_reference.h
+@@ -7,6 +7,7 @@
+ #ifndef CORE_FPDFAPI_PARSER_CPDF_REFERENCE_H_
+ #define CORE_FPDFAPI_PARSER_CPDF_REFERENCE_H_
+ 
++#include <optional>
+ #include <set>
+ 
+ #include "core/fpdfapi/parser/cpdf_object.h"
+@@ -38,7 +39,9 @@ class CPDF_Reference final : public CPDF_Object {
+  private:
+   friend class CPDF_Dictionary;
+ 
+-  CPDF_Reference(CPDF_IndirectObjectHolder* doc, uint32_t objnum);
++  CPDF_Reference(CPDF_IndirectObjectHolder* doc,
++                 uint32_t objnum,
++                 std::optional<uint32_t> ref_generation = std::nullopt);
+   ~CPDF_Reference() override;
+ 
+   const CPDF_Object* GetDirectInternal() const override;
+@@ -51,6 +54,9 @@ class CPDF_Reference final : public CPDF_Object {
+ 
+   UnownedPtr<CPDF_IndirectObjectHolder> obj_list_;
+   uint32_t ref_obj_num_;
++  // Parsed references retain the generation declared in the input. An
++  // engine-created reference resolves the current target when serialized.
++  std::optional<uint32_t> ref_generation_;
+ };
+ 
+ inline CPDF_Reference* ToReference(CPDF_Object* obj) {
+diff --git a/core/fpdfapi/parser/cpdf_syntax_parser.cpp b/core/fpdfapi/parser/cpdf_syntax_parser.cpp
+index ee91e039bc7adc88ef9c4a64f72e953bc8099718..6b447a0c4cca771b3f111f27b9a602af5f409110 100644
+--- a/core/fpdfapi/parser/cpdf_syntax_parser.cpp
++++ b/core/fpdfapi/parser/cpdf_syntax_parser.cpp
+@@ -567,7 +567,8 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
+       return nullptr;
+     }
+ 
+-    return pdfium::MakeRetain<CPDF_Reference>(pObjList, refnum);
++    return pdfium::MakeRetain<CPDF_Reference>(
++        pObjList, refnum, FXSYS_atoui(nextword.word.c_str()));
+   }
+ 
+   if (word == "true" || word == "false") {

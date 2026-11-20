@@ -1,11 +1,10 @@
 export interface PdfiumPatchStep {
   id: string
-  apply: string
-  sources: string[]
+  patch: string
 }
 
 export interface PdfiumPatchset {
-  format: 1
+  format: 2
   sourceRevision: string
   steps: PdfiumPatchStep[]
 }

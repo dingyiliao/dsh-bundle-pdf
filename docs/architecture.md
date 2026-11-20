@@ -52,7 +52,7 @@ RPC 和模型工具共享领域能力与工作副本，不各自实现写入事�
 | `src/native-boundary/{client,host,protocol}/` | TypeScript↔Native API、双端进程适配和共享 wire contract；与 PDFium 领域适配分开 |
 | `src/shared/` | 跨运行时共享类型、几何、缓存与纯工具 |
 | `native/` | Worker runtime、稳定 Backend 接口、PDFium worker、构建依赖锁与原生回调测试 |
-| `native/pdfium/patches/` | 版本化 patchset 清单与说明；列出 `native/pdfium/*.mjs` 的有序源码变换和扩展源码，当前不是 unified `.patch` 队列 |
+| `native/pdfium/patches/` | 版本化 unified `.patch` 队列与清单；按锁定 PDFium revision 顺序应用，扩展源码作为新增文件保存在补丁中 |
 
 Cordis 插件/服务是组合根：Host 服务经 capability 与 engine SPI 选择并调用引擎实现，依赖箭头从服务侧出发；provider 不反向依赖 Cordis。`working-copy` 组合文档、标注、表单和目录算法，文件操作、PDF 物化与存储通过端口接入。Host 不导入 Client 运行时代码，Client 不导入 Host 实现。领域模块可脱离 DSH 装配测试，但并非全部模块都是无 Node 依赖的纯函数。
 

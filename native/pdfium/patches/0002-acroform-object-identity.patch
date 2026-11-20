@@ -1,0 +1,234 @@
+diff --git a/core/fpdfdoc/cpdf_interactiveform.cpp b/core/fpdfdoc/cpdf_interactiveform.cpp
+index 961d8f0d537583b6923b7ba9d211cde0dddba99b..b8384cae9d8aa1473c09c56b1205d17baeb42242 100644
+--- a/core/fpdfdoc/cpdf_interactiveform.cpp
++++ b/core/fpdfdoc/cpdf_interactiveform.cpp
+@@ -586,8 +586,11 @@ CFieldTree::Node* CFieldTree::FindNode(const WideString& full_name) {
+   return node;
+ }
+ 
+-CPDF_InteractiveForm::CPDF_InteractiveForm(CPDF_Document* document)
+-    : document_(document), field_tree_(std::make_unique<CFieldTree>()) {
++CPDF_InteractiveForm::CPDF_InteractiveForm(CPDF_Document* document,
++                                           bool distinct_fields)
++    : document_(document),
++      field_tree_(std::make_unique<CFieldTree>()),
++      distinct_fields_(distinct_fields) {
+   RetainPtr<CPDF_Dictionary> pRoot = document_->GetMutableRoot();
+   if (!pRoot) {
+     return;
+@@ -664,6 +667,15 @@ RetainPtr<CPDF_Dictionary> CPDF_InteractiveForm::InitAcroFormDict(
+ }
+ 
+ size_t CPDF_InteractiveForm::CountFields(const WideString& field_name) const {
++  if (distinct_fields_) {
++    if (field_name.IsEmpty()) {
++      return object_fields_.size();
++    }
++    return std::count_if(object_fields_.begin(), object_fields_.end(),
++                         [&field_name](const auto& field) {
++                           return field->GetFullName() == field_name;
++                         });
++  }
+   if (field_name.IsEmpty()) {
+     return field_tree_->GetRoot()->CountFields();
+   }
+@@ -675,6 +687,18 @@ size_t CPDF_InteractiveForm::CountFields(const WideString& field_name) const {
+ CPDF_FormField* CPDF_InteractiveForm::GetField(
+     size_t index,
+     const WideString& field_name) const {
++  if (distinct_fields_) {
++    if (field_name.IsEmpty()) {
++      return index < object_fields_.size() ? object_fields_[index].Get()
++                                           : nullptr;
++    }
++    for (const auto& field : object_fields_) {
++      if (field->GetFullName() == field_name && index-- == 0) {
++        return field.Get();
++      }
++    }
++    return nullptr;
++  }
+   if (field_name.IsEmpty()) {
+     return field_tree_->GetRoot()->GetFieldAtIndex(index);
+   }
+@@ -689,6 +713,14 @@ CPDF_FormField* CPDF_InteractiveForm::GetFieldByDict(
+     return nullptr;
+   }
+ 
++  if (distinct_fields_) {
++    const auto found = fields_by_dict_.find(field_dict);
++    if (found != fields_by_dict_.end()) {
++      return found->second;
++    }
++    CPDF_FormControl* control = GetControlByDict(field_dict);
++    return control ? control->GetField() : nullptr;
++  }
+   return field_tree_->GetField(CPDF_FormField::GetFullNameForDict(field_dict));
+ }
+ 
+@@ -863,7 +895,7 @@ void CPDF_InteractiveForm::LoadField(RetainPtr<CPDF_Dictionary> field_dict,
+   uint32_t dwParentObjNum = field_dict->GetObjNum();
+   RetainPtr<CPDF_Array> kids =
+       field_dict->GetMutableArrayFor(pdfium::form_fields::kKids);
+-  if (!kids) {
++  if (!kids || (distinct_fields_ && kids->size() == 0)) {
+     AddTerminalField(std::move(field_dict));
+     return;
+   }
+@@ -902,7 +934,12 @@ void CPDF_InteractiveForm::FixPageFields(CPDF_Page* page) {
+ 
+ void CPDF_InteractiveForm::AddTerminalField(
+     RetainPtr<CPDF_Dictionary> field_dict) {
+-  if (!field_dict->KeyExist(pdfium::form_fields::kFT)) {
++  if (distinct_fields_) {
++    if (!CPDF_FormField::GetFieldAttrForDict(field_dict.Get(),
++                                            pdfium::form_fields::kFT)) {
++      return;
++    }
++  } else if (!field_dict->KeyExist(pdfium::form_fields::kFT)) {
+     // Key "FT" is required for terminal fields, it is also inheritable.
+     RetainPtr<const CPDF_Dictionary> pParentDict =
+         field_dict->GetDictFor(pdfium::form_fields::kParent);
+@@ -916,18 +953,19 @@ void CPDF_InteractiveForm::AddTerminalField(
+     return;
+   }
+ 
+-  CPDF_FormField* field = field_tree_->GetField(field_name);
+-  if (!field) {
+-    RetainPtr<CPDF_Dictionary> pParent(field_dict);
+-    if (!field_dict->KeyExist(pdfium::form_fields::kT) &&
+-        field_dict->GetNameFor("Subtype") == "Widget") {
+-      pParent = field_dict->GetMutableDictFor(pdfium::form_fields::kParent);
+-      if (!pParent) {
+-        pParent = field_dict;
+-      }
++  RetainPtr<CPDF_Dictionary> pParent(field_dict);
++  if (!field_dict->KeyExist(pdfium::form_fields::kT) &&
++      field_dict->GetNameFor("Subtype") == "Widget") {
++    if (auto parent = field_dict->GetMutableDictFor(pdfium::form_fields::kParent)) {
++      pParent = std::move(parent);
+     }
++  }
+ 
+-    if (pParent && pParent != field_dict &&
++  CPDF_FormField* field = distinct_fields_
++      ? GetFieldByDict(pParent.Get())
++      : field_tree_->GetField(field_name);
++  if (!field) {
++    if (!distinct_fields_ && pParent != field_dict &&
+         !pParent->KeyExist(pdfium::form_fields::kFT)) {
+       if (field_dict->KeyExist(pdfium::form_fields::kFT)) {
+         RetainPtr<const CPDF_Object> pFTValue =
+@@ -947,11 +985,11 @@ void CPDF_InteractiveForm::AddTerminalField(
+     }
+ 
+     auto new_field =
+-        pdfium::MakeRetain<CPDF_FormField>(this, std::move(pParent));
++        pdfium::MakeRetain<CPDF_FormField>(this, pParent);
+     field = new_field.Get();
+     RetainPtr<const CPDF_Object> t_obj =
+         field_dict->GetObjectFor(pdfium::form_fields::kT);
+-    if (ToReference(t_obj)) {
++    if (!distinct_fields_ && ToReference(t_obj)) {
+       RetainPtr<CPDF_Object> t_obj_clone = t_obj->CloneDirectObject();
+       if (t_obj_clone && t_obj_clone->IsString()) {
+         field_dict->SetFor(pdfium::form_fields::kT, std::move(t_obj_clone));
+@@ -960,7 +998,10 @@ void CPDF_InteractiveForm::AddTerminalField(
+                                            ByteString());
+       }
+     }
+-    if (!field_tree_->SetField(field_name, std::move(new_field))) {
++    if (distinct_fields_) {
++      fields_by_dict_.emplace(pParent.Get(), field);
++      object_fields_.push_back(std::move(new_field));
++    } else if (!field_tree_->SetField(field_name, std::move(new_field))) {
+       return;
+     }
+   }
+diff --git a/core/fpdfdoc/cpdf_interactiveform.h b/core/fpdfdoc/cpdf_interactiveform.h
+index 33c09170e7fc6f44e128f6a5e000b72fb4ad9b1e..9190b90e6ac5fd32ebb1294c4ad00efb0fb844dd 100644
+--- a/core/fpdfdoc/cpdf_interactiveform.h
++++ b/core/fpdfdoc/cpdf_interactiveform.h
+@@ -48,7 +48,8 @@ class CPDF_InteractiveForm {
+     virtual void AfterFormReset(CPDF_InteractiveForm* form) = 0;
+   };
+ 
+-  explicit CPDF_InteractiveForm(CPDF_Document* document);
++  explicit CPDF_InteractiveForm(CPDF_Document* document,
++                                bool distinct_fields = false);
+   ~CPDF_InteractiveForm();
+ 
+   static bool IsUpdateAPEnabled();
+@@ -119,6 +120,9 @@ class CPDF_InteractiveForm {
+   UnownedPtr<CPDF_Document> const document_;
+   RetainPtr<CPDF_Dictionary> form_dict_;
+   std::unique_ptr<CFieldTree> field_tree_;
++  const bool distinct_fields_;
++  std::vector<RetainPtr<CPDF_FormField>> object_fields_;
++  std::map<const CPDF_Dictionary*, CPDF_FormField*> fields_by_dict_;
+   std::map<RetainPtr<const CPDF_Dictionary>,
+            std::unique_ptr<CPDF_FormControl>,
+            std::less<>>
+diff --git a/fpdfsdk/cpdfsdk_formfillenvironment.cpp b/fpdfsdk/cpdfsdk_formfillenvironment.cpp
+index f6ce8cc18d49a7b763d69bf72383e78972e7e8d0..2bfd6d8d866a849fd25a08301939f54e831e29ad 100644
+--- a/fpdfsdk/cpdfsdk_formfillenvironment.cpp
++++ b/fpdfsdk/cpdfsdk_formfillenvironment.cpp
+@@ -798,9 +798,11 @@ IPDF_Page* CPDFSDK_FormFillEnvironment::GetPage(int nIndex) const {
+       info_, FPDFDocumentFromCPDFDocument(cpdfdoc_.Get()), nIndex));
+ }
+ 
+-CPDFSDK_InteractiveForm* CPDFSDK_FormFillEnvironment::GetInteractiveForm() {
++CPDFSDK_InteractiveForm* CPDFSDK_FormFillEnvironment::GetInteractiveForm(
++    bool distinct_fields) {
+   if (!interactive_form_) {
+-    interactive_form_ = std::make_unique<CPDFSDK_InteractiveForm>(this);
++    interactive_form_ =
++        std::make_unique<CPDFSDK_InteractiveForm>(this, distinct_fields);
+   }
+   return interactive_form_.get();
+ }
+diff --git a/fpdfsdk/cpdfsdk_formfillenvironment.h b/fpdfsdk/cpdfsdk_formfillenvironment.h
+index 5ddd521541c3543c35a528cc5975a2e524f45d78..bafa46e34b47df0dd6a852f1cf9c79c411b43118 100644
+--- a/fpdfsdk/cpdfsdk_formfillenvironment.h
++++ b/fpdfsdk/cpdfsdk_formfillenvironment.h
+@@ -254,7 +254,7 @@ class CPDFSDK_FormFillEnvironment final
+   }
+ 
+   IJS_Runtime* GetIJSRuntime();                   // Creates if not present.
+-  CPDFSDK_InteractiveForm* GetInteractiveForm();  // Creates if not present.
++  CPDFSDK_InteractiveForm* GetInteractiveForm(bool distinct_fields = false);
+ 
+  private:
+   using RunScriptCallback = std::function<void(IJS_EventContext* context)>;
+diff --git a/fpdfsdk/cpdfsdk_interactiveform.cpp b/fpdfsdk/cpdfsdk_interactiveform.cpp
+index 41dcf0b89ed4e8d917da086cf62515fc69cbff6c..dbc65945c638f3229eae5f693fc541cad2884c09 100644
+--- a/fpdfsdk/cpdfsdk_interactiveform.cpp
++++ b/fpdfsdk/cpdfsdk_interactiveform.cpp
+@@ -112,10 +112,11 @@ ByteString FDFToURLEncodedData(ByteString buffer) {
+ }  // namespace
+ 
+ CPDFSDK_InteractiveForm::CPDFSDK_InteractiveForm(
+-    CPDFSDK_FormFillEnvironment* pFormFillEnv)
++    CPDFSDK_FormFillEnvironment* pFormFillEnv,
++    bool distinct_fields)
+     : form_fill_env_(pFormFillEnv),
+       interactive_form_(std::make_unique<CPDF_InteractiveForm>(
+-          form_fill_env_->GetPDFDocument())) {
++          form_fill_env_->GetPDFDocument(), distinct_fields)) {
+   interactive_form_->SetNotifierIface(this);
+   RemoveAllHighLights();
+ }
+diff --git a/fpdfsdk/cpdfsdk_interactiveform.h b/fpdfsdk/cpdfsdk_interactiveform.h
+index 368aec8d7f220dbef01fb51b89bf69e77cb665a4..616fc511ea86fb0a121c28afc1b4064b65c0f47c 100644
+--- a/fpdfsdk/cpdfsdk_interactiveform.h
++++ b/fpdfsdk/cpdfsdk_interactiveform.h
+@@ -29,7 +29,8 @@ class CPDFSDK_FormFillEnvironment;
+ class CPDFSDK_InteractiveForm final
+     : public CPDF_InteractiveForm::NotifierIface {
+  public:
+-  explicit CPDFSDK_InteractiveForm(CPDFSDK_FormFillEnvironment* pFormFillEnv);
++  explicit CPDFSDK_InteractiveForm(CPDFSDK_FormFillEnvironment* pFormFillEnv,
++                                   bool distinct_fields = false);
+   ~CPDFSDK_InteractiveForm() override;
+ 
+   CPDF_InteractiveForm* GetInteractiveForm() const {

@@ -17,7 +17,7 @@ git -C "$work/pdfium" checkout --detach FETCH_HEAD
 )
 ```
 
-SDK 从固定源码提交编译，版本和许可证清单取自同平台的锁定归档。补丁队列由 [patchset.json](patches/patchset.json) 和同目录的确定性转换脚本组成；它会生成 `DSH_PATCHSET` 摘要，Worker 构建会拒绝摘要不匹配的 SDK。运行 `node scripts/build-native.mjs --download-only` 准备归档和 JSON 头文件。也可以向 SDK 构建脚本传入 `--stock-archive` 指定已下载的归档。
+SDK 从固定源码提交编译，版本和许可证清单取自同平台的锁定归档。补丁队列由 [patchset.json](patches/patchset.json) 按顺序列出的标准 unified `.patch` 文件构成；包括 DSH 扩展源码和 GN 注册在内的所有改动都在补丁中。SDK 构建要求干净的锁定 revision checkout，逐个执行 `git apply --check` 与 `git apply`，并将补丁队列摘要写入 `DSH_PATCHSET`；Worker 构建会拒绝摘要不匹配的 SDK。运行 `node scripts/build-native.mjs --download-only` 准备归档和 JSON 头文件。也可以向 SDK 构建脚本传入 `--stock-archive` 指定已下载的归档。
 
 ```sh
 node native/pdfium/build-pdfium-sdk.mjs --checkout "$work/pdfium" --sdk "$work/sdk"
@@ -31,6 +31,6 @@ DSH_PDF_NATIVE_HELPER="$work/worker/dsh-pdf-native" DSH_PDF_REQUIRE_NATIVE_TESTS
   node --import tsx --test tests/native-form-fields.test.ts tests/native-outline-extensions.test.ts tests/native-object-generations.test.ts
 ```
 
-Windows 的助手文件名为 `dsh-pdf-native.exe`。每个平台包的 `manifest.json` 记录 `pdfiumSourceRevision`、`pdfiumPatchset` 和协议版本，供 Host 检查。
+Windows 的助手文件名为 `dsh-pdf-native.exe`。每个平台包的 `manifest.json` 记录 `pdfiumSourceRevision`、`pdfiumPatchset` 和协议版本，作为构建身份信息供诊断使用。
 
 Linux ARM64 的 CI 在 Linux x64 主机交叉构建 PDFium SDK。同步源码前在 `.gclient` 中加入 `target_cpu = ["arm64"]`，构建时传入 `--target linux-arm64`。Worker 在 ARM64 runner 上编译并运行测试。
