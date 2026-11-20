@@ -73,7 +73,7 @@ async function verifyNodeSourceMapAlignment() {
   const source = await readFile(join(root, 'src/surfaces/host/io/local-files.ts'), 'utf8')
   const declaration = source.split(/\r?\n/).findIndex(line => /^\s*async function assertExpected\(/.test(line)) + 1
   const lcov = await readFile(nodeLcov, 'utf8')
-  const section = lcov.split(/(?=^SF:)/m).find(record => /^SF:(?:.*\/)?src\/adapters\/host\/filesystem\/local-files\.ts$/m.test(record))
+  const section = lcov.split(/(?=^SF:)/m).find(record => /^SF:(?:.*\/)?src\/surfaces\/host\/io\/local-files\.ts$/m.test(record))
   const reported = Number(section?.match(/^FN:(\d+),assertExpected$/m)?.[1])
   if (!declaration || !section || reported !== declaration) {
     throw new Error(`Node LCOV is not mapped to TypeScript source lines (assertExpected: source ${declaration}, LCOV ${reported || 'missing'}).`)
