@@ -95,10 +95,16 @@ it('directly edits an encrypted PDF with annotation permission and saves an encr
 it('keeps a restricted encrypted PDF visible through failed and successful owner-password entry', async () => {
   await withProtectedReader('encrypted-annotation-restricted', 'pdf-encrypted-owner-password', async reader => {
     const note = tool(reader, 'Note')
-    const unlock = reader.getByRole('button', { name: 'Unlock annotation editing', exact: true })
+    // The unlock action lives with the read-only notice inside the activity rail.
+    const unlock = async () => {
+      const rail = reader.locator('.dsh-pdf-activity-trigger')
+      if (await rail.getAttribute('aria-expanded') !== 'true') await rail.click()
+      await reader.locator('.dsh-pdf-floating-status[data-status-id="document-read-only"]')
+        .getByRole('button', { name: 'Unlock annotation editing', exact: true }).click()
+    }
     const canvas = reader.locator('[data-pdf-page="1"] canvas[data-pdf-raster-ready="true"]').first()
     expect(await note.isDisabled()).toBe(true)
-    await unlock.click()
+    await unlock()
     const prompt = reader.getByRole('form', { name: 'Unlock annotation editing' })
     const password = prompt.getByLabel('Owner password')
     await password.fill('incorrect-fixture-password')
@@ -109,7 +115,7 @@ it('keeps a restricted encrypted PDF visible through failed and successful owner
     expect(await note.isDisabled()).toBe(true)
     await prompt.getByRole('button', { name: 'Cancel', exact: true }).click()
     await prompt.waitFor({ state: 'detached' })
-    await unlock.click()
+    await unlock()
     await password.fill('fixture-owner')
     await prompt.getByRole('button', { name: 'Unlock annotation editing', exact: true }).click()
     await prompt.waitFor({ state: 'detached' })
