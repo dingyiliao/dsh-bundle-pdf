@@ -198,7 +198,7 @@ it('checks a Web Save As target before overwrite and rejects a changed target ve
     const externallyUpdated = await outlinedSourcePdf()
     await writeFile(targetPath, externallyUpdated)
     await dialog.getByRole('button', { name: 'Replace and save', exact: true }).click()
-    await reader.getByRole('alert').waitFor({ state: 'visible' })
+    await dialog.getByRole('alert').waitFor({ state: 'visible' })
     expect(await readFile(targetPath)).toEqual(Buffer.from(externallyUpdated))
     expect(await dialog.isVisible()).toBe(true)
 
