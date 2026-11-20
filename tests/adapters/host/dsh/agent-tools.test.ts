@@ -257,13 +257,16 @@ test('pdf_info does not disclose metadata from a protected source', async () => 
   const { ctx, definitions } = captureTools()
   const workspaces = { ...state.workspaces,
     async inspectFile(...args: Parameters<typeof state.workspaces.inspectFile>) {
+      if (args[4] === undefined) throw Object.assign(new Error('A password is required'), { code: 'pdf/password-required' })
       const info = await state.workspaces.inspectFile(...args)
-      return { ...info, document: { ...info.document, encrypted: true } }
+      return { ...info, document: { ...info.document, encrypted: true, annotationEditing: 'allowed' as const } }
     } }
   const dispose = registerPdfAgentTools(ctx, workspaces, {} as never, { current: () => [] })
   try {
     await assert.rejects(readTool(definitions, 'pdf_info', { path: '/fixtures/native.pdf' }, sessionId),
-      { code: 'pdf/protected-document' })
+      { code: 'pdf/password-required' })
+    const info = await readTool(definitions, 'pdf_info', { path: '/fixtures/native.pdf', password: 'secret' }, sessionId) as { encrypted: boolean }
+    assert.equal(info.encrypted, true)
     assert.deepEqual(state.workspaces.listDocuments(), [])
   } finally { await dispose(); await state.workspaces.dispose() }
 })
@@ -276,6 +279,21 @@ test('image-context replay requires a fresh-source adapter', async () => {
       documentId: 'doc', refId: 'pdfref_00000000-0000-4000-8000-000000000000',
     }, 'session-a'), { code: 'pdf/source-unavailable' })
   } finally { await dispose() }
+})
+
+test('PDF status distinguishes confirmed and possible signature-loss risks', async () => {
+  const f = await textEvidenceToolFixture()
+  try {
+    for (const [document, expected] of [
+      [{ ...f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId).document, signed: true }, 'This PDF is signed:'],
+      [{ ...f.state.workspaces.readSnapshot(f.sessionId, f.opened.documentId).document,
+        signed: false, signatureUncertain: true as const }, 'This PDF may be signed:'],
+    ] as const) {
+      f.snapshotView(snapshot => ({ ...snapshot, document }))
+      const status = await f.run('pdf_status', { documentId: f.opened.documentId }) as { limitations: string[] }
+      assert.ok(status.limitations.some(item => item.startsWith(expected)))
+    }
+  } finally { await f.dispose() }
 })
 
 test('registered document lifecycle and navigation tools render plain JSON metadata', async () => {
@@ -709,6 +727,73 @@ test('a model save keeps its draft alive throughout trusted human approval despi
     const result = await saving as { status: string; dirty: boolean }
     assert.equal(result.status, 'saved'); assert.equal(result.dirty, false); assert.equal(state.writes(), 1)
   } finally { approve(); await dispose(); await state.workspaces.dispose() }
+})
+
+test('a possibly signed PDF includes a signature-loss warning in the save review', async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'uncertain-signature-save'
+  let detail = ''
+  const { ctx, definitions } = captureTools({ userQuestions: {
+    async ask(request: { questions: Array<{ id: string; detail?: string; options: Array<{ label: string }> }> }) {
+      detail = request.questions[0]?.detail ?? ''
+      const first = request.questions[0]
+      return { answers: [{ id: first.id, selected: [first.options[0].label] }] }
+    },
+  } })
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      return { ...snapshot, document: { ...snapshot.document, signatureUncertain: true as const } }
+    } }
+  const dispose = registerPdfAgentTools(ctx, workspaces, { async releaseDocument() {} } as never, { current: () => [] })
+  try {
+    const opened = await readTool(definitions, 'pdf_open', { path: '/fixtures/native.pdf' }, sessionId) as {
+      documentId: string; revision: number
+    }
+    const changed = await workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: opened.documentId, revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'possible-signature-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'Draft',
+      } }] }, agent(sessionId), signal)
+    assert.ok('bytes' in changed)
+    await readTool(definitions, 'pdf_save', { documentId: opened.documentId,
+      expectedRevision: changed.revision }, sessionId)
+    assert.match(detail, /可能带有数字签名/)
+    assert.match(detail, /任何现有签名都将失效/)
+    assert.equal(state.writes(), 1)
+  } finally { await dispose(); await state.workspaces.dispose() }
+})
+
+test('a certification signature requires a separate signature-loss confirmation before saving', async () => {
+  const state = memoryWorkspace(await nativeFixture()), sessionId = 'certified-save'
+  const asked: string[][] = []
+  const { ctx, definitions } = captureTools({ userQuestions: {
+    async ask(request: { questions: Array<{ id: string; options: Array<{ label: string }> }> }) {
+      asked.push(request.questions.map(question => question.id))
+      // Answer the write approval only: the signature question stays unanswered.
+      const [first] = request.questions
+      return { answers: [{ id: first.id, selected: [first.options[0].label] }] }
+    },
+  } })
+  const workspaces = { ...state.workspaces,
+    readSnapshot(...args: Parameters<typeof state.workspaces.readSnapshot>) {
+      const snapshot = state.workspaces.readSnapshot(...args)
+      return { ...snapshot, document: { ...snapshot.document, signed: true, certificationPermission: 1 as const } }
+    } }
+  const dispose = registerPdfAgentTools(ctx, workspaces, { async releaseDocument() {} } as never, { current: () => [] })
+  try {
+    const opened = await readTool(definitions, 'pdf_open', { path: '/fixtures/native.pdf' }, sessionId) as {
+      documentId: string; revision: number
+    }
+    const changed = await workspaces.execute(sessionId, { action: 'change', sessionId,
+      id: opened.documentId, revision: opened.revision, operations: [{ type: 'add', annotation: {
+        id: 'certified-note', page: 1, subtype: 'Text', rect: [60, 80, 90, 100], contents: 'Certified draft',
+      } }] }, agent(sessionId), signal)
+    assert.ok('bytes' in changed)
+    await assert.rejects(readTool(definitions, 'pdf_save',
+      { documentId: opened.documentId, expectedRevision: changed.revision }, sessionId),
+    { code: 'pdf/approval-rejected' })
+    assert.equal(state.writes(), 0, 'an unanswered signature confirmation must never write the file')
+    assert.deepEqual(asked.at(-1), ['pdf-write-review', 'pdf-signature-review'])
+  } finally { await dispose(); await state.workspaces.dispose() }
 })
 
 test('pdf_bookmark_list lists native outline items with bounded, session-fenced pages', async () => {
@@ -1415,15 +1500,8 @@ test('pdf_current exposes only fresh reader hints from the caller session', asyn
     protectedReader = true
     const hidden = await readTool(definitions, 'pdf_current', {}, sessionId) as Record<string, unknown>
     assert.deepEqual(hidden, { status: 'none', documents: [] }, 'Reader presence must not expose a protected document ID or path')
-    for (const [name, args] of [
-      ['pdf_status', { documentId: opened.id }],
-      ['pdf_bookmark_list', { documentId: opened.id }],
-      ['pdf_annotation_list', { documentId: opened.id, page: 1 }],
-      ['pdf_page_read', { documentId: opened.id, page: 1 }],
-      ['pdf_page_render', { documentId: opened.id, page: 1 }],
-    ] as const) {
-      await assert.rejects(readTool(definitions, name, args, sessionId), { code: 'pdf/protected-document' }, name)
-    }
+    const protectedStatus = await readTool(definitions, 'pdf_status', { documentId: opened.id }, sessionId) as Record<string, unknown>
+    assert.equal(protectedStatus.documentId, opened.id, 'status remains available for an authorized protected working copy')
     protectedReader = false
     const otherSession = await readTool(definitions, 'pdf_current', {}, 'pdf-current-other') as Record<string, unknown>
     assert.equal(otherSession.status, 'none')

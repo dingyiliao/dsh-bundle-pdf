@@ -81,7 +81,7 @@ test('verified page fingerprints remain usable with incomplete coverage', async 
   await assert.rejects(read([hash('a')]), /incomplete page fingerprint batch/)
 })
 
-test('signature, unknown signature status and XFA remain protected by document metadata', async () => {
+test('a signature no longer makes a document read-only while XFA still does', async () => {
   const options = defaults(1)
   const read = async (probe: Partial<Options['probe']>) => readNativeDocumentMetadata({ ...options, probe: { ...options.probe, ...probe } })
   const blank = await read({ formType: 1, signatureCount: 1 })
@@ -89,10 +89,29 @@ test('signature, unknown signature status and XFA remain protected by document m
   assert.equal(blank.signed, false)
   assert.equal(blank.readOnly, false)
   for (const signatureStatus of [1, -1] as const) {
-    const protectedDocument = await read({ signatureStatus })
-    assert.equal(protectedDocument.signed, true)
-    assert.equal(protectedDocument.readOnlyReason, 'signed-document')
+    const signedDocument = await read({ signatureStatus })
+    assert.equal(signedDocument.certificationPermission, undefined)
+    if (signatureStatus === 1) {
+      assert.equal(signedDocument.signed, true)
+      assert.equal(signedDocument.signatureUncertain, undefined)
+      // Editing is allowed; saving invalidates the signature instead of blocking.
+      assert.equal(signedDocument.readOnly, false)
+      assert.equal(signedDocument.readOnlyReason, undefined)
+    } else {
+      // Inconclusive inspection is a save-time signature risk, not a write gate.
+      assert.equal(signedDocument.signed, false)
+      assert.equal(signedDocument.signatureUncertain, true)
+      assert.equal(signedDocument.readOnly, false)
+      assert.equal(signedDocument.readOnlyReason, undefined)
+    }
   }
+  for (const certificationPermission of [1, 2, 3] as const) {
+    const certified = await read({ signatureStatus: 1, certificationPermission })
+    assert.equal(certified.signed, true)
+    assert.equal(certified.certificationPermission, certificationPermission)
+    assert.equal(certified.readOnly, false)
+  }
+  assert.equal((await read({ certificationPermission: 0 })).certificationPermission, undefined)
   const xfa = await read({ formType: 2 })
   assert.equal(xfa.formKind, 'xfa')
   assert.equal(xfa.readOnlyReason, 'xfa-document')

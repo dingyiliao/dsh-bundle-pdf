@@ -5,7 +5,7 @@ import { hashSchema, idSchema, workingCopyOperationSchema, pathSchema } from '..
 
 export const draftSchema = z.object({
   format: z.literal(1), sessionId: idSchema, path: pathSchema,
-  sourceHash: hashSchema, sourceVersion: z.string().min(1).max(4096), contentVersion: idSchema,
+  sourceHash: hashSchema, baselineId: hashSchema.optional(), sourceVersion: z.string().min(1).max(4096), contentVersion: idSchema,
   // Absolute deployment ceiling. Per-operation volatile limits remain enforced by the file adapter.
   // Existing drafts carry original inline. New drafts store it once under baseKey.
   original: z.string().min(1).max(357913944).optional(), baseKey: z.string().min(1).max(256).optional(),

@@ -8,9 +8,10 @@ function props(overrides: Partial<ReaderAlertsProps> = {}): ReaderAlertsProps {
   return { reloadConfirm: false, setReloadConfirm() {}, reload() {}, t: key => key, ...overrides }
 }
 
+
 function saveAs(overrides: Partial<NonNullable<ReaderAlertsProps['saveAs']>> = {}): NonNullable<ReaderAlertsProps['saveAs']> {
   return { name: 'book.pdf', directory: '/books', pickerAvailable: true, picking: false, busy: false,
-    targetChecking: false, target: null, replaceConfirm: false, error: '',
+    targetChecking: false, target: null, replaceConfirm: false, signatureConfirm: false, signatureCertified: false, error: '',
     onNameChange() {}, onDirectoryChange() {}, onChooseDirectory() {}, onSubmit() {}, onCancel() {}, onBack() {},
     t: key => key, ...overrides }
 }
@@ -50,6 +51,21 @@ test('reader alerts present the Save As sheet with separate filename and locatio
   assert.match(replacing, /reader.replaceAndSave/)
   assert.match(replacing, /reader.saveBack/)
   assert.doesNotMatch(replacing, /reader.saveName|type="checkbox"/)
+})
+
+test('Save As requires signature-loss consent and distinguishes a certification signature', () => {
+  for (const [certified, body] of [[false, 'reader.signatureSaveBody'], [true, 'reader.signatureSaveCertifiedBody']] as const) {
+    const html = renderToStaticMarkup(React.createElement(ReaderAlerts,
+      props({ saveAs: saveAs({ target: { path: '/books/book.pdf', version: 'v1' },
+        signatureConfirm: true, signatureCertified: certified }) })))
+    assert.match(html, /reader\.signatureSaveTitle/)
+    assert.match(html, new RegExp(body))
+    assert.match(html, /reader\.signatureSaveConfirm/)
+    assert.match(html, /book\.pdf/)
+    assert.doesNotMatch(html, /reader\.saveName|type="checkbox"/)
+    if (certified) assert.doesNotMatch(html, /reader\.signatureSaveBody/)
+    else assert.doesNotMatch(html, /reader\.signatureSaveCertifiedBody/)
+  }
 })
 
 test('Save As errors stay in the modal while generic banners are absent', () => {

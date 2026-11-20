@@ -7,6 +7,13 @@ export type NativeRequestFor<C extends NativeRequest['command']> = RequestFor<C,
 type PayloadFor<R> = R extends unknown ? Omit<R, 'command'> : never
 export type NativePayloadFor<C extends NativeRequest['command']> = PayloadFor<NativeRequestFor<C>>
 
+/** Host-only identity for a native document opened from one working-copy baseline. */
+export interface NativeBaselineRef {
+  readonly baselineId: string
+  readonly documentId: string
+  readonly generation: number
+}
+
 /**
  * Host-facing PDF port. Domain services depend on this contract rather than
  * the worker process implementation, so a patched PDFium backend or another
@@ -20,7 +27,7 @@ export interface NativePdfPort {
   readonly documentExtensions: boolean
   ready(): Promise<void>
   openDocument(documentId: string, bytes: Uint8Array, options?: { password?: string; metadataOnly?: true }): Promise<NativeReply<'open'>>
-  closeDocument(documentId: string): Promise<void>
+  closeDocument(documentId: string, generation: number): Promise<void>
   inspectSecurity(request: NativePayloadFor<'security'>, signal?: AbortSignal, priority?: number): Promise<NativeReply<'security'>>
   inspectDocument(request: NativePayloadFor<'documentInfo'>, signal?: AbortSignal, priority?: number): Promise<NativeReply<'documentInfo'>>
   getPageFingerprints(request: NativePayloadFor<'fingerprints'>, signal?: AbortSignal, priority?: number): Promise<NativeReply<'fingerprints'>>

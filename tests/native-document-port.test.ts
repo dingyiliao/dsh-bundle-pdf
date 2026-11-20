@@ -113,7 +113,7 @@ function oversizedForm(signed: boolean): Uint8Array {
   ])
 }
 
-test('paginated inspection preserves signature protection for a large form', { skip }, async t => {
+test('paginated inspection keeps a signed large form editable', { skip }, async t => {
   const subprocess = await patchedSubprocess(t)
   if (!subprocess) return
   const port = createNativeDocumentPort(executable, subprocess)
@@ -122,12 +122,13 @@ test('paginated inspection preserves signature protection for a large form', { s
   const document = await port.inspect(bytes)
   assert.equal(document.formKind, 'acroform')
   assert.equal(document.formFields?.length, 5001)
-  assert.ok(document.formFields?.every(field => field.readOnly))
   assert.equal(document.signed, true)
-  assert.equal(document.readOnlyReason, 'signed-document')
-  await assert.rejects(port.materialize(bytes, [
-    { type: 'add', annotation: { id: 'denied', page: 1, subtype: 'Text', rect: [10, 10, 20, 20] } },
-  ], ['2026-11-09T00:00:00Z']), { code: 'read-only' })
+  // A signature blocks nothing by itself: saving rewrites the bytes and the
+  // signature stops verifying, which is the intended record of the change.
+  assert.equal(document.readOnly, false)
+  assert.equal(document.readOnlyReason, undefined)
+  assert.equal(document.certificationPermission, undefined)
+  assert.ok(document.formFields?.some(field => !field.readOnly), 'signature alone must not lock form fields')
 })
 
 test('native document inspection reads a large form across pages of metadata and classifies encrypted files', { skip }, async t => {

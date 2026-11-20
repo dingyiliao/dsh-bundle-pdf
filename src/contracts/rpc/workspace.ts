@@ -31,8 +31,10 @@ export const wireAnnotationSchema = z.object({
 
 /** Full snapshots and annotation deltas share one versioned wire shape. */
 export const wireSnapshotSchema = z.object({
-  id: z.string(), path: z.string(), sourceVersion: z.string(), contentVersion: z.string(),
+  id: z.string(), path: z.string(), baselineId: z.string().optional(), sourceVersion: z.string(), contentVersion: z.string(),
   revision: z.number().int(), dirty: z.boolean(), canUndo: z.boolean(), canRedo: z.boolean(), conflict: z.boolean(),
+  baselineMismatch: z.object({ operationsBaselineId: z.string(), currentBaselineId: z.string().optional(),
+    choices: z.array(z.enum(['adopt-current', 'retain-operations'])).min(1).max(2) }).optional(),
   warning: z.string().optional(),
   reader: z.object({ bytesHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     generation: z.number().int(), protocolVersion: z.literal(1), selectionGeometry: z.literal(true).optional() }),
@@ -42,6 +44,8 @@ export const wireSnapshotSchema = z.object({
   baselineFormFields: z.array(wireFormFieldSchema).optional(),
   document: z.object({
     pageCount: z.number().int().positive(), title: z.string().optional(), signed: z.boolean(), encrypted: z.boolean(),
+    signatureUncertain: z.literal(true).optional(),
+    certificationPermission: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
     annotationEditing: z.enum(['allowed', 'owner-password-required']).optional(),
     allowTextExtraction: z.boolean().optional(),
     formKind: z.enum(['acroform', 'xfa']).optional(),

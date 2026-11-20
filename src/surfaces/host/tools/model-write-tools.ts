@@ -70,6 +70,7 @@ type UserQuestionService = {
 }
 
 const SAVE_APPROVE = '批准覆盖保存此 PDF'
+const SIGNATURE_ACCEPT = '我确认签名将失效并继续保存'
 
 // DSH renders question.detail as Markdown. Keep document-sourced values inert,
 // but use compact code spans for ordinary one-line values so the approval card
@@ -96,15 +97,31 @@ function detailField(label: string, value: unknown): string {
     : `- **${label}**：${rendered}\n`
 }
 
+/** Saving rewrites the bytes, so an existing signature stops verifying. */
+function signatureNotice(review: ModelWriteReview): string {
+  if (!review.signed && !review.signatureUncertain) return ''
+  if (review.certificationPermission === 1) {
+    return '\n> ⚠️ **此 PDF 带认证签名（DocMDP P=1）**：签名者声明不允许任何修改。'
+      + '保存会重写文件字节，签名将被破坏并显示为**无效**。\n\n'
+  }
+  if (review.signatureUncertain) {
+    return '\n> ⚠️ **此 PDF 可能带有数字签名**：native 检查无法证明签名结构不存在。保存会重写文件字节，'
+      + '任何现有签名都将失效。\n\n'
+  }
+  return '\n> ⚠️ **此 PDF 带数字签名**：保存会重写文件字节，签名随之失效，验证器将报告**签名无效**；'
+    + '原始签名文件不会被保留。\n\n'
+}
+
 export function questionDetail(review: ModelWriteReview): string {
   return `将当前草稿**覆盖保存到原 PDF 文件**，不会另存副本。\n\n`
     + detailField('目标文件', review.path)
     + `- **PDF 变更**：${review.saveChangeCount} 项，包含手工修改和模型草稿。\n\n`
+    + signatureNotice(review)
     + `**将保存的最终变化**\n\n${inertBlock(review.saveDiffText ?? '')}\n\n`
     + '保存前会再次核对源文件版本；文件若已变化，本次保存会被拒绝。'
 }
 
-/** Only an exact DSH user-questions answer from the interactive provider authorizes the write. */
+/** Only exact DSH user-questions answers from the interactive provider authorize the write. */
 async function askHuman(ctx: Pick<Context, 'get'>, exec: ToolRunContext,
   review: ModelWriteReview): Promise<boolean> {
   const agent = exec.agent
@@ -112,18 +129,37 @@ async function askHuman(ctx: Pick<Context, 'get'>, exec: ToolRunContext,
   const service = (ctx.get as (name: string) => unknown)('userQuestions') as UserQuestionService | undefined
   if (!service?.ask) throw Object.assign(new Error('No interactive user-questions service is available; PDF write denied'),
     { code: 'pdf/approval-unavailable' })
-  const approve = SAVE_APPROVE
-  const response = await service.ask({ agent, signal: exec.signal, questions: [{ id: 'pdf-write-review',
+  const questions: Parameters<UserQuestionService['ask']>[0]['questions'] = [{
+    id: 'pdf-write-review',
     header: '确认保存 PDF',
     question: '是否覆盖保存此 PDF？',
     detail: questionDetail(review), options: [
-      { label: approve, description: '将当前草稿写入原 PDF 文件。' },
+      { label: SAVE_APPROVE, description: '将当前草稿写入原 PDF 文件。' },
       { label: '取消', description: '不做任何更改。' },
     ],
-  }] })
-  const answer = response.answers.find(item => item.id === 'pdf-write-review')
-  return response.answers.length === 1 && answer !== undefined && answer.custom === undefined
-    && answer.selected.length === 1 && answer.selected[0] === approve
+  }]
+  // A certification signature declares that no change is acceptable, so the
+  // reader must confirm the loss of that claim separately from the write itself.
+  if (review.certificationPermission === 1) questions.push({
+    id: 'pdf-signature-review',
+    header: '确认签名失效',
+    question: '此 PDF 的认证签名声明禁止任何修改，继续保存会使其失效。',
+    detail: '保存后文件内容已改变，原签名不再覆盖当前字节，验证器会将其报告为**签名无效**。'
+      + '如果这份文件需要保留可验证的签名，请先取消，再从原文另存副本。',
+    options: [
+      { label: SIGNATURE_ACCEPT, description: '接受签名失效，继续覆盖保存。' },
+      { label: '取消', description: '不做任何更改。' },
+    ],
+  })
+  const response = await service.ask({ agent, signal: exec.signal, questions })
+  const expected = new Map([['pdf-write-review', SAVE_APPROVE],
+    ...(review.certificationPermission === 1 ? [['pdf-signature-review', SIGNATURE_ACCEPT] as const] : [])])
+  if (response.answers.length !== expected.size) return false
+  return [...expected].every(([id, label]) => {
+    const answer = response.answers.find(item => item.id === id)
+    return answer !== undefined && answer.custom === undefined
+      && answer.selected.length === 1 && answer.selected[0] === label
+  })
 }
 
 /** Draft edits are immediate; only saving the source PDF requests approval. */

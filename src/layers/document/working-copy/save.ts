@@ -3,6 +3,7 @@ import type { PdfDocumentPort, HostWorkspaceSnapshot, WorkingCopyAgent, WorkingC
 import { operationsThrough } from './history.js'
 import { expectedSaveVersion, type SaveOptions } from './save-plan.js'
 import { freshRecord, type WorkingCopyState } from './state.js'
+import { asBaselineId, sourceVersionOf } from './model.js'
 
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error) }
@@ -24,7 +25,7 @@ export async function saveWorkingCopy(deps: SaveDependencies, copy: WorkingCopyS
   sessionId: string, agent: WorkingCopyAgent, signal: AbortSignal): Promise<HostWorkspaceSnapshot> {
   const { files, drafts, pdf, byPath, renderedHash, rememberSavedHash, recoverCommitted } = deps
   const record = copy.record
-  const encrypted = copy.baseline.encrypted
+  const encrypted = copy.baseline.document.encrypted
   if (copy.snapshot.document.readOnly) fail('pdf/read-only', copy.snapshot.document.readOnlyReason ?? 'This PDF is read-only')
   if (encrypted && options.path === undefined) fail('pdf/protected-save-as-required', 'Save the encrypted PDF to another path')
   const target = await files.resolvePath(agent, options.path ?? record.path, signal)
@@ -35,7 +36,7 @@ export async function saveWorkingCopy(deps: SaveDependencies, copy: WorkingCopyS
   if (!same && drafts.get(targetKey)?.groups.length) fail('pdf/target-draft', 'The destination has a saved draft; open it first or choose another path')
   const expected = expectedSaveVersion(record.sourceHash, same, options)
   // Materialize the active operation prefix once, only at the save boundary.
-  let committed = { bytes: copy.snapshot.bytes, document: copy.baseline }
+  let committed = { bytes: copy.baseline.bytes, document: copy.baseline.document }
   if (record.cursor) {
     if (encrypted) {
       if (!deps.materializeProtected) fail('pdf/security-unsupported', 'The native PDF plugin does not support encrypted annotation writes')
@@ -46,7 +47,7 @@ export async function saveWorkingCopy(deps: SaveDependencies, copy: WorkingCopyS
       }
     } else {
       const { operations, dates } = operationsThrough(record)
-      committed = await pdf.materialize(copy.snapshot.bytes, operations, dates)
+      committed = await pdf.materialize(copy.baseline.bytes, operations, dates)
     }
   }
   const committedBytes = committed.bytes
@@ -58,20 +59,23 @@ export async function saveWorkingCopy(deps: SaveDependencies, copy: WorkingCopyS
     // Equal bytes cannot prove a save happened; preserve a redo-only draft
     // if such a save fails before publication.
     copy.record = await drafts.persist(record, drafts.key(record.sessionId, record.path),
-      copy.snapshot.bytes, renderedHash(committedBytes))
+      copy.baseline.bytes, renderedHash(committedBytes))
   }
   function acceptCommit(saved: WorkingCopyFileVersion): HostWorkspaceSnapshot {
     const source = { ...saved, bytes: committedBytes }
     const next = freshRecord(sessionId, source, record.revision + 1, record.contentVersion)
+    const baseline = { baselineId: asBaselineId(saved.version), source: sourceVersionOf(saved), bytes: committedBytes, document }
     const snapshot: HostWorkspaceSnapshot = {
-      id: copy.id, path: next.path, sourceVersion: next.sourceVersion, contentVersion: next.contentVersion,
+      id: copy.id, path: next.path, baselineId: baseline.baselineId, sourceVersion: next.sourceVersion, contentVersion: next.contentVersion,
+      contentContext: { baselineId: baseline.baselineId, revision: next.revision, sourceDigest: baseline.source.digest,
+        contentVersion: next.contentVersion, indexContentDigest: document.indexContentDigest, indexPageDigests: document.indexPageDigests },
       revision: next.revision, dirty: false, canUndo: false, canRedo: false, conflict: false,
       document, baselineAnnotations: document.annotations, baselineOutline: document.outline,
       baselineFormFields: document.formFields, bytes: committedBytes,
     }
     // The PDF has committed. Keep the in-memory revision aligned even if draft cleanup fails.
     copy.record = next
-    copy.baseline = document
+    copy.baseline = baseline
     copy.snapshot = snapshot
     rememberSavedHash(committedBytes, next.sourceHash)
     byPath.delete(drafts.key(sessionId, record.path))

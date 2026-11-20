@@ -25,8 +25,10 @@ export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sess
   signal: AbortSignal) {
   signal.throwIfAborted()
   const document = snapshot.document
-  const readOnly = document.readOnly || document.signed || document.encrypted
-  const writeReason = readOnly ? document.readOnlyReason ?? 'This PDF is read-only'
+  const protectedWriteBlocked = document.encrypted && document.annotationEditing !== 'allowed'
+  const readOnly = document.readOnly || protectedWriteBlocked
+  const writeReason = document.readOnly ? document.readOnlyReason ?? 'This PDF is read-only'
+    : protectedWriteBlocked ? 'Protected PDF requires an owner password before editing'
     : snapshot.conflict ? 'The PDF source conflicts with this draft; resolve the conflict before writing' : undefined
   const [ocr, imageUnderstanding, semanticSearch] = await Promise.all([
     probe(services.ocr, 'OCR', sessionId, signal), probe(services.image, 'Image understanding', sessionId, signal),
@@ -51,6 +53,9 @@ export async function documentCapabilities(snapshot: HostWorkspaceSnapshot, sess
     ...(!services.navigation ? { reason: 'Reader navigation is not installed' }
       : !services.visible ? { reason: 'No matching PDF Reader is visible' } : {}) }
   return { readOnly, ...(document.readOnlyReason ? { readOnlyReason: document.readOnlyReason } : {}),
+    signature: { signed: document.signed,
+      ...(document.signatureUncertain ? { uncertain: true } : {}),
+      ...(document.certificationPermission ? { certificationPermission: document.certificationPermission } : {}) },
     capabilities: { readText: true, searchText: true, semanticSearch: semanticSearch.available,
       writeAnnotations: annotation.available, fillForms: forms.available, editBookmarks: bookmarks.available,
       navigateVisibleReader: navigation.available, ocr: ocr.available, imageUnderstanding: imageUnderstanding.available },

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { PdfDocumentError, type PdfAnnotation, type PdfDocumentInfo, type PdfFormOperation, type PdfOutlineItem } from '../../shared/pdf-types.js'
 import { createNativeHandleLease } from '../../native-boundary/host/handle-lease.js'
 import { isOutlineOperation } from '../../layers/document/outlines/index.js'
+import { digestPdfBytes } from '../../layers/document/content/index.js'
 import { projectWorkingCopyOperations, type PdfDocumentPort } from '../../layers/document/working-copy/index.js'
 import { measurePdfAsync } from '../../shared/performance.js'
 import { applyNativeAnnotations, readNativeAnnotations } from './document-annotations.js'
@@ -11,6 +12,7 @@ import { nativeOutlineEditRows, readNativeDocumentMetadata } from './document-me
 import { readNativeSavedBytes } from './save-bytes.js'
 import { NativeWorker, type NativeProcessRuntime } from '../../native-boundary/host/native-worker.js'
 import type { NativeReply } from '../../native-boundary/protocol/commands.js'
+import type { NativeBaselineRef } from '../../native-boundary/host/native-port.js'
 
 type Probe = NativeReply<'open'>['value']
 
@@ -26,16 +28,18 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
   const { signal } = lifetime
   let disposal: Promise<void> | undefined
 
-  async function open<T>(bytes: Uint8Array, use: (id: string, probe: Probe) => Promise<T>): Promise<T> {
+  async function open<T>(bytes: Uint8Array, use: (ref: NativeBaselineRef, probe: Probe) => Promise<T>): Promise<T> {
     const documentId = randomUUID()
-    const generation = worker.generation
+    const baselineId = digestPdfBytes(bytes)
+    let generation = -1
     let opened = false
     try {
       signal.throwIfAborted()
       const { value: probe } = await worker.openDocument(documentId, bytes, { metadataOnly: true })
+      generation = worker.generation
       opened = true
       signal.throwIfAborted()
-      return await use(documentId, probe)
+      return await use({ baselineId, documentId, generation }, probe)
     } catch (error) {
       if (error instanceof Error && 'code' in error) {
         if (error.code === 'pdf/password-required' || error.code === 'pdf/security-unsupported') {
@@ -45,8 +49,8 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
       }
       throw error
     } finally {
-      if (opened && !signal.aborted && worker.generation === generation) {
-        await worker.closeDocument(documentId).catch(() => undefined)
+      if (opened && worker.generation === generation) {
+        await worker.closeDocument(documentId, generation).catch(() => undefined)
       }
     }
   }
@@ -73,7 +77,8 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
     }
   }
 
-  async function describe(documentId: string, probe: Probe) {
+  async function describe(ref: NativeBaselineRef, probe: Probe) {
+    const documentId = ref.documentId
     const security = (await worker.inspectSecurity({ documentId }, signal)).value
     if (security.securityRevision >= 0) throw new PdfDocumentError('encrypted', 'Open protected PDFs through the Reader.')
     const header = await readNativeDocumentMetadata({
@@ -96,12 +101,17 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
 
   // A working copy retains its exact source buffer. Reuse the inspection
   // with that identity, without retaining evicted PDF bytes or page handles.
-  const inspections = new WeakMap<Uint8Array, Awaited<ReturnType<typeof describe>>>()
+  const inspections = new Map<string, Awaited<ReturnType<typeof describe>>>()
   async function inspectSource(bytes: Uint8Array) {
-    const known = inspections.get(bytes)
+    const digest = digestPdfBytes(bytes)
+    const known = inspections.get(digest)
     if (known) return known
     const loaded = await open(bytes, describe)
-    inspections.set(bytes, loaded)
+    if (inspections.size >= 32) {
+      const oldest = inspections.keys().next().value
+      if (oldest !== undefined) inspections.delete(oldest)
+    }
+    inspections.set(digest, loaded)
     return loaded
   }
 
@@ -115,8 +125,9 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
     async materialize(bytes, operations, dates) {
       return measurePdfAsync('host.materialize', { inputBytes: bytes.byteLength, operationCount: operations.length }, () => lease.run(async () => {
         await requireExtensions()
-        const output = await open(bytes, async (documentId, probe) => {
-          const baseline = inspections.get(bytes) ?? await describe(documentId, probe)
+        const output = await open(bytes, async (ref, probe) => {
+          const documentId = ref.documentId
+          const baseline = inspections.get(digestPdfBytes(bytes)) ?? await describe(ref, probe)
           const source = baseline.document
           if (source.readOnly) throw new PdfDocumentError('read-only', source.readOnlyReason ?? 'The PDF is read-only.')
           // Persisted history may edit a field again in a later undo group.
@@ -151,6 +162,7 @@ export function createNativeDocumentPort(executable: string, subprocess: NativeP
       const reason = new Error('PDF document engine is unloading')
       lifetime.abort(reason)
       lease.close(reason)
+      inspections.clear()
       disposal = worker.dispose()
       return disposal
     },

@@ -22,7 +22,7 @@ test('native document info reports the encrypted page scale when PDFium exposes 
     const opened = (await worker.request({ command: 'open', documentId: 'empty-password' },
       await fixture('encrypted-object-stream'))).value
     assert.deepEqual(opened, { pageCount: 2, formType: 0, signatureCount: 0,
-      ...(hello.documentExtensions ? { signatureStatus: 0 } : {}) })
+      ...(hello.documentExtensions ? { signatureStatus: 0, certificationPermission: 0 } : {}) })
     const security = (await worker.request({ command: 'security', documentId: 'empty-password' })).value as {
       securityRevision: number; permissions: number; userPermissions: number
     }
@@ -272,7 +272,8 @@ test('native password errors are fixed, retries leave no ghost handle, and valid
     await assert.rejects(worker.request({ command: 'open', documentId: 'protected', password: 'wrong' }, bytes),
       { code: 'pdf/password-incorrect' })
     assert.deepEqual((await worker.request({ command: 'open', documentId: 'protected', password: 'fixture-password' }, bytes)).value,
-      { pageCount: 2, formType: 0, signatureCount: 0, ...(worker.documentExtensions ? { signatureStatus: 0 } : {}) })
+      { pageCount: 2, formType: 0, signatureCount: 0,
+        ...(worker.documentExtensions ? { signatureStatus: 0, certificationPermission: 0 } : {}) })
     const info = (await worker.request({ command: 'documentInfo', documentId: 'protected' })).value as { securityRevision: number }
     assert.ok(info.securityRevision >= 0)
   } finally { await worker.dispose() }

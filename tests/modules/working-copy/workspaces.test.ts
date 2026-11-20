@@ -560,6 +560,27 @@ test('discardAddresses removes the live copy and its durable draft by absolute P
   } finally { await workspaces.dispose() }
 })
 
+test('discardAddresses retires an absolute address without reinterpreting it through the session cwd', async () => {
+  // A drive-less POSIX absolute path is the case where lexical `resolve(cwd, path)`
+  // invents a different path on Windows. The address is a storage identity, so an
+  // absolute address must be used as given.
+  const absolutePath = '/dsh-fixtures/workspace-discard-absolute.pdf'
+  const absoluteAddress = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(absolutePath)}`
+  const state = harness(await fixture(), absolutePath)
+  const workspaces = createWorkspaces(state.files, state.drafts)
+  try {
+    const opened = await snapshot(workspaces, { action: 'open', address: absoluteAddress })
+    await snapshot(workspaces, edit(opened.id, opened.revision, note('discard-absolute')))
+    assert.equal(state.records.size, 2)
+    assert.deepEqual(await workspaces.execute(sessionId, {
+      sessionId, action: 'discardAddresses', addresses: [absoluteAddress],
+    }, agent, signal), { discarded: [opened.id] })
+    assert.equal(state.records.size, 0)
+    assert.deepEqual(workspaces.listDocuments(), [])
+    assert.throws(() => workspaces.readSnapshot(sessionId, opened.id), { code: 'pdf/unknown-document' })
+  } finally { await workspaces.dispose() }
+})
+
 test('discardAddresses validates all addresses before deleting a valid draft', async () => {
   const absolutePath = join(tmpdir(), 'workspace-discard-validation.pdf')
   const absoluteAddress = `dsh-resource://file/session/${sessionId}/${encodeURIComponent(absolutePath)}`
@@ -781,6 +802,25 @@ test('inspectTarget propagates non-missing file errors', async () => {
       sessionId, action: 'inspectTarget', path,
     }, agent, signal), { code: 'PDF_STALE_VERSION' })
   } finally { await workspaces.dispose() }
+})
+
+test('a password cannot be checked against a stored baseline while the source is missing', async () => {
+  const state = harness(await fixture())
+  const first = createWorkspaces(state.files, state.drafts)
+  try {
+    const opened = await snapshot(first, { action: 'open', address })
+    await snapshot(first, edit(opened.id, opened.revision, note('leftover-password')))
+  } finally { await first.dispose() }
+  const [key, draft] = [...state.records].find(([, record]) => record.groups.length === 1) ?? []
+  assert.ok(key && draft?.baseKey)
+  state.records.set(key, { ...draft, groups: [], groupDates: [], cursor: 0 })
+  state.file.exists = false
+
+  const restarted = createWorkspaces(state.files, state.drafts)
+  try {
+    await assert.rejects(snapshot(restarted, { action: 'open', address, password: 'secret', owner: 'agent' }),
+      { code: 'pdf/source-conflict' })
+  } finally { await restarted.dispose() }
 })
 
 test('a clean leftover draft opens as saved when storage cleanup temporarily fails', async () => {

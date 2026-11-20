@@ -1081,7 +1081,7 @@ test('Host image evidence resolver binds each request to a live matching Session
   } finally { await mounted.disposeEffects() }
 })
 
-test('Host keeps an unlocked Reader tab out of agent context and image evidence', { skip: !existsSync(indexingWorker) }, async t => {
+test('Host keeps Reader navigation context explicit while sharing authorized protected evidence', { skip: !existsSync(indexingWorker) }, async t => {
   const assets = await assetFixture(t), sessionId = 'protected-reader-host'
   const readImage = t.mock.fn(async () => { assert.fail('Protected content must not reach the attachment store') })
   const runtime = host({ agentSessionId: sessionId, attachments: { readImage } })
@@ -1116,7 +1116,7 @@ test('Host keeps an unlocked Reader tab out of agent context and image evidence'
 
     const resolver = runtime.services.get('pdfImageEvidence') as PdfImageEvidenceResolver
     await assert.rejects(resolver.resolve(sessionId, document.id, 'pdfref_00000000-0000-4000-8000-000000000001',
-      execution.signal), { code: 'pdf/protected-document' })
+      execution.signal), { code: 'pdf/reference-unavailable' })
     assert.equal(readImage.mock.callCount(), 0)
   } finally { await runtime.disposeEffects() }
 })

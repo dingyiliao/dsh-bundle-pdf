@@ -1,9 +1,14 @@
 import type { WorkspaceSnapshot } from '../../../shared/contracts.js'
 import type { PdfDocumentInfo, PdfWorkingCopyOperation } from '../../../shared/pdf-types.js'
 import type { DraftRecord, WorkspaceRecord } from './schema.js'
+import type { ContentContext } from './model.js'
 
 /** Host-only snapshot; PDF bytes never cross the Client RPC boundary. */
-export type HostWorkspaceSnapshot = Omit<WorkspaceSnapshot, 'reader'> & { bytes: Uint8Array }
+export type HostWorkspaceSnapshot = Omit<WorkspaceSnapshot, 'reader'> & {
+  bytes: Uint8Array
+  /** Shared baseline/operation identity; renderer-specific output is separate. */
+  contentContext?: ContentContext
+}
 
 export type DocumentReleaseStatus = 'released' | 'retained-ui' | 'retained-model' | 'retained-operation' | 'already-closed'
 
@@ -86,7 +91,7 @@ export interface PdfDocumentPort {
     operationDates: readonly string[]): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }>
 }
 
-export interface ProtectedReaderPort {
+export interface ProtectedDocumentPort {
   inspect(bytes: Uint8Array, password: string | undefined, signal: AbortSignal): Promise<PdfDocumentInfo | undefined>
   materializeAnnotations?(snapshot: HostWorkspaceSnapshot, baseline: PdfDocumentInfo, password: string | undefined,
     signal: AbortSignal): Promise<{ bytes: Uint8Array; document: PdfDocumentInfo }>

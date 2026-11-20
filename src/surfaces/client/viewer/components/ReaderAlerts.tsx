@@ -64,6 +64,7 @@ export function ReaderAlerts(props: ReaderAlertsProps) {
   const { saveAs, password, editPassword, reloadConfirm, setReloadConfirm, reload, t } = props
   return <>
     {password && <ReaderPasswordPrompt key={password.identity} {...password} t={t} />}
+
     {editPassword?.prompt && <ReaderPasswordPrompt key={editPassword.prompt.identity} {...editPassword.prompt} edit t={t} />}
     {saveAs && <SaveAsDialog {...saveAs} />}
     {reloadConfirm && <div className="dsh-pdf-dialog"><p>{t('reader.reloadConfirm')}</p>

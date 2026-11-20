@@ -5,9 +5,14 @@ import { evidenceSha256 } from './provenance.js'
 export function observePdfStatus(workspaces: WorkingCopyReadPort, sessionId: string, documentId: string) {
   const snapshot = workspaces.readSnapshot(sessionId, documentId)
   return { documentId: snapshot.id, path: snapshot.path, pageCount: snapshot.document.pageCount,
-    sourceDigest: evidenceSha256(snapshot.bytes), sourceVersion: snapshot.sourceVersion,
+    ...(snapshot.baselineId ? { baselineId: snapshot.baselineId } : {}),
+    sourceDigest: snapshot.contentContext?.sourceDigest ?? evidenceSha256(snapshot.bytes), sourceVersion: snapshot.sourceVersion,
     contentVersion: snapshot.contentVersion, revision: snapshot.revision,
-    dirty: snapshot.dirty, conflict: snapshot.conflict, canUndo: snapshot.canUndo, canRedo: snapshot.canRedo,
+    ...(snapshot.contentContext?.indexContentDigest ? { indexContentDigest: snapshot.contentContext.indexContentDigest } : {}),
+    dirty: snapshot.dirty, conflict: snapshot.conflict,
+    ...(snapshot.baselineMismatch ? { baselineMismatch: { operationsBaselineId: snapshot.baselineMismatch.operationsBaselineId,
+      ...(snapshot.baselineMismatch.currentBaselineId ? { currentBaselineId: snapshot.baselineMismatch.currentBaselineId } : {}), choices: [...snapshot.baselineMismatch.choices] } } : {}),
+    canUndo: snapshot.canUndo, canRedo: snapshot.canRedo,
     observedAt: new Date().toISOString(),
     limitations: ['Status reflects the working copy at observation time; external changes require a new file check.'] }
 }

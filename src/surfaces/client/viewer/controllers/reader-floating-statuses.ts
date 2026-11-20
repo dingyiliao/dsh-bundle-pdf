@@ -42,11 +42,16 @@ export function readerNoticeStatuses(options: ReaderNoticeStatusesOptions): Floa
   if (document?.readOnly) {
     const message = t(document.readOnlyReason === 'encrypted-document'
       ? options.editPasswordRequired ? 'reader.encryptedAnnotationLocked' : 'reader.encryptedReadOnly'
-      : 'reader.signedReadOnly')
+      : 'reader.documentReadOnly')
     const actions = options.editPasswordRequired && !options.editPasswordPromptOpen
       ? [{ label: t('reader.unlockEditing'), onClick: options.beginEditUnlock }] : undefined
     statuses.push({ id: 'document-read-only', kind: 'notice', tone: 'neutral', activity: 'dot', content: message,
       ...(actions ? { actions } : {}) })
+  }
+  if (document && !document.readOnly && (document.signed || document.signatureUncertain)) {
+    const message = t(document.certificationPermission === 1 ? 'reader.signatureCertified'
+      : document.signatureUncertain ? 'reader.signaturePossible' : 'reader.signatureEditable')
+    statuses.push({ id: 'document-signature', kind: 'warning', tone: 'neutral', activity: 'dot', content: message })
   }
   if (document?.annotationEditing === 'allowed') statuses.push({
     id: 'document-annotation-editable', kind: 'notice', tone: 'neutral', activity: 'dot',

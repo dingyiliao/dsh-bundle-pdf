@@ -9,10 +9,11 @@ type Request = { command: string; requestId: string; documentId?: string }
 type Reply = { requestId: string; ok: boolean; value?: unknown; error?: { code: string; message: string }; bytes?: Uint8Array }
 
 function runtime(reply: (request: Request, send: (value: Reply) => void) => Reply | void,
-  missingInput = false): NativeProcessRuntime {
+  missingInput = false, onSpawn?: () => void): NativeProcessRuntime {
   return {
     async resolveExecutable(command: string) { return command },
     spawn(_spec: SubprocessSpawnSpec): SubprocessHandle {
+      onSpawn?.()
       const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough()
       let finish!: (value: { exitCode: number | null; signal: null }) => void
       const done = new Promise<{ exitCode: number | null; signal: null }>(resolve => { finish = resolve })
@@ -109,7 +110,7 @@ test('native worker rejects a correlated success with the wrong command response
     await worker.ready()
     await assert.rejects(worker.request({ command: 'close', documentId: 'invalid' }), { code: 'pdf/native-protocol' })
     await worker.ready()
-    assert.equal(worker.generation, 2, 'a malformed success retires the untrusted helper')
+    assert.equal(worker.generation, 3, 'retirement invalidates old handles before replacement starts')
   } finally { await worker.dispose() }
 })
 
@@ -141,6 +142,27 @@ test('native worker rejects unexpected request bytes without sending the command
   } finally { await worker.dispose() }
 })
 
+test('generation-guarded close does not restart after the owning helper retires', async () => {
+  let spawns = 0
+  let retire = false
+  const worker = new NativeWorker('/tmp/not-executed', runtime(request => {
+    if (request.command === 'hello') return { requestId: request.requestId, ok: true,
+      value: { protocolVersion: 2, build: '156.0.8076.0' } }
+    if (retire) return { requestId: 'not-the-active-request', ok: true, value: { closed: true } }
+    return { requestId: request.requestId, ok: true, value: { closed: true } }
+  }, false, () => { spawns++ }))
+  try {
+    await worker.ready()
+    assert.equal(spawns, 1)
+    retire = true
+    await assert.rejects(worker.request({ command: 'close', documentId: 'causes-retirement' }), { code: 'pdf/native-protocol' })
+    await worker.closeDocument('old-native-document', 1)
+    assert.equal(spawns, 1)
+    await worker.ready()
+    assert.equal(spawns, 2)
+  } finally { await worker.dispose() }
+})
+
 test('native worker retires the helper when an error reply carries bytes', async () => {
   const worker = new NativeWorker('/tmp/not-executed', runtime(request => request.command === 'hello'
     ? { requestId: request.requestId, ok: true, value: { protocolVersion: 2, build: '156.0.8076.0' } }
@@ -149,6 +171,6 @@ test('native worker retires the helper when an error reply carries bytes', async
   try {
     await assert.rejects(worker.request({ command: 'close', documentId: 'invalid' }), { code: 'pdf/native-protocol' })
     await worker.ready()
-    assert.equal(worker.generation, 2)
+    assert.equal(worker.generation, 3)
   } finally { await worker.dispose() }
 })

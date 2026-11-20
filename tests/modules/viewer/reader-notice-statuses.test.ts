@@ -25,9 +25,22 @@ test('document signature and source warnings are exposed through persistent stat
     snapshot: snapshot({ readOnly: true, readOnlyReason: 'signed-document' }, { warning: 'Saving invalidates signatures' }),
   }))
   assert.deepEqual(statuses.map(status => status.id), ['document-read-only', 'document-warning'])
-  assert.equal(statuses[0]?.content, 'reader.signedReadOnly')
+  assert.equal(statuses[0]?.content, 'reader.documentReadOnly')
   assert.equal(statuses[1]?.content, 'Saving invalidates signatures')
   assert.ok(statuses.every(status => status.durationMs === undefined))
+})
+
+test('signature-risk copy is routed to the rail without duplicating read-only notices', () => {
+  const uncertain = readerNoticeStatuses(options({ snapshot: snapshot({ signatureUncertain: true }) }))
+  assert.equal(uncertain[0]?.id, 'document-signature')
+  assert.equal(uncertain[0]?.content, 'reader.signaturePossible')
+  const signed = readerNoticeStatuses(options({ snapshot: snapshot({ signed: true }) }))
+  assert.equal(signed[0]?.content, 'reader.signatureEditable')
+  const certified = readerNoticeStatuses(options({ snapshot: snapshot({ signed: true, certificationPermission: 1 }) }))
+  assert.equal(certified[0]?.content, 'reader.signatureCertified')
+  const readOnly = readerNoticeStatuses(options({ snapshot: snapshot({ readOnly: true, signatureUncertain: true }) }))
+  assert.deepEqual(readOnly.map(status => status.id), ['document-read-only'])
+  assert.equal(readOnly[0]?.content, 'reader.documentReadOnly')
 })
 
 test('read-only, conflict, error, and position feedback retain their actions in the rail', () => {

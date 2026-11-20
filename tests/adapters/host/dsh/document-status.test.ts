@@ -45,8 +45,8 @@ test('semantic availability reports selected-backend readiness and reasons witho
   assert.equal('findRelatedText' in available.capabilities, false)
 })
 
-test('read-only, signed, encrypted and conflicting documents never advertise currently writable tools', async () => {
-  for (const flag of ['readOnly', 'signed', 'encrypted', 'conflict'] as const) {
+test('read-only, encrypted and conflicting documents never advertise currently writable tools', async () => {
+  for (const flag of ['readOnly', 'encrypted', 'conflict'] as const) {
     const state = snapshot()
     if (flag === 'conflict') state.conflict = true
     else state.document[flag] = true
@@ -59,6 +59,28 @@ test('read-only, signed, encrypted and conflicting documents never advertise cur
     assert.equal(result.capabilityDetails.navigateVisibleReader.supported, true)
     assert.equal(result.capabilities.navigateVisibleReader, false)
   }
+})
+
+test('a signed document stays writable and reports its signature separately', async () => {
+  for (const certificationPermission of [undefined, 1, 2, 3] as const) {
+    const state = snapshot()
+    state.document.signed = true
+    if (certificationPermission) state.document.certificationPermission = certificationPermission
+    const result = await documentCapabilities(state, 'session', { navigation: false, visible: false }, signal)
+    assert.equal(result.readOnly, false)
+    assert.equal(result.capabilities.writeAnnotations, true)
+    assert.deepEqual(result.signature, { signed: true,
+      ...(certificationPermission ? { certificationPermission } : {}) })
+  }
+})
+
+test('an uncertain signature stays writable and is reported as a save risk', async () => {
+  const state = snapshot()
+  state.document.signatureUncertain = true
+  const result = await documentCapabilities(state, 'session', { navigation: false, visible: false }, signal)
+  assert.equal(result.readOnly, false)
+  assert.equal(result.capabilities.writeAnnotations, true)
+  assert.deepEqual(result.signature, { signed: false, uncertain: true })
 })
 
 test('document-level form and outline limitations stay distinct from write permission', async () => {

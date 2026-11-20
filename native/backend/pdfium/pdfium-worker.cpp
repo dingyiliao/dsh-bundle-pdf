@@ -574,6 +574,20 @@ json apply_document_outlines(const json& request) {
   return {{"changed", true}};
 }
 
+// DocMDP (certification) permission: 1 forbids any change, 2 allows form
+// filling and further signing, 3 also allows annotations. 0 means the document
+// carries no certification signature. Editing always invalidates the signature
+// itself; this value only describes what the signer declared as acceptable.
+int certification_permission(FPDF_DOCUMENT document) {
+  int permission = 0;
+  const int count = FPDF_GetSignatureCount(document);
+  for (int index = 0; index < count; ++index) {
+    const unsigned int value = FPDFSignatureObj_GetDocMDPPermission(FPDF_GetSignatureObject(document, index));
+    if (value >= 1 && value <= 3) permission = std::max(permission, static_cast<int>(value));
+  }
+  return permission;
+}
+
 json run_pdfium(const json& request, std::vector<unsigned char>& payload, std::vector<unsigned char>& out) {
   switch (command_for(request)) {
   case Command::unknown:
@@ -610,6 +624,7 @@ json run_pdfium(const json& request, std::vector<unsigned char>& payload, std::v
     json result = {{"pageCount", doc->count}, {"formType", doc->formType},
       {"signatureCount", FPDF_GetSignatureCount(doc->handle)}};
     result["signatureStatus"] = doc->metadata.signature_status(doc->handle);
+    result["certificationPermission"] = certification_permission(doc->handle);
     documents[id] = std::move(doc);
     return result;
   }
