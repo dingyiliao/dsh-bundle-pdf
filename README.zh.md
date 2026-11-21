@@ -85,23 +85,56 @@ OCR、图像理解、翻译和 embedding 均支持第三方实现。将扩展写
 ## 架构
 
 ```mermaid
-flowchart TB
-  Reader["Client · PDF 阅读器"] <--> RPC
-  Model["DSH 会话模型"] -- "工具调用" --> Features
-  subgraph Host
-    RPC["鉴权 RPC"] --> Features["PDF 领域能力"]
-    Features --> Copy["共享工作副本 · 草稿与撤销"]
-    Features --> Search["检索与证据"]
-    Features --> Engines["可扩展 AI 引擎"]
-    Search --> Copy
-    Search --> Engines
-    Search --> Index[("磁盘索引与检查点")]
-    Copy --> PDF["原生 PDFium · 文档读写"]
-    Copy --> Storage["文件与草稿存储"]
+flowchart BT
+  User["用户"]
+
+  subgraph TS["TS 层"]
+    direction BT
+    Snapshot["快照渲染"]
+    Ops["操作"]
+    Src["源文件"]
+    Copy["基线（即工作副本）"]
+    Tools["模型工具"]
+    Facade["facade"]
+    Derived["派生数据层<br/>（带身份）"]
+    subgraph Cordis["Cordis 服务"]
+      direction LR
+      Image["图像理解引擎"]
+      Translation["翻译引擎"]
+      OCR["OCR 引擎"]
+      Embedding["embedding 引擎"]
+    end
+    subgraph Caps["PDF 原生能力"]
+      direction LR
+      RenderPage["渲染页面"]
+      RenderForm["渲染 AcroForm"]
+      PreviewSig["预览签名"]
+      Outlines["内置书签"]
+      More["…"]
+    end
   end
+
+  subgraph NativeLayer["原生层"]
+    APIs["原生 API"]
+  end
+
+  Snapshot --> User
+  Ops --> Snapshot
+  Facade --> Snapshot
+  Copy --> Ops
+  Src --> Copy
+  Caps --> Copy
+  Caps --> Tools
+  Facade --> Tools
+  Cordis -->|就地调用| Facade
+  Facade -->|补充或生成派生数据| Derived
+  Derived --> Facade
+  Cordis --> Derived
+  APIs --> Caps
+  Cordis ~~~ Snapshot
 ```
 
-阅读器与模型工具共用同一资源会话内的 Host 工作副本。原生 PDFium 负责渲染、文字提取、文档检查和写入。文档检查与写入使用独立进程，避免占用前台渲染队列。详见[架构文档](docs/architecture.md)。
+阅读器渲染共享工作副本的快照，并把编辑记录为该基线之上的操作。facade 同时服务于阅读器和模型工具，通过 Cordis 引擎服务补充或生成派生数据；PDF 原生能力向工作副本和模型工具提供渲染、表单、签名预览与书签读取。文档检查与写入在独立进程中运行，不占用渲染队列；运行时边界见[架构文档](docs/architecture.md)。
 
 ## 开发
 

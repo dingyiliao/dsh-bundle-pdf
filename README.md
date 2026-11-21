@@ -85,23 +85,56 @@ Start with [`http-engines`](examples/http-engines) in [`examples/`](examples/REA
 ## Architecture
 
 ```mermaid
-flowchart TB
-  Reader["Client · PDF Reader"] <--> RPC
-  Model["DSH conversation model"] -- "Tool calls" --> Features
-  subgraph Host
-    RPC["Authenticated RPC"] --> Features["PDF domain capabilities"]
-    Features --> Copy["Shared working copy · Drafts and undo"]
-    Features --> Search["Retrieval and evidence"]
-    Features --> Engines["Extensible AI engines"]
-    Search --> Copy
-    Search --> Engines
-    Search --> Index[("Disk index and checkpoints")]
-    Copy --> PDF["Native PDFium · Reading and writing"]
-    Copy --> Storage["Files and draft storage"]
+flowchart BT
+  User["User"]
+
+  subgraph TS["TS layer"]
+    direction BT
+    Snapshot["Snapshot render"]
+    Ops["Operations"]
+    Src["Src file"]
+    Copy["Baseline (i.e. Working copy)"]
+    Tools["Model tools"]
+    Facade["facade"]
+    Derived["Derived data layer<br/>(with identity)"]
+    subgraph Cordis["Cordis services"]
+      direction LR
+      Image["Image understanding engines"]
+      Translation["Translation engines"]
+      OCR["OCR engines"]
+      Embedding["Embedding engines"]
+    end
+    subgraph Caps["Pdf native capabilities"]
+      direction LR
+      RenderPage["render page"]
+      RenderForm["render acroform"]
+      PreviewSig["preview signature"]
+      Outlines["outlines"]
+      More["..."]
+    end
   end
+
+  subgraph NativeLayer["Native layer"]
+    APIs["Native APIs"]
+  end
+
+  Snapshot --> User
+  Ops --> Snapshot
+  Facade --> Snapshot
+  Copy --> Ops
+  Src --> Copy
+  Caps --> Copy
+  Caps --> Tools
+  Facade --> Tools
+  Cordis -->|call in place| Facade
+  Facade -->|supplement derived data or generate derived data| Derived
+  Derived --> Facade
+  Cordis --> Derived
+  APIs --> Caps
+  Cordis ~~~ Snapshot
 ```
 
-The Reader and agent tools share a Host working copy within each resource session. Native PDFium handles rendering, extraction, document inspection and writes. Separate processes keep document inspection and writes off the render queue. See the [architecture](docs/architecture.md).
+The Reader renders snapshots of the shared working copy and records edits as operations on that baseline. The facade serves both the Reader and model tools, completing or generating derived data through Cordis engine services, while PDF native capabilities feed the working copy and the tools. Document inspection and writes run in their own process, off the render queue; see the [architecture](docs/architecture.md) for the runtime boundaries.
 
 ## Development
 
