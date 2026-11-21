@@ -4,6 +4,8 @@ All notable user-visible changes to this project are documented here. Versions f
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-21
+
 ### Added
 
 - A baseline-backed Working Copy model shared by the Reader and agent tools, with explicit baseline mismatch choices instead of silently discarding operations.
