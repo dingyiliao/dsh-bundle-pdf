@@ -45,7 +45,7 @@ if (options.native) {
 // accidentally validate the development checkout instead of published archives.
 const temporary = await realpath(await mkdtemp(join(tmpdir(), 'dsh-pdf-install-smoke-')))
 const environment = { ...process.env, npm_config_update_notifier: 'false' }
-for (const key of ['NODE_PATH', 'NODE_OPTIONS', 'NODE_V8_COVERAGE', 'DSH_PDF_NATIVE_HELPER']) delete environment[key]
+for (const key of ['NODE_PATH', 'NODE_OPTIONS', 'NODE_V8_COVERAGE', 'DSH_PDF_NATIVE_HELPER', 'npm_config_legacy_peer_deps']) delete environment[key]
 const checked = async (command, argv, cwd, timeout = 60_000) => {
   try { return await execute(command, argv, { cwd, env: environment, windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 }) }
   catch (error) { throw new Error(`${command} failed:\n${(error.stdout ?? '').slice(-6000)}${(error.stderr ?? '').slice(-6000)}\n${error.message}`, { cause: error }) }
