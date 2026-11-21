@@ -166,12 +166,21 @@ export async function npmRegistryClient() {
       return integrity
     },
     async publish(item, dryRun) {
+      let result
       try {
-        await run(['publish', item.archive, '--ignore-scripts', '--access', 'public', '--json', '--registry', registry,
+        result = await run(['publish', item.archive, '--ignore-scripts', '--access', 'public', '--json', '--registry', registry,
           `--dry-run=${dryRun ? 'true' : 'false'}`])
       } catch (error) {
         throw new Error(`npm publish failed for ${item.name}@${item.version} (${npmErrorCode(error)}); check npm authentication and publish permissions`)
       }
+      // npm can answer 200 yet stage the version instead of publishing it.
+      let report
+      try { report = JSON.parse(result.stdout) } catch {}
+      if (report?.error || report?.staged === true) {
+        throw new Error(`npm did not publish ${item.name}@${item.version}: ${String(result.stdout).trim().slice(0, 400)}`)
+      }
+      console.log(`npm publish report: ${String(result.stdout).trim().slice(0, 400)}`)
+      return report
     },
   }
 }

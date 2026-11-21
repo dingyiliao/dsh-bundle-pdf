@@ -4,7 +4,7 @@ All notable user-visible changes to this project are documented here. Versions f
 
 ## [Unreleased]
 
-## [0.1.9] - 2026-11-21
+## [0.1.10] - 2026-11-21
 
 ### Added
 
@@ -35,6 +35,10 @@ All notable user-visible changes to this project are documented here. Versions f
 ### Known issues
 
 - Encrypted PDFs that are also signed remain on the stricter protected-document path and are not made editable by the ordinary signed-PDF policy.
+
+## [0.1.9] - 2026-11-21
+
+Native packages only; the plugin package did not reach the registry. Superseded by 0.1.10.
 
 ## [0.1.8] - 2026-11-13
 
