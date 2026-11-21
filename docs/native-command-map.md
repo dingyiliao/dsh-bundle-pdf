@@ -30,6 +30,7 @@
 
 | 当前 command | 目标 NativePdfPort | 事务要求 | 主要调用方 | 验收 |
 | --- | --- | --- | --- | --- |
+| `outline` | `readOutlineTree` | 基线 native 书签树（标题、目标、子项） | RPC `outline`、模型读取 | `native-outline-extensions.test.ts` |
 | `documentOutlines` | `readOutlines` | 返回当前快照书签树 | outlines、model tools | `native-outline-extensions.test.ts` |
 | `applyOutlines` | `mutateOutlines` | `MutationContext`、原子操作 | outlines、model tools | outline save/reopen tests |
 | `annotationPages` | `listAnnotationPages` | 只读页面索引 | annotations、reader | annotation tests |

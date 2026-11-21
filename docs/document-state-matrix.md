@@ -9,15 +9,15 @@
 | 状态 | 唯一所有者 | 同一资源会话 | 跨会话 | 持久化 |
 | --- | --- | --- | --- | --- |
 | 源文件路径和文件观察信息 | filesystem adapter / Host | 共享 | 按路径重新发现 | 否，路径可重建 |
-| 源文件字节摘要 | Host document service | 共享 | 可验证复用 | 是 |
+| 源文件字节摘要 | `capabilities/pdfium` 文档适配 | 共享 | 可验证复用 | 是 |
 | 工作副本操作日志 | working-copy service | UI 和模型共享 | 默认不共享 | 是 |
 | 工作副本 revision | working-copy service | 共享并 CAS 校验 | 不直接共享 | 是 |
 | Native handle | Native worker | 可被同一副本租用 | 不共享 | 否 |
-| 页面内容和索引产物 | retrieval/content service | 可读 | 内容身份相同且授权允许时共享 | 是 |
-| 索引任务状态 | retrieval task service | 任务所属会话可见 | 共享任务状态，但不共享权限 | 是 |
+| 页面内容和索引产物 | `layers/derived`（content、indexing） | 可读 | 内容身份相同且授权允许时共享 | 是 |
+| 索引任务状态 | `layers/facade`（indexing 任务编排） | 任务所属会话可见 | 共享任务状态，但不共享权限 | 是 |
 | 阅读位置、滚动锚点 | Client occurrence | 标签实例内 | 不共享 | 可选 |
 | 解释问题和输入草稿 | Client occurrence | 标签实例内 | 不共享 | 否 |
-| evidence handle | evidence service | 当前资源会话有效 | 不直接复用，重新签发 | 有界保存 |
+| evidence handle | `layers/facade`（evidence） | 当前资源会话有效 | 不直接复用，重新签发 | 有界保存 |
 | 密码和受保护草稿 | working-copy 内存边界 | 当前授权范围 | 不共享 | 不保存密码 |
 
 ## 不变量

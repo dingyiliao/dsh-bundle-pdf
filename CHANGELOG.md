@@ -13,6 +13,7 @@ All notable user-visible changes to this project are documented here. Versions f
 ### Changed
 
 - Signed and possibly signed PDFs remain editable. Saving rewrites the PDF and invalidates any existing signature instead of treating the file as read-only.
+- Reader feedback that does not block reading now lives in the activity rail: read-only, encrypted, signature, conflict, position and error notices, including the unlock-editing action. Password, reload and Save As prompts remain dialogs.
 - Certification signatures with DocMDP permission 1 require an additional explicit confirmation before saving.
 - Working Copy identity, baseline resources, operation sets and rendered content contexts now have separate lifecycle contracts.
 
