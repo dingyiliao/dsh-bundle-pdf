@@ -108,7 +108,7 @@ test('native protocol types and validators have no application implementation de
   ])
 })
 
-test('native engine host stays below PDFium adapters and feature modules', () => {
+test('native engine host stays below PDFium capabilities and domain layers', () => {
   assertRuntimeBoundary(['src/native-boundary/host'], [
     'src/surfaces', 'src/plugins', 'src/layers', 'src/engines', 'src/capabilities',
     'src/contracts', 'src/shared', 'src/native-boundary/client',

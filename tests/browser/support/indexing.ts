@@ -17,7 +17,7 @@ export interface IndexingControlsFixture {
 
 export async function mountIndexingControls(page: BrowserPage) {
   page.setDefaultTimeout(5_000)
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/indexing-controls.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/indexing-controls.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const css = await Promise.all(['reader.css', 'reading-sidebar.css', 'glass.css']
     .map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))

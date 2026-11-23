@@ -10,7 +10,7 @@ import { FILE_NAME, sourcePdf } from '../support/documents.ts'
 import { chooseZoom } from '../support/toolbar.ts'
 
 it('keeps the same PDF point and painted pixels through wheel zoom commits, centering clamps and mixed page sizes', async () => {
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/wheel-zoom-handoff.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/wheel-zoom-handoff.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': JSON.stringify('production') } })
   const css = (await Promise.all(['reader.css', 'windowed-pages.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))).join('\n')

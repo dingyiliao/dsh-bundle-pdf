@@ -137,7 +137,7 @@ it('forwards exact selections through the real translation adapter and renders c
 }, 30_000)
 
 it('connects region capture, controlled OCR and full or selected transcript translation through production browser boundaries', async () => {
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/ocr-translation.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/ocr-translation.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const css = await Promise.all(['reader.css', 'reading-sidebar.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const browser = await launchBrowser()

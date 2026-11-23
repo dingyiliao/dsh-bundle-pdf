@@ -111,8 +111,8 @@ await run(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1'
   'tests/native-page-content.test.ts', 'tests/native-protocol.test.ts', 'tests/native-provider.test.ts',
   'tests/native-coverage-edge.test.ts',
   'tests/native-text-positioning.test.ts', 'tests/native-text-surrogates.test.ts',
-  'tests/adapters/pdfium/pdf-service.test.ts', 'tests/adapters/pdfium/document-residency.test.ts',
-  'tests/adapters/pdfium/outlines.test.ts', 'tests/adapters/pdfium/unicode-form-appearance.test.ts'], {
+  'tests/capabilities/pdfium/pdf-service.test.ts', 'tests/layers/document/working-copy/document-residency.test.ts',
+  'tests/capabilities/pdfium/outlines.test.ts', 'tests/capabilities/pdfium/unicode-form-appearance.test.ts'], {
   env: { ...process.env, DSH_PDF_REQUIRE_NATIVE_TESTS: '1', DSH_PDF_NATIVE_HELPER: binary,
     DSH_PDF_REQUIRE_NATIVE_EXTENSIONS: '1',
     DSH_PDF_NATIVE_COVERAGE: '1', LLVM_PROFILE_FILE: join(rawDir, '%p.profraw') },

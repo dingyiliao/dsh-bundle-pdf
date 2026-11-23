@@ -4,15 +4,19 @@
 
 | 位置 | 验证范围 | 命令 |
 | --- | --- | --- |
-| `tests/modules/` | 工作副本、证据、导航、OCR、解释及 Viewer 领域规则 | `npm test` |
-| `tests/adapters/` | DSH、PDF 库、存储及 Client 适配边界 | `npm test` |
-| `tests/entrypoints/` | Host／Client 装配、注册及资源清理 | `npm test` |
+| `tests/layers/` | 工作副本、文档与派生内容、facade 用例规则 | `npm test` |
+| `tests/surfaces/` | Client viewer 与远程适配、Host routes/tools/io | `npm test` |
+| `tests/engines/` | OCR、图像、翻译、embedding 的 SDK、后端与路由 | `npm test` |
+| `tests/capabilities/` | PDFium 能力适配 | `npm test` |
+| `tests/native-boundary/` | Native 协议、Host 与 Client 边界 | `npm test` |
+| `tests/plugins/` | 插件装配、注册与资源清理 | `npm test` |
+| `tests/shared/`、`tests/contracts/` | 纯共享逻辑与跨端契约 | `npm test` |
 | 根目录 `contracts-*`、`settings-*`、`pdf-*` 等 | 跨模块契约、设置和文档生命周期 | `npm test` |
 | `tests/browser/e2e/*.e2e.ts` | 按功能划分的 Chromium Reader 和面板交互 | `npm run test:web` |
 | `tests/native-*.test.ts` | PDFium 协议、渲染、文字及保存集成 | `npm test` |
 | `tests/browser/ocr-local-worker.test.ts` | 构建后的浏览器 OCR Worker 启动 | 项目覆盖率流程 |
 
-`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供测试数据；`tests/support/` 统一临时 DOM 环境的创建和恢复，各场景保留自己的 mock。`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/README.md)。
+`tests/fixtures/`、`tests/expected/` 和 `native-fixture.ts` 提供共享测试数据；Viewer 的浏览器 fixture 位于 `tests/surfaces/client/viewer/fixtures/`。`tests/support/` 统一临时 DOM 环境的创建和恢复，各场景保留自己的 mock。`tests/browser-coverage.ts` 是采集辅助代码。`bench/` 衡量性能，运行方式见[基准指南](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/bench/README.md)。
 
 ## 运行
 

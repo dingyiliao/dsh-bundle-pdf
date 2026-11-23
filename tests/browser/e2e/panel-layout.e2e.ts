@@ -6,7 +6,7 @@ import { DSH_ROOT, ROOT } from '../support/scaffold.ts'
 
 it('keeps OCR translation labels and copy aligned at actual 234px and 260px sidebar widths in Chinese and English', async () => {
   const { build } = await import('esbuild')
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/ocr-toolbar-layout.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/ocr-toolbar-layout.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const css = await Promise.all(['reader.css', 'reading-sidebar.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const opened = await browser()
@@ -78,7 +78,7 @@ it('keeps OCR translation labels and copy aligned at actual 234px and 260px side
 
 it('keeps sidebar glass sampling the PDF backdrop while width clipping and collapsed controls remain safe', async () => {
   const { build } = await import('esbuild')
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/sidebar-glass.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/sidebar-glass.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser', loader: { '.css': 'text' } })
   const theme = await readFile(join(DSH_ROOT, 'packages/client/ui-theme/src/styles/design-platform.css'), 'utf8')
   const opened = await browser()
@@ -147,7 +147,7 @@ it('keeps sidebar glass sampling the PDF backdrop while width clipping and colla
 
 it('keeps the Save As sheet focused and usable in a narrow short reader', async () => {
   const { build } = await import('esbuild')
-  const bundle = await build({ entryPoints: [join(ROOT, 'tests/modules/viewer/save-as-dialog.web.fixture.tsx')],
+  const bundle = await build({ entryPoints: [join(ROOT, 'tests/surfaces/client/viewer/fixtures/save-as-dialog.web.fixture.tsx')],
     bundle: true, write: false, format: 'iife', platform: 'browser' })
   const css = await Promise.all(['reader.css', 'glass.css'].map(file => readFile(join(ROOT, 'src/surfaces/client', file), 'utf8')))
   const opened = await browser()
