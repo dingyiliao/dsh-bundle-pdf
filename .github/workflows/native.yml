@@ -1,8 +1,7 @@
 name: PDF native packages and compatibility checks
 on:
   pull_request:
-  push:
-    branches: [main, 'feat/native-pdf-*', feat/pdf-hybrid-retrieval, 'feat/npm-*']
+    types: [closed]
   workflow_dispatch:
     inputs:
       publish:
@@ -13,7 +12,7 @@ permissions:
   contents: read
 jobs:
   release-gate:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-24.04
     outputs:
       publish: ${{ steps.release.outputs.publish }}
@@ -28,6 +27,7 @@ jobs:
         id: release
         run: node scripts/release-gate.mjs
   native-sdk:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish || github.event_name == 'pull_request' && github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +49,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
   web-and-project-coverage:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish || github.event_name == 'pull_request' && github.event.pull_request.merged == true
     # The Node 24 matrix below proves platform packaging. This lane also
     # exercises the real DSH Web composition and all project-owned source.
     needs: native-sdk
@@ -127,6 +128,7 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
   linux-arm64-sdk:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish || github.event_name == 'pull_request' && github.event.pull_request.merged == true
     needs: native-sdk
     runs-on: ubuntu-24.04
     steps:
@@ -157,6 +159,7 @@ jobs:
           path: ${{ steps.sdk.outputs.sdk-root }}
           if-no-files-found: error
   native:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish || github.event_name == 'pull_request' && github.event.pull_request.merged == true
     needs: [native-sdk, linux-arm64-sdk]
     strategy:
       fail-fast: false
@@ -241,6 +244,7 @@ jobs:
           name: native-reader-smoke
           path: bench-results/ci-native
   package-main:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     needs: [native, web-and-project-coverage]
     runs-on: ubuntu-24.04
     steps:
@@ -257,7 +261,7 @@ jobs:
           path: artifacts/*-main.tgz
           if-no-files-found: error
   publish:
-    if: needs.release-gate.outputs.publish == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && needs.release-gate.outputs.publish == 'true'
     needs: [release-gate, native, web-and-project-coverage, package-main]
     runs-on: ubuntu-24.04
     permissions:
