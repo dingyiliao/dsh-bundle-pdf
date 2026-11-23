@@ -150,6 +150,22 @@ test('page reuses its cached native text layer after leaving and re-entering the
   })
 })
 
+test('page keeps a pinned text layer while scroll preview replaces raster work', async () => {
+  await withPage(async ({ render, mount }) => {
+    await render({ retainTextLayer: true })
+    const first = mount.querySelector('[data-pdf-run]')
+    const glyphs = mount.querySelectorAll('[data-pdf-run]').length
+    assert.ok(first, 'the pinned page should build its selectable layer')
+    await render({ retainTextLayer: true, scrollPreview: true })
+    assert.equal(mount.querySelectorAll('[data-pdf-run]').length, glyphs)
+    assert.equal(mount.querySelector('[data-pdf-run]'), first,
+      'scroll preview must not detach the nodes that hold the live selection Range')
+    assert.equal(mount.querySelector('.dsh-pdf-text-layer')?.getAttribute('data-pdf-text'), 'active')
+    await render({ retainTextLayer: true, scrollPreview: false })
+    assert.equal(mount.querySelector('[data-pdf-run]'), first, 'ending preview must not rebuild the pinned layer')
+  })
+})
+
 test('page renders OCR text, repaired markup, note marker and native keyboard links', async () => {
   await withPage(async ({ mount, render, flush, calls }) => {
     const old = annotation('older', 'Highlight', [20, 350, 100, 370], { color: [1, 0, 0] })

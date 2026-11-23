@@ -142,6 +142,34 @@ test('copy feedback belongs to the same selection, not a later one', async () =>
   })
 })
 
+test('scrolling a text selection fully out of view cancels it', async () => {
+  await withSelection(async ({ state, options, render, root, flushFrame }) => {
+    root.getBoundingClientRect = () => new DOMRect(0, 0, 500, 500)
+    const element = document.createElement('div')
+    element.getBoundingClientRect = () => new DOMRect(100, 200, 200, 200)
+    const viewport = { convertToViewportPoint: (x: number, y: number) => [x, y] } as PageView['viewport']
+    const view = { element, viewport, page: {} } as unknown as PageView
+    let outOfView = 0
+    await render({ ...options, views: { current: new Map([[1, view]]) }, onOutOfView: () => { outOfView++ } })
+    await act(async () => state().setSelection(selected))
+    const scroll = () => {
+      const event = root.ownerDocument.createEvent('Event')
+      event.initEvent('scroll', false, false)
+      root.dispatchEvent(event)
+    }
+    await act(async () => scroll())
+    await flushFrame()
+    assert.equal(state().selection?.kind, 'text', 'a visible selection survives scrolling')
+    assert.equal(outOfView, 0)
+
+    element.getBoundingClientRect = () => new DOMRect(100, 600, 200, 200)
+    await act(async () => scroll())
+    await flushFrame()
+    assert.equal(state().selection, null, 'a selection scrolled out of the viewport is cancelled')
+    assert.equal(outOfView, 1)
+  })
+})
+
 test('PDF fragment anchors use page geometry and ignore offscreen fragments', async () => {
   await withSelection(async ({ state, options, render, root }) => {
     root.getBoundingClientRect = () => new DOMRect(0, 0, 500, 500)

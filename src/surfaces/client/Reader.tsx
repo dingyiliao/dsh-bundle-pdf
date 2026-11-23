@@ -86,6 +86,7 @@ export function Reader(props: ReaderProps) {
   const { scrollRoot, currentPage, setCurrentPage, pageInput, setPageInput, editPageInput,
     views, registerView, scrollRef, updateScrolledPage, revealSelectionPage } = useReaderPageTracking({ snapshot,
     readerElement, scrollportRef: props.scrollportRef })
+  const nativeSelectionReset = useRef<{ cancel(): void } | undefined>(undefined)
   const readerSelection = useReaderSelection({ mode, scrollRoot, snapshot, views, ownerSequence,
     currentSnapshot: () => state.current.snapshot, tabSignal: tab.signal, setDraggingPage,
     shouldIgnore: next => explanation.sameDraftSelection(next),
@@ -93,6 +94,7 @@ export function Reader(props: ReaderProps) {
       if (next) setSelectedAnnotation(undefined)
       explanation.offerTextSelection(next)
     },
+    onOutOfView: () => nativeSelectionReset.current?.cancel(),
     onError: notifyError, t })
   const { selection, setSelection, textCopied, hasTextSelection, reset: resetSelection,
     clear: clearSelection, capture: captureSelection, scheduleCapture: scheduleCaptureSelection,
@@ -259,6 +261,7 @@ export function Reader(props: ReaderProps) {
     // The old raster can remain visible while its replacement acquires a handle.
     canSelect: revision => !!nativeSelectionPages && state.current.snapshot?.revision === revision && documentReady(),
     onRevealPage: revealSelectionPage, onSelect: readerSelection.accept, onError: notifyError })
+  nativeSelectionReset.current = nativeSelection
   const search = useReaderSearch({ document: pdf, pages: snapshot?.document.pages ?? [], ocrPages: visibleOcrPages,
     tabSignal: tab.signal, onError: notifyError })
   const recognize = async (requestedRegion?: { page: number; rect: PdfRect }) => {

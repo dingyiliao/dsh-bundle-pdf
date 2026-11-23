@@ -74,7 +74,11 @@ export function Page(props: PageProps) {
   const textFidelity = props.textFidelity ?? 'glyph'
   const pageActive = near || !!props.retainTextLayer
   const effectiveFidelity: TextFidelity = textFidelity
-  const browserTextActive = pageActive && !scrollPreview && !props.nativeSelection && effectiveFidelity !== 'none'
+  // Scroll preview drops raster work, but a pinned layer can hold the live DOM
+  // Range of a text selection. Removing its spans collapses the selection even
+  // though the reader still owns the selected text.
+  const browserTextActive = pageActive && (!scrollPreview || !!props.retainTextLayer)
+    && !props.nativeSelection && effectiveFidelity !== 'none'
   const [loaded, setLoaded] = useState<LoadedPage | null>(null)
   const loadedCache = useRef<LoadedPage | null>(null)
   const page = loaded?.page

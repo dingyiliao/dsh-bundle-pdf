@@ -14,6 +14,8 @@ export interface ReaderSelectionOptions {
   setDraggingPage: Dispatch<SetStateAction<number | null>>
   shouldIgnore(selection: ReaderSelection | null): boolean
   onCaptured(selection: ReaderSelection | null): void
+  /** The reader scrolled a text selection completely out of its viewport. */
+  onOutOfView?(): void
   onError(error: Error): void
   t(key: string): string
 }
@@ -113,6 +115,26 @@ export function useReaderSelection(options: ReaderSelectionOptions) {
     }
     return anchor
   }, [])
+
+  // A selection the reader can no longer see is no longer actionable. Drop it
+  // instead of leaving a toolbar for content scrolled out of the viewport.
+  useEffect(() => {
+    const root = latest.current.scrollRoot
+    if (!selection || selection.kind !== 'text' || !root) return
+    let frame: number | null = null
+    const check = () => {
+      frame = null
+      if (fragmentAnchor(selection.fragments)) return
+      latest.current.onOutOfView?.()
+      clear()
+    }
+    const schedule = () => { if (frame === null) frame = requestAnimationFrame(check) }
+    root.addEventListener('scroll', schedule, { passive: true })
+    return () => {
+      root.removeEventListener('scroll', schedule)
+      if (frame !== null) cancelAnimationFrame(frame)
+    }
+  }, [selection, fragmentAnchor, clear])
 
   return {
     selection, setSelection, textCopied,
