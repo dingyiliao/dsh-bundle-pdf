@@ -16,7 +16,7 @@ interface OpenTab {
 export interface PdfSidebarNavigation {
   readonly mounted: Observable<string | undefined>
   readonly openTabs: Observable<readonly OpenTab[]>
-  /** Public navigation only closes a tab of the currently mounted Session. */
+  /** Public navigation closes a tab of the currently mounted Session. */
   close(tabId: string): void
 }
 
@@ -72,7 +72,7 @@ export interface PdfSessionLifecycle {
   dispose(): Promise<void>
 }
 
-/** Close departing tabs and release only their views of shared Host drafts. */
+/** Release departing views while retaining their tabs and shared Host drafts. */
 export function createPdfSessionLifecycle(options: {
   readonly currentSession: PdfSessionSource
   readonly sidebar: PdfSidebarNavigation
@@ -149,20 +149,8 @@ export function createPdfSessionLifecycle(options: {
   function closeMountedPending(): void {
     if (disposed) return
     inventoryChanged()
-    for (const tab of [...pendingTabs.values()]) {
-      // Guard every call: close() intentionally cannot address an old Session.
-      // A pending record is retried when its original seat next mounts.
-      if (options.sidebar.mounted.getSnapshot() !== tab.sessionId) continue
-      if (pendingTabs.get(tabKey(tab)) !== tab) continue
-      if (!options.sidebar.openTabs.getSnapshot().some(candidate => sameTab(candidate, tab))) continue
-      const registered = [...owners.values()].filter(record => record.owner.containerSessionId === tab.sessionId &&
-        record.owner.tabId === tab.tabId && record.owner.resourceAddress === tab.contentId)
-      if (registered.length) closeRecords(registered)
-      if (pendingTabs.get(tabKey(tab)) !== tab) continue
-      if (options.sidebar.mounted.getSnapshot() !== tab.sessionId) continue
-      try { options.sidebar.close(tab.tabId) } catch (error) { options.onError?.(error) }
-      inventoryChanged()
-    }
+    // Session changes retain pending tabs; only an explicit sidebar removal
+    // is terminal and is handled by the occurrence abort callback.
   }
 
   async function clean(): Promise<void> {
@@ -202,21 +190,28 @@ export function createPdfSessionLifecycle(options: {
     assertLive()
   }
 
+  function releaseRecords(records: readonly OwnerRecord[]): void {
+    for (const record of records.filter(record => !record.closing)) {
+      const sessions = [...record.resourceSessions]
+      record.resourceSessions.clear()
+      record.documents.clear()
+      for (const sessionId of sessions) {
+        void options.api.release(sessionId, undefined, record.referenceId).catch(error => {
+          if (!disposed && !options.signal.aborted) options.onError?.(error)
+        })
+      }
+    }
+  }
+
   function closeRecords(records: readonly OwnerRecord[]): void {
     const newlyClosing = records.filter(record => !record.closing)
     for (const record of newlyClosing) {
       record.closing = true
       closing.add(record)
-    }
-    for (const record of newlyClosing) {
-      // Tab ids can be restored by layout undo with a new occurrence. Never
-      // invoke an ended occurrence's close callback a second time.
       if (!record.owner.signal.aborted) {
         try { record.owner.close() } catch (error) { options.onError?.(error) }
       }
     }
-    // Observe rejection here. A later open calls drain() and retries the
-    // retained batch; until that succeeds no new Host open can enter.
     void beginCleanup().catch(() => undefined)
   }
 
@@ -224,7 +219,7 @@ export function createPdfSessionLifecycle(options: {
     const { owner } = record
     const pending = pendingTabs.get(JSON.stringify([owner.containerSessionId, owner.tabId]))
     if ((selected !== undefined && selected !== owner.containerSessionId) || pending?.contentId === owner.resourceAddress) {
-      closeRecords([record])
+      releaseRecords([record])
     }
   }
 
@@ -253,13 +248,9 @@ export function createPdfSessionLifecycle(options: {
     }
     owner.signal.throwIfAborted()
     const aborted = (): void => {
-      // Both manual close and Session switches release view references. Neither
-      // action owns the shared draft, which may still be used by model tools.
-      if (!record.closing) {
-        record.closing = true
-        closing.add(record)
-        void beginCleanup().catch(() => undefined)
-      }
+      // A tab abort is a terminal close; unlike a Session switch it must close
+      // the occurrence and release all of its remaining Host references.
+      closeRecords([record])
     }
     const record: OwnerRecord = {
       owner, referenceId: crypto.randomUUID(), resourceSessions: new Set(), documents: new Map(),
@@ -281,8 +272,11 @@ export function createPdfSessionLifecycle(options: {
     selected = next
     if (previous !== undefined) {
       captureUnvisitedTabs(previous)
-      closeRecords([...owners.values()].filter(record => record.owner.containerSessionId === previous))
-      closeMountedPending()
+      // Session switching hides the view but must not close the user's tab.
+      // The occurrence remains registered so it can reacquire native state when
+      // its Session becomes visible again; only its Host view lease is released.
+      releaseRecords([...owners.values()].filter(record => record.owner.containerSessionId === previous))
+      // Unvisited tabs remain untouched; they have no acquired UI lease yet.
     }
   }
   const unsubscribeInventory = options.sidebar.openTabs.subscribe(inventoryChanged)
@@ -323,7 +317,7 @@ export function createPdfSessionLifecycle(options: {
       while (record.retiring) await record.retiring
       signal?.throwIfAborted()
       owner.signal.throwIfAborted()
-      if (record.closing) throw new DOMException('PDF tab closed after Session switch', 'AbortError')
+      if (record.closing) throw new DOMException('PDF tab closed', 'AbortError')
       if (record.generation !== generation || record.owner.resourceSessionId !== sessionId ||
         record.owner.resourceAddress !== address) throw new DOMException('PDF navigation was superseded', 'AbortError')
       // Record authorization before dispatch; a failed reply must not leave an
@@ -337,7 +331,7 @@ export function createPdfSessionLifecycle(options: {
         record.documents.set(key, { sessionId, id: snapshot.id })
         assertLive()
         owner.signal.throwIfAborted()
-        if (record.closing) throw new DOMException('PDF tab closed after Session switch', 'AbortError')
+        if (record.closing) throw new DOMException('PDF tab closed', 'AbortError')
         if (record.generation !== generation) throw new DOMException('PDF navigation was superseded', 'AbortError')
         // Canonical aliases can return the same id. Retire by actual identity,
         // not the addressed string, so alias navigation keeps its shared lease.
