@@ -96,7 +96,7 @@ test('editing unlock uses the live tab occurrence and never acquires another PDF
   } finally { await f.lifecycle.dispose() }
 })
 
-test('Session switches retain tabs while releasing each view reference of one shared draft', async () => {
+test('Session switches release each view reference of one shared draft, never discard it', async () => {
   const f = fixture()
   f.setOpen(async () => snapshot('shared-draft'))
   const first = occurrence('container-a', 'one', 'resource-x')
@@ -109,8 +109,8 @@ test('Session switches retain tabs while releasing each view reference of one sh
   assert.notEqual(f.opened[0]?.referenceId, f.opened[1]?.referenceId)
   f.switchTo('container-b')
   await f.lifecycle.drain()
-  assert.deepEqual(first.closes, [])
-  assert.deepEqual(second.closes, [])
+  assert.deepEqual(first.closes, [first.owner.resourceAddress])
+  assert.deepEqual(second.closes, [second.owner.resourceAddress])
   assert.deepEqual(f.released, f.opened.map(open => ({ sessionId: 'resource-x', id: undefined, referenceId: open.referenceId! })))
   f.lifecycle.dispose()
 })
@@ -165,14 +165,14 @@ test('closing a pending UI adoption releases its token before the delayed reply'
   f.lifecycle.dispose()
 })
 
-test('failed terminal releases retry before new opens with the same reference identity', async () => {
+test('failed releases retry before new opens with the same reference identity', async () => {
   const f = fixture()
   const old = occurrence()
   await f.lifecycle.open(old.owner, 'container-a', old.owner.resourceAddress)
   let attempts = 0
   const failure = new Error('temporary connection failure')
   f.setRelease(async () => { if (++attempts === 1) throw failure })
-  old.controller.abort()
+  f.switchTo('container-b')
   await assert.rejects(f.lifecycle.drain(), error => error === failure)
   assert.deepEqual(f.errors, [failure])
   const next = occurrence('container-b')
@@ -182,7 +182,7 @@ test('failed terminal releases retry before new opens with the same reference id
   f.lifecycle.dispose()
 })
 
-test('unvisited PDF tabs remain retained without touching unseen drafts', async () => {
+test('unvisited PDF tabs close only in their mounted Session without touching unseen drafts', async () => {
   const pdf = { sessionId: 'container-a', tabId: 'unvisited', kind: 'text', contentId: address('resource-x') }
   const f = fixture([pdf,
     { sessionId: 'container-a', tabId: 'other', kind: 'text', contentId: address('container-a', 'notes.txt') },
@@ -193,9 +193,9 @@ test('unvisited PDF tabs remain retained without touching unseen drafts', async 
   assert.deepEqual(f.closedTabs, [])
   f.mounted.set('container-a')
   await f.lifecycle.drain()
-  assert.deepEqual(f.closedTabs, [])
+  assert.deepEqual(f.closedTabs, ['unvisited'])
   assert.deepEqual(f.released, [], 'unopened tabs have no Host view reference')
-  assert.equal(f.tabs.getSnapshot().length, 4)
+  assert.equal(f.tabs.getSnapshot().length, 3)
   f.lifecycle.dispose()
 })
 
@@ -227,11 +227,7 @@ test('manual close releases only its lease and restored occurrences receive new 
   f.switchTo('container-b')
   await f.lifecycle.drain()
   assert.deepEqual(old.closes, [])
-  assert.deepEqual(replacement.closes, [])
-  assert.equal(f.released.length, 2)
-  replacement.controller.abort()
-  await f.lifecycle.drain()
-  assert.deepEqual(replacement.closes, [])
+  assert.deepEqual(replacement.closes, [replacement.owner.resourceAddress])
   assert.equal(f.released.length, 2)
   f.lifecycle.dispose()
 })
@@ -249,10 +245,7 @@ test('navigation retires the previous document and keeps terminal cleanup Sessio
   assert.throws(() => f.lifecycle.register({ ...updated, tabId: 'another-tab' }), /cannot change its container Session or tab identity/)
   f.switchTo('container-b')
   await f.lifecycle.drain()
-  assert.deepEqual(latestClose, [])
-  tab.controller.abort()
-  await f.lifecycle.drain()
-  assert.deepEqual(latestClose, [])
+  assert.deepEqual(latestClose, [newAddress])
   assert.deepEqual(f.released, [
     { sessionId: 'resource-x', id: 'workspace-1', referenceId: f.opened[0]!.referenceId! },
     { sessionId: 'resource-x', id: undefined, referenceId: f.opened[0]!.referenceId! },
@@ -397,52 +390,53 @@ test('resource authorization, caller cancellation and plugin lifetime gate acqui
   await assert.rejects(f.lifecycle.open(tab.owner, 'container-a', tab.owner.resourceAddress), { name: 'AbortError' })
 })
 
-test('late mounted departing tabs remain available without acquiring Host drafts', async () => {
+test('late mounted departing tabs close without acquiring Host drafts', async () => {
   const f = fixture()
   f.switchTo('container-b')
   const late = occurrence('container-a', 'late')
   f.lifecycle.register(late.owner)
   await f.lifecycle.drain()
-  assert.deepEqual(late.closes, [])
-  assert.equal((await f.lifecycle.open(late.owner, 'container-a', late.owner.resourceAddress)).id, 'workspace-1')
-  assert.equal(f.opened.length, 1)
+  assert.deepEqual(late.closes, [late.owner.resourceAddress])
+  await assert.rejects(f.lifecycle.open(late.owner, 'container-a', late.owner.resourceAddress), { name: 'AbortError' })
+  assert.deepEqual(f.opened, [])
   f.lifecycle.dispose()
 })
 
-test('registered tabs found in unvisited inventory remain open', async () => {
+test('registered tabs found in unvisited inventory close once', async () => {
   const tab = occurrence('container-a', 'registered', 'resource-x')
   const f = fixture([{ sessionId: 'container-a', tabId: 'registered', kind: 'text', contentId: tab.owner.resourceAddress }])
   await f.lifecycle.open(tab.owner, 'resource-x', tab.owner.resourceAddress)
   f.switchTo('container-b')
   await f.lifecycle.drain()
-  assert.deepEqual(tab.closes, [])
-  assert.deepEqual(f.closedTabs, [])
+  assert.deepEqual(tab.closes, [tab.owner.resourceAddress])
+  assert.deepEqual(f.closedTabs, ['registered'])
   assert.equal(f.released.length, 1)
   f.lifecycle.dispose()
 })
 
-test('pending inventory remains available when its body mounts after returning', async () => {
+test('pending inventory remains retired when its body mounts after returning', async () => {
   const tab = occurrence('container-a', 'pending', 'resource-x')
   const f = fixture([{ sessionId: 'container-a', tabId: 'pending', kind: 'text', contentId: tab.owner.resourceAddress }])
   f.mounted.set('container-b'); f.switchTo('container-b'); f.switchTo('container-a')
   f.lifecycle.register(tab.owner)
   await f.lifecycle.drain()
-  assert.deepEqual(tab.closes, [])
+  assert.deepEqual(tab.closes, [tab.owner.resourceAddress])
   f.mounted.set('container-a')
   await f.lifecycle.drain()
-  assert.deepEqual(f.closedTabs, [])
+  assert.deepEqual(f.closedTabs, ['pending'])
   assert.deepEqual(f.released, [])
   f.lifecycle.dispose()
 })
 
-test('a throwing occurrence close is reported without suppressing terminal release', async () => {
+test('a throwing occurrence close is reported without suppressing view release', async () => {
   const f = fixture()
   const tab = occurrence()
   const failure = new Error('reader failed to close')
   const faulty = { ...tab.owner, close() { throw failure } }
   await f.lifecycle.open(faulty, 'container-a', faulty.resourceAddress)
-  await f.lifecycle.dispose()
-  assert.deepEqual(f.errors, [])
+  f.switchTo('container-b')
+  await f.lifecycle.drain()
+  assert.deepEqual(f.errors, [failure])
   assert.equal(f.released.length, 1)
   f.lifecycle.dispose()
 })
@@ -452,13 +446,11 @@ test('tab-close errors are reported without discarding any data', async () => {
   const f = fixture([pdf])
   const failure = new Error('sidebar rejected close')
   f.setClose(() => { throw failure })
-  const tab = occurrence('container-a', 'unvisited')
-  f.lifecycle.register(tab.owner)
-  await f.lifecycle.open(tab.owner, 'container-a', tab.owner.resourceAddress)
-  await f.lifecycle.dispose()
-  assert.deepEqual(f.errors, [])
+  f.switchTo('container-b')
+  await f.lifecycle.drain()
+  assert.deepEqual(f.errors, [failure])
   assert.deepEqual(f.tabs.getSnapshot(), [pdf])
-  assert.equal(f.released.length, 1)
+  assert.deepEqual(f.released, [])
   f.lifecycle.dispose()
 })
 
@@ -490,7 +482,7 @@ test('a failed open reply still releases its resource Session reference on close
   await f.lifecycle.dispose()
 })
 
-test('a never-settled old open is retained while the next Session opens', async () => {
+test('a never-settled old open does not prevent the next Session from opening', async () => {
   const f = fixture()
   const pending = deferred<WorkspaceSnapshot>()
   f.setOpen(async sessionId => sessionId === 'container-a' ? pending.promise : snapshot('new-session-document'))
@@ -502,6 +494,6 @@ test('a never-settled old open is retained while the next Session opens', async 
   assert.equal((await f.lifecycle.open(next.owner, 'container-b', next.owner.resourceAddress)).id, 'new-session-document')
   assert.equal(f.released[0]?.id, undefined)
   pending.resolve(snapshot('late-old-document'))
-  assert.equal((await opening).id, 'late-old-document')
+  await assert.rejects(opening, { name: 'AbortError' })
   await f.lifecycle.dispose()
 })
