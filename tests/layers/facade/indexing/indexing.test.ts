@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createPdfIndexing } from '../../../../src/layers/facade/indexing/indexing.ts'
 import { createRetrievalPrefetch } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
 import type { OpenWorkingCopyDocument } from '../../../../src/layers/document/working-copy/index.ts'
-import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.ts'
+import type { RetrievalProgress } from '../../../../src/layers/facade/search/retrieval/index.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function fixture() {
@@ -70,9 +70,8 @@ test('manual controls cannot cross resource sessions and cancellation remains st
 test('resuming a task preserves its checkpoint and never stages pending preferences', async () => {
   const f = fixture(), signal = new AbortController().signal
   let stages = 0
-  const settings = { documentId: 'first-pdf', revision: 1, enabled: true, activeEnabled: true,
-    policy: { indexScanPages: true, indexImageDescriptions: true },
-    activePolicy: { indexScanPages: true, indexImageDescriptions: false }, pending: true, impact: 'content' as const }
+  const settings = { documentId: 'first-pdf', revision: 1, enabled: true,
+    policy: { indexScanPages: true, indexImageDescriptions: true } }
   const indexing = createPdfIndexing(f.prefetch, { documents: () => f.documents, enabled: () => true,
     indexes: { settings: (_session, id) => ({ ...settings, documentId: id }),
       async stage() { stages++ }, async configure() {} } })
@@ -85,7 +84,7 @@ test('resuming a task preserves its checkpoint and never stages pending preferen
     assert.ok(next.tasks[0]!.occurrence > original.occurrence)
     assert.equal(next.tasks[0]!.progress?.indexedPages, original.progress!.indexedPages)
     assert.equal(next.tasks[0]!.progress?.phase, 'restoring')
-    assert.equal(next.documents![0]!.pending, true, 'resume leaves new preferences pending')
+    assert.deepEqual(next.documents![0]!.policy, settings.policy)
     await indexing.dispatch('first', { action: 'cancel', sessionId: 'first', documentId: 'first-pdf' }, signal)
     await indexing.dispatch('first', { action: 'start', sessionId: 'first', documentId: 'first-pdf' }, signal)
     assert.equal(stages, 1, 'only an explicit update stages new preferences')

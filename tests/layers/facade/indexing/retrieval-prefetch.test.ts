@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRetrievalPrefetch, type RetrievalPrefetchDocument } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
-import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.js'
+import type { RetrievalProgress } from '../../../../src/layers/facade/search/retrieval/index.js'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {
@@ -353,9 +353,9 @@ test('a queued cancellation is retained until its source changes', async () => {
 
 test('resume keeps the interrupted plan and progress while the old uncooperative request drains', async () => {
   const gates = [deferred(), deferred()]
-  const calls: Array<{ input: { documentId: string; indexPlanId?: string }; signal: AbortSignal; report: (progress: RetrievalProgress) => void }> = []
+  const calls: Array<{ input: { documentId: string; bindingId?: string }; signal: AbortSignal; report: (progress: RetrievalProgress) => void }> = []
   const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
-    selection: () => ({ identity: 'accepted-ocr', planId: 'accepted-ocr-plan' }),
+    selection: () => ({ identity: 'accepted-ocr', bindingId: 'accepted-ocr-plan' }),
     async prepare(_session, input, signal, report) { calls.push({ input, signal, report: report! }); await gates[calls.length - 1]!.promise } })
   try {
     await turn()
@@ -377,7 +377,7 @@ test('resume keeps the interrupted plan and progress while the old uncooperative
     assert.deepEqual(prefetch.status().documents[0]!.progress, resumed.progress, 'late old progress cannot rewrite the retained checkpoint')
     gates[0]!.resolve(); await turn()
     assert.equal(calls.length, 2)
-    assert.deepEqual(calls[1]!.input, { documentId: 'a', indexPlanId: 'accepted-ocr-plan' })
+    assert.deepEqual(calls[1]!.input, { documentId: 'a', bindingId: 'accepted-ocr-plan' })
     assert.equal(prefetch.status().documents[0]!.state, 'running')
     assert.deepEqual(prefetch.status().documents[0]!.progress, resumed.progress, 'retained counters remain until Host reports actual restored work')
     prefetch.resumeTask('session', 'a')
@@ -452,7 +452,7 @@ test('failed-task resume clears failure metadata and preserves source counters w
 for (const change of ['identity', 'plan', 'source', 'disabled', 'unavailable'] as const) {
   test(`resume rejects ${change} changes instead of silently replacing the interrupted plan`, async () => {
     const gate = deferred()
-    let current = document('a'), selection: { identity: string; planId?: string } | undefined = { identity: 'ocr', planId: 'ocr-plan' }
+    let current = document('a'), selection: { identity: string; bindingId?: string } | undefined = { identity: 'ocr', bindingId: 'ocr-plan' }
     let unavailable = false, calls = 0
     const prefetch = createRetrievalPrefetch({ documents: () => [current], selection() {
       if (unavailable) throw new Error('private engine discovery error')
@@ -461,8 +461,8 @@ for (const change of ['identity', 'plan', 'source', 'disabled', 'unavailable'] a
     try {
       await turn(); prefetch.cancel('session', 'a')
       const before = prefetch.status()
-      if (change === 'identity') selection = { identity: 'image', planId: 'ocr-plan' }
-      if (change === 'plan') selection = { identity: 'ocr', planId: 'new-plan' }
+      if (change === 'identity') selection = { identity: 'image', bindingId: 'ocr-plan' }
+      if (change === 'plan') selection = { identity: 'ocr', bindingId: 'new-plan' }
       if (change === 'source') current = { ...current, sourceDigest: 'changed-source' }
       if (change === 'disabled') selection = undefined
       if (change === 'unavailable') unavailable = true
@@ -475,10 +475,10 @@ for (const change of ['identity', 'plan', 'source', 'disabled', 'unavailable'] a
 
 test('resume of a forced rebuild preserves the prior plan identity and rebuild flag', async () => {
   const gates = [deferred(), deferred()]
-  const inputs: Array<{ documentId: string; indexPlanId?: string; rebuild?: boolean }> = []
+  const inputs: Array<{ documentId: string; bindingId?: string; rebuild?: boolean }> = []
   let rebuildCalls = 0
   const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
-    selection: () => ({ identity: 'forced-attempt', planId: 'forced-attempt-token' }),
+    selection: () => ({ identity: 'forced-attempt', bindingId: 'forced-attempt-token' }),
     async prepare(_session, input) {
       inputs.push(input)
       if (input.rebuild) await gates[rebuildCalls++]!.promise
@@ -489,8 +489,8 @@ test('resume of a forced rebuild preserves the prior plan identity and rebuild f
     prefetch.cancel('session', 'a'); prefetch.resumeTask('session', 'a')
     gates[0]!.resolve(); await turn()
     assert.deepEqual(inputs.slice(1), [
-      { documentId: 'a', indexPlanId: 'forced-attempt-token', rebuild: true },
-      { documentId: 'a', indexPlanId: 'forced-attempt-token', rebuild: true },
+      { documentId: 'a', bindingId: 'forced-attempt-token', rebuild: true },
+      { documentId: 'a', bindingId: 'forced-attempt-token', rebuild: true },
     ])
     gates[1]!.resolve(); await turn()
     assert.equal(prefetch.status().documents[0]!.state, 'ready')
@@ -685,9 +685,9 @@ test('diagnostics distinguish source replacement, configuration retirement, susp
 test('plan-scoped diagnostics remain passive even when the observer rejects asynchronously', async () => {
   const events: string[] = []
   const prefetch = createRetrievalPrefetch({ documents: () => [document('a')],
-    selection: () => ({ identity: 'engine', planId: 'saved-plan' }),
+    selection: () => ({ identity: 'engine', bindingId: 'saved-plan' }),
     async prepare(_session, input, _signal, report) {
-      assert.equal(input.indexPlanId, 'saved-plan')
+      assert.equal(input.bindingId, 'saved-plan')
       report!({ indexedPages: 1, totalPages: 1, embeddedChunks: 0, totalChunks: 0, phase: 'ready' })
     }, async onDiagnostic(event) { events.push(event.event); throw new Error('isolated asynchronous observer') } })
   try {

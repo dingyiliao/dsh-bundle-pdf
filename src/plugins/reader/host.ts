@@ -43,9 +43,10 @@ import { ImageUnderstandingError } from '../../engines/image/service/index.js'
 import { CapabilityRegistry } from '../../capabilities/index.js'
 import { createLocalTextRecovery } from '../../engines/ocr/backends/local-text-recovery.js'
 import { createPageOcrArtifacts } from '../../layers/derived/content/cache/page-ocr-artifacts.js'
-import { recordIndexPerformance } from '../../layers/derived/indexing/index.js'
+import { recordIndexPerformance } from '../../shared/indexing-performance-runtime.js'
 import { EngineCatalog, engineBinding, engineCatalogRequestSchema } from '../../engines/spi/index.js'
 import { RETRIEVAL_REBUILD_METHOD, retrievalRebuildRequestSchema } from '../../contracts/retrieval-index.js'
+import { EMBEDDING_TEST_METHOD } from '../../contracts/embedding-test.js'
 import { defaultSettings } from '../../shared/contracts.js'
 import type { PdfDocumentInfo } from '../../shared/pdf-types.js'
 
@@ -136,9 +137,7 @@ export async function apply(
   const agentNavigation = createAgentNavigation(workspaces, readerContexts)
   const transportLifetime = new AbortController()
   const profile = ctx.get('profileContext')
-  const indexCache = createIndexingCache(ctx.storageDomain, {
-    directory: resolveRetrievalStoreDirectory(profile, suffix), suffix, lifetime: transportLifetime.signal,
-  })
+  const indexCache = createIndexingCache({ directory: resolveRetrievalStoreDirectory(profile, suffix) })
   const retrievalCache = indexCache.cache
   const pdfService = createPdfService(workspaces, {
     executable: ctx.pdfNative.executable,
@@ -178,7 +177,7 @@ export async function apply(
   }))
   const { retrieval, prefetch, indexing } = createReaderIndexing({
     ctx, workspaces, pdfService, files, referenceStore, indexPolicies, embeddings, indexingDiagnostics,
-    retrievalCache, waitForMigration: indexCache.waitForMigration, readSettings: () => readConfig(config),
+    retrievalCache, readSettings: () => readConfig(config),
   })
   const stopIndexPolicies = retrieval.subscribe(() => { prefetch.refresh(); indexing.changed() })
   const stopIndexingDocuments = workspaces.onDocumentsChanged(() => { retrieval.refresh(); indexing.changed() })
@@ -334,6 +333,12 @@ export async function apply(
       disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(
         createPdfModelOptions(ctx.sessionController as PdfModelOptionsController, () => ctx.get('llm'), transportLifetime.signal),
         PDF_MODEL_OPTIONS_METHOD, { code: 'pdf/model-options-unavailable', message: 'Model choices are unavailable. Please retry.' })))
+      disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(async (payload, signal) => {
+        if (payload !== undefined && payload !== null && typeof payload !== 'object') throw new Error('Invalid request')
+        const settings = readConfig(config)
+        const binding = engineBinding('embedding', settings.embeddingEngine ?? 'none', settings.engineConfigurations)
+        return embeddings.availability(binding, signal)
+      }, EMBEDDING_TEST_METHOD, { code: 'pdf/embedding-test-failed', message: 'Could not test the embedding engine.' })))
       disposers.push(ctx.connection.fetch.register(createPdfInfoRoute(async (payload, signal) => {
         retrievalRebuildRequestSchema.parse(payload)
         const active = AbortSignal.any([signal, transportLifetime.signal])

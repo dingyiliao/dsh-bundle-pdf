@@ -43,8 +43,7 @@ async function assetFixture(t: TestContext) {
 
 function host(options: { namespace?: string; failOpenAt?: number; failRegistration?: string;
   failDisposal?: string; failDomainClose?: number; failProvideKey?: string; agentSessionId?: string;
-  resolvedAgentId?: string; attachments?: unknown; legacyCache?: readonly [string, unknown][];
-  legacyOpen?: () => Promise<void>; legacyEntries?: () => Iterable<[string, unknown]> } = {}) {
+  resolvedAgentId?: string; attachments?: unknown } = {}) {
   const routes = new Map<string, Route>()
   const registrations: string[] = []
   const releases: string[] = []
@@ -78,16 +77,14 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
     storageDomain: { async open(definition: { name: string }) {
       if (opened.length + 1 === options.failOpenAt) throw new Error('Domain open failed')
       opened.push(definition.name)
-      const legacy = definition.name.startsWith('pdf_retrieval_')
-      if (legacy) await options.legacyOpen?.()
-      const values = new Map<string, unknown>(legacy ? options.legacyCache : undefined)
+      const values = new Map<string, unknown>()
       domainValues.set(definition.name, values)
       return {
         table() { return {
           get: (key: string) => values.get(key),
           put: async (key: string, value: unknown) => { values.set(key, value) },
           delete: async (key: string) => { values.delete(key) },
-          entries: () => legacy && options.legacyEntries ? options.legacyEntries() : values.entries(),
+          entries: () => values.entries(),
         } },
         async close() {
           closed.push(definition.name)
@@ -131,11 +128,7 @@ function host(options: { namespace?: string; failOpenAt?: number; failRegistrati
 }
 
 function assertDomainsClosed(runtime: ReturnType<typeof host>): void {
-  const core = (names: readonly string[]) => names.filter(name => !name.startsWith('pdf_retrieval_'))
-  assert.deepEqual(core(runtime.closed), core(runtime.opened).reverse())
-  for (const name of runtime.opened.filter(name => name.startsWith('pdf_retrieval_'))) {
-    assert.equal(runtime.closed.filter(closed => closed === name).length, 1, 'each admitted migration domain closes exactly once')
-  }
+  assert.deepEqual(runtime.closed, runtime.opened.toReversed())
 }
 
 async function mountDocument(runtime: ReturnType<typeof host>, assetRoot: string, bytes: Uint8Array) {
@@ -282,7 +275,7 @@ test('Host indexing diagnostics preserve the failed run on disk and across a suc
   } finally { await runtime.disposeEffects() }
 })
 
-test('document content choices follow global engines, cancel on global disable and wait for explicit replacement processing', { skip: !existsSync(indexingWorker) }, async t => {
+test('document content choices use current global engines and cancel work on global disable', { skip: !existsSync(indexingWorker) }, async t => {
   const assets = await assetFixture(t), sessionId = 'preindex-settings', runtime = host({ agentSessionId: sessionId })
   runtime.ctx.pdfNative.executable = indexingWorker
   await apply(runtime.ctx, runtime.config, assets)
@@ -311,8 +304,8 @@ test('document content choices follow global engines, cancel on global disable a
     }))
     const body = await response.json() as { result: { ok: boolean; value: {
       tasks: Array<{ documentId: string; state: string }>; documents: Array<{
-      documentId: string; revision: number; pending: boolean; enabled: boolean; activeEnabled: boolean;
-        policy: { indexScanPages: boolean; indexImageDescriptions: boolean }; activePolicy: { indexScanPages: boolean; indexImageDescriptions: boolean }
+      documentId: string; revision: number; enabled: boolean;
+        policy: { indexScanPages: boolean; indexImageDescriptions: boolean }
     }> } } }
     assert.equal(body.result.ok, true)
     return body.result.value
@@ -325,11 +318,11 @@ test('document content choices follow global engines, cancel on global disable a
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(calls.length, 0, 'new global defaults do not change a PDF that is already open')
     const settings = (await control({ action: 'status', sessionId })).documents[0]!
-    assert.equal(settings.enabled, true); assert.equal(settings.activeEnabled, false)
+    assert.equal(settings.enabled, true)
     assert.deepEqual(Object.keys(settings.policy).sort(), ['indexImageDescriptions', 'indexScanPages'])
     const configured = await control({ action: 'configure', sessionId, documentId: opened.documentId,
       revision: settings.revision, policy: { ...settings.policy, indexScanPages: false } })
-    assert.equal(configured.documents[0]!.pending, true)
+    assert.equal(configured.documents[0]!.policy.indexScanPages, false)
     assert.equal(calls.length, 0, 'saving a new document policy does not start expensive work')
     await control({ action: 'start', sessionId, documentId: opened.documentId })
     await waitForIndexing(() => calls.length === 1)
@@ -346,14 +339,13 @@ test('document content choices follow global engines, cancel on global disable a
     await waitForIndexing(() => calls.length === 2)
     const building = await control({ action: 'status', sessionId })
     assert.equal(building.tasks.find(task => task.documentId === opened.documentId)!.state, 'running')
-    assert.equal(building.documents[0]!.pending, true, 'embedding admission is not a ready index')
-    assert.equal(building.documents[0]!.activeEnabled, false)
+    assert.equal(building.documents[0]!.enabled, true)
     finishSecond()
     await waitForIndexing(async () => {
       const ready = await control({ action: 'status', sessionId })
       const document = ready.documents.find(document => document.documentId === opened.documentId)!
       return ready.tasks.some(task => task.documentId === opened.documentId && task.state === 'ready')
-        && !document.pending && document.activeEnabled
+        && document.enabled
     })
     const reset = await runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
       type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'reset-prefetch', payload: {},
@@ -418,14 +410,14 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
     'loader', 'tools', 'pdfNative', 'subprocess'])
   await apply(runtime.ctx, runtime.config, assets)
   try {
-    assert.equal(runtime.routes.size, 18)
+    assert.equal(runtime.routes.size, 19)
     assert.deepEqual(runtime.registrations, [
       '/api/pdf.dispatch.v2', '/api/pdf.watch', '/api/pdf.native', '/api/pdf.position',
       '/api/pdf.translation', '/api/pdf.ocr', '/api/pdf.region', '/api/pdf.selection',
       '/api/pdf.readercontext', '/api/pdf.navigation', '/api/pdf.indexing', '/api/pdf.indexing.diagnostics', '/api/pdf.evidence',
-      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines', '/api/pdf.model-options', '/api/pdf.retrieval.rebuild',
+      '/api/pdf-assets/ocr/bridge.js', '/api/pdf.info', '/api/pdf.engines', '/api/pdf.model-options', '/api/pdf.embedding.test', '/api/pdf.retrieval.rebuild',
     ])
-    assert.deepEqual(runtime.opened.filter(domain => !domain.startsWith('pdf_retrieval_')).map(domain => domain.split('_').slice(0, 2).join('_')),
+    assert.deepEqual(runtime.opened.map(domain => domain.split('_').slice(0, 2).join('_')),
       ['pdf_drafts', 'pdf_positions', 'pdf_evidence', 'pdf_index'])
     assert.deepEqual(runtime.provided, ['pdfTranslation', 'pdfEmbedding', 'pdfAiSettings', 'pdfCapabilities', 'pdf', 'pdfImageEvidence'])
     assert.ok(runtime.tools.includes('pdf_open'))
@@ -452,136 +444,6 @@ test('Host plugin installs its authenticated routes, tools, services and isolate
   } finally { await runtime.disposeEffects() }
   assert.equal(runtime.routes.size, 0)
   assert.deepEqual(runtime.releases, [...runtime.registrations].reverse())
-  assertDomainsClosed(runtime)
-})
-
-test('Host startup publishes the Reader while legacy migration is pending and never reloads a migrated domain', async t => {
-  const assets = await assetFixture(t)
-  let release!: () => void, entered!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  const loading = new Promise<void>(resolve => { entered = resolve })
-  const runtime = host({ legacyCache: [['legacy-vector', { createdAt: Date.now(), payload: [1, 0] }]],
-    async legacyOpen() { entered(); await gate } })
-  await apply(runtime.ctx, runtime.config, assets)
-  await loading
-  assert.ok(runtime.routes.has('/api/pdf.info'), 'the Reader/settings are usable before a large migration finishes')
-  assert.ok(runtime.services.has('pdf'))
-  assert.equal(runtime.closed.some(name => name.startsWith('pdf_retrieval_')), false)
-  release()
-  const clear = async (value: ReturnType<typeof host>) => {
-    const response = await value.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
-      type: 'client-request', method: 'pdf.retrieval.rebuild', rpcId: 'migration-barrier', payload: {},
-    }))
-    assert.equal((await response.json() as { result: { ok: boolean } }).result.ok, true)
-  }
-  const inspector = createRetrievalStore({ directory: runtime.storeDirectory, maxMemoryBytes: 0 })
-  try {
-    await waitForIndexing(() => runtime.closed.some(name => name.startsWith('pdf_retrieval_')))
-    assert.deepEqual(await inspector.get('legacy-vector'), [1, 0])
-    await runtime.disposeEffects()
-    assertDomainsClosed(runtime)
-    const restarted = host({ async legacyOpen() { throw new Error('A migrated domain must never be opened again') } })
-    restarted.services.set('profileContext', runtime.services.get('profileContext'))
-    await apply(restarted.ctx, restarted.config, assets)
-    try {
-      await clear(restarted)
-      assert.equal(restarted.opened.some(name => name.startsWith('pdf_retrieval_')), false)
-      assert.equal(await inspector.get('legacy-vector'), undefined)
-    } finally { await restarted.disposeEffects() }
-    assertDomainsClosed(restarted)
-  } finally { release(); await inspector.dispose(); await runtime.disposeEffects() }
-})
-
-test('a failed legacy migration blocks model work and a later explicit start retries migration', { skip: !existsSync(indexingWorker) }, async t => {
-  const assets = await assetFixture(t), sessionId = 'migration-retry'
-  const options: { agentSessionId: string; failOpenAt?: number } = { agentSessionId: sessionId, failOpenAt: 5 }
-  const runtime = host(options)
-  runtime.ctx.pdfNative.executable = indexingWorker
-  const config = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: 'fixture' })
-  await apply(runtime.ctx, config, assets)
-  let models = 0
-  ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register({ ...indexingEngine(async request => {
-    models++; return request.texts.map(() => [1, 0])
-  }), async availability() { models++; return { status: 'available' } } })
-  const call = async (payload: unknown) => {
-    const response = await runtime.routes.get('/api/pdf.indexing')!.fetch(infoRequest({
-      type: 'client-request', method: 'pdf.indexing', rpcId: 'migration-state', payload,
-    }))
-    const value = (await response.json() as { result: { ok: boolean; value: { tasks: Array<{ state: string; failureCode?: string }> } } }).result
-    assert.equal(value.ok, true)
-    return value.value
-  }
-  try {
-    const document = await openSyntheticDocument(runtime, assets, sessionId, 'Already computed data must survive a migration retry.')
-    await waitForIndexing(async () => (await call({ action: 'status', sessionId })).tasks[0]?.state === 'failed')
-    assert.equal(models, 0, 'a failed import cannot fall through optional cache reads and redo OCR or embedding')
-    assert.equal((await call({ action: 'status', sessionId })).tasks[0]!.failureCode, 'pdf/index-storage-migration-failed')
-    options.failOpenAt = undefined
-    await call({ action: 'start', sessionId, documentId: document.documentId })
-    await waitForIndexing(async () => (await call({ action: 'status', sessionId })).tasks[0]?.state === 'ready')
-    assert.ok(models > 0)
-  } finally { await runtime.disposeEffects() }
-  assertDomainsClosed(runtime)
-})
-
-test('unloading aborts background migration between durable records and closes the old domain before core storage', { timeout: 5000 }, async t => {
-  const assets = await assetFixture(t)
-  let visited = 0, entered!: () => void
-  const reading = new Promise<void>(resolve => { entered = resolve })
-  const runtime = host({ *legacyEntries(): Iterable<[string, unknown]> {
-    entered()
-    for (let index = 0; index < 100; index++) {
-      visited++
-      yield [`legacy_${index}`, { createdAt: Date.now(), payload: 'Existing OCR cache' }]
-    }
-  } })
-  await apply(runtime.ctx, runtime.config, assets)
-  await reading
-  await runtime.disposeEffects()
-  assert.ok(visited < 100, 'shutdown must not wait for an entire legacy cache copy')
-  assert.equal((await readdir(runtime.storeDirectory)).includes('legacy-v1-complete.json'), false)
-  assertDomainsClosed(runtime)
-  const firstCoreClose = runtime.closed.findIndex(name => !name.startsWith('pdf_retrieval_'))
-  assert.ok(runtime.closed.findIndex(name => name.startsWith('pdf_retrieval_')) < firstCoreClose)
-})
-
-test('cancelling an index waiting on migration releases its caller without cancelling the shared import', { skip: !existsSync(indexingWorker) }, async t => {
-  const assets = await assetFixture(t), sessionId = 'migration-waiter'
-  let release!: () => void, entered!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve }), loading = new Promise<void>(resolve => { entered = resolve })
-  const runtime = host({ agentSessionId: sessionId, async legacyOpen() { entered(); await gate } })
-  runtime.ctx.pdfNative.executable = indexingWorker
-  const config = (Config as unknown as (input: Record<string, unknown>) => HostConfig)({ embeddingEngine: 'fixture' })
-  await apply(runtime.ctx, config, assets)
-  await loading
-  let models = 0
-  ;(runtime.services.get('pdfEmbedding') as EmbeddingRegistry).register(indexingEngine(async request => {
-    models++; return request.texts.map(() => [1, 0])
-  }))
-  const call = async (payload: unknown) => {
-    const response = await runtime.routes.get('/api/pdf.indexing')!.fetch(infoRequest({
-      type: 'client-request', method: 'pdf.indexing', rpcId: 'migration-waiter', payload,
-    }))
-    const value = (await response.json() as { result: { ok: boolean; value: { tasks: Array<{ state: string }> } } }).result
-    assert.equal(value.ok, true)
-    return value.value
-  }
-  try {
-    const document = await openSyntheticDocument(runtime, assets, sessionId, 'A cancelled waiter must not cancel shared index migration.')
-    await waitForIndexing(async () => (await call({ action: 'status', sessionId })).tasks[0]?.state === 'running')
-    await call({ action: 'cancel', sessionId, documentId: document.documentId })
-    await waitForIndexing(async () => (await call({ action: 'status', sessionId })).tasks[0]?.state === 'cancelled')
-    assert.equal(models, 0)
-    assert.equal(runtime.closed.some(name => name.startsWith('pdf_retrieval_')), false)
-    await call({ action: 'start', sessionId, documentId: document.documentId })
-    release()
-    await waitForIndexing(async () => (await call({ action: 'status', sessionId })).tasks[0]?.state === 'ready')
-    assert.equal(runtime.opened.filter(name => name.startsWith('pdf_retrieval_')).length, 1)
-    const status = await runtime.registeredTools.get('pdf_status')!.execute({ documentId: document.documentId }, {
-      agent: { session: { id: sessionId, header: {} } }, signal: new AbortController().signal,
-    }) as { capabilities: { semanticSearch: boolean } }
-    assert.equal(status.capabilities.semanticSearch, true, 'capability probes also pass through the completed migration barrier')
-  } finally { release(); await runtime.disposeEffects() }
   assertDomainsClosed(runtime)
 })
 
@@ -644,10 +506,10 @@ test('Host settings bootstrap reads a profile with retired form configuration wi
 })
 
 test('authenticated settings rebuild resets only derived retrieval records without opening a PDF', async t => {
-  const assets = await assetFixture(t), runtime = host({ legacyCache: [['derived-vector', { createdAt: Date.now(), payload: [1, 0] }]] })
+  const assets = await assetFixture(t), runtime = host()
   await apply(runtime.ctx, runtime.config, assets)
-  await waitForIndexing(() => runtime.closed.some(name => name.startsWith('pdf_retrieval_')))
   const cache = createRetrievalStore({ directory: runtime.storeDirectory, maxMemoryBytes: 0 })
+  await cache.set('derived-vector', [1, 0])
   const drafts = [...runtime.domainValues].find(([name]) => name.startsWith('pdf_drafts_'))![1]
   drafts.set('unchanged-draft', { revision: 7, dirty: true })
   const call = (payload: unknown) => runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
@@ -667,10 +529,10 @@ test('authenticated settings rebuild resets only derived retrieval records witho
 })
 
 test('rebuild route reports storage failures without claiming success and permits a successful retry', async t => {
-  const assets = await assetFixture(t), runtime = host({ legacyCache: [['derived-vector', { createdAt: Date.now(), payload: [1, 0] }]] })
+  const assets = await assetFixture(t), runtime = host()
   await apply(runtime.ctx, runtime.config, assets)
-  await waitForIndexing(() => runtime.closed.some(name => name.startsWith('pdf_retrieval_')))
   const cache = createRetrievalStore({ directory: runtime.storeDirectory, maxMemoryBytes: 0 })
+  await cache.set('derived-vector', [1, 0])
   const db = new DatabaseSync(join(runtime.storeDirectory, 'records.sqlite'))
   db.exec("CREATE TRIGGER refuse_clear BEFORE DELETE ON records BEGIN SELECT RAISE(ABORT,'simulated private disk failure'); END")
   const call = () => runtime.routes.get('/api/pdf.retrieval.rebuild')!.fetch(infoRequest({
@@ -704,7 +566,7 @@ test('Host embedding resolves optional credentials per operation, including rota
   })
   await apply(runtime.ctx, runtime.config, assets)
   const registry = runtime.services.get('pdfEmbedding') as EmbeddingRegistry
-  const config = { endpoint: 'https://embedding.example/v1/embeddings', model: 'fixture',
+  const config = { endpoint: 'https://embedding.example/v1', model: 'fixture',
     dimensions: 2, queryInstruction: '' }
   const binding = { engineId: 'local-qwen3-embedding', config }
   try {
@@ -751,7 +613,7 @@ test('Host embedding cancellation during credential resolution sends no document
     const registry = runtime.services.get('pdfEmbedding') as EmbeddingRegistry
     const controller = new AbortController()
     const pending = registry.embed({ texts: ['private document'], purpose: 'document', signal: controller.signal },
-      { engineId: 'local-qwen3-embedding', config: { endpoint: 'https://embedding.example/v1/embeddings',
+      { engineId: 'local-qwen3-embedding', config: { endpoint: 'https://embedding.example/v1',
         model: 'fixture', dimensions: 2, queryInstruction: '', apiKeyRef: 'PDF_EMBEDDING_KEY' } })
     await resolving
     controller.abort()
@@ -992,7 +854,7 @@ test('Host image evidence resolves persisted attachments and drains an admitted 
     assert.equal(attachmentSignal!.aborted, true, 'unloading must cancel the admitted attachment read')
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.equal(closed, false, 'teardown must wait for the admitted resolver to settle')
-    assert.equal(runtime.closed.filter(name => !name.startsWith('pdf_retrieval_')).length, 0, 'evidence storage must remain open while its resolver is active')
+    assert.equal(runtime.closed.length, 0, 'evidence storage must remain open while its resolver is active')
     resume!()
     await cancelled
     await closing

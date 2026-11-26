@@ -17,6 +17,7 @@ export const sameDocument = (a: RetrievalDocument, b: RetrievalDocument): boolea
 export const indexContentDigest = (document: RetrievalDocument): string =>
   document.indexContentDigest ?? document.sourceDigest
 
+/** Live selection fence for work, cursors and results, not a persistent cache key. */
 export const providerIdentity = (provider: RetrievalEmbedding | undefined): string => provider
   ? JSON.stringify([
     provider.fingerprint,

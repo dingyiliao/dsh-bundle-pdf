@@ -138,13 +138,24 @@ Reject excessive input rather than silently truncating it.
 `modelRevision`, `dimensions`, `maxBatchSize`, `maxInputCharacters`, `encoding`
 and `fingerprint`. The character limit counts UTF-16 units; providers must also
 enforce tokenizer limits. `modelRevision` is provider-owned metadata, not a
-required user setting. Change the fingerprint when weights, tokenizer,
-instructions or other encoding behavior changes.
+required user setting. The provider owns this stable encoding identity: change
+the fingerprint when weights, tokenizer, dimensions, instructions, normalization
+or other encoding behavior changes. Endpoints, credentials and transport-only
+limits must not enter it; matching identities assert interchangeable encoders.
 
 Optional `documentFingerprint` identifies document encoding alone. Query-only
-instructions and transport batch sizes may leave it unchanged; document weights,
-tokenizer, dimensions or document instructions must change it. Without this
-identity, document-vector reuse conservatively includes the full binding.
+instructions may leave it unchanged; document weights, tokenizer, dimensions or
+document instructions must change it. Without this identity, document-vector
+reuse uses the full provider `fingerprint`, not the raw configuration. The Host
+scopes either identity to the registered engine ID; it does not infer model
+identity from connection settings.
+
+A PDF can retain independent caches for multiple provider identities. Switching
+back restores the matching cache, including after a Host restart. A connection
+change still invalidates in-flight requests and rechecks availability, but does
+not discard stored vectors. Complete index keys separately include the effective
+chunking rules; changing a limit that actually changes chunks does not change
+the identity of vectors for identical input text.
 
 ## Cache identity
 

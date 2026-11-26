@@ -2,9 +2,10 @@ import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir, cpus, platform, arch } from 'node:os'
 import { join } from 'node:path'
 import { createRetrievalStore } from '../src/layers/derived/storage/retrieval-store.js'
-import { createRetrievalService } from '../src/layers/derived/indexing/service.js'
+import { createRetrievalService } from '../src/layers/facade/search/retrieval/service.js'
 import { digest } from '../src/layers/derived/indexing/cache.js'
-import type { RetrievalPorts, RetrievalPage } from '../src/layers/derived/indexing/types.js'
+import type { RetrievalPorts } from '../src/layers/facade/search/retrieval/types.js'
+import type { RetrievalPage } from '../src/layers/derived/indexing/types.js'
 
 async function diskBytes(directory: string): Promise<{ files: number; bytes: number }> {
   let files = 0, bytes = 0

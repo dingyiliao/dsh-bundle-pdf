@@ -6,8 +6,8 @@ import { EmbeddingRegistry, type EmbeddingBinding } from '../src/engines/embeddi
 import { createOpenAiCompatibleEmbeddingEngine, QWEN3_RETRIEVAL_INSTRUCTION } from '../src/engines/embedding/backends/openai-compatible.ts'
 import { rankRelatedText } from './legacy-related-text.ts'
 import { chunkPage, RETRIEVAL_TEXT_VERSION, type RetrievalChunk } from '../src/layers/derived/content/retrieval/text.ts'
-import { createBm25Index, hybridCandidates, rankVectors, reciprocalRankFusion, searchBm25, type RankedChunk } from '../src/layers/derived/indexing/ranking.ts'
-import { createRetrievalService, type RetrievalEmbedding, type RetrievalInput, type RetrievalPorts } from '../src/layers/derived/indexing/index.ts'
+import { createBm25Index, hybridCandidates, rankVectors, reciprocalRankFusion, searchBm25, type RankedChunk } from '../src/layers/facade/search/retrieval/ranking.ts'
+import { createRetrievalService, type RetrievalEmbedding, type RetrievalInput, type RetrievalPorts } from '../src/layers/facade/search/retrieval/index.ts'
 import { environmentMetadata } from './metadata.ts'
 import { complexPageLimitations, retrievalCorpusVersion, retrievalPassages, retrievalQueries, type RetrievalQuery } from './retrieval-corpus.ts'
 

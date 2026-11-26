@@ -47,7 +47,7 @@ test('current PDF bundle identities match the frozen pre-refactor compatibility 
       keyExpressions: Object.fromEntries(Object.entries(expected.storage.keyExpressions).filter(([key]) => key !== 'bookmark')) },
     toolNames: atomicTools.sort(),
     // Read-only model choices add a settings endpoint; existing resource methods stay unchanged.
-    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.engines', 'pdf.evidence', 'pdf.indexing', 'pdf.indexing.diagnostics', 'pdf.model-options', 'pdf.navigation', 'pdf.region', 'pdf.retrieval.rebuild', 'pdf.selection', 'pdf.watch'].sort(),
+    rpcMethods: [...expected.rpcMethods.filter(method => method !== 'pdf.bookmarks'), 'pdf.embedding.test', 'pdf.engines', 'pdf.evidence', 'pdf.indexing', 'pdf.indexing.diagnostics', 'pdf.model-options', 'pdf.navigation', 'pdf.region', 'pdf.retrieval.rebuild', 'pdf.selection', 'pdf.watch'].sort(),
     providedServices: [...expected.providedServices, 'pdfAiSettings', 'pdfCapabilities', 'pdfImageEvidence', 'pdfEmbedding'].sort(),
     package: { ...expected.package, name: '@dylanl1/dsh-plugin-pdf', exports: { ...expected.package.exports,
       './capabilities': { types: './dist/types/modules/capabilities/index.d.ts', import: './dist/capabilities.js' },

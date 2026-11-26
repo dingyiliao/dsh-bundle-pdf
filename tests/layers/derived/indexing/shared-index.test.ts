@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
-import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress } from '../../../../src/layers/derived/indexing/types.ts'
+import { createRetrievalService } from '../../../../src/layers/facade/search/retrieval/service.ts'
+import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress } from '../../../../src/layers/facade/search/retrieval/types.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {
@@ -302,7 +302,7 @@ test('continuation cursors and result fences stay Session-local while cancellati
   } finally { await f.service.dispose() }
 })
 
-test('content and encoding namespaces remain distinct while registration lifetimes reuse durable generations', { timeout: 30_000 }, async t => {
+test('content and encoding namespaces remain distinct while connection and registration changes reuse durable generations', { timeout: 30_000 }, async t => {
   for (const distinction of ['digest', 'range', 'configuration', 'dimensions', 'generation', 'input-limit', 'page-count'] as const) {
     await t.test(distinction, async () => {
       const f = fixture({ cache: true })
@@ -311,39 +311,43 @@ test('content and encoding namespaces remain distinct while registration lifetim
         const a = await f.service.search('a', input('a'))
         if (distinction === 'digest') f.documents.get('b')!.sourceDigest = 'another-source'
         if (distinction === 'configuration') f.providers.get('b')!.configurationIdentity = 'another-binding'
-        if (distinction === 'dimensions') f.providers.get('b')!.dimensions = 3
+        if (distinction === 'dimensions') {
+          f.providers.get('b')!.dimensions = 3
+          f.providers.get('b')!.fingerprint = 'same-model-3d' // Providers declare changes to their vector space.
+        }
         if (distinction === 'generation') f.providers.get('b')!.generation = 'another-registration'
         if (distinction === 'input-limit') f.providers.get('b')!.maxInputCharacters = 128
         if (distinction === 'page-count') f.documents.get('b')!.pageCount = 2
         const scope = distinction === 'range' ? { fromPage: 2, maxPages: 1 } : {}
         await f.service.prepare('b', { documentId: 'document-b', ...scope })
         const b = await f.service.search('b', input('b', scope))
-        if (distinction === 'generation') {
-          assert.equal(b.indexGeneration, a.indexGeneration, 'new provider registrations reuse the same attested document-encoding records')
+        if (distinction === 'generation' || distinction === 'configuration') {
+          assert.equal(b.indexGeneration, a.indexGeneration, 'connection and registration changes reuse the same provider encoding records')
           f.service.validate('a', a)
           assert.throws(() => f.service.validate('b', a), { code: 'pdf/stale-reader' }, 'sharing disk data never shares a Session result fence')
         } else assert.notEqual(b.indexGeneration, a.indexGeneration)
         assert.equal(b.status, 'complete')
         assert.deepEqual(b.document, f.documents.get('b'))
-        if (distinction === 'configuration') assert.equal(documentCalls(f).length, 6,
-          'persistent vectors also include the binding identity when the provider fingerprint omits its config')
+        if (distinction === 'configuration') assert.equal(documentCalls(f).length, 3,
+          'only the provider encoding identity, not connection configuration, owns persistent vectors')
       } finally { await f.service.dispose() }
     })
   }
 })
 
-test('persistent vectors restore only within their exact engine configuration namespace', { timeout: 30_000 }, async () => {
+test('persistent vectors restore across connection changes and different index heads after restart', { timeout: 30_000 }, async () => {
   const f = fixture({ cache: true })
   try {
     await f.service.prepare('a', { documentId: 'document-a' })
     f.providers.get('b')!.configurationIdentity = 'another-binding'
+    f.documents.get('b')!.sourceDigest = 'another-source-with-identical-text'
     await f.service.prepare('b', { documentId: 'document-b' })
-    assert.equal(documentCalls(f).length, 6)
+    assert.equal(documentCalls(f).length, 3, 'a new index restores equal text vectors from the same provider identity')
     await f.service.dispose()
     const restored = createRetrievalService(f.ports)
     try {
       await restored.prepare('b', { documentId: 'document-b' })
-      assert.equal(documentCalls(f).length, 6, 'the same saved binding can restore its own vectors after a service restart')
+      assert.equal(documentCalls(f).length, 3, 'the provider cache survives a service restart')
       assert.equal((await restored.search('b', input('b'))).status, 'complete')
     } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
@@ -374,6 +378,42 @@ test('an attested document encoder reuses vectors across query and transport cha
     assert.throws(() => f.service.validate('b', after), { code: 'pdf/stale-reader' })
     await f.service.prepare('b', { documentId: 'document-b' })
     assert.equal(documentCalls(f).length, 6, 'different weights cannot restore the previous document vectors')
+  } finally { await f.service.dispose() }
+})
+
+test('effective chunk limits have separate index heads without changing the provider vector namespace', async () => {
+  const f = fixture({ cache: true })
+  const provider = f.providers.get('a')!
+  provider.documentFingerprint = 'stable-document-encoder'
+  provider.maxInputCharacters = 2000
+  f.state.onRead = async (_session, page) => page === 2 ? 'A cat sleeps in the garden. '.repeat(100) : undefined
+  try {
+    await f.service.prepare('a', { documentId: 'document-a' })
+    const original = await f.service.search('a', input('a'))
+    const originalEmbeddings = documentCalls(f).length
+    provider.maxInputCharacters = 4000
+    await f.service.prepare('a', { documentId: 'document-a' })
+    assert.equal((await f.service.search('a', input('a'))).indexGeneration, original.indexGeneration,
+      'limits above 1200 do not change the effective chunking rules')
+    assert.equal(documentCalls(f).length, originalEmbeddings)
+    provider.maxInputCharacters = 128
+    await f.service.prepare('a', { documentId: 'document-a' })
+    const smaller = await f.service.search('a', input('a'))
+    assert.notEqual(smaller.indexGeneration, original.indexGeneration)
+    assert.equal(smaller.status, 'complete')
+    const extra = documentCalls(f).slice(originalEmbeddings)
+    assert.ok(extra.length > 0)
+    assert.ok(extra.every(text => text.length <= 128 && text.includes('cat')),
+      'only changed long-page chunks are encoded; equal short-page vectors remain reusable')
+    const afterSmaller = documentCalls(f).length
+    provider.maxInputCharacters = 2000
+    await f.service.dispose()
+    const restored = createRetrievalService(f.ports)
+    try {
+      await restored.prepare('a', { documentId: 'document-a' })
+      assert.equal((await restored.search('a', input('a'))).indexGeneration, original.indexGeneration)
+      assert.equal(documentCalls(f).length, afterSmaller, 'switching back restores the original chunked index')
+    } finally { await restored.dispose() }
   } finally { await f.service.dispose() }
 })
 

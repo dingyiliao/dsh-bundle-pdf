@@ -5,7 +5,7 @@ import { OcrError } from '../../../../src/engines/ocr/sdk/types.ts'
 import { ImageUnderstandingError } from '../../../../src/engines/image/service/service.ts'
 import { createIndexingDiagnostics, type PrefetchDiagnosticEvent } from '../../../../src/layers/facade/indexing/indexing-diagnostics.ts'
 import { indexingDiagnosticsResultSchema } from '../../../../src/contracts/indexing-diagnostics.ts'
-import { recordIndexPerformance } from '../../../../src/layers/derived/indexing/performance.ts'
+import { recordIndexPerformance } from '../../../../src/shared/indexing-performance-runtime.ts'
 
 const base = { sessionId: 'session', documentId: 'document', occurrence: 1 }
 

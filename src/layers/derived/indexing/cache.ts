@@ -63,10 +63,8 @@ const pageSchema = z.object({
 })
 export type CachedRetrievalPage = z.infer<typeof pageSchema>
 
-/** The empty legacy identity intentionally preserves the unextended key shape. */
-export function pageCacheKey(path: string, sourceDigest: string, page: number, extractionIdentity = ''): string {
-  const parts = ['page', RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, path, sourceDigest, page]
-  return retrievalCacheKey(...parts, ...(extractionIdentity ? [extractionIdentity] : []))
+export function pageCacheKey(path: string, sourceDigest: string, page: number, extractionIdentity: string): string {
+  return retrievalCacheKey('page', RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, path, sourceDigest, page, extractionIdentity)
 }
 
 export function validateRetrievalPage(value: unknown): CachedRetrievalPage | undefined {
@@ -79,21 +77,6 @@ export async function readCachedPage(cache: RetrievalCache | undefined, key: str
   try {
     return validateRetrievalPage(await cache.get(key))
   } catch (error) { if (storageFailure(error)) throw error; return undefined }
-}
-
-export const MAX_PAGE_CACHE_SOURCE_PAGES = 10_000
-const pageCacheSourceSchema = z.object({ version: z.literal(1), sourceDigest: z.string().min(1).max(512),
-  indexContentDigest: digestSchema.optional(), indexPageDigests: z.array(digestSchema.nullable()).max(MAX_PAGE_CACHE_SOURCE_PAGES) }).strict()
-export type PageCacheSource = z.infer<typeof pageCacheSourceSchema>
-
-export const pageCacheSourceKey = (path: string, extractionIdentity: string) => retrievalCacheKey(
-  'page-cache-source', RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, path, extractionIdentity)
-
-/** A migration hint for legacy whole-source page keys. A caller must compare
- * each saved page digest with its current authorized page before using it. */
-export async function readPageCacheSource(cache: RetrievalCache, key: string): Promise<PageCacheSource | undefined> {
-  const result = pageCacheSourceSchema.safeParse(await cache.get(key).catch(() => undefined))
-  return result.success ? result.data : undefined
 }
 
 /** Derived caches are disposable; an unavailable cache must not break reading. */
@@ -151,30 +134,21 @@ export function decodeCachedVector(value: unknown, dimensions: number): number[]
 }
 
 async function readVectorCache(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<{
-  record: CachedRetrievalVector; vector: number[]; persisted: boolean
+  record: CachedRetrievalVector; vector: number[]
 } | undefined> {
   try {
     const value = await cache?.get(key)
-    if (validVector(value, dimensions)) {
-      // Migrate old JSON arrays as they are reused, without embedding again.
-      const record = encodeCachedVector(value)
-      let persisted = false
-      try { await cache?.set(key, record); persisted = !!cache }
-      catch (error) { if (storageFailure(error)) throw error }
-      return { record, vector: [...value], persisted }
-    }
     const vector = decodeCachedVector(value, dimensions)
-    return vector ? { record: { ...value as CachedRetrievalVector }, vector, persisted: true } : undefined
+    return vector ? { record: { ...value as CachedRetrievalVector }, vector } : undefined
   } catch (error) { if (storageFailure(error)) throw error; return undefined }
 }
 
-/** Preserve the exact verified Float32 bytes when a checkpoint references this
- * cache entry. A failed optional migration still needs a durable checkpoint copy. */
+/** Preserve the exact verified Float32 bytes when a checkpoint references this cache entry. */
 export async function readCachedVectorRecord(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<{
-  record: CachedRetrievalVector; persisted: boolean
+  record: CachedRetrievalVector
 } | undefined> {
   const loaded = await readVectorCache(cache, key, dimensions)
-  return loaded ? { record: loaded.record, persisted: loaded.persisted } : undefined
+  return loaded ? { record: loaded.record } : undefined
 }
 
 export async function readCachedVector(cache: RetrievalCache | undefined, key: string, dimensions: number): Promise<number[] | undefined> {

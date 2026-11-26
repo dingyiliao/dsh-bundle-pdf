@@ -10,8 +10,7 @@ export const documentIndexPolicySchema = z.object({
 export type PdfDocumentIndexPolicy = z.infer<typeof documentIndexPolicySchema>
 export const documentIndexSettingsSchema = z.object({
   documentId, revision: z.number().int().nonnegative(), policy: documentIndexPolicySchema,
-  activePolicy: documentIndexPolicySchema, enabled: z.boolean(), activeEnabled: z.boolean(), pending: z.boolean(),
-  impact: z.enum(['none', 'content', 'embedding', 'configuration']),
+  enabled: z.boolean(),
 }).strict()
 export type PdfDocumentIndexSettings = z.infer<typeof documentIndexSettingsSchema>
 export const indexingProgressSchema = z.object({

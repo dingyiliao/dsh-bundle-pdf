@@ -1,5 +1,3 @@
-export { createPdfPageContent, projectPageContent } from './production/page-content.js'
-export type { PdfPageContent } from './production/page-content.js'
 export { chunkPage, chunkRetrievalPage, tokenizeRetrievalText, RETRIEVAL_TEXT_VERSION } from './retrieval/text.js'
 export type { RetrievalChunk } from './retrieval/text.js'
 export type { AgentPageReadPort, IndexingDiagnosticActivity } from './ports.js'

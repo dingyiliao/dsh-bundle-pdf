@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRetrievalPrefetch } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
 import type { PrefetchDiagnosticEvent } from '../../../../src/layers/facade/indexing/indexing-diagnostics.ts'
-import type { RetrievalProgress } from '../../../../src/layers/derived/indexing/index.ts'
+import type { RetrievalProgress } from '../../../../src/layers/facade/search/retrieval/index.ts'
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred() {
@@ -17,11 +17,11 @@ test('cooperative quanta let a cached document finish before a large OCR documen
   const documents = [document('large'), document('cached')], calls: string[] = [], events: PrefetchDiagnosticEvent[] = []
   const first = deferred(), last = deferred()
   let largeSlices = 0
-  const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine', planId: 'plan' }),
+  const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine', bindingId: 'plan' }),
     prepare: legacyPrepare,
     async prepareSlice(_sessionId, input) {
       calls.push(input.documentId)
-      assert.equal(input.indexPlanId, 'plan')
+      assert.equal(input.bindingId, 'plan')
       if (input.documentId === 'cached') return true
       if (++largeSlices === 1) { await first.promise; return false }
       await last.promise; return true
@@ -94,7 +94,7 @@ test('cancelling a yielded quantum preserves its stopped occurrence and does not
 
 test('source replacement during a noncooperative quantum drains the old work before admitting the new source', async () => {
   const documents = [document('changing')], gate = deferred(), calls: AbortSignal[] = [], events: PrefetchDiagnosticEvent[] = []
-  const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine', planId: 'same-plan' }),
+  const prefetch = createRetrievalPrefetch({ documents: () => documents, selection: () => ({ identity: 'engine', bindingId: 'same-plan' }),
     prepare: legacyPrepare, async prepareSlice(_sessionId, _input, active) {
       calls.push(active)
       if (calls.length === 1) await gate.promise
@@ -137,9 +137,9 @@ test('a burst of manual requests remains within the document budget and preserve
   const prefetch = createRetrievalPrefetch({ documents: () => documents, maxDocuments: 1,
     selection() {
       if (brokenSelection) throw new Error('Invalid saved configuration')
-      return { identity: 'engine', planId: 'durable-plan' }
+      return { identity: 'engine', bindingId: 'durable-plan' }
     }, prepare: legacyPrepare, async prepareSlice(_sessionId, input) {
-      calls.push(input.documentId); assert.equal(input.indexPlanId, 'durable-plan')
+      calls.push(input.documentId); assert.equal(input.bindingId, 'durable-plan')
       if (input.documentId === 'active') await gate.promise
       return true
     } })

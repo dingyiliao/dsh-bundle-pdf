@@ -30,7 +30,7 @@ type Call = { action: string; sessionId: string; id: string; signal: AbortSignal
   revision?: number; policy?: PdfDocumentIndexPolicy }
 const policy: PdfDocumentIndexPolicy = { indexScanPages: true, indexImageDescriptions: false }
 const documentSettings = (overrides: Partial<PdfDocumentIndexSettings> = {}): PdfDocumentIndexSettings => ({
-  documentId: 'a', revision: 1, policy, activePolicy: policy, enabled: true, activeEnabled: true, pending: false, impact: 'none', ...overrides,
+  documentId: 'a', revision: 1, policy, enabled: true, ...overrides,
 })
 
 async function withIndexing(run: (f: {
@@ -226,72 +226,6 @@ test('switching PDFs in the same session aborts view commands and does not show 
   }, idle())
 })
 
-test('interrupted indexing resumes its accepted plan while pending choices require an explicit update', async () => {
-  for (const state of ['cancelled', 'failed'] as const) {
-    const desired = { indexScanPages: false, indexImageDescriptions: true }
-    await withIndexing(async f => {
-      assert.equal(f.state().control!.label, state === 'cancelled' ? 'Resume indexing' : 'Retry indexing')
-      assert.ok(f.state().control!.onUpdate, 'pending choices have a separate explicit update action')
-      const contextual = f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!
-      await act(async () => { contextual.onClick() })
-      await act(async () => { f.state().control!.onStart() })
-      assert.deepEqual(f.calls.map(call => call.action), ['resume', 'resume'], 'neither interruption entry point applies desired settings')
-      assert.deepEqual(f.state().control!.configuration!.value.activePolicy, policy)
-      assert.equal(f.state().control!.configuration!.value.pending, true)
-      await act(async () => { f.state().control!.onUpdate!() })
-      await act(async () => { f.state().control!.onRebuild!() })
-      assert.deepEqual(f.calls.map(call => call.action), ['resume', 'resume', 'start', 'rebuild'])
-      assert.deepEqual(f.state().control!.configuration!.value.policy, desired, 'the Host remains the settings owner')
-    }, { ...idle(), tasks: [{ ...running().tasks[0]!, state }], documents: [documentSettings({
-      policy: desired, pending: true, impact: 'content' })] })
-  }
-})
-
-test('resume allows either desired or accepted enablement while explicit update still requires desired enablement', async () => {
-  await withIndexing(async f => {
-    assert.equal(f.state().control!.enabled, true, 'disabling desired settings does not stop continuation of the accepted plan')
-    assert.equal(f.state().control!.disabled, false)
-    assert.equal(f.state().control!.onUpdate, undefined)
-    assert.equal(f.state().control!.onRebuild, undefined, 'forced rebuild must not silently reuse the old enabled plan')
-    await act(async () => { f.state().control!.onStart() })
-    assert.equal(f.calls.at(-1)?.action, 'resume')
-    await f.publish({ ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
-      documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
-    assert.equal(f.state().control!.disabled, false, 'an enabled candidate can resume before an accepted plan exists')
-    assert.equal(f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!.disabled, false)
-    assert.equal(f.state().control!.updateDisabled, false, 'a newly enabled plan can still be applied')
-    await act(async () => { f.state().control!.onStart() })
-    assert.equal(f.calls.at(-1)?.action, 'resume', 'the Host owns validation of the retained candidate plan')
-    await act(async () => { f.state().control!.onUpdate!() })
-    assert.equal(f.calls.at(-1)?.action, 'start')
-    await f.publish({ ...idle(), enabled: false, tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
-      documents: [documentSettings({ enabled: false, activeEnabled: false })] })
-    assert.equal(f.state().control!.disabled, true)
-    assert.equal(f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!.disabled, true)
-    const before = f.calls.length
-    await act(async () => { f.state().control!.onStart() })
-    assert.equal(f.calls.length, before)
-  }, { ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }], documents: [documentSettings({
-    enabled: false, activeEnabled: true, pending: true, impact: 'embedding' })] })
-})
-
-test('the first candidate started after enabling indexing remains resumable before any completed plan exists', async () => {
-  await withIndexing(async f => {
-    assert.equal(f.state().control!.disabled, true)
-    await f.publish({ ...idle(), documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
-    await act(async () => { f.state().control!.onStart() })
-    assert.equal(f.calls.at(-1)?.action, 'start')
-    await f.publish({ ...idle(), tasks: [{ ...running().tasks[0]!, state: 'cancelled' }],
-      documents: [documentSettings({ activeEnabled: false, pending: true, impact: 'embedding' })] })
-    assert.equal(f.state().control!.disabled, false, 'activeEnabled describes the previous accepted plan, not this interrupted candidate')
-    const taskAction = f.state().statuses.find(status => status.id === 'indexing:a')!.actions![0]!
-    assert.equal(taskAction.disabled, false)
-    await act(async () => { taskAction.onClick() })
-    await act(async () => { f.state().control!.onStart() })
-    assert.deepEqual(f.calls.map(call => call.action), ['start', 'resume', 'resume'])
-  }, { ...idle(), enabled: false, documents: [documentSettings({ enabled: false, activeEnabled: false })] })
-})
-
 test('resuming queues restoration without claiming the cancelled task is already running', async () => {
   await withIndexing(async f => {
     let reject!: (error: Error) => void
@@ -370,40 +304,6 @@ test('task text distinguishes restoration, native extraction and new embeddings 
     assert.match(card.textContent ?? '', /Index ready.*Reused passages: 6 · Newly computed: 0/)
     assert.equal(card.getAttribute('data-tone'), 'success')
   })
-})
-
-test('document choices save by revision even when semantic search is off and processing starts only on explicit update', async () => {
-  const disabled = { ...policy, indexScanPages: false }
-  await withIndexing(async f => {
-    const configuration = f.state().control!.configuration!
-    assert.equal(configuration.disabled, false, 'engine selection remains editable when indexing is disabled')
-    assert.equal(f.state().control!.disabled, true)
-    let finish!: () => void
-    const configure = f.api.configure
-    f.api.configure = async (...args) => { await configure(...args); await new Promise<void>(resolve => { finish = resolve }) }
-    let saved!: Promise<boolean>
-    await act(async () => { saved = configuration.configure(policy); await Promise.resolve() })
-    assert.equal(f.state().control!.configuration!.saving, true)
-    assert.deepEqual(f.calls.map(({ signal: _signal, ...call }) => call), [{ action: 'configure', sessionId: 'session-a',
-      id: 'a', revision: 1, policy }])
-    await f.publish({ ...idle(), enabled: false, documents: [documentSettings({ revision: 2, activePolicy: disabled,
-      enabled: false, activeEnabled: false, pending: true, impact: 'content' })] })
-    await act(async () => { finish(); assert.equal(await saved, true) })
-    assert.equal(f.state().control!.configuration!.saving, false)
-    assert.equal(f.state().control!.label, 'Update index')
-    assert.equal(f.state().control!.configuration!.value.activeEnabled, false)
-    assert.equal(f.state().control!.enabled, false, 'content switches cannot enable the globally disabled embedding engine')
-    await f.publish({ ...idle(), documents: [documentSettings({ revision: 2, activePolicy: disabled, activeEnabled: false,
-      pending: true, impact: 'embedding' })] })
-    assert.equal(f.calls.length, 1, 'saving configuration must never start a model job')
-    await act(async () => { f.state().control!.onStart() })
-    assert.equal(f.calls.at(-1)!.action, 'start')
-    await act(async () => { f.state().control!.onRebuild!() })
-    assert.equal(f.calls.at(-1)!.action, 'rebuild', 'forced recomputation remains an explicit separate command')
-    await act(async () => { assert.equal(await f.state().control!.configuration!.useDefaults(), true) })
-    assert.equal(f.calls.at(-1)!.action, 'defaults')
-    assert.equal(f.calls.at(-1)!.revision, 2, 'each choice uses the settings revision displayed by its render')
-  }, { ...idle(), enabled: false, documents: [documentSettings({ policy: disabled, activePolicy: disabled, enabled: false, activeEnabled: false })] })
 })
 
 test('configuration errors reach the local editor, retain Host truth and cannot leak across document lifetimes', async () => {

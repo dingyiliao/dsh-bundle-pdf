@@ -1,12 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { EmbeddingRegistry } from '../../../../engines/embedding/sdk/index.js'
 import { assertFreshSource, type EvidenceReferenceStore } from '../../evidence/index.js'
-import { settingsForIndexPlan, type createDocumentIndexPolicies } from '../document-policy.js'
+import { settingsForRetrievalBinding, type createDocumentIndexPolicies } from '../document-policy.js'
 import type { RetrievalCache } from '../../../derived/indexing/index.js'
 import type { createWorkingCopyService } from '../../../document/working-copy/index.js'
 import type { PdfSettings } from '../../../../shared/contracts.js'
 import type { createLocalFiles } from '../../../../surfaces/host/io/local-files.js'
-import { createPdfPageContent } from '../../../derived/content/index.js'
+import { createPdfPageContent } from '../../search/retrieval/page-content.js'
 import { createPdfRetrieval } from '../../search/host-retrieval.js'
 import { createDocumentIndexes } from '../document-indexes.js'
 import { createRetrievalPrefetch } from '../retrieval-prefetch.js'
@@ -25,18 +25,17 @@ type IndexingDependencies = {
   embeddings: EmbeddingRegistry
   indexingDiagnostics: ReturnType<typeof createIndexingDiagnostics>
   retrievalCache: RetrievalCache & { clear(): Promise<void> }
-  waitForMigration(signal?: AbortSignal): Promise<void>
   readSettings(): PdfSettings
 }
 
 /** Compose per-document retrieval, background preparation and its task surface. */
 export function createReaderIndexing(options: IndexingDependencies) {
   const { ctx, workspaces, pdfService, files, referenceStore, indexPolicies, embeddings,
-    indexingDiagnostics, retrievalCache, waitForMigration, readSettings } = options
+    indexingDiagnostics, retrievalCache, readSettings } = options
   const retrieval = createDocumentIndexes({ documents: workspaces.listOpenDocuments, policies: indexPolicies,
     clearCache: () => retrievalCache.clear(),
-    create(plan) {
-      const settings = settingsForIndexPlan(plan, readSettings())
+    create(binding) {
+      const settings = settingsForRetrievalBinding(binding, readSettings())
       const content = createPdfPageContent(workspaces, pdfService, { cache: retrievalCache, settings: () => settings,
         ocr: () => ctx.get('ocr'), image: () => ctx.get('imageUnderstanding'), onActivity: indexingDiagnostics.activity })
       const api = createPdfRetrieval(workspaces, pdfService, referenceStore,
@@ -60,15 +59,7 @@ export function createReaderIndexing(options: IndexingDependencies) {
             return workspaces.acquire(sessionId, documentId, resolved.agent, signal)
           },
         })
-      return { ...api,
-        async availability(sessionId, signal, documentId) { await waitForMigration(signal); return api.availability(sessionId, signal, documentId) },
-        async prepare(sessionId, input, signal, onProgress) { await waitForMigration(signal); return api.prepare(sessionId, input, signal, onProgress) },
-        async prepareSlice(sessionId, input, signal, onProgress, occurrence) {
-          await waitForMigration(signal)
-          return api.prepareSlice!(sessionId, input, signal, onProgress, occurrence)
-        },
-        async search(sessionId, input, signal) { await waitForMigration(signal); return api.search(sessionId, input, signal) },
-      }
+      return api
     },
   })
   const prefetch = createRetrievalPrefetch({

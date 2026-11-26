@@ -481,7 +481,7 @@ test('service metadata updates rebuild warm vectors before querying and survive 
       data: input.map((_text, index) => ({ index, embedding: revision === 'A' ? [1, 0] : [0, 1] })) }))
   }) as typeof fetch })
   const settings = () => ({ ...defaultSettings, embeddingEngine: 'local-qwen3-embedding',
-    engineConfigurations: { embedding: { 'local-qwen3-embedding': { endpoint: 'https://fixture.example/v1/embeddings',
+    engineConfigurations: { embedding: { 'local-qwen3-embedding': { endpoint: 'https://fixture.example/v1',
       model: 'fixture-embedding', dimensions: 2, queryInstruction: 'Find the relevant passage' } } } })
   const start = () => {
     const registry = new EmbeddingRegistry()
@@ -690,7 +690,7 @@ test('scoped availability failures reach Host diagnostics before the unavailable
 })
 
 test('invalid document identity rejects malformed explicit fingerprints', async () => {
-  const { invalidDocumentIdentity } = await import('../../../../src/layers/derived/indexing/identity.ts')
+  const { invalidDocumentIdentity } = await import('../../../../src/layers/facade/search/retrieval/identity.ts')
   const provider = (documentFingerprint?: unknown) => ({
     fingerprint: 'coverage', dimensions: 8, maxBatchSize: 8, embed: async () => [],
     ...(documentFingerprint === undefined ? {} : { documentFingerprint }),

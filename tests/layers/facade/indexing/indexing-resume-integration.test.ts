@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import test, { type TestContext } from 'node:test'
 import { createDocumentIndexes } from '../../../../src/layers/facade/indexing/document-indexes.ts'
 import { createPdfIndexing } from '../../../../src/layers/facade/indexing/indexing.ts'
-import { createPdfPageContent } from '../../../../src/layers/derived/content/production/page-content.ts'
+import { createPdfPageContent } from '../../../../src/layers/facade/search/retrieval/page-content.ts'
 import { createPdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
 import { createRetrievalPrefetch } from '../../../../src/layers/facade/indexing/retrieval-prefetch.ts'
 import { createRetrievalStore } from '../../../../src/layers/derived/storage/retrieval-store.ts'
@@ -14,7 +14,7 @@ import { EmbeddingRegistry } from '../../../../src/engines/embedding/sdk/index.t
 import { createMemoryEvidenceReferenceStore, evidenceSha256 } from '../../../../src/layers/facade/evidence/index.ts'
 import { HostImageUnderstandingService } from '../../../../src/engines/image/service/index.ts'
 import { HostOcrService } from '../../../../src/engines/ocr/service/index.ts'
-import { createDocumentIndexPolicies, settingsForIndexPlan, type ResolvedIndexPlan } from '../../../../src/layers/facade/indexing/document-policy.ts'
+import { createDocumentIndexPolicies, settingsForRetrievalBinding, type ResolvedRetrievalBinding } from '../../../../src/layers/facade/indexing/document-policy.ts'
 import type { HostWorkspaceSnapshot, OpenWorkingCopyDocument } from '../../../../src/layers/document/working-copy/index.ts'
 import type { NativeTextContent } from '../../../../src/shared/native.ts'
 import { defaultSettings, type PdfSettings } from '../../../../src/shared/contracts.ts'
@@ -42,8 +42,8 @@ async function fixture(t: TestContext, options: { scan?: boolean; failOcr?: numb
   const settings: PdfSettings = { ...defaultSettings, embeddingEngine: 'test-embedding', ocrEngine: 'test-ocr',
     imageEngine: 'test-image', indexScanPages: options.scan ?? true, indexImageDescriptions: false }
   const state = { native: [] as number[], ocr: [] as number[], image: [] as number[], embeddings: [] as string[],
-    attemptedEmbeddings: [] as string[], plans: [] as ResolvedIndexPlan[],
-    preparations: [] as { plan: ResolvedIndexPlan; input: { documentId: string; rebuild?: boolean; rebuildToken?: string } }[],
+    attemptedEmbeddings: [] as string[], plans: [] as ResolvedRetrievalBinding[],
+    preparations: [] as { plan: ResolvedRetrievalBinding; input: { documentId: string; rebuild?: boolean; rebuildToken?: string } }[],
     embedPause: undefined as ReturnType<typeof pause> | undefined, failEmbedding: false,
     failOcr: new Set(options.failOcr), pins: 0 }
   const bytes = new Uint8Array([1, 2, 3])
@@ -131,7 +131,7 @@ async function fixture(t: TestContext, options: { scan?: boolean; failOcr?: numb
     const indexes = createDocumentIndexes({ policies, documents: () => documents, async clearCache() { await store.clear() },
       create(plan) {
         state.plans.push(structuredClone(plan))
-        const boundSettings = settingsForIndexPlan(plan, settings)
+        const boundSettings = settingsForRetrievalBinding(plan, settings)
         const content = createPdfPageContent(workspaces, pages, { settings: () => boundSettings, ocr: () => ocr, image: () => image, cache: store })
         const retrieval = createPdfRetrieval(workspaces, pages, createMemoryEvidenceReferenceStore(), {
           cache: store, embeddings, settings: () => boundSettings, content,
@@ -209,121 +209,6 @@ test('one retry visits later failed OCR pages across scheduler slices and retain
     assert.deepEqual(f.state.embeddings, [pageText(1), pageText(3), pageText(2)])
   } finally { await f.dispose() }
 })
-
-test('real Host resume preserves an OCR-only plan after desired changes, then explicit start adds images using durable layers and vectors', { timeout: 10_000 }, async t => {
-  const f = await fixture(t)
-  const pending = pause(); f.state.embedPause = pending
-  try {
-    await pending.started
-    const interruptedPlan = f.host.indexes.selection(f.documents[0]!)!
-    assert.deepEqual(f.state.ocr, [2, 3])
-    assert.deepEqual(f.state.embeddings, [pageText(1), pageText(2)])
-    await f.configure(true, true)
-    assert.deepEqual(f.host.indexes.selection(f.documents[0]!), interruptedPlan, 'editing desired settings leaves the running plan intact')
-    await f.dispatch('cancel')
-    await f.waitFor(() => f.host.prefetch.status().state === 'idle', 'cancel did not drain its embedding call')
-    const checkpoint = f.task()!.progress!
-    assert.ok(checkpoint.indexedPages >= 2 && checkpoint.embeddedChunks >= 2)
-    const resumed = await f.dispatch('resume')
-    assert.ok(resumed.tasks[0]!.progress!.indexedPages >= checkpoint.indexedPages, 'resuming keeps the known checkpoint visible')
-    await f.waitFor(() => f.task()?.state === 'ready', 'old OCR-only plan did not finish')
-    assert.deepEqual(f.state.image, [])
-    assert.equal(f.host.indexes.settings('a', 'doc-a').pending, true)
-    assertNoRepeatedCompletedWork(f.state)
-    assert.ok(f.host.store.diagnostics().diskWrites > 0)
-    const completed = [...f.state.embeddings]
-
-    await f.restart()
-    await f.waitFor(() => f.task()?.state === 'ready', 'SQLite checkpoint did not restore after complete Host restart')
-    assert.ok(f.host.store.diagnostics().diskReads > 0, 'the replacement Host really opens persisted records')
-    assert.deepEqual(f.state.embeddings, completed)
-    assert.deepEqual(f.state.image, [])
-    assertNoRepeatedCompletedWork(f.state)
-
-    await f.dispatch('start')
-    await f.waitFor(() => f.task()?.state === 'ready' && !f.host.indexes.settings('a', 'doc-a').pending, 'explicit update did not activate image descriptions')
-    assert.deepEqual(f.state.image, [1, 2, 3])
-    assertNoRepeatedCompletedWork(f.state)
-    assert.equal(f.state.pins, 0)
-  } finally { await f.dispose() }
-})
-
-test('an incomplete SQLite checkpoint survives complete Host shutdown and resumes without repeating successful OCR or vectors', { timeout: 10_000 }, async t => {
-  const f = await fixture(t)
-  const firstPause = pause(); f.state.embedPause = firstPause
-  try {
-    await firstPause.started
-    await f.configure(true, true)
-    await f.dispatch('cancel')
-    await f.waitFor(() => f.host.prefetch.status().state === 'idle', 'the first task did not finish cancellation')
-    let savedPages = 0, cursor: string | undefined
-    do {
-      const batch = await f.host.store.scan('index_page_', cursor)
-      savedPages += batch.entries.length; cursor = batch.nextKey
-    } while (cursor)
-    assert.ok(savedPages >= 3, 'every extracted page has a real durable checkpoint')
-    assert.deepEqual(f.state.embeddings, [pageText(1), pageText(2)])
-    assert.deepEqual(f.state.ocr, [2, 3])
-
-    const restoredPause = pause(); f.state.embedPause = restoredPause
-    await f.restart()
-    await restoredPause.started
-    assert.ok(f.host.store.diagnostics().diskReads > 0)
-    assert.deepEqual(f.state.embeddings, [pageText(1), pageText(2)], 'successful vectors are read from disk before reaching the interrupted batch')
-    assert.deepEqual(f.state.ocr, [2, 3], 'accepted OCR layers survive the entire Host/runtime/store lifetime')
-    assert.deepEqual(f.state.native, [1, 2, 3])
-    assert.deepEqual(f.state.image, [], 'reopening does not silently apply edited desired settings')
-    await f.dispatch('cancel')
-    await f.waitFor(() => f.host.prefetch.status().state === 'idle', 'the restored task did not finish cancellation')
-    await f.dispatch('resume')
-    await f.waitFor(() => f.task()?.state === 'ready', 'the restored checkpoint did not complete')
-    assertNoRepeatedCompletedWork(f.state)
-    assert.equal(f.host.indexes.settings('a', 'doc-a').pending, true)
-    assert.deepEqual(f.state.image, [])
-    assert.equal(f.state.pins, 0)
-  } finally { await f.dispose() }
-})
-
-for (const interrupted of ['cancelled', 'failed'] as const) {
-  test(`a partial forced candidate retains its rebuild token and old plan when ${interrupted}, even after desired is edited`, { timeout: 10_000 }, async t => {
-    const f = await fixture(t, { scan: false })
-    try {
-      await f.waitFor(() => f.task()?.state === 'ready', 'initial native-only plan did not finish')
-      await f.configure(true, false)
-      const pending = pause()
-      if (interrupted === 'cancelled') f.state.embedPause = pending
-      else f.state.failEmbedding = true
-      await f.dispatch('rebuild')
-      if (interrupted === 'cancelled') await pending.started
-      else await f.waitFor(() => f.task()?.state === 'failed', 'the embedding fault was not visible')
-      const candidate = f.host.indexes.selection(f.documents[0]!)!
-      const oldPlans = f.state.preparations.filter(value => value.plan.policy.indexScanPages && !value.plan.policy.indexImageDescriptions)
-      assert.ok(oldPlans.length > 0)
-      assert.ok(oldPlans.every(value => value.input.rebuild && value.input.rebuildToken === candidate.planId))
-      await f.configure(true, true)
-      if (interrupted === 'cancelled') await f.dispatch('cancel')
-      await f.waitFor(() => f.host.prefetch.status().state === 'idle', 'the interrupted candidate did not drain')
-      assert.deepEqual(f.host.indexes.selection(f.documents[0]!), candidate, 'desired edits do not silently stage a replacement')
-      const previousOccurrence = f.task()!.occurrence
-      await f.dispatch('resume')
-      await f.waitFor(() => f.task()?.state === 'ready', 'the interrupted candidate did not finish under its original plan')
-      assert.ok(f.task()!.occurrence > previousOccurrence)
-      assert.deepEqual(f.state.image, [])
-      const resumedPlans = f.state.preparations.filter(value => value.plan.policy.indexScanPages && !value.plan.policy.indexImageDescriptions)
-      assert.ok(resumedPlans.length > oldPlans.length)
-      assert.ok(resumedPlans.every(value => value.input.rebuildToken === candidate.planId), 'resume never generates a replacement force token')
-      const settings = f.host.indexes.settings('a', 'doc-a')
-      assert.equal(settings.pending, true)
-      assert.deepEqual(settings.activePolicy, { indexScanPages: true, indexImageDescriptions: false })
-      assertNoRepeatedCompletedWork(f.state)
-
-      await f.dispatch('start')
-      await f.waitFor(() => f.task()?.state === 'ready' && !f.host.indexes.settings('a', 'doc-a').pending, 'explicit start did not apply the newer desired plan')
-      assert.deepEqual(f.state.image, [1, 2, 3])
-      assertNoRepeatedCompletedWork(f.state)
-    } finally { await f.dispose() }
-  })
-}
 
 test('resume authorization rejects another Session before touching the real task, checkpoint or models', { timeout: 10_000 }, async t => {
   const f = await fixture(t)

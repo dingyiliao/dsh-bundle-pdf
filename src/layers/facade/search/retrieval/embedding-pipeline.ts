@@ -1,8 +1,9 @@
-import { digest, encodeCachedVector, readCachedVectorRecord, retrievalCacheKey, validVector } from './cache.js'
-import { measureIndexOperation, recordIndexPerformance } from './performance.js'
-import { buildIndexPageEntries, readIndexPage, type StoredIndexPage, type IndexPageSummary } from './stored-index.js'
-import type { RetrievalCache, RetrievalEmbedding } from './types.js'
-import type { RetrievalChunk } from '../content/retrieval/text.js'
+import { digest, encodeCachedVector, readCachedVectorRecord, retrievalCacheKey, validVector } from '../../../derived/indexing/cache.js'
+import { measureIndexOperation, recordIndexPerformance } from '../../../../shared/indexing-performance-runtime.js'
+import { buildIndexPageEntries, readIndexPage, type StoredIndexPage, type IndexPageSummary } from '../../../derived/indexing/stored-index.js'
+import type { RetrievalCache } from '../../../derived/indexing/types.js'
+import type { RetrievalEmbedding } from './types.js'
+import type { RetrievalChunk } from '../../../derived/content/retrieval/text.js'
 import type { SharedRetrievalSource } from './shared-source.js'
 
 type LoadedPage = NonNullable<Awaited<ReturnType<typeof readIndexPage>>>
@@ -116,15 +117,14 @@ export async function embedIndexStep(
       if (exhausted()) { await commit(); return }
       source.check()
       const provider = source.current().provider!
-      const modelKey = provider.documentFingerprint ?? (provider.configurationIdentity === undefined ? provider.fingerprint
-        : digest(JSON.stringify([provider.fingerprint, provider.configurationIdentity])))
+      const modelKey = provider.documentFingerprint ?? provider.fingerprint
       const key = retrievalCacheKey('vector', modelKey, 'document', digest(chunk.text))
       const equivalent = rows.get(key)
       if (equivalent) { equivalent.targets.push({ frame, chunk }); continue }
       const cached = await readCachedVectorRecord(context.cache ?? context.storage, key, provider.dimensions)
       source.check()
       recordIndexPerformance({ stage: 'vector-cache', durationMs: 0, records: 1, cacheHit: !!cached })
-      if (cached) assign(frame, chunk, cached.record, cached.persisted ? key : undefined)
+      if (cached) assign(frame, chunk, cached.record, key)
       else rows.set(key, { text: chunk.text, targets: [{ frame, chunk }] })
       if (rows.size === batchSize) await flush()
     }

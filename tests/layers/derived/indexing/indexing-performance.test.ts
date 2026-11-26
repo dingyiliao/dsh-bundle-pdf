@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
-import { measureIndexOperation, recordIndexPerformance, withIndexPerformance, type IndexPerformanceMetric } from '../../../../src/layers/derived/indexing/performance.ts'
-import type { RetrievalPorts } from '../../../../src/layers/derived/indexing/types.ts'
+import { createRetrievalService } from '../../../../src/layers/facade/search/retrieval/service.ts'
+import { measureIndexOperation, recordIndexPerformance, withIndexPerformance, type IndexPerformanceMetric } from '../../../../src/shared/indexing-performance-runtime.ts'
+import type { RetrievalPorts } from '../../../../src/layers/facade/search/retrieval/types.ts'
 
 function fixture(pages = 32, maxBatchSize = 16) {
   const records = new Map<string, unknown>(), batches: string[][] = [], transactions: string[][] = []
@@ -246,30 +246,6 @@ test('a small working budget flushes the page window instead of rejecting indivi
     await service.prepare('a', { documentId: 'doc' })
     assert.equal(f.batches.flat().length, 10)
     assert.ok(f.batches.length > 1, 'the bounded window deliberately sends smaller batches')
-  } finally { await service.dispose() }
-})
-
-test('legacy pages with over 256 unique vectors migrate in ordered backend batches without new inference', async () => {
-  const f = fixture(1)
-  f.ports.pages.read = async () => ({ text: Array.from({ length: 300 }, (_, i) => `Paragraph ${i}.`).join('\n\n'), source: 'pdf-text' })
-  f.ports.embedding = { select: () => ({ fingerprint: 'legacy-fixture', dimensions: 2, maxBatchSize: 16,
-    async embed(texts) { f.batches.push(texts); return texts.map(text => [1, Number(text.match(/\d+/)![0]) + 1]) } }) }
-  let service = createRetrievalService(f.ports)
-  try {
-    await service.prepare('a', { documentId: 'doc' }); await service.dispose()
-    const entry = [...f.records].find(([key]) => key.startsWith('index_page_'))!
-    const header = entry[1] as { page: number; generation: string; contentKey: string; vectorRefs: Record<string, { key: string }> }
-    f.records.set(entry[0], { version: 1, page: header.page, generation: header.generation,
-      content: f.records.get(header.contentKey), vectors: Object.fromEntries(Object.entries(header.vectorRefs).map(([id, ref]) => [id, f.records.get(ref.key)])) })
-    const requests = f.batches.length
-    f.transactions.length = 0
-    service = createRetrievalService(f.ports)
-    await service.prepare('a', { documentId: 'doc', rebuild: true, rebuildToken: 'migrate-legacy-page' })
-    assert.equal(f.batches.length, requests)
-    assert.ok(f.transactions.some(keys => keys.length === 256))
-    assert.ok(f.transactions.every(keys => keys.length <= 256))
-    const last = f.transactions.findLast(keys => keys.some(key => key.startsWith('index_page_')))!
-    assert.ok(last.at(-1)!.startsWith('index_page_'), 'page publication stays after immutable content and vectors')
   } finally { await service.dispose() }
 })
 

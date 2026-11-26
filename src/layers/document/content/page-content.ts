@@ -124,7 +124,7 @@ export function pageContentDigest(text: string): string {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`
 }
 
-/** Distinguish page attestations from the legacy whole-document and raw-byte cache keys. */
+/** Prefer a page attestation when present, with document or source identity as fallback. */
 export function pageContentCacheIdentity(page: PageContentSourceIdentity): string {
   if (typeof page.indexPageDigest === 'string') return `page:${page.indexPageDigest}`
   return (page.indexPageDigest === undefined ? page.indexContentDigest : undefined) ?? page.sourceDigest

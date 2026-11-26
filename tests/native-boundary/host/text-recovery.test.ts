@@ -3,6 +3,7 @@ import test from 'node:test'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 import { resolve, join } from 'node:path'
 import { NativeWorker } from '../../../src/native-boundary/host/native-worker.ts'
 import { createPdfService } from '../../../src/capabilities/pdfium/pdf-service.ts'
@@ -18,7 +19,7 @@ import { createPageOcrArtifacts } from '../../../src/layers/derived/content/cach
 import { BUNDLED_LOCAL_OCR_PRODUCER } from '../../../src/engines/ocr/backends/local-identity.ts'
 import { createLocalTesseractOcrBackend } from '../../../src/engines/ocr/backends/local-backend.ts'
 import { createRetrievalStore } from '../../../src/layers/derived/storage/retrieval-store.ts'
-import { createPdfPageContent } from '../../../src/layers/derived/content/production/page-content.ts'
+import { createPdfPageContent } from '../../../src/layers/facade/search/retrieval/page-content.ts'
 import { HostOcrService } from '../../../src/engines/ocr/service/index.ts'
 import { HostImageUnderstandingService } from '../../../src/engines/image/service/index.ts'
 import { defaultSettings } from '../../../src/shared/contracts.ts'
@@ -158,13 +159,11 @@ function sharedFixture(directory: string, bytes: Uint8Array, onRecognize?: (sign
     async dispose() { content.dispose(); ocr.dispose(); await service.dispose(); await state.workspaces.dispose(); await store.dispose() } }
 }
 async function storedRecords(store: ReturnType<typeof createRetrievalStore>, prefix: string) {
-  const entries: [string, unknown][] = []
-  let cursor: string | undefined
-  do {
-    const batch = await store.scan(prefix, cursor)
-    entries.push(...batch.entries); cursor = batch.nextKey
-  } while (cursor !== undefined)
-  return { entries }
+  const db = new DatabaseSync(join(store.directory, 'records.sqlite'))
+  try {
+    const rows = db.prepare('SELECT key,envelope FROM records WHERE key LIKE ? ORDER BY key').all(`${prefix}%`)
+    return { entries: rows.map(row => [String(row.key), JSON.parse(String(row.envelope)).payload] as [string, unknown]) }
+  } finally { db.close() }
 }
 
 test('index OCR and read-page recovery share a durable raw artifact in both directions, including a new Host/session/document', { skip }, async () => {

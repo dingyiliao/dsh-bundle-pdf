@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { cosineSimilarity, createBm25Index, hybridCandidates, rankVectors, reciprocalRankFusion, searchBm25, validateEmbeddingVector } from '../../../../src/layers/derived/indexing/ranking.ts'
-import { createBm25IndexCooperatively, rankVectorsCooperatively, searchBm25Cooperatively } from '../../../../src/layers/derived/indexing/ranking.ts'
+import { cosineSimilarity, createBm25Index, hybridCandidates, rankVectors, reciprocalRankFusion, searchBm25, validateEmbeddingVector } from '../../../../src/layers/facade/search/retrieval/ranking.ts'
+import { createBm25IndexCooperatively, rankVectorsCooperatively, searchBm25Cooperatively } from '../../../../src/layers/facade/search/retrieval/ranking.ts'
 
 test('BM25 uses corpus rarity, term frequency saturation and document length normalization', () => {
   const index = createBm25Index([

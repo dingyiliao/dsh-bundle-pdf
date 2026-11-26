@@ -16,6 +16,7 @@ export function EngineConfigurationFields({ descriptor, config, disabled, prefix
             value={typeof value === 'string' || typeof value === 'number' ? value : ''}
             onChange={event => change(field.key, event.target.value === '' ? undefined
               : field.type === 'number' && Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : event.target.value)} />}
+      {field.description && <small className="dsh-pdf-settings-hint">{field.description}</small>}
       {field.type === 'secret-reference' && <small className="dsh-pdf-settings-hint">{referenceHint}</small>}
     </div>
   })}</>

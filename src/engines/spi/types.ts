@@ -10,6 +10,7 @@ export interface EngineBinding { engineId: string; config?: EngineConfiguration 
 
 export const configurationFieldSchema = z.object({
   key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/), label: z.string().min(1).max(200),
+  description: z.string().max(1000).optional(),
   type: z.enum(['string', 'number', 'boolean', 'secret-reference']), required: z.boolean().optional(),
 }).strict()
 export type EngineConfigurationField = z.infer<typeof configurationFieldSchema>

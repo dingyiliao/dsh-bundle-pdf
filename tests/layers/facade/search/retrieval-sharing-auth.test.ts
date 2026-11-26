@@ -126,18 +126,18 @@ test('a caller lease is released when availability fails, and pre-aborted calls 
   } finally { await f.retrieval.dispose(); f.registry.dispose() }
 })
 
-test('Host binding configurations stay isolated even when a contributor returns the same model fingerprint', async () => {
+test('Host reuses provider-declared encoding identity across connection configurations without sharing authorization', async () => {
   const f = fixture()
   try {
     await f.retrieval.prepare('a', { documentId: 'document-a' }, signal)
     const first = await f.retrieval.search('a', { documentId: 'document-a', query: 'atomic', mode: 'semantic' }, signal)
     f.state.configuration = 'second'
     const second = await f.retrieval.search('a', { documentId: 'document-a', query: 'atomic', mode: 'semantic' }, signal)
-    assert.notEqual(second.indexGeneration, first.indexGeneration)
-    assert.equal(f.state.documents, 2, 'a distinct saved configuration cannot consume the first binding vectors')
+    assert.equal(second.indexGeneration, first.indexGeneration)
+    assert.equal(f.state.documents, 1, 'connection configuration does not override the provider’s declared encoding identity')
     const shared = await f.retrieval.search('b', { documentId: 'document-b', query: 'atomic', mode: 'semantic' }, signal)
     assert.equal(shared.indexGeneration, second.indexGeneration)
-    assert.equal(f.state.documents, 2)
+    assert.equal(f.state.documents, 1)
     assert.equal(shared.documentId, 'document-b')
   } finally { await f.retrieval.dispose(); f.registry.dispose() }
 })

@@ -31,10 +31,7 @@ export function migrateEngineConfigurations(input: EngineConfigurations = {}, im
       input = { ...input, image: { ...input.image, 'dsh-vision': configuration } }
     }
   }
-  const service = input.embedding?.['local-qwen3-embedding']
-  if (!service || !Object.hasOwn(service, 'modelRevision')) return input
-  const { modelRevision: _retired, ...configuration } = service
-  return { ...input, embedding: { ...input.embedding, 'local-qwen3-embedding': configuration } }
+  return input
 }
 
 /** Keep unavailable legacy choices when their previous model cannot be proven. */

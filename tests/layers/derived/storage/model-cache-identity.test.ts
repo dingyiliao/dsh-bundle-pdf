@@ -10,7 +10,7 @@ import { createRetrievalStore } from '../../../../src/layers/derived/storage/ret
 import { sessionModelCacheIdentity, type SessionModelInfo } from '../../../../src/engines/spi/routing/model-cache-identity.ts'
 import { createSessionLlmOcrBackend, type SessionOcrLlm } from '../../../../src/engines/ocr/backends/session-llm.ts'
 import { createDshVisionBackend } from '../../../../src/engines/image/backends/dsh.ts'
-import { createPdfPageContent, pageContentDigestBytes } from '../../../../src/layers/derived/content/production/page-content.ts'
+import { createPdfPageContent, pageContentDigestBytes } from '../../../../src/layers/facade/search/retrieval/page-content.ts'
 import { createPdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
 import { HostOcrService } from '../../../../src/engines/ocr/service/index.ts'
 import { HostImageUnderstandingService } from '../../../../src/engines/image/service/index.ts'
@@ -120,11 +120,9 @@ test('cache identity resolves a valid text-only route without attachments but do
   }
 })
 
-for (const scenario of ['current', 'legacy-default', 'legacy-private'] as const)
-for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index survives Host recreation without crossing private backend boundaries`, async t => {
-  const legacy = scenario !== 'current', privateBackend = scenario === 'legacy-private'
-  const ocrId = privateBackend ? 'private-ocr' : 'session-llm'
-  const imageId = privateBackend ? 'private-image' : 'dsh-vision'
+for (const mode of ['ocr', 'image'] as const) test(`${mode} index survives Host recreation`, async t => {
+  const ocrId = 'session-llm'
+  const imageId = 'dsh-vision'
   const directory = await mkdtemp(join(tmpdir(), 'pdf-model-identity-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   let ctx = new Context(), llm = new FixtureLlm(ctx)
@@ -135,33 +133,30 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
   const attachments = { async saveImage() {
     return { attachmentId: 'fixture-image', mediaType: 'image/png', bytes: 24, width: 200, height: 300 }
   } }
-  const registerBackends = (old: boolean) => {
+  const registerBackends = () => {
     const ocrBackend = createSessionLlmOcrBackend({ getLlm: () => getLlm(ctx),
       getAttachments: () => attachmentService ? attachments : undefined,
       async resolveModel() { return selectedRoute } })
     const imageBackend = createDshVisionBackend({ getLlm: () => getLlm(ctx),
       getAttachments: () => attachmentService ? attachments : undefined,
       selectedModel: () => selectedRoute })
-    const scoped = old || privateBackend ? {
-      cacheIdentity: async () => ({ identity: old ? 'old-runtime' : 'new-runtime', reusable: false as const }),
-    } : {}
-    ocr.register({ ...ocrBackend, descriptor: { ...ocrBackend.descriptor, id: ocrId }, ...scoped })
-    image.register({ ...imageBackend, descriptor: { ...imageBackend.descriptor, id: imageId }, ...scoped })
+    ocr.register({ ...ocrBackend, descriptor: { ...ocrBackend.descriptor, id: ocrId } })
+    image.register({ ...imageBackend, descriptor: { ...imageBackend.descriptor, id: imageId } })
   }
-  registerBackends(legacy)
+  registerBackends()
   const bytes = blankPdf(1, [200, 300])
   const { indexContentDigest, indexPageDigests } = await inspectFixturePdf(bytes)
   const indexIdentity = { indexContentDigest, indexPageDigests }
   assert.ok(indexIdentity.indexContentDigest)
   assert.match(indexIdentity.indexPageDigests?.[0] ?? '', /^sha256:[a-f0-9]{64}$/)
-  let modernMetadata = !legacy, authorizedSession = 'session'
+  let authorizedSession = 'session'
   let documentId = 'doc', contentVersion = 'content-one', nativeReads = 0, renders = 0, documentVectors = 0
   const snapshot = (): HostWorkspaceSnapshot => ({ id: documentId, path: '/scanned.pdf', bytes,
     sourceVersion: 'disk-one', contentVersion, revision: 0,
     dirty: false, conflict: false, canUndo: false, canRedo: false,
     document: { pageCount: 1, pages: [{ page: 1, userUnit: 1, rotation: 0, mediaBox: [0, 0, 200, 300], cropBox: [0, 0, 200, 300] }],
       annotations: [], signed: false, encrypted: false, readOnly: false,
-      ...(modernMetadata ? indexIdentity : {}) } })
+      ...indexIdentity } })
   const workspaces = { readSnapshot(sessionId: string, id: string) {
     if (sessionId !== authorizedSession || id !== documentId) {
       throw Object.assign(new Error('Document is not owned by this session'), { code: 'pdf/unknown-document' })
@@ -190,10 +185,8 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     } }
   embeddings.register(embeddingBackend)
   let content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: store })
-  const oldContentPort = { ...content }
-  delete oldContentPort.indexIdentity
   let retrieval = createPdfRetrieval(workspaces, pages, createMemoryEvidenceReferenceStore(), {
-    settings: () => settings, embeddings, content: legacy ? oldContentPort : content, cache: store,
+    settings: () => settings, embeddings, content, cache: store,
   })
   try {
     const progress: { indexedPages: number; embeddedChunks: number; phase?: string }[] = []
@@ -211,22 +204,10 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     await retrieval.prepare('session', { documentId: 'doc' }, signal)
     assert.equal(llm.calls, 1, 'stable model proxies reuse the prepared index without another model call')
     const firstIdentity = await (mode === 'ocr' ? ocr : image).cacheIdentity('session', signal)
-    assert.equal(firstIdentity.reusable, !legacy)
+    assert.equal(firstIdentity.reusable, true)
     const firstVectors = documentVectors, firstReads = nativeReads, firstRenders = renders
-    let switchedIdentity = firstIdentity
-    if (legacy) {
-      const aggregate = (await store.scan('pagecontent_')).entries.filter(([key]) => /^pagecontent_[a-f0-9]{64}$/.test(key))
-      assert.equal(aggregate.length, 1, 'the old full page aggregate really exists in SQLite')
-      const value = aggregate[0]![1]
-      assert.ok(value && typeof value === 'object')
-      assert.equal('indexContentDigest' in value, false, 'the fixture must use the 0.1.4 record shape')
-      assert.equal('indexPageDigest' in value, false)
-      assert.ok('extractionIdentity' in value)
-      assert.equal(value.extractionIdentity, content.identity('session'))
-    }
     selectedRoute = { ...route, model: 'another-conversation-model' }
-    if (!legacy) {
-      switchedIdentity = await (mode === 'ocr' ? ocr : image).cacheIdentity('model-b-session', signal)
+    const switchedIdentity = await (mode === 'ocr' ? ocr : image).cacheIdentity('model-b-session', signal)
       assert.notEqual(switchedIdentity.fingerprint, firstIdentity.fingerprint,
         'live engine identity must continue detecting a genuinely different execution route')
       authorizedSession = 'model-b-session'
@@ -236,7 +217,6 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
       assert.equal(llm.calls, 1, 'changing the conversation model cannot replace an accepted document index')
       assert.equal(nativeReads, firstReads, 'a model-only switch does not re-extract the PDF')
       assert.equal(documentVectors, firstVectors, 'a model-only switch does not recalculate document embeddings')
-    }
     await retrieval.dispose(); content.dispose(); ocr.dispose(); image.dispose(); embeddings.dispose()
     await store.dispose(); await ctx.fiber.dispose()
     ctx = new Context(); llm = new FixtureLlm(ctx)
@@ -244,44 +224,30 @@ for (const mode of ['ocr', 'image'] as const) test(`${scenario} ${mode} index su
     store = createRetrievalStore({ directory, maxMemoryBytes: 64 * 1024 })
     ocr = new HostOcrService(() => ocrId); image = new HostImageUnderstandingService(() => imageId)
     attachmentService = false
-    registerBackends(false)
+    registerBackends()
     embeddings = new EmbeddingRegistry(); embeddings.register(embeddingBackend)
     documentId = 'reopened-document'; contentVersion = 'new-working-copy-identity'
-    modernMetadata = true; authorizedSession = 'new-session'
-    let upgradeScans = 0
-    const countedCache = { ...store, scan(...args: Parameters<typeof store.scan>) { upgradeScans++; return store.scan(...args) } }
-    content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: countedCache })
+    authorizedSession = 'new-session'
+    content = createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image, cache: store })
     retrieval = createPdfRetrieval(workspaces, pages, createMemoryEvidenceReferenceStore(), {
       settings: () => settings, embeddings, content, cache: store,
     })
     const reopenedIdentity = await (mode === 'ocr' ? ocr : image).cacheIdentity('new-session', signal)
     assert.equal((await (mode === 'ocr' ? ocr : image).availability('new-session', signal)).status, 'unavailable',
       'the current text-only model and missing attachment service remain unavailable for new image processing')
-    if (legacy) assert.notEqual(reopenedIdentity.fingerprint, firstIdentity.fingerprint)
-    else assert.equal(reopenedIdentity.fingerprint, switchedIdentity.fingerprint)
+    assert.equal(reopenedIdentity.fingerprint, switchedIdentity.fingerprint)
     assert.notEqual(reopenedIdentity.generation, firstIdentity.generation,
       'persistent identity is independent of the new registration, which still fences in-flight operations')
-    if (privateBackend) {
-      await assert.rejects(retrieval.prepare(authorizedSession, { documentId }, signal), { code: 'pdf/retrieval-incomplete' })
-      assert.equal(upgradeScans, 0, 'a private producer cannot acquire new sharing rights from the upgrade')
-      assert.equal(llm.calls, 0)
-      assert.equal(documentVectors, firstVectors)
-      return
-    }
     let restoredPhase: string | undefined
     await retrieval.prepare('new-session', { documentId }, signal, value => { restoredPhase = value.phase })
     assert.equal(restoredPhase, 'ready')
-    assert.equal(upgradeScans > 0, legacy, 'only an old default model needs a one-time scan after upgrading')
-    const scans = upgradeScans
-    await content.prepare('new-session', signal, documentId)
-    assert.equal(upgradeScans, scans, 'the completion marker is durable for this path and policy')
     assert.equal(llm.calls, 0, 'Host recreation cannot rerun completed OCR or visual descriptions')
     assert.equal(nativeReads, firstReads, 'restoring completed pages does not re-extract them')
     assert.equal(documentVectors, firstVectors, 'restoring completed pages does not recompute document vectors')
-    assert.equal(renders, firstRenders, 'upgrading must not render unchanged PDF pixels again')
+    assert.equal(renders, firstRenders, 'restoring must not render unchanged PDF pixels again')
     const reopened = await retrieval.search('new-session', { documentId, query: 'needle', mode: 'semantic' }, signal)
     assert.equal(reopened.status, 'complete')
-    if (!legacy) assert.equal(reopened.indexGeneration, found.indexGeneration)
+    assert.equal(reopened.indexGeneration, found.indexGeneration)
     assert.equal(reopened.candidates[0]?.source, mode === 'ocr' ? 'ocr-text' : 'image-description')
     assert.match(reopened.candidates[0]!.quote, /needle/)
     const provenance = reopened.candidates[0]!.evidence.snapshot

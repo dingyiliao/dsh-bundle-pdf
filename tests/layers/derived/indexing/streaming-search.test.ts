@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { searchStoredIndex, type SearchPage, type StoredIndexSearchOptions } from '../../../../src/layers/derived/indexing/streaming-search.ts'
-import { createBm25Index, rankVectors, searchBm25 } from '../../../../src/layers/derived/indexing/ranking.ts'
+import { searchStoredIndex, type SearchPage, type StoredIndexSearchOptions } from '../../../../src/layers/facade/search/retrieval/streaming-search.ts'
+import { createBm25Index, rankVectors, searchBm25 } from '../../../../src/layers/facade/search/retrieval/ranking.ts'
 import type { RetrievalChunk } from '../../../../src/layers/derived/content/retrieval/text.ts'
 
 const chunk = (id: string, page: number, text: string): RetrievalChunk => ({ id, page, text,

@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto'
 import { EmbeddingError, type EmbeddingEngine, type EmbeddingEngineOutput, type EmbeddingEngineRequest, type EmbeddingModel } from '../sdk/index.js'
 import type { EngineConfiguration } from '../../spi/index.js'
-import type { IndexPerformanceMetric } from '../../../shared/indexing-performance.js'
 
 export const QWEN3_RETRIEVAL_INSTRUCTION = 'Given a search query, retrieve relevant passages from the document that answer the query'
-const localEndpoint = 'http://127.0.0.1:8001/v1/embeddings'
+const localEndpoint = 'http://127.0.0.1:8001/v1'
 const modelName = 'mlx-community/Qwen3-Embedding-0.6B-8bit'
 const metadataTtlMs = 2000
 const metadataCacheLimit = 128
@@ -17,8 +16,8 @@ interface Options {
   now?: () => number
   /** Host-owned references, never raw credentials from settings. Resolved once per operation. */
   resolveCredential?: (reference: string, signal: AbortSignal) => Promise<string | undefined>
-  /** Optional metadata-only observer; the engine does not depend on derived-index internals. */
-  onPerformance?: (metric: IndexPerformanceMetric) => void
+  /** Optional transport timing observer. */
+  onPerformance?: (metric: { stage: string; durationMs: number; requests: number; records?: number }) => void
 }
 interface Configuration {
   endpoint: string; model: string; dimensions: number
@@ -45,8 +44,8 @@ function configuration(input: EngineConfiguration): Configuration {
   }
   const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(url.hostname)
   if (url.username || url.password || url.search || url.hash || !['http:', 'https:'].includes(url.protocol)
-      || url.protocol === 'http:' && !loopback || !/\/embeddings\/?$/.test(url.pathname)) {
-    throw new EmbeddingError('invalid-request', 'Use an HTTPS embedding endpoint, or HTTP on loopback, ending in /embeddings.')
+      || url.protocol === 'http:' && !loopback) {
+    throw new EmbeddingError('invalid-request', 'Use an HTTPS embedding base URL, or HTTP on loopback.')
   }
   const model = string('model', modelName)
   const queryInstruction = input.queryInstruction ?? ''
@@ -55,6 +54,8 @@ function configuration(input: EngineConfiguration): Configuration {
   if (apiKeyRef !== undefined && (typeof apiKeyRef !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(apiKeyRef))) {
     throw new EmbeddingError('invalid-request', 'Use a credential reference such as EMBEDDING_API_KEY, not an API key.')
   }
+  // Keep the configured base path; the API route is appended to this directory.
+  url.pathname = url.pathname.replace(/\/$/, '') + '/'
   return { endpoint: url.toString(), model,
     dimensions: integer('dimensions', 1024, 8192), maxBatchSize: integer('maxBatchSize', 8, 16),
     maxInputCharacters: integer('maxInputCharacters', 16_000, 16_000), queryInstruction,
@@ -94,23 +95,24 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
   const revisions = new Map<string, string>()
   const metadata = new Map<string, { revision?: string; expires: number }>()
   const pending = new Map<string, { controller: AbortController; waiters: Set<object>; settled: boolean; promise: Promise<string | undefined> }>()
-  const descriptor = { id, name: 'Embedding service', version: '3', execution: 'service' as const,
+  const descriptor = { id, name: 'OpenAI-compatible embedding service', version: '4', execution: 'service' as const,
     configurationFields: [
-      { key: 'endpoint', label: 'Embedding endpoint', type: 'string' as const },
+      { key: 'endpoint', label: 'OpenAI-compatible API base URL', description: 'Use the service base URL, such as https://provider.example/api or http://127.0.0.1:8001/v1; /embeddings and /models are appended automatically.', type: 'string' as const },
       { key: 'apiKeyRef', label: 'API key reference (optional)', type: 'secret-reference' as const },
       { key: 'model', label: 'Model name', type: 'string' as const },
-      { key: 'dimensions', label: 'Vector dimensions', type: 'number' as const },
-      { key: 'maxBatchSize', label: 'Batch size', type: 'number' as const },
-      { key: 'maxInputCharacters', label: 'Maximum input characters', type: 'number' as const },
+      { key: 'dimensions', label: 'Vector dimensions', description: 'Must equal the model output dimension; model-dependent (1–8192).', type: 'number' as const },
+      { key: 'maxBatchSize', label: 'Batch size', description: 'Must not exceed the service/model batch limit (1–16).', type: 'number' as const },
+      { key: 'maxInputCharacters', label: 'Maximum input characters', description: 'Must not exceed the service/model input limit (1–16,000 characters).', type: 'number' as const },
       { key: 'queryInstruction', label: 'Query instruction', type: 'string' as const },
     ] }
   const describe = (input: EngineConfiguration): EmbeddingModel => {
     const config = configuration(input)
     const encoding = `text-instruct-l2-v1:${createHash('sha256').update(config.queryInstruction).digest('hex')}`
     const modelRevision = revisions.get(configurationIdentity(config)) ?? 'unversioned'
+    // Reusable vectors belong to the encoder, not its deployment or credentials.
+    // Unversioned services rely on the declared model name until they report a revision.
     const documentFingerprint = createHash('sha256').update(JSON.stringify({ engine: id, version: descriptor.version,
-      endpoint: config.endpoint, model: config.model, dimensions: config.dimensions, encoding: 'document-text-l2-v1', modelRevision,
-      ...(modelRevision === 'unversioned' ? { credentialScope: config.apiKeyRef ?? null } : {}) })).digest('hex')
+      model: config.model, dimensions: config.dimensions, encoding: 'document-text-l2-v1', modelRevision })).digest('hex')
     const fingerprint = createHash('sha256').update(JSON.stringify({ documentFingerprint, encoding })).digest('hex')
     return { engineId: id, engineVersion: descriptor.version, model: config.model, modelRevision,
       dimensions: config.dimensions, maxBatchSize: config.maxBatchSize, maxInputCharacters: config.maxInputCharacters, encoding, fingerprint,
@@ -148,8 +150,7 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
     .update(JSON.stringify([configurationIdentity(config), config.maxBatchSize, config.maxInputCharacters,
       requestHeaders.get('authorization')])).digest('hex')
   const readMetadata = async (config: Configuration, signal: AbortSignal, requestHeaders: Headers): Promise<string | undefined> => {
-    const url = new URL(config.endpoint)
-    url.pathname = url.pathname.replace(/\/embeddings\/?$/, '/models')
+    const url = new URL('models', config.endpoint)
     const started = performance.now()
     let raw: { data?: { id?: unknown; embedding?: Record<string, unknown> }[] }
     try {
@@ -167,7 +168,7 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
         || attestation.truncation !== false || typeof attestation.maxInputCharacters !== 'number'
         || attestation.maxInputCharacters < config.maxInputCharacters || typeof attestation.maxBatchSize !== 'number'
         || attestation.maxBatchSize < config.maxBatchSize || attestation.queryEncoding !== 'client-instruction')) {
-      throw new EmbeddingError('engine-unavailable', 'The embedding endpoint must report matching model metadata and non-truncating inputs at /v1/models.')
+      throw new EmbeddingError('engine-unavailable', 'The embedding endpoint must report matching model metadata and non-truncating inputs at /models.')
     }
     return attestation?.revision as string | undefined
   }
@@ -240,7 +241,7 @@ export function createOpenAiCompatibleEmbeddingEngine(options: Options = {}): Em
     const started = performance.now()
     let raw: { model?: unknown; model_revision?: unknown; data?: unknown }
     try {
-      const response = await requestFetch(config.endpoint, { method: 'POST', redirect: 'error', signal: request.signal,
+      const response = await requestFetch(new URL('embeddings', config.endpoint).toString(), { method: 'POST', redirect: 'error', signal: request.signal,
         headers: requestHeaders, body: JSON.stringify({ model: config.model, input: texts, encoding_format: 'float' }) })
       raw = await readJson(response, options.maxResponseBytes ?? 4 * 1024 * 1024) as typeof raw
     } finally { options.onPerformance?.({ stage: 'embedding-http', durationMs: performance.now() - started, requests: 1, records: texts.length }) }

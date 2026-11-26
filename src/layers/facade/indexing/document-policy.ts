@@ -7,14 +7,12 @@ const engineId = z.string().min(1).max(200)
 const resolvedPolicySchema = documentIndexPolicySchema.extend({
   embeddingEngine: engineId, ocrEngine: engineId, imageEngine: engineId,
 }).strict()
-export const resolvedIndexPlanSchema = z.object({
+export const resolvedRetrievalBindingSchema = z.object({
   policy: resolvedPolicySchema, configurations: engineConfigurationsSchema,
 }).strict()
-export type ResolvedIndexPlan = z.infer<typeof resolvedIndexPlanSchema>
+export type ResolvedRetrievalBinding = z.infer<typeof resolvedRetrievalBindingSchema>
 export const documentIndexRecordSchema = z.object({
-  version: z.literal(2).optional(), revision: z.number().int().nonnegative(),
-  desired: z.union([documentIndexPolicySchema, resolvedPolicySchema.transform(value => indexPolicy(value))]),
-  active: resolvedIndexPlanSchema,
+  version: z.literal(3), revision: z.number().int().nonnegative(), policy: documentIndexPolicySchema,
 }).strict()
 type Record = z.infer<typeof documentIndexRecordSchema>
 interface Store {
@@ -28,22 +26,22 @@ const stale = () => Object.assign(new Error('PDF index settings changed. Reload 
 export function indexPolicy(settings: Pick<PdfSettings, 'indexScanPages' | 'indexImageDescriptions'>): PdfDocumentIndexPolicy {
   return { indexScanPages: settings.indexScanPages ?? true, indexImageDescriptions: settings.indexImageDescriptions ?? false }
 }
-/** Freeze only the selected bindings; edits to unrelated engines do not invalidate this document. */
-export function resolveIndexPlan(policy: PdfDocumentIndexPolicy, settings: PdfSettings): ResolvedIndexPlan {
+/** Resolve the current engine configuration for one facade operation. It is never persisted with the document. */
+export function resolveRetrievalBinding(policy: PdfDocumentIndexPolicy, settings: PdfSettings): ResolvedRetrievalBinding {
   const resolved = { ...policy, embeddingEngine: settings.embeddingEngine ?? 'none',
     ocrEngine: settings.ocrEngine ?? defaultSettings.ocrEngine!, imageEngine: settings.imageEngine ?? 'dsh-vision' }
-  const configurations: ResolvedIndexPlan['configurations'] = {}
+  const configurations: ResolvedRetrievalBinding['configurations'] = {}
   for (const [kind, id] of [['embedding', resolved.embeddingEngine], ['ocr', resolved.ocrEngine], ['image', resolved.imageEngine]] as const) {
     if (kind === 'ocr' && !policy.indexScanPages || kind === 'image' && !policy.indexImageDescriptions || id === 'none') continue
     configurations[kind] = { [id]: structuredClone(settings.engineConfigurations?.[kind]?.[id] ?? {}) }
   }
   return { policy: structuredClone(resolved), configurations }
 }
-export function settingsForIndexPlan(plan: ResolvedIndexPlan, defaults: PdfSettings = defaultSettings): PdfSettings {
-  return { ...defaults, ...plan.policy, engineConfigurations: structuredClone(plan.configurations) }
+export function settingsForRetrievalBinding(binding: ResolvedRetrievalBinding, defaults: PdfSettings = defaultSettings): PdfSettings {
+  return { ...defaults, ...binding.policy, engineConfigurations: structuredClone(binding.configurations) }
 }
 
-/** Host/profile-owned preferences. The path key survives saves; source digests belong to derived indexes. */
+/** Host/profile-owned document content preferences. Cached index generations have their own identity. */
 export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSettings) {
   const entries = new Map<string, { record: Record; pending: Promise<void>; retained: boolean }>()
   const listeners = new Set<() => void>()
@@ -57,16 +55,11 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
     let current = entries.get(key)
     if (!current) {
       const saved = store.get(key)
-      const settings = defaults(), desired = indexPolicy(settings)
-      const parsed: Record = saved === undefined ? { revision: 0, desired, active: resolveIndexPlan(desired, settings) }
-        : documentIndexRecordSchema.parse(saved)
-      const record: Record = { ...parsed, version: 2 }
+      const record: Record = saved && typeof saved === 'object' && 'version' in saved && saved.version === 3
+        ? documentIndexRecordSchema.parse(saved)
+        : { version: 3, revision: 0, policy: indexPolicy(defaults()) }
       current = { record, pending: Promise.resolve(), retained: true }
       entries.set(key, current)
-      if (parsed.version !== 2) {
-        current.pending = Promise.resolve().then(async () => { await store.put(key, structuredClone(record)) })
-        void current.pending.catch(() => {})
-      }
     }
     current.retained = true
     return { key, current }
@@ -84,24 +77,15 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
     void pending.catch(() => {})
     return pending
   }
-  function desired(path: string): ResolvedIndexPlan {
-    return resolveIndexPlan(entry(path).current.record.desired, defaults())
-  }
   return {
     enabled,
-    active(path: string): ResolvedIndexPlan {
-      const plan = structuredClone(entry(path).current.record.active)
-      // Global disable is a reversible gate, never a rewrite of a ready index.
-      if (!enabled()) plan.policy.embeddingEngine = 'none'
-      return plan
+    current(path: string): ResolvedRetrievalBinding {
+      return resolveRetrievalBinding(entry(path).current.record.policy, defaults())
     },
-    desired,
     async settled(path: string) {
       const { key, current } = entry(path), pending = current.pending
       try { await pending } catch (error) {
         if (disposed) throw error
-        // An explicit retry can recover an initial preference-store failure.
-        // Concurrent callers share that retry rather than racing new writes.
         if (current.pending === pending) {
           current.pending = Promise.resolve().then(async () => { await store.put(key, structuredClone(current.record)) })
           void current.pending.catch(() => {})
@@ -110,40 +94,19 @@ export function createDocumentIndexPolicies(store: Store, defaults: () => PdfSet
       }
     },
     snapshot(path: string, documentId: string): PdfDocumentIndexSettings {
-      const { record } = entry(path).current, target = desired(path)
-      const pending = !equal(record.active, target)
-      const impact = !pending ? 'none' : record.active.policy.embeddingEngine !== target.policy.embeddingEngine
-        ? 'embedding' : record.active.policy.indexScanPages !== target.policy.indexScanPages
-          || record.active.policy.indexImageDescriptions !== target.policy.indexImageDescriptions
-          || record.active.policy.ocrEngine !== target.policy.ocrEngine || record.active.policy.imageEngine !== target.policy.imageEngine
-          ? 'content' : 'configuration'
-      const enabled = target.policy.embeddingEngine !== 'none'
-      return { documentId, revision: record.revision, policy: structuredClone(record.desired),
-        activePolicy: indexPolicy(record.active.policy), enabled,
-        activeEnabled: enabled && record.active.policy.embeddingEngine !== 'none', pending, impact }
+      const { record } = entry(path).current
+      return { documentId, revision: record.revision, policy: structuredClone(record.policy), enabled: enabled() }
     },
     configure(path: string, revision: number, policy: PdfDocumentIndexPolicy) {
       const next = documentIndexPolicySchema.parse(policy)
       return write(path, record => {
         if (record.revision !== revision) throw stale()
-        if (equal(record.desired, next)) return record
-        return { ...record, revision: record.revision + 1, desired: next }
+        if (equal(record.policy, next)) return record
+        return { ...record, revision: record.revision + 1, policy: next }
       })
     },
     defaults(path: string, revision: number) {
       return this.configure(path, revision, indexPolicy(defaults()))
-    },
-    /** A staged build may finish after preferences change. In that case the
-     * active plan captured at admission is its compare-and-swap boundary. */
-    activate(path: string, plan: ResolvedIndexPlan, expectedActive?: ResolvedIndexPlan) {
-      const accepted = resolvedIndexPlanSchema.parse(plan)
-      const baseline = expectedActive === undefined ? undefined : resolvedIndexPlanSchema.parse(expectedActive)
-      return write(path, record => {
-        if (baseline && equal(record.active, accepted)) return record
-        if (baseline ? !equal(record.active, baseline) : !equal(resolveIndexPlan(record.desired, defaults()), accepted)) throw stale()
-        if (equal(record.active, accepted)) return record
-        return { ...record, revision: record.revision + 1, active: accepted }
-      })
     },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } },
     releaseUnused(paths: ReadonlySet<string>) {

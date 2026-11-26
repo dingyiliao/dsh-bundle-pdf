@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
-import { digest, pageCacheKey, retrievalCacheKey } from '../../../../src/layers/derived/indexing/cache.ts'
-import { RETRIEVAL_TEXT_VERSION } from '../../../../src/layers/derived/content/retrieval/text.ts'
-import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress, RetrievalResult } from '../../../../src/layers/derived/indexing/types.ts'
+import { createRetrievalService } from '../../../../src/layers/facade/search/retrieval/service.ts'
+import { digest, pageCacheKey } from '../../../../src/layers/derived/indexing/cache.ts'
+import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalProgress, RetrievalResult } from '../../../../src/layers/facade/search/retrieval/types.ts'
 
 const document = (): RetrievalDocument => ({ id: 'doc', path: '/synthetic.pdf', sourceDigest: 'source-1', contentVersion: 'content-1', pageCount: 3 })
 const turn = () => new Promise<void>(resolve => setTimeout(resolve, 0))
@@ -529,31 +528,6 @@ test('durable data survives restart and corrupted structure requires explicit re
   } finally { await repaired.dispose() }
 })
 
-test('obsolete native quality warnings are re-extracted while unchanged text reuses cached embeddings', async () => {
-  const text = 'The cat is learning.', e = embedding(), f = fixture({ text: [text], provider: e.provider })
-  const source = f.state.document
-  const oldKey = retrievalCacheKey('page', 'joined-page-text-v1', RETRIEVAL_TEXT_VERSION, source.path, source.sourceDigest, 1)
-  f.stored.set(oldKey, { version: 1, source: 'pdf-text', text,
-    warnings: ['Some native characters could not be decoded; OCR or visual inspection is needed.'] })
-  // Quality-only extraction changes must not send unchanged document text to the model again.
-  f.stored.set(retrievalCacheKey('vector', e.provider.fingerprint, 'document', digest(text)), [1, 0])
-  try {
-    const result = await finish(f.service, { ...baseInput, mode: 'semantic' })
-    assert.deepEqual(f.reads, [1], 'obsolete extraction metadata must be replaced by an authorized page read')
-    assert.deepEqual(result.coverage.qualityWarnings, [])
-    assert.equal(result.chunks[0]!.text, text)
-    assert.deepEqual(e.calls.map(call => call.purpose), ['query'])
-    assert.deepEqual(f.stored.get(pageCacheKey(source.path, source.sourceDigest, 1)), { version: 1, source: 'pdf-text', text })
-    await f.service.dispose()
-    const restored = createRetrievalService(f.ports)
-    try {
-      assert.deepEqual((await finish(restored, { ...baseInput, mode: 'semantic' })).coverage.qualityWarnings, [])
-      assert.deepEqual(f.reads, [1], 'the corrected quality metadata must survive service disposal')
-      assert.ok(e.calls.every(call => call.purpose === 'query'))
-    } finally { await restored.dispose() }
-  } finally { await f.service.dispose() }
-})
-
 test('positioned paragraphs rank and persist independently without widening their exact evidence ranges', async () => {
   const e = embedding(), body = 'A cat learns useful patterns.\nIt should not memorize the examples.'
   const text = `Heading\n${body}\nFooter`
@@ -582,13 +556,10 @@ test('positioned paragraphs rank and persist independently without widening thei
   } finally { await f.service.dispose() }
 })
 
-test('older chunking caches and malformed paragraph offsets are rebuilt from authorized page text', async () => {
+test('malformed cached paragraph offsets are rebuilt from authorized page text', async () => {
   const f = fixture({ text: ['cat\nnext paragraph'] })
   const source = f.state.document
-  const oldKey = retrievalCacheKey('page', 'joined-page-text-v1', 'page-text-v1', source.path, source.sourceDigest, 1)
-  const freshKey = pageCacheKey(source.path, source.sourceDigest, 1)
-  assert.notEqual(oldKey, freshKey)
-  f.stored.set(oldKey, { version: 1, source: 'pdf-text', text: 'An obsolete whole-page cache.' })
+  const freshKey = pageCacheKey(source.path, source.sourceDigest, 1, '')
   f.ports.pages.read = async () => {
     f.reads.push(1)
     return { text: 'cat\nnext paragraph', source: 'pdf-text', paragraphBreaks: [4] }
@@ -598,8 +569,7 @@ test('older chunking caches and malformed paragraph offsets are rebuilt from aut
     assert.equal(f.reads.length, 1)
     await f.service.dispose()
     for (const paragraphBreaks of [[0], [100], [4, 2], [4, 4], [1.5], [2]]) {
-      // This is a legacy-cache migration case: no authoritative index shard
-      // exists yet, so each malformed legacy page must be re-extracted.
+      // Remove the checkpoint so the malformed cached page is read again.
       for (const key of f.stored.keys()) if (key.startsWith('index_head_') || key.startsWith('index_page_')) f.stored.delete(key)
       // Offset 2 splits a Unicode surrogate in this cached source.
       f.stored.set(freshKey, { version: 1, source: 'pdf-text', text: 'A😀 cached cat', paragraphBreaks })

@@ -121,20 +121,22 @@ test('Host settings discard only removed form-engine configuration and preserve 
   } }) as unknown as HostConfig), /8192/)
 })
 
-test('retired built-in embedding revisions are removed without changing provider settings or saved values', () => {
+test('embedding endpoints remain exactly configured when settings are read', () => {
   const saved = { embedding: {
     'local-qwen3-embedding': { endpoint: 'https://embedding.example/v1/embeddings', model: 'embedding', modelRevision: 'old-user-tag' },
     'custom-provider': { modelRevision: 'provider-owned-value', dimensions: 2 },
   }, ocr: { fixture: { language: 'auto' } } }
   const configured = validate({ engineConfigurations: saved })
   const settings = readConfig(configured as unknown as HostConfig)
-  assert.deepEqual(settings.engineConfigurations?.embedding?.['local-qwen3-embedding'], {
-    endpoint: 'https://embedding.example/v1/embeddings', model: 'embedding',
-  })
+  assert.deepEqual(settings.engineConfigurations?.embedding?.['local-qwen3-embedding'], saved.embedding['local-qwen3-embedding'])
   assert.deepEqual(settings.engineConfigurations?.embedding?.['custom-provider'], saved.embedding['custom-provider'])
   assert.deepEqual(configured.engineConfigurations.get(), saved)
   assert.deepEqual(migrateEngineConfigurations(), {})
   assert.strictEqual(migrateEngineConfigurations(settings.engineConfigurations), settings.engineConfigurations)
+  for (const endpoint of ['http://127.0.0.1:8000/v1/embeddings', 'http://127.0.0.1:8000/v1/embeddings/']) {
+    assert.deepEqual(migrateEngineConfigurations({ embedding: { 'local-qwen3-embedding': { endpoint } } }),
+      { embedding: { 'local-qwen3-embedding': { endpoint } } })
+  }
 })
 
 test('PDF settings expose only the supported translation targets and no source/default-color fields', () => {

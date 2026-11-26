@@ -20,12 +20,12 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
   const { dom, restore: restoreDom } = createDom()
   const { createRoot } = await import('react-dom/client')
   const container = dom.document.getElementById('root')!, root = createRoot(container)
-  const legacySnapshot: ConfigFormSnapshot = { ...ready(), value: { ...defaultSettings,
+  const configuredSnapshot: ConfigFormSnapshot = { ...ready(), value: { ...defaultSettings,
     embeddingEngine: 'local-qwen3-embedding', engineConfigurations: { embedding: { 'local-qwen3-embedding': {
-      endpoint: 'http://localhost:8001/v1/embeddings', modelRevision: 'retired-version',
+      endpoint: 'http://localhost:8001/v1',
     } } } } }
   const mutations: unknown[] = []
-  let accepted = legacySnapshot
+  let accepted = configuredSnapshot
   const listeners = new Set<() => void>()
   let owner: ConfigForm = { getSnapshot: () => accepted,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
@@ -65,9 +65,8 @@ test('index rebuild settings show progress and recovery, fence duplicates, and c
       endpoint.dispatchEvent(new dom.Event('input', { bubbles: true }))
     })
     await act(async () => { endpoint.dispatchEvent(new dom.FocusEvent('focusout', { bubbles: true })) })
-    assert.equal(mutations.length, 1, 'a retired modelRevision cannot prevent saving a valid engine edit')
+    assert.equal(mutations.length, 1, 'a valid endpoint edit is saved')
     assert.match(JSON.stringify(mutations[0]), /provider\.example/)
-    assert.equal(JSON.stringify(mutations[0]).includes('modelRevision'), false)
     assert.match(container.textContent ?? '', /不会修改 PDF 或草稿/)
     await act(async () => { button('清除全部索引缓存').click(); button('清除全部索引缓存').click() })
     assert.equal(calls, 1)

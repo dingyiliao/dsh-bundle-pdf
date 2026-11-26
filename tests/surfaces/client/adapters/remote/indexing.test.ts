@@ -82,31 +82,6 @@ test('a late pre-action status reply cannot overwrite a cancelled task', async (
   } finally { stop(); api.dispose(); lifetime.abort() }
 })
 
-test('resume is a distinct control request that retains the accepted plan instead of applying pending settings', async () => {
-  const lifetime = new AbortController(), requests: unknown[] = []
-  const activePolicy = { indexScanPages: true, indexImageDescriptions: false }
-  const desiredPolicy = { indexScanPages: false, indexImageDescriptions: true }
-  const api = createPdfIndexingApi({ rpc: { async call(_path, _method, raw) {
-    requests.push(raw)
-    const action = (raw as { action: string }).action
-    return ok({ ...snapshot('running'), revision: action,
-      documents: [{ documentId: 'document', revision: 3, policy: desiredPolicy,
-        activePolicy: action === 'resume' ? activePolicy : desiredPolicy,
-        enabled: true, activeEnabled: true, pending: action === 'resume', impact: action === 'resume' ? 'content' : 'none' }] })
-  } } }, lifetime.signal)
-  try {
-    await api.resume('session', 'document', lifetime.signal)
-    assert.deepEqual(requests, [{ action: 'resume', sessionId: 'session', documentId: 'document' }])
-    assert.deepEqual(api.getSnapshot('session').documents?.[0]?.activePolicy, activePolicy)
-    assert.equal(api.getSnapshot('session').documents?.[0]?.pending, true)
-    await api.start('session', 'document', lifetime.signal)
-    await api.rebuild('session', 'document', lifetime.signal)
-    assert.deepEqual(requests, ['resume', 'start', 'rebuild'].map(action => ({ action, sessionId: 'session', documentId: 'document' })))
-    assert.equal(api.getSnapshot('session').documents?.[0]?.pending, false)
-    assert.deepEqual(api.getSnapshot('session').documents?.[0]?.activePolicy, desiredPolicy)
-  } finally { api.dispose(); lifetime.abort() }
-})
-
 test('late status and cancelled transport replies cannot replace the resumed task occurrence', async () => {
   const lifetime = new AbortController()
   let finishStatus!: (value: unknown) => void, finishResume!: (value: unknown) => void
@@ -285,7 +260,7 @@ const customPolicy = { indexScanPages: true, indexImageDescriptions: true }
 const documentSnapshot = (revision: string, settingsRevision: number, pending = false): PdfIndexingSnapshot => ({
   ...snapshot('running'), revision,
   documents: [{ documentId: 'document', revision: settingsRevision, policy: pending ? customPolicy : defaultPolicy,
-    activePolicy: defaultPolicy, enabled: true, activeEnabled: true, pending, impact: pending ? 'content' : 'none' }],
+    enabled: true }],
 })
 
 test('document configuration and defaults update every view through the shared session snapshot', async () => {
@@ -309,7 +284,7 @@ test('document configuration and defaults update every view through the shared s
     assert.equal(firstNotifications, first + 1)
     assert.equal(secondNotifications, second + 1)
     assert.deepEqual(api.getSnapshot('session').documents, documentSnapshot('configured', 8, true).documents,
-      'Host-provided active and pending policies remain distinct until indexing applies them')
+      'Host-provided document policy is shared across views')
     assert.equal(api.getSnapshot('other-session'), other, 'the same document ID in another Session has separate state')
 
     await api.useDefaults('session', 'document', 8, lifetime.signal)
@@ -338,7 +313,7 @@ test('a late status or configuration reply cannot replace a newer defaults snaps
     finishConfigure(ok(documentSnapshot('configured', 8, true)))
     await configured; await turn()
     assert.equal(api.getSnapshot('session'), current)
-    assert.equal(current.documents![0]!.pending, false)
+    assert.deepEqual(current.documents![0]!.policy, defaultPolicy)
     assert.equal(current.documents![0]!.revision, 9)
   } finally { stop(); api.dispose(); lifetime.abort() }
 })

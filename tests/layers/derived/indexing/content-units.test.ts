@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { readIndexPage } from '../../../../src/layers/derived/indexing/stored-index.ts'
 import test from 'node:test'
-import { digest, pageCacheKey, RETRIEVAL_EXTRACTION_VERSION, retrievalCacheKey, validateRetrievalPage } from '../../../../src/layers/derived/indexing/cache.ts'
-import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
-import { chunkRetrievalPage, RETRIEVAL_TEXT_VERSION } from '../../../../src/layers/derived/content/retrieval/text.ts'
-import type { RetrievalPage, RetrievalPageUnit, RetrievalPorts } from '../../../../src/layers/derived/indexing/types.ts'
+import { digest, pageCacheKey, validateRetrievalPage } from '../../../../src/layers/derived/indexing/cache.ts'
+import { createRetrievalService } from '../../../../src/layers/facade/search/retrieval/service.ts'
+import { chunkRetrievalPage } from '../../../../src/layers/derived/content/retrieval/text.ts'
+import type { RetrievalPorts } from '../../../../src/layers/facade/search/retrieval/types.ts'
+import type { RetrievalPage, RetrievalPageUnit } from '../../../../src/layers/derived/indexing/types.ts'
 
 const sha = (text: string) => `sha256:${digest(text)}`
 const unit = (id: string, kind: RetrievalPageUnit['kind'], text: string, extra: Partial<RetrievalPageUnit> = {}): RetrievalPageUnit =>
@@ -172,9 +173,6 @@ test('pipeline identities invalidate ready fences, continuations and page cache 
     assert.equal(f.state.documentEmbeddings, 1, 'identical text reuses model vectors across extraction pipelines')
     assert.ok(f.data.has(pageCacheKey('/content-units.pdf', 'same-original', 1, 'pipeline-a')))
     assert.ok(f.data.has(pageCacheKey('/content-units.pdf', 'same-original', 1, 'pipeline-b')))
-    assert.equal(pageCacheKey('/content-units.pdf', 'same-original', 1),
-      retrievalCacheKey('page', RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, '/content-units.pdf', 'same-original', 1))
-    assert.equal(pageCacheKey('/content-units.pdf', 'same-original', 1, ''), pageCacheKey('/content-units.pdf', 'same-original', 1))
   } finally { await f.service.dispose() }
 })
 
@@ -332,7 +330,7 @@ test('structure rebuild reuses verified representations while source changes and
   f.ports.pages.read = async (...args) => ({ ...await originalRead(...args), text })
   const originalSelect = f.ports.embedding!.select
   let configuration = 'a'
-  f.ports.embedding!.select = session => ({ ...originalSelect(session)!, configurationIdentity: configuration })
+  f.ports.embedding!.select = session => ({ ...originalSelect(session)!, fingerprint: `model-${configuration}`, configurationIdentity: configuration })
   try {
     const lexical = await f.service.search('session', search)
     const semanticA = await f.service.search('session', { ...search, mode: 'semantic' })
@@ -369,7 +367,7 @@ test('structure rebuild reuses verified representations while source changes and
 test('a changed source with partial content never restores an older source as falsely complete after restart', async () => {
   const pages: RetrievalPage[] = [{ text: 'needle old complete', source: 'pdf-text' }]
   const f = fixture(pages, { embedding: true })
-  const key = pageCacheKey('/content-units.pdf', 'same-original', 1)
+  const key = pageCacheKey('/content-units.pdf', 'same-original', 1, '')
   try {
     assert.equal((await f.service.search('session', search)).status, 'complete')
     assert.ok(f.data.get(key))
@@ -377,7 +375,7 @@ test('a changed source with partial content never restores an older source as fa
     pages[0] = { text: 'needle current partial', source: 'pdf-text', failure: { code: 'pdf/index-image-unavailable' } }
     await assert.rejects(f.service.prepare('session', { documentId: 'doc' }), { code: 'pdf/retrieval-incomplete' })
     assert.ok(f.data.get(key), 'a verified cache for different source bytes stays independently reusable')
-    assert.equal(f.data.has(pageCacheKey('/content-units.pdf', 'changed-source', 1)), false)
+    assert.equal(f.data.has(pageCacheKey('/content-units.pdf', 'changed-source', 1, '')), false)
     await f.service.dispose()
     const restored = createRetrievalService(f.ports)
     try {
@@ -433,7 +431,7 @@ test('a projected page cannot downgrade a typed source authority failure into av
 
 test('a changed source that throws during extraction cannot resurrect old content and can resume after restart', async () => {
   const f = fixture([{ text: 'needle old complete', source: 'pdf-text' }], { embedding: true })
-  const key = pageCacheKey('/content-units.pdf', 'same-original', 1)
+  const key = pageCacheKey('/content-units.pdf', 'same-original', 1, '')
   try {
     assert.equal((await f.service.search('session', search)).status, 'complete')
     assert.ok(f.data.get(key))

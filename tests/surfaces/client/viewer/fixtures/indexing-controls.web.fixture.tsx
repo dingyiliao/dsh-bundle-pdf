@@ -30,8 +30,7 @@ function host(sessionId: string): PdfIndexingSnapshot {
   if (!value) {
     value = { revision: String(++revision), enabled: globallyEnabled, tasks: [],
       documents: (sessionId === 'session-a' ? ['alpha', 'gamma'] : ['beta']).map(documentId => ({
-        documentId, revision: 0, policy: { ...defaults }, activePolicy: { ...defaults },
-        enabled: globallyEnabled, activeEnabled: globallyEnabled, pending: false, impact: 'none',
+        documentId, revision: 0, policy: { ...defaults }, enabled: globallyEnabled,
       })) }
     hosts.set(sessionId, value)
   }
@@ -71,9 +70,7 @@ const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal
     const settings = current.documents!.find(value => value.documentId === input.documentId)!
     if (input.revision !== settings.revision) return { ok: false, error: { code: 'pdf/index-settings-conflict', message: 'Index settings changed.' } }
     const policy = input.action === 'defaults' ? { ...defaults } : input.policy!
-    const pending = JSON.stringify(policy) !== JSON.stringify(settings.activePolicy)
-    const next = { ...settings, revision: settings.revision + 1, policy, pending,
-      impact: pending ? 'content' as const : 'none' as const }
+    const next = { ...settings, revision: settings.revision + 1, policy }
     changed(input.sessionId, { ...current, documents: current.documents!.map(value => value.documentId === input.documentId ? next : value) })
     return respond(host(input.sessionId))
   }
@@ -87,9 +84,7 @@ const connection: PdfConnection = { rpc: { async call(_path, method, raw, signal
     } } : {}
       : { progress: { indexedPages: 1, totalPages: 3, embeddedChunks: 0, totalChunks: 3, phase: 'extracting' as const } }),
   }
-  changed(input.sessionId, { enabled: current.enabled, tasks: [task], documents: current.documents?.map(settings =>
-    settings.documentId === input.documentId && (input.action === 'start' || input.action === 'rebuild')
-      ? { ...settings, activePolicy: settings.policy, activeEnabled: settings.enabled, pending: false, impact: 'none' } : settings) })
+  changed(input.sessionId, { enabled: current.enabled, tasks: [task], documents: current.documents })
   return respond(host(input.sessionId))
 } } }
 const api = createPdfIndexingApi(connection, lifetime.signal)
@@ -159,8 +154,7 @@ Object.assign(window, { __pdfIndexingFixture: {
   disable() {
     globallyEnabled = false
     for (const [sessionId, value] of hosts) changed(sessionId, { enabled: false, tasks: [], documents: value.documents?.map(settings => ({
-      ...settings, revision: settings.revision + 1, enabled: false, activeEnabled: false,
-      activePolicy: settings.policy, pending: false, impact: 'none',
+      ...settings, revision: settings.revision + 1, enabled: false,
     })) })
   },
 } })

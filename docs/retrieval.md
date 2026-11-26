@@ -17,7 +17,8 @@ model is not assumed to provide embeddings. Check `pdf_status` and its
 The built-in **Embedding service** has the stable engine ID
 `local-qwen3-embedding`. It accepts either a loopback
 HTTP service or an HTTPS service with an OpenAI-compatible `/embeddings` endpoint
-and sibling `/models` endpoint. Select it in PDF settings and set its `endpoint`,
+and sibling `/models` endpoint. Set `endpoint` to the service API base URL (for example
+`http://127.0.0.1:8000/v1/` or `https://provider.example/api/`); the adapter appends `models` or `embeddings` to that path. Also set
 `model`, `dimensions`, `maxBatchSize`, `maxInputCharacters` and optional
 `queryInstruction`. `queryInstruction` is empty by default. If authentication is
 needed, set `apiKeyRef` to a DSH Host credential reference, not to a raw API key.
@@ -42,6 +43,20 @@ in cache identity. If a service silently changes weights or tokenizer without
 reporting a revision, select a distinct engine identity or clear the profile's
 index caches before relying on old results.
 
+Embedding caches belong to the provider's declared model/encoding identity,
+not its endpoint or credentials. The provider must include all output-affecting
+model parameters (including dimensions and any reported weights revision) in
+that identity. The same PDF may retain separate indexes for several model
+configurations: switching A → B → A reuses A, including after a Host restart.
+Changing only the server address or credentials rechecks that connection but
+reuses the matching vectors. A failed connection does not delete them.
+
+Complete indexes also distinguish source content, extraction rules and effective
+chunking limits. Query-only instructions do not invalidate document vectors when
+the provider declares a separate document-encoding identity. In-memory eviction
+does not remove these on-disk model caches; **Clear all index caches** removes
+them together.
+
 ### Per-document content choices
 
 Search → **Current PDF index** saves two switches per PDF path:
@@ -56,16 +71,17 @@ Search → **Current PDF index** saves two switches per PDF path:
 Native PDF text is always included. The switches do not enable embeddings by
 themselves. Global engine selections and connections belong to PDF settings;
 these two document preferences determine which extra content is indexed. New
-documents inherit the current defaults. Changing settings saves a *pending*
-plan; **Update index** applies it only after a successful build, leaving the
-previous active index usable in the meantime. Globally selecting `none` for
+documents inherit the current defaults. The saved document record contains only
+these two content choices. Facade resolves the current engine configuration for
+each operation and uses the matching derived index cache. A cache miss is built
+while searching or preparing. Globally selecting `none` for
 embeddings disables semantic indexing immediately without deleting stored
 content or document preferences.
 
 ## Index, storage and recovery
 
 Opening a PDF in the Reader or with `pdf_open` can schedule background
-preparation when its active plan enables an available embedding provider. The
+preparation when the current configuration enables an available embedding provider. The
 open call does not wait for indexing. An early search may continue the remaining
 work. Background preparation and foreground search share page content, vectors
 and build jobs; authorization is still checked for each Session. An index is
@@ -107,8 +123,9 @@ artifact. Cache reuse always rechecks the current caller's source and access.
 
 Successful page checkpoints survive cache eviction, cancellation, failure and
 Host restart. **Resume indexing** / **Retry indexing** continues the interrupted
-task's *original* source and plan, repairing missing work. If the source or plan
-has changed, explicitly start **Update index** instead. **Rebuild index** builds
+task's unfinished cache work, repairing missing pages. If the current source or
+configuration has changed, the facade selects the corresponding cache identity.
+**Rebuild index** builds
 the current PDF's structure again while reusing validated extraction and vector
 artifacts. PDF settings → **Clear all index caches** is a separate profile-wide
 operation that discards the derived results and active search continuations;
@@ -157,7 +174,7 @@ exact PDF quotations or precise native-text annotation targets.
 
 ## Resource and quality limits
 
-Production uses at most four active plan runtimes. Each allows two resident
+Production uses at most four active retrieval runtimes. Each allows two resident
 index summaries, 64 MiB of accounted working metadata/current-page data, two
 build jobs and eight admitted queries; each index is capped at 20,000 chunks.
 An indexing step processes at most 20 pages and four embedding batches before

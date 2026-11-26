@@ -1,20 +1,18 @@
 import { fatalContentError, pageContentCacheIdentity } from '../../../document/content/index.js'
 import { cacheDerived, pageCacheKey, readCachedPage,
-  validateRetrievalPage, type PageCacheSource } from '../../indexing/index.js'
-import { chunkRetrievalPage, tokenizeRetrievalText, type RetrievalChunk } from './text.js'
-import { buildIndexPageEntries, readIndexPage, type StoredIndexHead, type StoredIndexPage, type IndexPageSummary } from '../../indexing/index.js'
-import { measureIndexOperation, recordIndexPerformance } from '../../indexing/index.js'
-import { pageFailureSchema, type PageFailure } from '../../indexing/index.js'
-import type { RetrievalPorts } from '../../indexing/index.js'
+  validateRetrievalPage } from '../../../derived/indexing/index.js'
+import { chunkRetrievalPage, tokenizeRetrievalText, type RetrievalChunk } from '../../../derived/content/retrieval/text.js'
+import { buildIndexPageEntries, readIndexPage, type StoredIndexHead, type StoredIndexPage, type IndexPageSummary } from '../../../derived/indexing/index.js'
+import { measureIndexOperation, recordIndexPerformance } from '../../../../shared/indexing-performance-runtime.js'
+import { pageFailureSchema, type PageFailure } from '../../../derived/indexing/index.js'
+import type { RetrievalPorts } from './types.js'
 
 export interface PagePipelineIndex {
   persistentKey: string
   generation: string
-  contentDigest: string
   extractionIdentity: string
   provider?: { dimensions: number; maxInputCharacters?: number }
   head: StoredIndexHead
-  previousPageCacheSource?: PageCacheSource
   pages: Map<number, IndexPageSummary>
   chunkCount: number
 }
@@ -31,7 +29,6 @@ export interface PagePipelineContext {
   limits: { maxChunks: number }
   fail(code: string, message: string): Error
   codeOf(error: unknown): string
-  isContentDigest(value: unknown): value is string
   characters(index: PagePipelineIndex): number
   phase(index: PagePipelineIndex, phase: 'restoring' | 'extracting'): void
   reserve(index: PagePipelineIndex, bytes: number): void
@@ -78,29 +75,6 @@ export async function readIndexPagePipeline(
   const key = cacheKey(pageContentCacheIdentity({ ...document, indexPageDigest: pageDigest }))
   let cached = stored?.record.failure ? undefined : await readCachedPage(context.cache, key)
   source.check()
-  const previousCacheSource = index.previousPageCacheSource
-  const sameSource = previousCacheSource && context.isContentDigest(document.sourceDigest)
-    && previousCacheSource.sourceDigest === document.sourceDigest && previousCacheSource.indexPageDigests.length === document.pageCount
-  if (!cached && (pageDigest || sameSource) && !stored?.record.failure) {
-    const keys = new Set([index.contentDigest, document.sourceDigest])
-    if (pageDigest && previousCacheSource?.indexPageDigests[page - 1] === pageDigest) {
-      if (previousCacheSource.indexContentDigest) keys.add(previousCacheSource.indexContentDigest)
-      keys.add(previousCacheSource.sourceDigest)
-    }
-    if (sameSource) keys.add(pageContentCacheIdentity({ ...previousCacheSource, indexPageDigest: previousCacheSource.indexPageDigests[page - 1] }))
-    for (const legacy of keys) {
-      const legacyKey = cacheKey(legacy)
-      if (legacyKey === key) continue
-      try { cached = await readCachedPage(context.cache, legacyKey) }
-      catch (error) {
-        if (!['pdf/index-storage-corrupt', 'pdf/index-storage-missing'].includes(context.codeOf(error))) throw error
-      }
-      source.check()
-      if (!cached) continue
-      await cacheDerived(context.cache, key, cached)
-      source.check(); break
-    }
-  }
   recordIndexPerformance({ stage: 'page-cache', durationMs: 0, records: 1, cacheHit: !!cached })
   let pageFailure: PageFailure | undefined
   if (!cached) {

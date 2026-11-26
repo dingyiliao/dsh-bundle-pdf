@@ -34,7 +34,6 @@ export function DocumentIndexSettings({ control, t }: {
     }
   }
   const disabled = !configuration || configuration.disabled || configuration.saving
-  const pendingSettings = configuration?.value.pending && (configuration.value.enabled || configuration.value.activeEnabled)
   return <details className="dsh-pdf-search-indexing" aria-label={t('reader.indexing.title')} open>
     <summary><strong>{t('reader.indexing.title')}</strong><ToolbarIcon name="chevronDown" /></summary>
     <div className="dsh-pdf-index-settings-content">
@@ -70,11 +69,8 @@ export function DocumentIndexSettings({ control, t }: {
         </div>
         <p className="dsh-pdf-index-save-status" role="status" aria-live="polite">
           {t(configuration.saving ? 'reader.indexing.savingSettings' : failure ? 'reader.indexing.settingsNotSaved'
-            : pendingSettings ? 'reader.indexing.settingsPending' : 'reader.indexing.settingsSaved')}
+            : 'reader.indexing.settingsSaved')}
         </p>
-        {pendingSettings && <p className="dsh-pdf-index-impact">
-          {t(`reader.indexing.impact.${configuration.value.impact}`)}
-        </p>}
         {failure && <div className="dsh-pdf-index-settings-error" role="alert">
           <span>{failure.message}</span>
           <button type="button" disabled={disabled} onClick={() => { void persist(failure.defaults ? undefined : value) }}>

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
-import { createRetrievalService, type RetrievalCache, type RetrievalInput, type RetrievalPrepareInput, type RetrievalProgress,
-  type RetrievalEmbedding, type RetrievalResult } from '../../derived/indexing/index.js'
+import { createRetrievalService } from './retrieval/service.js'
+import type { RetrievalInput, RetrievalPrepareInput, RetrievalProgress, RetrievalEmbedding, RetrievalResult } from './retrieval/types.js'
+import type { RetrievalCache } from '../../derived/indexing/types.js'
 import { evidenceSha256, rememberTextEvidence, describeEvidenceCapabilities, createImageEvidenceRegistry, type AgentPageReadPort,
   type EvidenceReferenceStore } from '../evidence/index.js'
 import type { WorkingCopyReadPort } from '../../document/working-copy/index.js'
@@ -9,7 +10,7 @@ import { EmbeddingError, type EmbeddingRegistry } from '../../../engines/embeddi
 import { nativePageContentText } from '../../document/content/index.js'
 import { joinPageText } from '../../../shared/page-text.js'
 import { defaultSettings, type PdfSettings } from '../../../shared/contracts.js'
-import { projectPageContent, type PdfPageContent } from '../../derived/content/index.js'
+import { projectPageContent, type PdfPageContent } from './retrieval/page-content.js'
 
 /** Tool output reports each issue once; detailed per-page quality stays in the index. */
 function summarizeCoverage(coverage: RetrievalResult['coverage'], candidates: readonly { page: number }[]) {
@@ -83,8 +84,9 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       const model = registry.describe(binding)
       return { configuration, registry,
         backend: { fingerprint: model.fingerprint, generation: registry.generation(binding),
-        ...(model.documentFingerprint ? { documentFingerprint: createHash('sha256')
-          .update(JSON.stringify([binding.engineId, model.documentFingerprint])).digest('hex') } : {}),
+        // Providers own encoding identity; raw connection configuration only fences live work.
+        documentFingerprint: createHash('sha256')
+          .update(JSON.stringify([binding.engineId, model.documentFingerprint ?? model.fingerprint])).digest('hex'),
         configurationIdentity: createHash('sha256').update(configuration).digest('hex'),
         dimensions: model.dimensions, maxBatchSize: model.maxBatchSize, maxInputCharacters: model.maxInputCharacters,
         async availability(signal) {

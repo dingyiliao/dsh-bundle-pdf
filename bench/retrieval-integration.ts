@@ -26,7 +26,7 @@ const { values } = parseArgs({ options: {
   endpoint: { type: 'string' },
   sdk: { type: 'string', default: 'source' }, out: { type: 'string' },
 } })
-if (!values.endpoint) throw new Error('Pass --endpoint http://127.0.0.1:8001/v1/embeddings to explicitly run local model integration.')
+if (!values.endpoint) throw new Error('Pass --endpoint http://127.0.0.1:8001/v1 to explicitly run local model integration.')
 if (values.sdk !== 'source' && values.sdk !== 'dist') throw new Error('--sdk must be source or dist')
 const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 if (!existsSync(executable)) throw new Error('The native PDFium helper is required; run the native build first.')

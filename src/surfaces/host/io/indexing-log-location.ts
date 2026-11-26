@@ -30,7 +30,7 @@ export function resolveIndexingLogDirectory(profile: unknown, envHome = process.
   return join(value.home, 'logs', 'dsh-plugin-pdf', value.profile)
 }
 
-/** Complete indexes are durable profile data, independent of the expiring legacy cache. */
+/** Complete indexes are durable profile data. */
 export function resolveRetrievalStoreDirectory(profile: unknown, namespaceSuffix: string, envHome = process.env.DSH_HOME,
   userHome = homedir()): string {
   if (!/^[a-f0-9]{16}$/.test(namespaceSuffix)) throw new RangeError('Invalid PDF storage namespace')

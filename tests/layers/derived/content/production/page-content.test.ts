@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfPageContent, pageContentDigestBytes, projectPageContent } from '../../../../../src/layers/derived/content/production/page-content.ts'
+import { createPdfPageContent, pageContentDigestBytes, projectPageContent } from '../../../../../src/layers/facade/search/retrieval/page-content.ts'
 import { pageContentDigest, parsePageContent, PageRepresentationSchema, createPageRepresentation } from '../../../../../src/layers/document/content/index.ts'
 import { HostOcrService, type HostOcrBackend } from '../../../../../src/engines/ocr/service/index.ts'
 import { HostImageUnderstandingService, type ImageUnderstandingBackend } from '../../../../../src/engines/image/service/index.ts'
@@ -38,7 +38,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
     onOcr: undefined as (() => Promise<void>) | undefined,
     onOcrIdentity: undefined as (() => Promise<void>) | undefined, onImageIdentity: undefined as (() => Promise<void>) | undefined,
     onNative: undefined as (() => Promise<void>) | undefined, onRender: undefined as (() => Promise<void>) | undefined,
-    onGet: undefined as (() => void) | undefined, onScan: undefined as (() => Promise<void>) | undefined }
+    onGet: undefined as (() => void) | undefined }
   let settings: PdfSettings = { ...defaultSettings, ocrEngine: 'fixture', imageEngine: options.imageEngine ?? 'fixture-image',
     indexScanPages: options.scan ?? true,
     indexImageDescriptions: options.describe ?? false,
@@ -112,7 +112,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
   const workspaces = { readSnapshot: snapshot }
   const create = () => createPdfPageContent(workspaces, pages, { settings: () => settings, ocr: () => ocr, image: () => image,
     onActivity: options.onActivity,
-    cache: { async scan() { await state.onScan?.(); return { entries: [] } },
+    cache: {
       async get(key) { const value = structuredClone(data.get(key)); state.onGet?.(); return value }, async set(key, value) {
       if (state.cacheWriteFailure) throw new Error('Cache storage is unavailable')
       data.set(key, structuredClone(value))
@@ -214,46 +214,7 @@ test('an explicitly unverifiable page only reuses identical source bytes', async
   } finally { f.dispose() }
 })
 
-test('verified pages lazily adopt only compatible legacy aggregate and producer keys', async t => {
-  for (const legacyKey of ['document', 'source']) for (const reuse of ['aggregate', 'layers']) {
-    await t.test(`${legacyKey} ${reuse}`, async () => {
-      const f = fixture({ describe: true })
-      if (legacyKey === 'document') f.state.indexContentDigest = pageContentDigest('stable whole document')
-      let reopened: ReturnType<typeof f.create> | undefined
-      try {
-        const old = await f.content.read('a', 'doc-a', 1, signal)
-        if (reuse === 'aggregate') {
-          const key = aggregateKey(f)
-          for (const entry of f.data.keys()) if (entry !== key) f.data.delete(entry)
-        } else f.data.delete(aggregateKey(f))
-        const legacyKeys = new Set(f.data.keys())
-        // Whole-document attestations also cover a different serialization.
-        if (legacyKey === 'document') f.state.bytes = new Uint8Array([4, 5, 6])
-        f.state.indexPageDigests = [pageContentDigest('verified page')]
-        f.content.dispose(); reopened = f.create()
-        f.state.onScan = async () => { assert.fail('preparing verified pages must not scan the legacy cache') }
-        await reopened.prepare('b', signal, 'doc-b')
-        assert.deepEqual(new Set(f.data.keys()), legacyKeys)
-
-        const adopted = await reopened.read('b', 'doc-b', 1, signal)
-        assert.equal(adopted.sourceDigest, pageContentDigestBytes(f.state.bytes))
-        assert.equal(adopted.indexPageDigest, f.state.indexPageDigests[0])
-        assert.notEqual(adopted.blocks[0]!.id, old.blocks[0]!.id)
-        assert.deepEqual(representations(adopted), representations(old))
-        assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
-
-        for (const key of legacyKeys) f.data.delete(key)
-        f.state.bytes = new Uint8Array([7, 8, 9]); f.state.indexContentDigest = pageContentDigest('another whole document')
-        f.updateSettings({ indexScanPages: false }); await reopened.prepare('b', signal)
-        const reconfigured = await reopened.read('b', 'doc-b', 1, signal)
-        assert.deepEqual(representations(reconfigured).map(rep => rep.kind), ['native-text', 'image-description'])
-        assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
-      } finally { reopened?.dispose(); f.dispose() }
-    })
-  }
-})
-
-test('a verified page cannot adopt legacy results from a different file identity', async () => {
+test('a verified page cannot reuse results from a different file identity', async () => {
   const f = fixture({ describe: true })
   f.state.indexContentDigest = pageContentDigest('old document')
   try {
@@ -290,22 +251,6 @@ test('a verified cache hit is rejected if its source changes during lookup', asy
     const retried = await f.content.read('a', 'doc-a', 1, signal)
     assert.equal(retried.sourceDigest, pageContentDigestBytes(f.state.bytes))
     assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [1, 1, 1, 1])
-  } finally { f.dispose() }
-})
-
-test('a source replaced during legacy-cache discovery aborts before marker writes or model work', async () => {
-  const f = fixture()
-  f.state.indexContentDigest = pageContentDigest('stable printed page')
-  f.state.onScan = async () => { f.state.bytes = new Uint8Array([6, 7, 8]) }
-  try {
-    await assert.rejects(f.content.prepare('a', signal, 'doc-a'), { code: 'pdf/stale-reader' })
-    assert.deepEqual([f.state.reads, f.state.renders, f.state.recognitions, f.state.descriptions], [0, 0, 0, 0])
-    assert.equal(f.data.size, 0, 'neither migrated output nor a completion marker belongs to the changed source')
-    f.state.onScan = undefined
-    await f.content.prepare('a', signal, 'doc-a')
-    const recovered = await f.content.read('a', 'doc-a', 1, signal)
-    assert.equal(recovered.sourceDigest, pageContentDigestBytes(f.state.bytes))
-    assert.equal(f.state.recognitions, 1)
   } finally { f.dispose() }
 })
 
@@ -911,24 +856,6 @@ test('a damaged optional layer is recomputed without rerunning the healthy produ
     const restored = await f.content.read('a', 'doc-a', 1, signal)
     assert.equal(restored.failure, undefined)
     assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 2, 1])
-  } finally { f.dispose() }
-})
-
-test('a legacy aggregate seeds separate native and producer caches before a policy change', async () => {
-  const f = fixture({ describe: true })
-  try {
-    const original = await f.content.read('a', 'doc-a', 1, signal)
-    const key = aggregateKey(f)
-    f.data.clear()
-    f.data.set(key, { ...original, blocks: original.blocks.map(block => ({ ...block,
-      representations: block.representations.map(rep => rep.kind !== 'native-text' ? rep :
-        createPageRepresentation({ ...rep, producer: { ...rep.producer, version: 'legacy-aggregate-extraction' } })),
-    })) })
-    await f.content.read('a', 'doc-a', 1, signal)
-    f.updateSettings({ indexScanPages: false }); await f.content.prepare('a', signal)
-    const combined = await f.content.read('a', 'doc-a', 1, signal)
-    assert.deepEqual(representations(combined).map(rep => rep.kind), ['native-text', 'image-description'])
-    assert.deepEqual([f.state.reads, f.state.recognitions, f.state.descriptions], [1, 1, 1])
   } finally { f.dispose() }
 })
 

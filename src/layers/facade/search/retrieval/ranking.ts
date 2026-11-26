@@ -1,4 +1,6 @@
-import { tokenizeRetrievalText, type RetrievalChunk } from '../content/retrieval/text.js'
+import { tokenizeRetrievalText, type RetrievalChunk } from '../../../derived/content/retrieval/text.js'
+import { validateEmbeddingVector } from '../../../derived/indexing/vector.js'
+export { validateEmbeddingVector } from '../../../derived/indexing/vector.js'
 
 export interface RankedChunk {
   chunkId: string
@@ -92,20 +94,6 @@ export function searchBm25(index: Bm25Index, query: string, limit = 30): RankedC
 export function searchBm25Cooperatively(index: Bm25Index, query: string, limit = 30,
   signal?: AbortSignal, check?: () => void): Promise<RankedChunk[]> {
   return cooperate(scoreBm25(index, query, limit), 1024, signal, check)
-}
-
-export function validateEmbeddingVector(vector: ArrayLike<number>, expectedDimensions?: number): number {
-  if (!Number.isSafeInteger(vector.length) || vector.length < 1
-    || (expectedDimensions !== undefined && vector.length !== expectedDimensions)) {
-    throw new RangeError('Embedding vector dimensions do not match.')
-  }
-  let nonzero = false
-  for (let index = 0; index < vector.length; index++) {
-    if (!Number.isFinite(vector[index])) throw new TypeError('Embedding vector contains a non-finite value.')
-    nonzero ||= vector[index] !== 0
-  }
-  if (!nonzero) throw new RangeError('Embedding vector must have a nonzero norm.')
-  return vector.length
 }
 
 /** Scaling first avoids overflow/underflow for valid finite but unnormalized vectors. */

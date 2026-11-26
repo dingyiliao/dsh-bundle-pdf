@@ -27,6 +27,7 @@ export interface SettingsProps {
   engineCatalog?: EngineCatalogSnapshot
   modelOptions?: ModelOptionsStore
   rebuildRetrievalIndex?: (signal: AbortSignal) => Promise<void>
+  testEmbedding?: (signal: AbortSignal) => Promise<{ status: 'available' | 'disabled' | 'not-configured' | 'unavailable' }>
 }
 
 export const settingsLocales = {
@@ -40,6 +41,13 @@ export const settingsLocales = {
     'settings.imageEngine': '图像理解引擎',
     'settings.embeddingEngine': '语义检索引擎',
     'settings.embeddingHelp': '所有 PDF 共用此引擎。已有索引可在文档的搜索面板更新，原有结果会保留。第三方服务会收到抽取的文字，关键词搜索不受影响。',
+    'settings.testEmbedding': '测试服务器连接',
+    'settings.testingEmbedding': '正在测试服务器…',
+    'settings.embeddingAvailable': '服务器连接正常。',
+    'settings.embeddingUnavailable': '服务器不可用。',
+    'settings.embeddingDisabled': '语义检索已禁用。',
+    'settings.embeddingNotConfigured': 'Embedding 引擎尚未配置。',
+    'settings.embeddingTestFailed': '测试失败：',
     'settings.rebuildIndex': '清除全部索引缓存',
     'settings.rebuildingIndex': '正在清除索引缓存…',
     'settings.rebuildIndexHelp': '清除当前 profile 中所有 PDF 的检索缓存。已启用索引的文档随后按各自策略重新建立；不会修改 PDF 或草稿。当前文档的重建请使用其搜索面板。',
@@ -122,6 +130,13 @@ export const settingsLocales = {
     'settings.imageEngine': 'Image understanding engine',
     'settings.embeddingEngine': 'Semantic search engine',
     'settings.embeddingHelp': 'Shared by all PDFs. Update existing indexes from each document’s Search panel; current results are retained. Third-party services receive extracted text. Keyword search remains available.',
+    'settings.testEmbedding': 'Test server connection',
+    'settings.testingEmbedding': 'Testing server…',
+    'settings.embeddingAvailable': 'Server connection is working.',
+    'settings.embeddingUnavailable': 'Server is unavailable.',
+    'settings.embeddingDisabled': 'Semantic search is disabled.',
+    'settings.embeddingNotConfigured': 'The embedding engine is not configured.',
+    'settings.embeddingTestFailed': 'Test failed: ',
     'settings.rebuildIndex': 'Clear all index caches',
     'settings.rebuildingIndex': 'Clearing index cache…',
     'settings.rebuildIndexHelp': 'Clears retrieval caches for all PDFs in this profile. Index-enabled documents subsequently rebuild with their own policies. PDFs and drafts are unchanged. Use the Search panel to rebuild only the current document.',
@@ -293,7 +308,7 @@ function editorFor(form: ConfigForm, snapshot: ConfigFormSnapshot): EditorOwner 
 }
 
 /** Revision-fenced automatic saves, with a local draft for incomplete edits. */
-export function Settings({ form, t, translationEngines, engineCatalog, modelOptions, rebuildRetrievalIndex }: SettingsProps) {
+export function Settings({ form, t, translationEngines, engineCatalog, modelOptions, rebuildRetrievalIndex, testEmbedding }: SettingsProps) {
   const tr = useCallback((key: keyof typeof settingsLocales.zh): string => {
     const value = t(key)
     return value && value !== key ? value : settingsLocales.zh[key]
@@ -332,6 +347,10 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
   const [rebuildingIndex, setRebuildingIndex] = useState(false)
   const [indexNotice, setIndexNotice] = useState('')
   const [indexError, setIndexError] = useState('')
+  const [testingEmbedding, setTestingEmbedding] = useState(false)
+  const [embeddingTest, setEmbeddingTest] = useState('')
+  const [embeddingTestError, setEmbeddingTestError] = useState('')
+  const embeddingRequest = useRef<AbortController | undefined>(undefined)
   const indexRequest = useRef<AbortController | undefined>(undefined)
   const formIdentity = useRef(form)
   const mounted = useRef(true)
@@ -339,8 +358,8 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
-    setRebuildingIndex(false); setIndexNotice(''); setIndexError('')
-    return () => { indexRequest.current?.abort(); indexRequest.current = undefined }
+    setRebuildingIndex(false); setIndexNotice(''); setIndexError(''); setTestingEmbedding(false); setEmbeddingTest(''); setEmbeddingTestError('')
+    return () => { indexRequest.current?.abort(); indexRequest.current = undefined; embeddingRequest.current?.abort(); embeddingRequest.current = undefined }
   }, [form, rebuildRetrievalIndex])
   useEffect(() => { formIdentity.current = form }, [form])
   useEffect(() => () => { void owner.flush() }, [owner])
@@ -434,6 +453,23 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
   const legacyPromptActive = !!editor && editor.draft.explanationPromptTemplate !== defaultExplanationPromptTemplate
     && promptFields.every(field => !editor.draft[field].trim())
   const remoteDraft = snapshot.value === undefined ? undefined : toDraft(snapshot.value)
+
+  async function testEmbeddingServer() {
+    if (!testEmbedding || disabled || dirty || !editor || editor.conflict || embeddingRequest.current) return
+    const controller = new AbortController(), owner = form
+    embeddingRequest.current = controller
+    setTestingEmbedding(true); setEmbeddingTest(''); setEmbeddingTestError('')
+    try {
+      const result = await testEmbedding(controller.signal)
+      if (mounted.current && !controller.signal.aborted && formIdentity.current === owner && embeddingRequest.current === controller) {
+        setEmbeddingTest(tr(result.status === 'available' ? 'settings.embeddingAvailable' : result.status === 'disabled' ? 'settings.embeddingDisabled' : result.status === 'not-configured' ? 'settings.embeddingNotConfigured' : 'settings.embeddingUnavailable'))
+      }
+    } catch (failure) {
+      if (mounted.current && !controller.signal.aborted && formIdentity.current === owner && embeddingRequest.current === controller) setEmbeddingTestError(`${tr('settings.embeddingTestFailed')}${failure instanceof Error ? failure.message : String(failure)}`)
+    } finally {
+      if (embeddingRequest.current === controller) { embeddingRequest.current = undefined; if (mounted.current) setTestingEmbedding(false) }
+    }
+  }
 
   async function rebuildIndex() {
     if (!rebuildRetrievalIndex || disabled || dirty || !editor || editor.conflict || indexRequest.current) return
@@ -713,6 +749,16 @@ export function Settings({ form, t, translationEngines, engineCatalog, modelOpti
         {engineFields('image', 'imageEngine')}
         {engineFields('translation', 'translationEngine')}
         {engineFields('embedding', 'embeddingEngine')}
+        {testEmbedding && <div className="dsh-pdf-settings-field">
+          <div className="dsh-pdf-settings-field-heading">
+            <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || saving || dirty || editor.conflict || testingEmbedding}
+              onClick={() => { void testEmbeddingServer() }}>
+              {tr(testingEmbedding ? 'settings.testingEmbedding' : 'settings.testEmbedding')}
+            </button>
+          </div>
+          {embeddingTest && <p role="status" className="dsh-pdf-settings-status">{embeddingTest}</p>}
+          {embeddingTestError && <p role="alert" className="dsh-pdf-settings-error">{embeddingTestError}</p>}
+        </div>}
         {rebuildRetrievalIndex && <div className="dsh-pdf-settings-field">
           <div className="dsh-pdf-settings-field-heading">
             <button type="button" className="dsh-pdf-settings-secondary" disabled={disabled || saving || dirty || editor.conflict}

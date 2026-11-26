@@ -1,20 +1,18 @@
-import { measureIndexOperation } from './performance.js'
+import { measureIndexOperation } from '../../../../shared/indexing-performance-runtime.js'
 import { randomUUID } from 'node:crypto'
-import { fatalContentError } from '../../document/content/index.js'
-import { digest, pageCacheSourceKey,
-  readPageCacheSource, validVector,
-  MAX_PAGE_CACHE_SOURCE_PAGES, RETRIEVAL_EXTRACTION_VERSION, type PageCacheSource } from './cache.js'
-import { RETRIEVAL_TEXT_VERSION, type RetrievalChunk } from '../content/retrieval/text.js'
+import { fatalContentError } from '../../../document/content/index.js'
+import { digest, validVector, RETRIEVAL_EXTRACTION_VERSION } from '../../../derived/indexing/cache.js'
+import { RETRIEVAL_TEXT_VERSION, type RetrievalChunk } from '../../../derived/content/retrieval/text.js'
 import { collapseRepresentations, hybridCandidates } from './ranking.js'
 import { encodeRetrievalCursor, parseRetrievalCursor, retrievalPrepareSchema, retrievalQuerySchema,
   type RetrievalPrepareScope, type RetrievalQuery } from './request.js'
 import { searchStoredIndex, type SearchPage } from './streaming-search.js'
-import { openIndexHead, promoteIndexHead } from './index-head.js'
+import { openIndexHead, promoteIndexHead } from '../../../derived/indexing/index-head.js'
 import { createVolatileIndexStore, readIndexPage, readIndexSummary,
-  summarizeIndexPage, type StoredIndexHead, type StoredIndexPage, type IndexPageSummary } from './stored-index.js'
+  summarizeIndexPage, type StoredIndexHead, type StoredIndexPage, type IndexPageSummary } from '../../../derived/indexing/stored-index.js'
 import { createSharedRetrievalSource, type RetrievalBinding, type SharedRetrievalSource } from './shared-source.js'
 import { indexContentDigest, invalidDocumentIdentity, isContentDigest, providerIdentity, sameDocument } from './identity.js'
-import { readIndexPagePipeline } from '../content/retrieval/page-pipeline.js'
+import { readIndexPagePipeline } from './page-pipeline.js'
 import { embedIndexStep } from './embedding-pipeline.js'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalInput, RetrievalPorts, RetrievalPrepareInput, RetrievalProgress, RetrievalResult, RetrievalService } from './types.js'
 
@@ -26,7 +24,6 @@ interface Index {
   failures: Map<number, { page: number; attempts: number; code: string }>
   bytes: number; lastUsed: number; users: number
   phase: NonNullable<RetrievalProgress['phase']>; computedChunks: number
-  previousPageCacheSource?: PageCacheSource; pageCacheSourceRecorded?: boolean
   progress: Set<() => void>
   release(): void
 }
@@ -218,7 +215,7 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     index.bytes += size(summary) - size(previous)
     reserve(index, 0)
   }
-  const characters = (index: Index) => Math.min(1200, index.provider?.maxInputCharacters ?? 1200)
+  const characters = (index: { provider?: { maxInputCharacters?: number } }) => Math.min(1200, index.provider?.maxInputCharacters ?? 1200)
   async function loadPage(index: Index, page: number) {
     return readIndexPage(storage, index.persistentKey, index.generation, page, index.provider?.dimensions, characters(index))
   }
@@ -230,7 +227,6 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       limits,
       fail,
       codeOf,
-      isContentDigest,
       characters,
       phase,
       reserve,
@@ -245,8 +241,8 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     if (!entries.length) return
     await measureIndexOperation('checkpoint-write', async () => {
       if (storage.setMany) {
-        // Large legacy pages may migrate more than one backend batch. Keep the
-        // final header last so interrupted migration never publishes dangling refs.
+        // Large pages may span backend batches. Keep the final header last so
+        // an interrupted write never publishes dangling references.
         for (let offset = 0; offset < entries.length; offset += 256) await storage.setMany(entries.slice(offset, offset + 256))
       }
       else for (const [key, value] of entries) await storage.set(key, value)
@@ -368,12 +364,11 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     const extractionIdentity = binding.indexExtractionIdentity ?? binding.extractionIdentity
     if (!Number.isSafeInteger(document.pageCount) || document.pageCount < query.fromPage) throw fail('pdf/invalid-page', 'Requested page is outside the PDF')
     const toPage = Math.min(document.pageCount, query.fromPage + (query.maxPages ?? document.pageCount) - 1)
-    const modelKey = provider ? provider.documentFingerprint ?? digest(JSON.stringify([provider.fingerprint,
-      provider.configurationIdentity ?? '', provider.dimensions, provider.maxInputCharacters ?? 1200])) : 'lexical'
+    const modelKey = provider ? provider.documentFingerprint ?? provider.fingerprint : 'lexical'
     const contentKey = document.indexContentDigest
       ? ['disk-index-v2-content', document.path, document.indexContentDigest] : ['disk-index-v1', document.sourceDigest]
     const persistentKey = digest(JSON.stringify([...contentKey, document.pageCount,
-      query.fromPage, toPage, modelKey, RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, extractionIdentity]))
+      query.fromPage, toPage, modelKey, RETRIEVAL_EXTRACTION_VERSION, RETRIEVAL_TEXT_VERSION, characters({ provider }), extractionIdentity]))
     let result!: Index
     let reservedPin: (() => void) | undefined
     const task = opening.then(async () => {
@@ -389,19 +384,15 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const key = digest(JSON.stringify([persistentKey, selected.id, selectionIdentity]))
       let index = indexes.get(key)
       if (!index) {
-        const previousPageCacheSource = document.indexPageDigests && ports.cache
-          ? await readPageCacheSource(ports.cache, pageCacheSourceKey(document.path, extractionIdentity)) : undefined
-        checkBinding(binding)
         index = { key, persistentKey, head, contentDigest: indexContentDigest(document),
           ...(document.indexContentDigest ? { sourcePath: document.path } : {}), pageCount: document.pageCount,
           fromPage: query.fromPage, toPage, generation: selected.id,
           provider: provider && { dimensions: provider.dimensions, maxBatchSize: provider.maxBatchSize,
             maxInputCharacters: provider.maxInputCharacters }, selectionIdentity, extractionIdentity,
           pages: new Map(), nextPage: created ? query.fromPage : toPage + 1, chunkCount: 0, embeddedCount: 0, dataRevision: 0,
-          failures: new Map(), bytes: 512 + (previousPageCacheSource?.indexPageDigests.length ?? 0) * 160,
+          failures: new Map(), bytes: 512,
           lastUsed: Date.now(), users: 0,
           phase: 'restoring', computedChunks: 0, progress: new Set(),
-          ...(previousPageCacheSource ? { previousPageCacheSource } : {}),
           release: reservedPin }
         reservedPin = undefined
         indexes.set(key, index)
@@ -455,19 +446,6 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       signal: binding.signal, check: () => guard(index, binding),
       onFailure: error => ports.onFailure?.(binding.sessionId, binding.document.id, error),
     })
-    const { document } = binding, pages = document.indexPageDigests
-    if (ports.cache && !index.pageCacheSourceRecorded && pages && pages.length <= MAX_PAGE_CACHE_SOURCE_PAGES
-      && index.fromPage === 1 && index.toPage === document.pageCount) {
-      // Remember the source that proved a ready index. An upgrade can thus
-      // restore it without eagerly rewriting every legacy page cache record.
-      guard(index, binding)
-      await ports.cache.set(pageCacheSourceKey(document.path, index.extractionIdentity), { version: 1,
-        sourceDigest: document.sourceDigest, indexPageDigests: pages,
-        ...(document.indexContentDigest ? { indexContentDigest: document.indexContentDigest } : {}),
-      }).catch(() => {})
-      guard(index, binding)
-      index.pageCacheSourceRecorded = true
-    }
   }
   function invalidatePage(index: Index, page: number): void {
     const summary = index.pages.get(page)

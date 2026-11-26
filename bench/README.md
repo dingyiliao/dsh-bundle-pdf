@@ -47,8 +47,8 @@ npm run bench:compare -- --before bench-results/reader-before/runs.jsonl --after
 ```sh
 mkdir -p bench-results
 npm run bench:retrieval -- --repeats 3 --out bench-results/retrieval-lexical.json
-npm run bench:retrieval -- --embedding-endpoint http://127.0.0.1:8001/v1/embeddings --repeats 3 --out bench-results/retrieval-model.json
-npm run bench:retrieval:integration -- --endpoint http://127.0.0.1:8001/v1/embeddings --sdk dist --out bench-results/retrieval-integration.json
+npm run bench:retrieval -- --embedding-endpoint http://127.0.0.1:8001/v1 --repeats 3 --out bench-results/retrieval-model.json
+npm run bench:retrieval:integration -- --endpoint http://127.0.0.1:8001/v1 --sdk dist --out bench-results/retrieval-integration.json
 ```
 
 后两条要求兼容的模型服务已运行；显式请求的服务不可用时，runner 会失败，不会把词法结果冒充语义结果。集成 runner 还需要已构建的插件和原生 helper。固定语料是小规模、人工编写的开发用样本，不是独立保留的检索质量评测；见[检索行为与边界](../docs/retrieval.md)。输出 JSON 文件须使用新的文件名，避免覆盖原始证据。

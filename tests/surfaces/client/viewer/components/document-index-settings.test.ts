@@ -46,8 +46,7 @@ async function withSettings(run: (fixture: {
     enabled: true, disabled: false, label: 'Update index', statusLabel: 'Index ready',
     onStart() { work.starts++ }, onRebuild() { work.rebuilds++ },
     configuration: { identity, disabled: false, saving: false,
-      value: { documentId: identity, revision: 7, policy, activePolicy: policy,
-        enabled: true, activeEnabled: true, pending: false, impact: 'none' },
+      value: { documentId: identity, revision: 7, policy, enabled: true },
       configure: policy => request('configure', policy), useDefaults: () => request('defaults') },
   })
   let control = makeControl('session:document')
@@ -84,7 +83,7 @@ async function withSettings(run: (fixture: {
         assert.ok(operation, 'there must be a real pending settings request')
         const configuration = control.configuration!
         await render({ ...control, configuration: { ...configuration, value: { ...configuration.value,
-          revision: configuration.value.revision + 1, policy, pending: true, impact: 'content' } } })
+          revision: configuration.value.revision + 1, policy } } })
         await act(async () => { operation.resolve(true) })
       },
     })
@@ -205,7 +204,7 @@ test('global engine disable leaves document content choices editable but hides m
   await withSettings(async f => {
     const control = f.control(), configuration = control.configuration!
     await f.render({ ...control, enabled: false, disabled: true, configuration: { ...configuration,
-      value: { ...configuration.value, enabled: false, activeEnabled: false, pending: true, impact: 'embedding' } } })
+      value: { ...configuration.value, enabled: false } } })
     assert.equal(f.container.querySelector('select'), null)
     assert.equal(f.toggle(scanLabel).disabled, false)
     assert.equal(f.toggle(imageLabel).disabled, false)
@@ -218,64 +217,6 @@ test('global engine disable leaves document content choices editable but hides m
     assert.deepEqual(f.calls, [{ kind: 'configure', policy: { ...defaults, indexScanPages: true } }])
     await f.accept({ ...defaults, indexScanPages: true })
     assert.deepEqual(f.work, { starts: 0, rebuilds: 0 })
-  })
-})
-
-test('pending impact messages, disabled state, disclosure and legacy controls remain accurate', async () => {
-  await withSettings(async f => {
-    const impacts = {
-      content: 'Update to apply the content choices. Reusable text and recognition results are retained.',
-      embedding: 'Update to encode passages with the selected model. Extracted page content is retained.',
-      configuration: 'Engine configuration has changed. Update to apply it; reusable results are retained.',
-    } as const
-    for (const impact of ['content', 'embedding', 'configuration'] as const) {
-      const control = f.control(), configuration = control.configuration!
-      await f.render({ ...control, configuration: { ...configuration, value: { ...configuration.value, pending: true, impact } } })
-      assert.equal(f.container.querySelector('.dsh-pdf-index-impact')!.textContent, impacts[impact])
-      assert.match(f.container.textContent ?? '', /Continuing uses the original plan; update the index to apply new settings/)
-    }
-    const control = f.control(), configuration = control.configuration!
-    await f.render({ ...control, disabled: true, configuration: { ...configuration, saving: true } })
-    assert.match(f.container.textContent ?? '', /Saving settings/)
-    assert.ok([...f.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')].every(element => element.disabled))
-    await f.click(f.button('Use current defaults'))
-    assert.equal(f.calls.length, 0)
-    await f.render({ ...control, disabled: true, configuration: { ...configuration, disabled: true } })
-    assert.equal(f.toggle(scanLabel).disabled, true)
-    await f.render(f.makeControl('session:document'))
-    const details = f.container.querySelector('details')!
-    await f.click(details.querySelector('summary')!)
-    assert.equal(details.open, false)
-    await f.render({ ...f.control(), statusLabel: 'Index running' })
-    assert.equal(details.open, false)
-    const { configuration: _configuration, ...legacy } = f.control()
-    await f.render(legacy)
-    assert.equal(f.container.querySelector('select,input'), null)
-    await f.click(f.button('Update index'))
-    assert.equal(f.work.starts, 1)
-  })
-})
-
-test('continuing an interrupted index and applying new settings are separate, clearly described actions', async () => {
-  await withSettings(async f => {
-    let updates = 0
-    const control = f.control(), configuration = control.configuration!
-    await f.render({ ...control, label: 'Resume indexing', statusLabel: 'Indexing cancelled',
-      onUpdate() { updates++ }, updateDisabled: false,
-      configuration: { ...configuration, value: { ...configuration.value,
-        policy: { ...defaults, indexScanPages: true }, pending: true, impact: 'content' } } })
-    assert.match(f.container.textContent ?? '', /Continuing uses the original plan; update the index to apply new settings/)
-    const update = f.button('Apply new settings and update index')
-    const more = update.closest<HTMLDetailsElement>('.dsh-pdf-index-help')!
-    assert.ok(more, 'the alternative plan action uses the existing details disclosure')
-    assert.equal(more.open, false, 'new plan controls do not crowd the ordinary continuation action')
-    await f.click(f.button('Resume indexing'))
-    assert.equal(f.work.starts, 1)
-    assert.equal(updates, 0, 'continuation does not apply staged choices')
-    await f.click(more.querySelector('summary')!)
-    await f.click(update)
-    assert.equal(updates, 1)
-    assert.equal(f.work.starts, 1, 'updating has its own callback rather than pretending to resume')
   })
 })
 

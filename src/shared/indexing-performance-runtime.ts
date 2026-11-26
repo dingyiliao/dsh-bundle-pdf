@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { IndexPerformanceMetric } from '../../../shared/indexing-performance.js'
-export type { IndexPerformanceMetric } from '../../../shared/indexing-performance.js'
+import type { IndexPerformanceMetric } from './indexing-performance.js'
+export type { IndexPerformanceMetric } from './indexing-performance.js'
 
 type Observer = (metric: IndexPerformanceMetric) => void
 const scope = new AsyncLocalStorage<Observer>()

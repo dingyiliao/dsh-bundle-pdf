@@ -1,5 +1,5 @@
 import { cosineSimilarity, validateEmbeddingVector, type RankedChunk } from './ranking.js'
-import { tokenizeRetrievalText, type RetrievalChunk } from '../content/retrieval/text.js'
+import { tokenizeRetrievalText, type RetrievalChunk } from '../../../derived/content/retrieval/text.js'
 
 /** A page is released after each scan; the producer owns disk and cache policy. */
 export interface SearchPage {

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { digest, decodeCachedVector, encodeCachedVector, validVector, validateRetrievalPage, type CachedRetrievalPage,
+import { digest, decodeCachedVector, validateRetrievalPage, type CachedRetrievalPage,
   type CachedRetrievalVector } from './cache.js'
 import { chunkRetrievalPage, type RetrievalChunk } from '../content/retrieval/text.js'
 import type { RetrievalCache } from './types.js'
@@ -8,10 +8,6 @@ const generation = z.object({ id: z.string().uuid(), rebuildToken: z.string().mi
 const headSchema = z.object({ version: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/),
   active: generation.optional(), pending: generation.optional(), seeds: z.array(generation).max(8).optional(),
   retired: z.array(generation).max(1024).optional() }).strict()
-const shardSchema = z.object({ version: z.literal(1), page: z.number().int().positive(), generation: z.string().uuid(),
-  content: z.unknown(), vectors: z.record(z.string().regex(/^[a-f0-9]{64}$/), z.unknown()),
-  failure: z.object({ code: z.string().min(1).max(128), attempts: z.number().int().positive() }).strict().optional(),
-}).strict()
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const recordKeySchema = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/)
 const vectorRefSchema = z.object({ key: recordKeySchema, sha256: hashSchema }).strict()
@@ -72,103 +68,28 @@ function splitHeader(value: unknown, generation?: string, page?: number) {
       header.summary.warnings)) throw corrupt()
   return header
 }
-function cachedVector(value: unknown, dimensions: number) {
-  // Historical standalone caches could persist JSON arrays. Migrate those
-  // once to the normalized wire record; modern records retain their exact bytes.
-  const encoded = validVector(value, dimensions) ? encodeCachedVector(value) : value as CachedRetrievalVector
-  const decoded = decodeCachedVector(encoded, dimensions)
-  return decoded ? { encoded: { ...encoded }, decoded } : undefined
-}
-
 interface VerifiedIndexVector {
   encoded: CachedRetrievalVector
   decoded: Float32Array
-  reference?: StoredIndexPageLocation['vectorRefs'][string]
-}
-export interface RecoveredIndexPageHeader {
-  header: StoredIndexPageHeader
-  repairedReferences: number
-  persisted: boolean
-}
-const staleHeader = () => Object.assign(new Error('The saved PDF index page changed during recovery. Retry the read.'),
-  { code: 'pdf/stale-reader' })
-// A migration has no selected model to attest dimensions. Bound inference before
-// decoding any untrusted payload; normal reads use their provider's dimensions.
-const maxInferredDimensions = 65_536
-function inferredVectorDimensions(value: unknown): number | undefined {
-  if (!value || typeof value !== 'object' || !('dimensions' in value)) return
-  const dimensions = value.dimensions
-  return typeof dimensions === 'number' && Number.isSafeInteger(dimensions)
-    && dimensions > 0 && dimensions <= maxInferredDimensions ? dimensions : undefined
+  reference: StoredIndexPageLocation['vectorRefs'][string]
 }
 
-async function loadSplitVectors(cache: RetrievalCache, recordKey: string, rawHeader: unknown, header: StoredIndexPageHeader,
-  dimensions: number | undefined, options: { inferDimensions?: boolean; collectVectors?: boolean } = {}): Promise<RecoveredIndexPageHeader & {
+async function loadSplitVectors(cache: RetrievalCache, header: StoredIndexPageHeader,
+  dimensions: number | undefined, collectVectors = false): Promise<{
     vectors: Map<string, VerifiedIndexVector>
     references: StoredIndexPageLocation['vectorRefs']
   }> {
   const vectors = new Map<string, VerifiedIndexVector>()
-  // Summary restoration and scanned repairs retain only small references. Full
-  // readers explicitly opt into keeping decoded payloads for their working page.
   const references: StoredIndexPageLocation['vectorRefs'] = Object.create(null)
-  const repairs: StoredIndexPageLocation['vectorRefs'] = Object.create(null)
-  let repairedReferences = 0
-  if (dimensions !== undefined || options.inferDimensions) for (const [id, reference] of Object.entries(header.vectorRefs)) {
-    const raw = await cache.get(reference.key), expectedDimensions = dimensions ?? inferredVectorDimensions(raw)
-    if (expectedDimensions === undefined) continue
-    const vector = cachedVector(raw, expectedDimensions)
-    if (!vector) continue
-    if (vector.encoded.sha256 === reference.sha256) {
-      references[id] = reference
-      if (options.collectVectors) vectors.set(id, { encoded: vector.encoded, decoded: Float32Array.from(vector.decoded), reference })
-      continue
-    }
-    // One historical embed path decoded valid A, normalized it again into B,
-    // then committed B's hash alongside A's cache key. Recognize only that exact
-    // deterministic transformation, never an arbitrary checksum mismatch.
-    const source = decodeCachedVector(raw, expectedDimensions)
-    if (!source) continue
-    const rebuilt = encodeCachedVector(source)
-    if (rebuilt.sha256 !== reference.sha256) continue
-    repairedReferences++
-    if (!cache.compareAndSet) {
-      // A read-only port can still recover B in memory. Omit a durable location
-      // so a later normal checkpoint cannot reuse the broken A-key/B-hash pair.
-      references[id] = reference
-      if (options.collectVectors) vectors.set(id, { encoded: rebuilt,
-        decoded: Float32Array.from(decodeCachedVector(rebuilt, expectedDimensions)!) })
-      continue
-    }
-    const repairedReference = { key: `index_vector_${rebuilt.sha256}`, sha256: rebuilt.sha256 }
-    let stored = await cache.get(repairedReference.key)
-    if (stored === undefined || stored === null) {
-      if (await cache.compareAndSet(repairedReference.key, stored, rebuilt)) stored = rebuilt
-      else stored = await cache.get(repairedReference.key)
-    }
-    const storedDecoded = decodeCachedVector(stored, expectedDimensions)
-    if (!storedDecoded || (stored as CachedRetrievalVector).sha256 !== rebuilt.sha256) throw corrupt()
-    repairs[id] = repairedReference
-    references[id] = repairedReference
-    if (options.collectVectors) vectors.set(id, { encoded: { ...stored as CachedRetrievalVector }, decoded: Float32Array.from(storedDecoded),
-      reference: repairedReference })
+  if (dimensions !== undefined) for (const [id, reference] of Object.entries(header.vectorRefs)) {
+    const raw = await cache.get(reference.key)
+    const decoded = decodeCachedVector(raw, dimensions)
+    if (!decoded || (raw as CachedRetrievalVector).sha256 !== reference.sha256) continue
+    references[id] = reference
+    if (collectVectors) vectors.set(id, { encoded: { ...raw as CachedRetrievalVector },
+      decoded: Float32Array.from(decoded), reference })
   }
-  if (!Object.keys(repairs).length) return { header, vectors, references, repairedReferences, persisted: false }
-  const recovered = { ...header, vectorRefs: { ...header.vectorRefs, ...repairs } }
-  if (!await cache.compareAndSet!(recordKey, rawHeader, recovered)) throw staleHeader()
-  return { header: recovered, vectors, references, repairedReferences, persisted: true }
-}
-
-/** Repair a single scanned V2 checkpoint without loading its text, OCR or page
- * geometry. Only the proven double-normalization bug is recoverable. Stores
- * without atomic compare-and-set provide an in-memory result and remain intact.
- * A concurrent header replacement raises pdf/stale-reader for a bounded retry. */
-export async function recoverIndexPageHeader(cache: RetrievalCache, recordKey: string, rawHeader: unknown,
-  dimensions?: number): Promise<RecoveredIndexPageHeader | undefined> {
-  if (!/^index_page_[a-f0-9]{64}$/.test(recordKey)) throw corrupt()
-  if (!rawHeader || typeof rawHeader !== 'object' || !('version' in rawHeader) || rawHeader.version !== 2) return
-  const header = splitHeader(rawHeader)
-  const recovered = await loadSplitVectors(cache, recordKey, rawHeader, header, dimensions, { inferDimensions: true })
-  return { header: recovered.header, repairedReferences: recovered.repairedReferences, persisted: recovered.persisted }
+  return { vectors, references }
 }
 
 export async function readIndexHead(cache: RetrievalCache, key: string): Promise<StoredIndexHead | undefined> {
@@ -183,48 +104,27 @@ export async function readIndexPage(cache: RetrievalCache, key: string, generati
     vectors: Map<string, Float32Array>; location?: StoredIndexPageLocation } | undefined> {
   const recordKey = storedIndexPageKey(key, generation, page), value = await cache.get(recordKey)
   if (value === undefined || value === null) return undefined
-  if (typeof value === 'object' && 'version' in value && value.version === 2) {
-    const header = splitHeader(value, generation, page), rawContent = await cache.get(header.contentKey)
-    if (rawContent === undefined || rawContent === null) throw missingContent()
-    const content = validateRetrievalPage(rawContent)
-    if (!content || header.contentKey !== `index_content_${digest(JSON.stringify(rawContent))}`) throw corrupt()
-    contentKeys.set(content, header.contentKey)
-    const chunks = chunkRetrievalPage(page, content, { maxCharacters })
-    if (JSON.stringify(header.chunkIds) !== JSON.stringify(chunks.map(chunk => chunk.id))) throw corrupt()
-    const vectors = new Map<string, Float32Array>(), encoded: Record<string, CachedRetrievalVector> = Object.create(null)
-    const refs: StoredIndexPageLocation['vectorRefs'] = Object.create(null)
-    const recovered = await loadSplitVectors(cache, recordKey, value, header, dimensions, { collectVectors: true })
-    for (const [id, vector] of recovered.vectors) {
-      vectors.set(id, vector.decoded); encoded[id] = vector.encoded
-      if (vector.reference) refs[id] = vector.reference
-    }
-    const record: StoredIndexPage = { version: 1, page, generation, content, vectors: encoded,
-      ...(header.summary.failure ? { failure: { code: header.summary.failure.code, attempts: header.summary.failure.attempts } } : {}) }
-    // The header describes what was committed, not what damaged/missing vector
-    // records still provide. Recompute counts from the independently verified data.
-    const summary = summarizeIndexPage(record, chunks, vectors.size)
-    if (header.summary.chunks !== chunks.length || header.summary.noText !== summary.noText || header.summary.ocr !== summary.ocr
-      || header.summary.descriptions !== summary.descriptions || header.summary.failure?.page !== (record.failure ? page : undefined)
-      || JSON.stringify(header.summary.warnings) !== JSON.stringify(summary.warnings)) throw corrupt()
-    return { record, chunks, vectors, location: { contentKey: header.contentKey, vectorRefs: refs } }
-  }
-  const parsed = shardSchema.safeParse(value)
-  if (!parsed.success || parsed.data.page !== page || parsed.data.generation !== generation) throw corrupt()
-  const content = validateRetrievalPage(parsed.data.content)
-  if (!content) throw corrupt()
+  const header = splitHeader(value, generation, page), rawContent = await cache.get(header.contentKey)
+  if (rawContent === undefined || rawContent === null) throw missingContent()
+  const content = validateRetrievalPage(rawContent)
+  if (!content || header.contentKey !== `index_content_${digest(JSON.stringify(rawContent))}`) throw corrupt()
+  contentKeys.set(content, header.contentKey)
   const chunks = chunkRetrievalPage(page, content, { maxCharacters })
-  const ids = new Set(chunks.map(chunk => chunk.id)), vectors = new Map<string, Float32Array>()
-  const encoded: Record<string, CachedRetrievalVector> = Object.create(null)
-  for (const [id, value] of Object.entries(parsed.data.vectors)) {
-    if (!ids.has(id) || dimensions === undefined) continue
-    const vector = cachedVector(value, dimensions)
-    // A damaged vector can be repaired from its independent cache, or computed
-    // again. A checkpoint must never claim this chunk is already embedded.
-    if (!vector) continue
-    vectors.set(id, Float32Array.from(vector.decoded)); encoded[id] = vector.encoded
+  if (JSON.stringify(header.chunkIds) !== JSON.stringify(chunks.map(chunk => chunk.id))) throw corrupt()
+  const vectors = new Map<string, Float32Array>(), encoded: Record<string, CachedRetrievalVector> = Object.create(null)
+  const refs: StoredIndexPageLocation['vectorRefs'] = Object.create(null)
+  const loaded = await loadSplitVectors(cache, header, dimensions, true)
+  for (const [id, vector] of loaded.vectors) {
+    vectors.set(id, vector.decoded); encoded[id] = vector.encoded; refs[id] = vector.reference
   }
-  return { record: { version: 1, page, generation, content, vectors: encoded,
-    ...(parsed.data.failure ? { failure: parsed.data.failure } : {}) }, chunks, vectors }
+  const record: StoredIndexPage = { version: 1, page, generation, content, vectors: encoded,
+    ...(header.summary.failure ? { failure: { code: header.summary.failure.code, attempts: header.summary.failure.attempts } } : {}) }
+  // Damaged or missing vectors are gaps, never completed chunks.
+  const summary = summarizeIndexPage(record, chunks, vectors.size)
+  if (header.summary.chunks !== chunks.length || header.summary.noText !== summary.noText || header.summary.ocr !== summary.ocr
+    || header.summary.descriptions !== summary.descriptions || header.summary.failure?.page !== (record.failure ? page : undefined)
+    || JSON.stringify(header.summary.warnings) !== JSON.stringify(summary.warnings)) throw corrupt()
+  return { record, chunks, vectors, location: { contentKey: header.contentKey, vectorRefs: refs } }
 }
 /** Restore coverage without materializing page text or glyph geometry. Stores
  * lacking a cheap existence probe retain the full-read validation path. */
@@ -237,10 +137,9 @@ export async function readIndexSummary(cache: RetrievalCache, key: string, gener
   if (!cache.has) return full()
   const recordKey = storedIndexPageKey(key, generation, page), value = await cache.get(recordKey)
   if (value === undefined || value === null) return undefined
-  if (typeof value !== 'object' || !('version' in value) || value.version !== 2) return full()
   const header = splitHeader(value, generation, page)
   if (!await cache.has(header.contentKey)) throw missingContent()
-  const recovered = await loadSplitVectors(cache, recordKey, value, header, dimensions)
+  const recovered = await loadSplitVectors(cache, header, dimensions)
   return { ...header.summary, embedded: Object.keys(recovered.references).length,
     dataVersion: indexDataVersion(header.chunkIds, recovered.references,
       header.summary.failure ? { code: header.summary.failure.code, attempts: header.summary.failure.attempts } : undefined,
@@ -294,17 +193,9 @@ function indexDataVersion(chunkIds: readonly string[], vectors: Record<string, {
   // result's coverage, so a meaningful change retains the stale-data fence.
   return hashIndexData(chunkIds, vectors, failure ? { code: failure.code } : null, warnings)
 }
-function legacyIndexDataVersion(chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
-  failure: StoredIndexPage['failure'], warnings: readonly string[]): string {
-  return hashIndexData(chunkIds, vectors, failure ?? null, warnings)
-}
 function validDataVersion(value: string, chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
   failure: StoredIndexPage['failure'], warnings: readonly string[]): boolean {
-  // Previously written V2 headers included the retry count. Accept that exact
-  // on-disk checksum, then normalize the in-memory version on read; the next
-  // checkpoint write publishes the current format without a cache rebuild.
   return value === indexDataVersion(chunkIds, vectors, failure, warnings)
-    || value === legacyIndexDataVersion(chunkIds, vectors, failure, warnings)
 }
 function hashIndexData(chunkIds: readonly string[], vectors: Record<string, { sha256: string }>,
   failure: unknown, warnings: readonly string[]): string {

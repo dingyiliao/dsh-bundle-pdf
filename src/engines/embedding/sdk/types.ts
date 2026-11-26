@@ -23,9 +23,12 @@ export interface EmbeddingModel {
   maxInputCharacters: number
   /** Includes query instructions, document encoding and normalization version. */
   encoding: string
+  /** Stable provider-owned model/encoding identity, including weights and dimensions.
+   * Excludes endpoints, credentials and transport limits; used for persistence
+   * when documentFingerprint is absent. */
   fingerprint: string
-  /** Optional identity of document vectors only. Excludes query instructions
-   * and transport limits; providers own and must attest its encoding contract. */
+  /** Optional identity of document vectors only. Also excludes query-only instructions;
+   * providers own and must attest its encoding contract. */
   documentFingerprint?: string
 }
 

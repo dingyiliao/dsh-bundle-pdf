@@ -127,9 +127,7 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
   }
   async function command(action: 'start' | 'resume' | 'rebuild' | 'cancel', target: string): Promise<void> {
     const settings = snapshot.documents?.find(value => value.documentId === target)
-    const enabled = settings ? action === 'cancel' || action === 'resume'
-      ? settings.enabled || settings.activeEnabled
-      : settings.enabled : snapshot.enabled
+    const enabled = action === 'cancel' || (settings?.enabled ?? snapshot.enabled)
     if (!api || !connected || !enabled || signal.aborted || requests.current.has(target)) return
     const controller = new AbortController()
     requests.current.set(target, controller)
@@ -175,9 +173,7 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
     const active = task.state === 'queued' || task.state === 'running'
     const completed = task.state === 'ready'
     const settings = snapshot.documents?.find(value => value.documentId === task.documentId)
-    const enabled = settings ? active || !completed
-      ? settings.enabled || settings.activeEnabled
-      : settings.enabled : snapshot.enabled
+    const enabled = active || (settings?.enabled ?? snapshot.enabled)
     const action = active ? 'cancel' : 'resume'
     const actionLabel = t(active ? 'reader.cancel' : task.state === 'cancelled' ? 'reader.indexing.resume' : 'reader.indexing.retry')
     const diagnosticKey = `diagnostics:${task.documentId}:${task.occurrence}`
@@ -211,7 +207,7 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
   const settings = snapshot.documents?.find(value => value.documentId === documentId)
   const resumable = current?.state === 'failed' || current?.state === 'cancelled'
   const desiredEnabled = settings ? settings.enabled : snapshot.enabled
-  const enabled = settings ? resumable ? settings.enabled || settings.activeEnabled : settings.enabled : snapshot.enabled
+  const enabled = settings?.enabled ?? snapshot.enabled
   const workDisabled = !documentId || !connected || signal.aborted || pending.has(documentId)
     || pending.has(`configuration:${documentId}`) || current?.state === 'queued' || current?.state === 'running'
   const statusLabel = t(!connected ? snapshot.status === 'loading' ? 'reader.indexing.checking' : 'reader.indexing.unavailable'
@@ -220,13 +216,11 @@ export function useReaderIndexing({ api, sessionId, documentId, signal, t, onErr
   const control: ReaderIndexingControl | undefined = api ? {
     enabled,
     label: t(current?.state === 'cancelled' ? 'reader.indexing.resume' : current?.state === 'failed' ? 'reader.indexing.retry'
-      : settings?.pending || current?.state === 'ready' ? 'reader.indexing.update' : 'reader.indexing.start'),
+      : current?.state === 'ready' ? 'reader.indexing.update' : 'reader.indexing.start'),
     statusLabel: connected && enabled && current ? indexingLabel(current, t) : statusLabel,
     disabled: workDisabled || !enabled,
     updateDisabled: workDisabled || !desiredEnabled,
     onStart: () => { if (documentId) void command(resumable ? 'resume' : 'start', documentId) },
-    ...(resumable && settings?.pending && settings.enabled
-      ? { onUpdate: () => { if (documentId) void command('start', documentId) } } : {}),
     ...(desiredEnabled ? { onRebuild: () => { if (documentId) void command('rebuild', documentId) } } : {}),
     ...(settings ? { configuration: {
       identity: JSON.stringify([sessionId, documentId]), value: settings,

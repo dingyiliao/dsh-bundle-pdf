@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPdfPageContent, type PdfPageContent } from '../../../../../src/layers/derived/content/production/page-content.ts'
+import { createPdfPageContent, type PdfPageContent } from '../../../../../src/layers/facade/search/retrieval/page-content.ts'
 import { createPdfRetrieval } from '../../../../../src/layers/facade/search/host-retrieval.ts'
 import { EmbeddingRegistry } from '../../../../../src/engines/embedding/sdk/index.ts'
 import { createMemoryEvidenceReferenceStore, evidenceSha256, type SavedReference } from '../../../../../src/layers/facade/evidence/index.ts'

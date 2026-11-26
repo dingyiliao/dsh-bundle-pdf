@@ -1,5 +1,5 @@
 import { pageContentDigest, type PageContent } from '../../../document/content/index.js'
-import type { RetrievalPage, RetrievalPageUnit } from '../../indexing/index.js'
+import type { RetrievalPage, RetrievalPageUnit } from '../../../derived/indexing/index.js'
 
 /** Indexing is a projection of representations, not a second editable document. */
 export function projectPageContent(content: PageContent): RetrievalPage {

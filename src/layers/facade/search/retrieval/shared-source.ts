@@ -1,4 +1,4 @@
-import { fatalContentError } from '../../document/content/index.js'
+import { fatalContentError } from '../../../document/content/index.js'
 import type { RetrievalDocument, RetrievalEmbedding, RetrievalPorts } from './types.js'
 
 /** Authority belongs to a caller, never to the content-addressed index. */

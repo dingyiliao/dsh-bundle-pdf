@@ -38,7 +38,7 @@ test('endpoint configuration and direct engine inputs reject invalid limits befo
   assert.deepEqual(engine.describe({ apiKeyRef: '' }), engine.describe({}))
 })
 
-test('availability verifies server metadata without transmitting document inputs', async () => {
+test('availability verifies model metadata without inference', async () => {
   const requests: string[] = []
   const registry = new EmbeddingRegistry()
   registry.register(createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {
@@ -110,9 +110,9 @@ test('response bytes, endpoint destinations and status errors are bounded withou
   registry.register(createOpenAiCompatibleEmbeddingEngine({ maxResponseBytes: 10,
     fetch: (async url => String(url).endsWith('/models') ? reply(metadata()) : reply({ secret: 'private error body', data: [] })) as typeof fetch }))
   await assert.rejects(registry.embed({ texts: ['a'], purpose: 'document' }, binding), code('limit-exceeded'))
-  for (const endpoint of ['http://example.com/v1/embeddings', 'http://localhost.evil.test/v1/embeddings',
-    'file:///tmp/secret', 'http://user:password@localhost:8001/v1/embeddings', 'http://localhost:8001/v1/embeddings?token=secret',
-    'https://example.com/v1/chat/completions', 'https://example.com/v1/embeddings#secret']) {
+  for (const endpoint of ['http://example.com/api', 'http://localhost.evil.test/api',
+    'file:///tmp/secret', 'http://user:password@localhost:8001/api', 'http://localhost:8001/api?token=secret',
+    'https://example.com/api#secret']) {
     assert.throws(() => registry.describe({ ...binding, config: { endpoint } }), code('invalid-request'))
   }
   registry.dispose()
@@ -128,12 +128,17 @@ test('response bytes, endpoint destinations and status errors are bounded withou
 })
 
 test('one service adapter accepts local and third-party endpoints using standard model and vector responses', async () => {
-  for (const endpoint of ['http://localhost:8001/v1/embeddings', 'http://[::1]:8001/v1/embeddings', 'https://provider.example/api/v1/embeddings']) {
+  for (const endpoint of ['http://localhost:8001', 'http://localhost:8001/v1', 'http://localhost:8001/v1/',
+    'http://[::1]:8001/custom/api', 'https://provider.example/api', 'https://provider.example/api/v2/',
+    'https://provider.example/v1/embeddings']) {
     const calls: string[] = []
     const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async (url, init) => {
       calls.push(String(url))
       assert.equal(init?.redirect, 'error')
-      if (String(url).endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'provider-embedding' }] }))
+      if (String(url).endsWith('/models')) {
+        assert.equal(init?.body, undefined)
+        return new Response(JSON.stringify({ data: [{ id: 'provider-embedding' }] }))
+      }
       assert.deepEqual(JSON.parse(String(init?.body)), { model: 'provider-embedding', input: ['search words'], encoding_format: 'float' })
       return new Response(JSON.stringify({ model: 'provider-embedding', data: [{ index: 0, embedding: [3, 4] }] }))
     }) as typeof fetch })
@@ -144,13 +149,15 @@ test('one service adapter accepts local and third-party endpoints using standard
       assert.equal(registry.list()[0]!.execution, 'service')
       assert.deepEqual(await registry.availability(configured), { status: 'available' })
       assert.deepEqual((await registry.embed({ texts: ['search words'], purpose: 'query' }, configured)).vectors, [[0.6, 0.8]])
-      assert.deepEqual(calls, [endpoint.replace(/embeddings$/, 'models'), endpoint])
+      const base = endpoint.replace(/\/$/, '')
+      assert.deepEqual(calls, [`${base}/models`, `${base}/embeddings`])
+      assert.equal(registry.describe(configured).fingerprint, registry.describe({ ...configured, config: { ...configured.config, endpoint: `${base}/` } }).fingerprint)
       assert.equal(registry.describe(configured).modelRevision, 'unversioned')
     } finally { registry.dispose() }
   }
 })
 
-test('authentication is resolved once per operation and sent to both API requests without entering the model identity', async () => {
+test('authentication is resolved once per operation without entering the model identity', async () => {
   let resolutions = 0, token = 'first-secret'
   const authorizations: Array<string | null> = []
   const engine = createOpenAiCompatibleEmbeddingEngine({
@@ -213,15 +220,23 @@ test('cancellation after model discovery prevents transmitting document text', a
   assert.equal(requests, 1)
 })
 
-test('cache identity is internally managed from the service and encoding configuration', () => {
+test('provider cache identity follows model encoding, not connection or transport configuration', () => {
   const engine = createOpenAiCompatibleEmbeddingEngine()
   const initial = engine.describe({})
   const configurations: Parameters<typeof engine.describe>[0][] = [
-    { endpoint: 'https://provider.example/v1/embeddings' }, { model: 'other-embedding' },
-    { dimensions: 2 }, { queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION },
+    { model: 'other-embedding' }, { dimensions: 2 }, { queryInstruction: QWEN3_RETRIEVAL_INSTRUCTION },
   ]
   for (const config of configurations) {
     assert.notEqual(engine.describe(config).fingerprint, initial.fingerprint)
+  }
+  const connections: Parameters<typeof engine.describe>[0][] = [
+    { endpoint: 'https://provider.example/v1' }, { apiKeyRef: 'ANOTHER_ACCOUNT' },
+    { maxBatchSize: 1 }, { maxInputCharacters: 2000 },
+  ]
+  for (const config of connections) {
+    const changed = engine.describe(config)
+    assert.equal(changed.fingerprint, initial.fingerprint)
+    assert.equal(changed.documentFingerprint, initial.documentFingerprint)
   }
   assert.equal(engine.descriptor.configurationFields?.some(field => field.key === 'modelRevision'), false)
   assert.deepEqual(engine.describe({ modelRevision: 'retired-user-tag' }), initial)
@@ -265,21 +280,45 @@ test('document encoding identity ignores query instructions and transport limits
     else assert.equal(changed.fingerprint, original.fingerprint)
   }
   const encodingChanges: Parameters<typeof engine.describe>[0][] = [
-    { model: 'other-model' }, { dimensions: 3 }, { endpoint: 'https://other.example/v1/embeddings' },
+    { model: 'other-model' }, { dimensions: 3 },
   ]
   for (const change of encodingChanges) {
     assert.notEqual(engine.describe({ ...base, ...change }).documentFingerprint, original.documentFingerprint)
   }
 })
 
-test('credential changes stay isolated until the service attests the same model revision', async () => {
-  const engine = createOpenAiCompatibleEmbeddingEngine({ resolveCredential: async () => 'fixture-key',
-    fetch: (async () => reply(metadata())) as typeof fetch })
-  const first = { dimensions: 2, apiKeyRef: 'FIRST_ACCOUNT' }, second = { dimensions: 2, apiKeyRef: 'SECOND_ACCOUNT' }
-  assert.notEqual(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+test('connection probes remain independent while equal provider identities share document vectors', async () => {
+  for (const versioned of [false, true]) {
+    const requests: Array<{ url: string; authorization: string | null }> = []
+    const engine = createOpenAiCompatibleEmbeddingEngine({ resolveCredential: async reference => `key-${reference}`,
+      fetch: (async (url, init) => {
+        requests.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') })
+        return reply(versioned ? metadata() : { data: [{ id: 'mlx-community/Qwen3-Embedding-0.6B-8bit' }] })
+      }) as typeof fetch })
+    const first = { dimensions: 2, endpoint: 'https://first.example/v1', apiKeyRef: 'FIRST_ACCOUNT' }
+    const second = { dimensions: 2, endpoint: 'https://second.example/v1', apiKeyRef: 'SECOND_ACCOUNT' }
+    assert.equal(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+    await engine.availability!(first, new AbortController().signal)
+    await engine.availability!(second, new AbortController().signal)
+    assert.equal(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+    assert.equal(engine.describe(first).fingerprint, engine.describe(second).fingerprint)
+    assert.equal(engine.describe(second).modelRevision, versioned ? FIXTURE_MODEL_REVISION : 'unversioned')
+    assert.deepEqual(requests, [
+      { url: 'https://first.example/v1/models', authorization: 'Bearer key-FIRST_ACCOUNT' },
+      { url: 'https://second.example/v1/models', authorization: 'Bearer key-SECOND_ACCOUNT' },
+    ], 'sharing vector identity never reuses another connection’s metadata probe')
+  }
+})
+
+test('different service model revisions have different provider identities regardless of endpoint', async () => {
+  const engine = createOpenAiCompatibleEmbeddingEngine({ fetch: (async url =>
+    reply(metadata({ revision: String(url).includes('first.example') ? 'weights-1' : 'weights-2' }))) as typeof fetch })
+  const first = { dimensions: 2, endpoint: 'https://first.example/v1' }
+  const second = { dimensions: 2, endpoint: 'https://second.example/v1' }
   await engine.availability!(first, new AbortController().signal)
   await engine.availability!(second, new AbortController().signal)
-  assert.equal(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+  assert.notEqual(engine.describe(first).documentFingerprint, engine.describe(second).documentFingerprint)
+  assert.notEqual(engine.describe(first).fingerprint, engine.describe(second).fingerprint)
 })
 
 test('availability and successive embedding batches reuse only fresh successful model checks', async () => {
@@ -360,7 +399,7 @@ test('failed discovery is retried and metadata cache isolates endpoint, model, d
   failed = false
   await engine.availability!(base, active); await engine.availability!({ ...base, queryInstruction: 'query only' }, active)
   assert.equal(gets, 2)
-  const changes: Parameters<typeof engine.describe>[0][] = [{ endpoint: 'https://another.example/v1/embeddings' },
+  const changes: Parameters<typeof engine.describe>[0][] = [{ endpoint: 'https://another.example/v1' },
     { model: 'two' }, { dimensions: 3 }, { maxBatchSize: 1 }, { maxInputCharacters: 1000 }]
   for (const change of changes) {
     await engine.availability!({ ...base, ...change }, active)
@@ -390,7 +429,7 @@ test('discovery success and pending request caches stay bounded', async () => {
     gets++; return reply(metadata())
   }) as typeof fetch })
   const active = new AbortController().signal
-  const configured = (n: number) => ({ ...binding.config, endpoint: `https://provider${n}.example/v1/embeddings` })
+  const configured = (n: number) => ({ ...binding.config, endpoint: `https://provider${n}.example/v1` })
   for (let i = 0; i < 129; i++) await engine.availability!(configured(i), active)
   await engine.availability!(configured(128), active); assert.equal(gets, 129)
   await engine.availability!(configured(0), active); assert.equal(gets, 130, 'The oldest successful entry was evicted')

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { cacheDerived, decodeCachedVector, encodeCachedVector, readCachedPage, readCachedVector, readCachedVectorRecord } from '../../../../src/layers/derived/indexing/cache.ts'
-import { cosineSimilarity } from '../../../../src/layers/derived/indexing/ranking.ts'
+import { cosineSimilarity } from '../../../../src/layers/facade/search/retrieval/ranking.ts'
 import type { RetrievalCache } from '../../../../src/layers/derived/indexing/types.ts'
 
 function cacheWith(value: unknown) {
@@ -40,45 +40,23 @@ test('normalization before serialization preserves finite very large and subnorm
   for (const invalid of [[], [0, 0], [NaN, 1], [Infinity, 1]]) assert.throws(() => encodeCachedVector(invalid))
 })
 
-test('valid legacy arrays migrate to compact records without any embedding call or mutating the caller', async () => {
-  const input = [3, 4], f = cacheWith(input)
-  assert.deepEqual(await readCachedVector(f.cache, 'vector', 2), input)
-  assert.deepEqual(input, [3, 4])
-  assert.deepEqual(f.stored.get('vector'), encodeCachedVector(input))
-  assert.equal(f.writes(), 1)
-  const restored = await readCachedVector(f.cache, 'vector', 2)
-  assert.ok(restored)
-  assert.ok(Math.abs(cosineSimilarity(input, restored) - 1) < 1e-7)
-  assert.equal(f.writes(), 1, 'the same entry is migrated once')
-})
-
 test('checkpoint cache reads retain verified Float32 bytes when encoding them again would change their checksum', async () => {
   const record = encodeCachedVector([0.275497866794467, -0.4411379941739142])
   assert.notEqual(encodeCachedVector(decodeCachedVector(record, 2)!).sha256, record.sha256,
     'the fixture must detect an accidental second normalization')
   const f = cacheWith(record)
   const loaded = await readCachedVectorRecord(f.cache, 'vector', 2)
-  assert.deepEqual(loaded, { record, persisted: true })
+  assert.deepEqual(loaded, { record })
   assert.equal(f.writes(), 0, 'modern vector reuse must not rewrite an already durable record')
   loaded!.record.sha256 = '0'.repeat(64)
-  assert.deepEqual(await readCachedVectorRecord(f.cache, 'vector', 2), { record, persisted: true },
+  assert.deepEqual(await readCachedVectorRecord(f.cache, 'vector', 2), { record },
     'callers cannot mutate the cached vector through the returned record')
 })
 
-test('checkpoint cache reads distinguish durable legacy migrations from optional writes that failed', async () => {
-  const input = [0.275497866794467, -0.4411379941739142], record = encodeCachedVector(input)
-  const f = cacheWith(input)
-  assert.deepEqual(await readCachedVectorRecord(f.cache, 'vector', 2), { record, persisted: true })
-  assert.deepEqual(f.stored.get('vector'), record)
-  const optional: RetrievalCache = { async get() { return [...input] }, async set() { throw new Error('optional write failed') } }
-  assert.deepEqual(await readCachedVectorRecord(optional, 'vector', 2), { record, persisted: false },
-    'a usable legacy vector still needs its exact encoded bytes copied into the checkpoint')
-})
-
-test('cache failures are misses and a failed best-effort migration does not discard a usable vector', async () => {
+test('cache failures are misses', async () => {
   assert.equal(await readCachedVector(undefined, 'vector', 2), undefined)
   assert.equal(await readCachedVector({ async get() { throw new Error('offline') }, async set() {} }, 'vector', 2), undefined)
-  assert.deepEqual(await readCachedVector({ async get() { return [3, 4] }, async set() { throw new Error('full') } }, 'vector', 2), [3, 4])
+  assert.equal(await readCachedVector({ async get() { return [3, 4] }, async set() { throw new Error('full') } }, 'vector', 2), undefined)
 })
 
 test('durable storage failures preserve the original error while optional cache failures remain recoverable misses', async () => {
@@ -89,10 +67,6 @@ test('durable storage failures preserve the original error while optional cache 
   await assert.rejects(readCachedVector(durable, 'vector', 2), error => error === failure)
   await assert.rejects(readCachedPage(durable, 'page'), error => error === failure)
   await assert.rejects(cacheDerived(durable, 'page', { text: 'derived' }), error => error === failure)
-  await assert.rejects(readCachedVector({ async get() { return [3, 4] }, async set() { throw failure } }, 'vector', 2),
-    error => error === failure, 'legacy vector migration cannot hide a failed durable write')
-  await assert.rejects(readCachedVectorRecord({ async get() { return [3, 4] }, async set() { throw failure } }, 'vector', 2),
-    error => error === failure, 'checkpoint reads preserve durable migration failures too')
   assert.equal(failure.cause, cause)
   assert.deepEqual(failure.budget, { kind: 'record', limit: 100, used: 80, requested: 40 })
   const optional: RetrievalCache = { async get() { throw new Error('optional cache unavailable') },
@@ -131,9 +105,9 @@ test('corrupt vector records, unknown formats and dimension mismatches are safe 
 
 test('1024-dimensional dense vectors fit a 6677-chunk book within the existing disk budget', () => {
   const input = Array.from({ length: 1024 }, (_, index) => Math.sin(index + 0.25) / Math.sqrt(512))
-  const legacyBytes = Buffer.byteLength(JSON.stringify({ createdAt: 1, payload: input }))
+  const uncompressedBytes = Buffer.byteLength(JSON.stringify({ createdAt: 1, payload: input }))
   const compactBytes = Buffer.byteLength(JSON.stringify({ createdAt: 1, payload: encodeCachedVector(input) }))
-  assert.ok(compactBytes < legacyBytes * 0.3, `${legacyBytes} -> ${compactBytes} serialized bytes per vector`)
-  assert.ok(legacyBytes * 6677 > 64 * 1024 * 1024)
+  assert.ok(compactBytes < uncompressedBytes * 0.3, `${uncompressedBytes} -> ${compactBytes} serialized bytes per vector`)
+  assert.ok(uncompressedBytes * 6677 > 64 * 1024 * 1024)
   assert.ok(compactBytes * 6677 < 40 * 1024 * 1024, 'leave space for page text inside the unchanged 64 MiB cache')
 })

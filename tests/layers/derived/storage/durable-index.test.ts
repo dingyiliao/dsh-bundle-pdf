@@ -6,9 +6,10 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test, { type TestContext } from 'node:test'
 import { createRetrievalStore } from '../../../../src/layers/derived/storage/retrieval-store.ts'
-import { createRetrievalService } from '../../../../src/layers/derived/indexing/service.ts'
+import { createRetrievalService } from '../../../../src/layers/facade/search/retrieval/service.ts'
 import { chunkRetrievalPage, tokenizeRetrievalText } from '../../../../src/layers/derived/content/retrieval/text.ts'
-import type { RetrievalEmbedding, RetrievalPage, RetrievalPorts } from '../../../../src/layers/derived/indexing/types.ts'
+import type { RetrievalEmbedding, RetrievalPorts } from '../../../../src/layers/facade/search/retrieval/types.ts'
+import type { RetrievalPage } from '../../../../src/layers/derived/indexing/types.ts'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 async function directory(t: TestContext) {

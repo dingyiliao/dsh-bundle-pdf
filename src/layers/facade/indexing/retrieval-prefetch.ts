@@ -1,5 +1,5 @@
 import type { OpenWorkingCopyDocument } from '../../document/working-copy/index.js'
-import type { RetrievalProgress } from '../../derived/indexing/index.js'
+import type { RetrievalProgress } from '../search/retrieval/types.js'
 import { indexingProgressSchema } from '../../../contracts/indexing.js'
 import type { PrefetchDiagnosticEvent, IndexingCancellationReason } from './indexing-diagnostics.js'
 
@@ -23,7 +23,7 @@ interface Entry {
   progress?: RetrievalProgress
   failureCode?: string
   rebuild?: boolean
-  planId?: string
+  bindingId?: string
   started?: boolean
   lastServed?: number
   boost?: boolean
@@ -33,11 +33,11 @@ interface Ports {
   /** Only real UI/model owners belong here; indexing leases are not owners. */
   documents(): readonly RetrievalPrefetchDocument[]
   /** A stable saved binding/registration identity, not mutable discovery metadata. */
-  selection(document: RetrievalPrefetchDocument): { identity: string; planId?: string } | undefined
-  prepare(sessionId: string, input: { documentId: string; rebuild?: boolean; indexPlanId?: string }, signal: AbortSignal,
+  selection(document: RetrievalPrefetchDocument): { identity: string; bindingId?: string } | undefined
+  prepare(sessionId: string, input: { documentId: string; rebuild?: boolean; bindingId?: string }, signal: AbortSignal,
     onProgress?: (progress: RetrievalProgress) => void): Promise<void>
   /** A cooperative quantum: false preserves this occurrence and requeues it. */
-  prepareSlice?(sessionId: string, input: { documentId: string; rebuild?: boolean; indexPlanId?: string }, signal: AbortSignal,
+  prepareSlice?(sessionId: string, input: { documentId: string; rebuild?: boolean; bindingId?: string }, signal: AbortSignal,
     onProgress?: (progress: RetrievalProgress) => void, occurrence?: object): Promise<boolean>
   subscribe?(listener: () => void): () => void
   onChange?(status: RetrievalPrefetchStatus): void
@@ -129,7 +129,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     task.promise = Promise.resolve().then(async () => {
       controller.signal.throwIfAborted()
       const input = { documentId: entry.document.id,
-        ...(entry.planId ? { indexPlanId: entry.planId } : {}),
+        ...(entry.bindingId ? { bindingId: entry.bindingId } : {}),
         ...(entry.rebuild ? { rebuild: true } : {}) }
       const progress = (progress: RetrievalProgress) => {
         if (running !== task || controller.signal.aborted || entries.get(documentKey(entry.document)) !== entry || entry.state !== 'running') return
@@ -171,7 +171,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     notify()
   }
   function reconcile(): void {
-    const desired = new Map<string, Pick<Entry, 'document' | 'signature' | 'selectionIdentity' | 'planId'>>()
+    const desired = new Map<string, Pick<Entry, 'document' | 'signature' | 'selectionIdentity' | 'bindingId'>>()
     let skipped = 0
     const owned = new Map(ports.documents().map(document => [documentKey(document), document]))
     {
@@ -184,14 +184,14 @@ export function createRetrievalPrefetch(ports: Ports) {
         if (!selection) continue
         if (desired.size >= maximum) { skipped++; continue }
         desired.set(key, { document: { ...document }, signature: signatureFor(selection.identity, document), selectionIdentity: selection.identity,
-          ...(selection.planId ? { planId: selection.planId } : {}) })
+          ...(selection.bindingId ? { bindingId: selection.bindingId } : {}) })
       }
     }
     skippedDocuments = skipped; lastFailure = undefined
     for (const [key, entry] of entries) {
       const next = desired.get(key)
       if (next?.signature === entry.signature) continue
-      // A completed index depends on the verified page content and plan. Only
+      // A completed index depends on verified page content and the current engine binding. Only
       // in-flight work is bound to the exact saved bytes it started reading.
       if (entry.state === 'ready' && next && entry.document.path && entry.document.path === next.document.path
         && entry.document.contentVersion === next.document.contentVersion && entry.selectionIdentity === next.selectionIdentity
@@ -237,7 +237,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     if (resume && (!previous || previous.state === 'ready')) {
       fail('pdf/index-resume-unavailable', 'There is no interrupted PDF indexing task to resume. Start an index update instead.')
     }
-    let selection: { identity: string; planId?: string } | undefined
+    let selection: { identity: string; bindingId?: string } | undefined
     try { selection = ports.selection(document) } catch {
       if (resume) fail('pdf/index-settings-changed', 'The interrupted PDF index configuration is no longer available. Start an explicit index update.')
       fail('pdf/retrieval-engine-unavailable', 'Configure an available semantic search engine before indexing.')
@@ -247,7 +247,7 @@ export function createRetrievalPrefetch(ports: Ports) {
       return fail('pdf/retrieval-engine-unavailable', 'Enable semantic search before indexing.')
     }
     const signature = signatureFor(selection.identity, document)
-    if (resume && (previous!.signature !== signature || previous!.planId !== selection.planId)) {
+    if (resume && (previous!.signature !== signature || previous!.bindingId !== selection.bindingId)) {
       fail('pdf/index-settings-changed', 'The PDF source or indexing configuration changed. Start an explicit index update instead of resuming the old task.')
     }
     if (previous?.signature === signature && (rebuild
@@ -264,7 +264,7 @@ export function createRetrievalPrefetch(ports: Ports) {
       ...(interrupted.progress.computedChunks !== undefined ? { computedChunks: 0, reusedChunks: interrupted.progress.embeddedChunks } : {}) } : undefined
     const entry: Entry = { document: { ...document }, signature, selectionIdentity: selection.identity,
       occurrence: ++occurrence, state: 'queued', boost: true,
-      ...(selection.planId ? { planId: selection.planId } : {}),
+      ...(selection.bindingId ? { bindingId: selection.bindingId } : {}),
       ...(rebuild || interrupted?.rebuild ? { rebuild: true } : {}),
       ...(restoredProgress ? { progress: restoredProgress } : {}) }
     entries.set(key, entry); diagnostic(entry, 'queued')
@@ -283,7 +283,7 @@ export function createRetrievalPrefetch(ports: Ports) {
     start(sessionId: string, id: string): void {
       enqueue(sessionId, id, false)
     },
-    /** Resume the exact interrupted plan; applying desired settings is a separate command. */
+    /** Resume unfinished cache work for the current selection. */
     resumeTask(sessionId: string, id: string): void {
       enqueue(sessionId, id, false, true)
     },

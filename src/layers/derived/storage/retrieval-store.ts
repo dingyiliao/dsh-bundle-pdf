@@ -1,14 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, open, opendir, rename, rmdir, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
 
-interface LegacyRetrievalStore {
-  entries(): Iterable<[string, { payload: unknown }]>
-  close(): Promise<void>
-}
 export interface RetrievalStoreMetric {
   stage: 'store-read' | 'store-write' | 'store-serialize' | 'store-verify'
   durationMs: number
@@ -24,10 +20,7 @@ interface RetrievalStoreOptions {
 }
 interface CachedRecord { text: string; bytes: number }
 interface EncodedRecord { id: string; key: string; text: string; bytes: number }
-const markerName = 'legacy-v1-complete.json'
 const databaseName = 'records.sqlite'
-const recordName = /^[a-f0-9]{64}\.json$/
-const temporaryName = /^[a-f0-9]{64}\.[a-f0-9-]{36}\.tmp$/
 const json = z.json()
 const hasCode = (error: unknown, code: string) => !!error && typeof error === 'object' && 'code' in error && error.code === code
 const failure = (code: string, message: string, cause?: unknown) => Object.assign(new Error(message, { cause }), { code: `pdf/index-storage-${code}` })
@@ -50,9 +43,8 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
   }
   const sqliteCacheBytes = Math.min(8 * 1024 * 1024, Math.max(64 * 1024, maxMemoryBytes))
   const maxPendingBytes = Math.max(maxMemoryBytes, maxRecordBytes * 2)
-  const migrationRetired = Symbol('migration already completed or cleared')
   const hot = new Map<string, CachedRecord>()
-  let memoryBytes = 0, pendingCalls = 0, pendingBytes = 0, diskReads = 0, diskWrites = 0, cacheHits = 0, commits = 0, importedRecords = 0
+  let memoryBytes = 0, pendingCalls = 0, pendingBytes = 0, diskReads = 0, diskWrites = 0, cacheHits = 0, commits = 0
   let sealed = false, tail = Promise.resolve(), disposal: Promise<void> | undefined
   let lastYieldAt = performance.now()
   let database: DatabaseSync | undefined, initialization: Promise<DatabaseSync> | undefined, dataVersion = 0
@@ -86,32 +78,6 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
       await chmod(path, 0o600)
     }
   }
-  async function readLegacyText(path: string, maximum = maxRecordBytes): Promise<string | undefined> {
-    let handle
-    try {
-      const metadata = await lstat(path)
-      if (!metadata.isFile() || metadata.isSymbolicLink()) throw failure('unsafe', 'The PDF index storage contains an unsafe legacy record.')
-      handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
-    } catch (error) {
-      if (hasCode(error, 'ENOENT')) return undefined
-      if (hasCode(error, 'ELOOP')) throw failure('unsafe', 'The PDF index storage contains an unsafe legacy record.')
-      throw error
-    }
-    try {
-      const stat = await handle.stat()
-      if (!stat.isFile()) throw failure('unsafe', 'The PDF index storage contains an unsafe legacy record.')
-      if (stat.size > maximum) throw failure('record-too-large', 'The PDF index record exceeds its storage limit.')
-      const bytes = Buffer.alloc(stat.size + 1)
-      let count = 0
-      while (count < bytes.length) {
-        const result = await handle.read(bytes, count, bytes.length - count, count)
-        if (!result.bytesRead) break
-        count += result.bytesRead
-      }
-      if (count > maximum || count !== stat.size) throw failure('corrupt', 'The legacy PDF index record changed while it was read.')
-      return bytes.subarray(0, count).toString('utf8')
-    } finally { await handle.close() }
-  }
   function forget(id: string): void {
     const previous = hot.get(id)
     if (previous) { hot.delete(id); memoryBytes -= previous.bytes }
@@ -133,8 +99,7 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     try {
       const payload = JSON.stringify(json.parse(value))
       const checksum = createHash('sha256').update(payload).digest('hex')
-      // Preserve the V1 envelope byte format without traversing positioned
-      // page content a second time just to add its small identity wrapper.
+      // Serialize page content once before adding the small identity wrapper.
       text = `{"version":1,"key":${JSON.stringify(key)},"payload":${payload},"checksum":"${checksum}"}`
     } catch { throw failure('invalid-record', 'The PDF index record is not valid JSON data.') }
     const bytes = Buffer.byteLength(text)
@@ -165,12 +130,6 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     catch (error) { try { db.exec('ROLLBACK') } catch { /* Preserve the original storage error. */ } throw error }
     finally { metric({ stage: 'store-write', durationMs: performance.now() - started, bytes, records }) }
   }
-  function marker(db: DatabaseSync, name: string): boolean {
-    const row = db.prepare('SELECT value FROM meta WHERE name = ?').get(name)
-    if (row && row.value !== '1') throw failure('corrupt', 'The PDF index migration metadata is invalid.')
-    return row !== undefined
-  }
-  const setMarker = (db: DatabaseSync, name: string) => { db.prepare('INSERT OR REPLACE INTO meta(name,value) VALUES (?,?)').run(name, '1') }
   function readRow(db: DatabaseSync, id: string) {
     // Read the bounded metadata first inside SQLite. A damaged length column
     // cannot make the JS runtime allocate an arbitrarily large string.
@@ -182,86 +141,18 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     if (dataVersion && current !== dataVersion) emptyHot()
     dataVersion = current
   }
-  function writeRows(db: DatabaseSync, records: readonly EncodedRecord[], cache: boolean, completedMarker?: string): void {
+  function writeRows(db: DatabaseSync, records: readonly EncodedRecord[], cache: boolean): void {
     invalidateExternalWrites(db)
     const statement = db.prepare('INSERT OR REPLACE INTO records(id,key,envelope,bytes) VALUES (?,?,?,?)')
     transaction(db, () => {
-      // A different store may clear while this instance awaits a legacy source.
-      // Check under the same write lock as clear, before reviving any old row.
-      if (completedMarker && marker(db, completedMarker)) throw migrationRetired
       for (const row of records) statement.run(row.id, row.key, row.text, row.bytes)
     }, records.length,
       records.reduce((sum, row) => sum + row.bytes, 0))
     for (const row of records) { if (cache) remember(row.id, row.text); else forget(row.id) }
   }
-  function matchingRecord(db: DatabaseSync, record: EncodedRecord): boolean {
-    const previous = readRow(db, record.id)
-    if (!previous) return false
-    try {
-      if (previous.key !== record.key || typeof previous.envelope !== 'string' || Number(previous.actualBytes) > maxRecordBytes
-        || Number(previous.bytes) !== Number(previous.actualBytes)) return false
-      decode(previous.envelope, record.key)
-      return JSON.parse(previous.envelope).checksum === JSON.parse(record.text).checksum
-    } catch (error) { if (hasCode(error, 'pdf/index-storage-corrupt')) return false; throw error }
-  }
-  async function mirrorLegacyMarker(): Promise<void> {
-    const path = join(directory, markerName), previous = await readLegacyText(path, 512)
-    if (previous === '{"version":1}') return
-    if (previous !== undefined) {
-      try { if (JSON.parse(previous)?.version === 1) return } catch { /* Invalid markers must not be overwritten. */ }
-      throw failure('corrupt', 'The PDF index migration marker is invalid.')
-    }
-    const temporary = join(directory, `${randomUUID()}.migration.tmp`)
-    try {
-      const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-      try { await handle.writeFile('{"version":1}'); await handle.sync() } finally { await handle.close() }
-      await rename(temporary, path)
-      if (process.platform !== 'win32') {
-        const parent = await open(directory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0))
-        try { await parent.sync() } finally { await parent.close() }
-      }
-    } finally { await unlink(temporary).catch(() => {}) }
-  }
-  async function importFiles(db: DatabaseSync, signal?: AbortSignal): Promise<void> {
-    if (marker(db, 'file-v1-imported')) return
-    const oldMarker = await readLegacyText(join(directory, markerName), 512)
-    if (oldMarker !== undefined) {
-      try { if (JSON.parse(oldMarker)?.version !== 1) throw new Error('Invalid version') }
-      catch { throw failure('corrupt', 'The PDF index migration marker is invalid.') }
-    }
-    for await (const entry of await opendir(directory)) {
-      signal?.throwIfAborted()
-      if (!/^[a-f0-9]{2}$/.test(entry.name)) continue
-      const bucket = join(directory, entry.name)
-      await checkedDirectory(bucket)
-      for await (const file of await opendir(bucket)) {
-        signal?.throwIfAborted()
-        if (marker(db, 'file-v1-imported')) return
-        if (!recordName.test(file.name)) continue
-        const path = join(bucket, file.name), text = await readLegacyText(path)
-        if (text === undefined) continue
-        let key: string
-        try { key = JSON.parse(text).key; if (digest(key) !== file.name.slice(0, -5)) throw new Error('Wrong key') }
-        catch { throw failure('corrupt', 'The legacy PDF index record identity is invalid.') }
-        decode(text, key)
-        const record = { id: digest(key), key, text, bytes: Buffer.byteLength(text) }
-        if (!matchingRecord(db, record)) {
-          try { writeRows(db, [record], false, 'file-v1-imported'); importedRecords++ }
-          catch (error) { if (error === migrationRetired) return; throw error }
-        }
-        signal?.throwIfAborted()
-        await unlink(path).catch(error => { if (!hasCode(error, 'ENOENT')) throw error })
-        await new Promise<void>(resolve => setImmediate(resolve))
-      }
-      try { await rmdir(bucket) } catch (error) { if (!hasCode(error, 'ENOTEMPTY') && !hasCode(error, 'ENOENT')) throw error }
-    }
-    signal?.throwIfAborted()
-    transaction(db, () => { setMarker(db, 'file-v1-imported'); if (oldMarker !== undefined) setMarker(db, 'legacy-v1-complete') })
-  }
-  async function ensureDatabase(signal?: AbortSignal, skipImport = false): Promise<DatabaseSync> {
+  async function ensureDatabase(): Promise<DatabaseSync> {
     if (initialization) return initialization
     const pending = (async () => {
-      signal?.throwIfAborted()
       await checkedDirectory(directory, true)
       await checkedDatabaseFiles()
       try {
@@ -273,21 +164,13 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
         db.exec(`PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-${Math.ceil(sqliteCacheBytes / 1024)}; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA trusted_schema=OFF;`)
         const version = Number(db.prepare('PRAGMA user_version').get()!.user_version)
         if (version !== 0 && version !== 1) throw failure('corrupt', 'The PDF index database version is unsupported.')
-        db.exec('CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, key TEXT NOT NULL, envelope TEXT NOT NULL, bytes INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;')
+        db.exec('CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, key TEXT NOT NULL, envelope TEXT NOT NULL, bytes INTEGER NOT NULL); PRAGMA user_version=1;')
         const columns = db.prepare('PRAGMA table_info(records)').all()
-        const metaColumns = db.prepare('PRAGMA table_info(meta)').all()
-        if (columns.map(row => row.name).join(',') !== 'id,key,envelope,bytes' || Number(columns[0]?.pk) !== 1
-          || metaColumns.map(row => row.name).join(',') !== 'name,value' || Number(metaColumns[0]?.pk) !== 1) {
+        if (columns.map(row => row.name).join(',') !== 'id,key,envelope,bytes' || Number(columns[0]?.pk) !== 1) {
           throw failure('corrupt', 'The PDF index database schema is invalid.')
-        }
-        db.exec('CREATE INDEX IF NOT EXISTS records_key ON records(key COLLATE BINARY)')
-        const keyIndex = db.prepare('PRAGMA index_xinfo(records_key)').all().filter(row => row.key === 1)
-        if (keyIndex.length !== 1 || keyIndex[0]!.name !== 'key' || keyIndex[0]!.coll !== 'BINARY') {
-          throw failure('corrupt', 'The PDF index database key index is invalid.')
         }
         await checkedDatabaseFiles()
         database = db
-        if (!skipImport) await importFiles(db, signal)
         dataVersion = Number(db.prepare('PRAGMA data_version').get()!.data_version)
         return db
       } catch (error) { database = undefined; db.close(); throw error }
@@ -313,67 +196,8 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     tail = task.then(() => {}, () => {}).finally(() => { pendingCalls--; pendingBytes -= bytes })
     return task
   }
-  async function removeLegacyFiles(): Promise<void> {
-    for await (const entry of await opendir(directory)) {
-      if (!/^[a-f0-9]{2}$/.test(entry.name)) continue
-      const bucket = join(directory, entry.name)
-      await checkedDirectory(bucket)
-      for await (const file of await opendir(bucket)) {
-        if (!recordName.test(file.name) && !temporaryName.test(file.name)) continue
-        if (file.isDirectory()) throw failure('unsafe', 'The PDF index storage contains an unsafe legacy record.')
-        await unlink(join(bucket, file.name))
-      }
-      try { await rmdir(bucket) } catch (error) { if (!hasCode(error, 'ENOTEMPTY')) throw error }
-    }
-  }
   return {
     directory,
-    /** Ordered, page-local snapshots for bounded derived-data migrations.
-     * Consumers own returned payloads; the hot cache never retains scan pages.
-     * One large record may exceed the page's memory target, but never its
-     * record limit, so low-memory callers can still make forward progress. */
-    async scan(prefix: string, afterKey?: string, limit = 16): Promise<{ entries: [string, unknown][]; nextKey?: string }> {
-      digest(prefix)
-      if (afterKey !== undefined) {
-        digest(afterKey)
-        if (!afterKey.startsWith(prefix)) throw failure('key', 'The PDF index scan cursor belongs to a different prefix.')
-      }
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw failure('limit', 'The PDF index scan page limit is invalid.')
-      return enqueue('read', 0, async () => {
-        const started = performance.now(), db = await ensureDatabase()
-        invalidateExternalWrites(db)
-        db.exec('BEGIN')
-        try {
-          // Only bounded metadata enters JS before the byte budget is known.
-          // All valid keys are ASCII; DEL is a strict upper prefix boundary.
-          const rows = db.prepare('SELECT id,key,bytes,length(CAST(envelope AS BLOB)) AS actualBytes FROM records WHERE key COLLATE BINARY >= ? AND key COLLATE BINARY < ? AND key COLLATE BINARY > ? ORDER BY key COLLATE BINARY LIMIT ?')
-            .all(prefix, `${prefix}\u007f`, afterKey ?? '', limit + 1)
-          const entries: [string, unknown][] = []
-          let bytes = 0, more = false
-          for (const row of rows) {
-            if (entries.length === limit) { more = true; break }
-            let id: string
-            try { id = digest(row.key as string) } catch { throw failure('corrupt', 'The PDF index record identity is invalid.') }
-            const size = Number(row.actualBytes)
-            if (row.id !== id || !(row.key as string).startsWith(prefix) || !Number.isSafeInteger(row.bytes)
-              || !Number.isSafeInteger(size) || size < 1 || row.bytes !== size) {
-              throw failure('corrupt', 'The PDF index record identity is invalid.')
-            }
-            if (size > maxRecordBytes) throw failure('record-too-large', 'The PDF index record exceeds its storage limit.')
-            if (entries.length && bytes + size > maxMemoryBytes) { more = true; break }
-            const record = readRow(db, id)
-            diskReads++
-            if (!record || record.key !== row.key || typeof record.envelope !== 'string'
-              || Buffer.byteLength(record.envelope) !== size) throw failure('corrupt', 'The PDF index record identity is invalid.')
-            entries.push([row.key as string, decode(record.envelope, row.key as string)])
-            bytes += size
-          }
-          db.exec('COMMIT')
-          metric({ stage: 'store-read', durationMs: performance.now() - started, bytes, records: entries.length, cacheHit: false })
-          return { entries, ...(more ? { nextKey: entries.at(-1)![0] } : {}) }
-        } catch (error) { try { db.exec('ROLLBACK') } catch { /* Preserve the original read error. */ } throw error }
-      })
-    },
     async has(key: string): Promise<boolean> {
       const id = digest(key)
       return enqueue('read', 0, async () => {
@@ -471,41 +295,12 @@ export function createRetrievalStore(options: RetrievalStoreOptions) {
     },
     async clear(): Promise<void> {
       return enqueue('clear', 0, async () => {
-        const db = await ensureDatabase(undefined, true)
-        transaction(db, () => { db.exec('DELETE FROM records'); setMarker(db, 'file-v1-imported'); setMarker(db, 'legacy-v1-complete') })
+        const db = await ensureDatabase()
+        transaction(db, () => { db.exec('DELETE FROM records') })
         emptyHot()
-        await removeLegacyFiles()
-        await mirrorLegacyMarker()
       })
     },
-    async migrateLegacy(loader: () => Promise<LegacyRetrievalStore>, signal?: AbortSignal): Promise<void> {
-      signal?.throwIfAborted()
-      return enqueue('migration', 0, async () => {
-        signal?.throwIfAborted()
-        const db = await ensureDatabase(signal)
-        signal?.throwIfAborted()
-        if (marker(db, 'legacy-v1-complete')) { await mirrorLegacyMarker(); return }
-        const legacy = await loader()
-        try {
-          signal?.throwIfAborted()
-          for (const [key, value] of legacy.entries()) {
-            signal?.throwIfAborted()
-            if (marker(db, 'legacy-v1-complete')) break
-            const record = encode(key, value.payload)
-            if (!matchingRecord(db, record)) {
-              try { writeRows(db, [record], false, 'legacy-v1-complete') }
-              catch (error) { if (error === migrationRetired) break; throw error }
-            }
-            signal?.throwIfAborted()
-            await new Promise<void>(resolve => setImmediate(resolve))
-          }
-        } finally { await legacy.close() }
-        signal?.throwIfAborted()
-        transaction(db, () => setMarker(db, 'legacy-v1-complete'))
-        await mirrorLegacyMarker()
-      }).catch(error => { signal?.throwIfAborted(); throw error })
-    },
-    diagnostics() { return { backend: 'sqlite' as const, sqliteCacheBytes, memoryBytes, entries: hot.size, pendingCalls, pendingBytes, diskReads, diskWrites, cacheHits, commits, importedRecords } },
+    diagnostics() { return { backend: 'sqlite' as const, sqliteCacheBytes, memoryBytes, entries: hot.size, pendingCalls, pendingBytes, diskReads, diskWrites, cacheHits, commits } },
     dispose(): Promise<void> {
       if (disposal) return disposal
       sealed = true

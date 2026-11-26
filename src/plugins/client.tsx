@@ -22,6 +22,7 @@ import { createEngineCatalogStore } from '../surfaces/client/adapters/remote/eng
 import { createModelOptionsStore } from '../surfaces/client/adapters/remote/model-options.js'
 import { createTranslationDirectoryMirror } from '../surfaces/client/adapters/remote/translation-directory.js'
 import { createRetrievalIndexApi } from '../surfaces/client/adapters/remote/retrieval-index.js'
+import { createEmbeddingTestApi } from '../surfaces/client/adapters/remote/embedding-test.js'
 import { rpcResponseSchema } from '../contracts/rpc/index.js'
 import { engineBinding, engineCatalogSchema, engineConfigurationsSchema, engineExecutionSchema } from '../engines/spi/index.js'
 import { persistTranslationLanguage } from '../surfaces/client/adapters/dsh/persist-translation-language.js'
@@ -87,6 +88,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
   const info = bootstrap.value
   const form = ctx.configForms.get<PdfSettings>(info.settingsNamespace)
   const retrievalIndex = createRetrievalIndexApi(ctx.connection, lifetime.signal)
+  const embeddingTest = createEmbeddingTestApi(ctx.connection, lifetime.signal)
   const indexingApi = createPdfIndexingApi(ctx.connection, lifetime.signal)
   ctx.effect(() => () => indexingApi.dispose(), 'pdf: indexing task subscriptions')
   const subscribeSettings = (listener: () => void) => form.subscribe(listener)
@@ -205,6 +207,7 @@ export async function apply(ctx: ClientContext): Promise<void> {
       engineCatalog={engines}
       modelOptions={modelOptions}
       rebuildRetrievalIndex={retrievalIndex.rebuild}
+      testEmbedding={embeddingTest.test}
       translationEngines={translation.list().map(engine => ({ id: engine.id, label: engine.name }))} />
   }
   ctx.effect(() => ctx.documentPreviews.register({ id: ID, extensions: ['pdf'], binaryExtensions: ['pdf'],
