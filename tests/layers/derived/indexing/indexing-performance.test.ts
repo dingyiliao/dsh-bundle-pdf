@@ -221,7 +221,7 @@ test('missing immutable content is repaired on ordinary resume and on a new stru
   })
 })
 
-test('a slow page yields its preparation slice at the soft deadline after checkpointing at least one model batch', async t => {
+test('a slow page leaves embedding for the next preparation slice', async t => {
   const f = fixture(3)
   let clock = 0
   t.mock.method(performance, 'now', () => clock)
@@ -231,10 +231,49 @@ test('a slow page yields its preparation slice at the soft deadline after checkp
   try {
     assert.equal(await service.prepareSlice('a', { documentId: 'doc' }), false)
     assert.equal(f.reads(), 1)
-    assert.equal(f.batches.flat().length, 1)
+    assert.equal(f.batches.flat().length, 0)
     await service.prepare('a', { documentId: 'doc' })
     assert.equal(f.reads(), 3)
+    assert.equal(f.batches.flat().length, 3)
   } finally { await service.dispose() }
+})
+
+test('a sliced index embeds the previous page while extracting the next page', { timeout: 5000 }, async t => {
+  const f = fixture(2)
+  let activeLeases = 0
+  f.ports.documents.retain = async () => {
+    activeLeases++
+    return () => { activeLeases-- }
+  }
+  let clock = 0
+  t.mock.method(performance, 'now', () => clock)
+  let markRead!: () => void, releaseRead!: () => void, markEmbed!: () => void, releaseEmbed!: () => void
+  const reading = new Promise<void>(resolve => { markRead = resolve })
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+  const embedding = new Promise<void>(resolve => { markEmbed = resolve })
+  const embedGate = new Promise<void>(resolve => { releaseEmbed = resolve })
+  const originalRead = f.ports.pages.read
+  f.ports.pages.read = async (...args) => {
+    clock += 800
+    if (args[2] === 2) { markRead(); await readGate }
+    return originalRead(...args)
+  }
+  f.ports.embedding = { select: () => ({ fingerprint: 'overlap-fixture', dimensions: 2, maxBatchSize: 16,
+    async embed(texts) { markEmbed(); await embedGate; f.batches.push(texts); return texts.map(() => [1, 0]) } }) }
+  const service = createRetrievalService(f.ports)
+  try {
+    assert.equal(await service.prepareSlice('a', { documentId: 'doc' }), false)
+    assert.equal(f.reads(), 1)
+    assert.equal(f.batches.length, 0)
+    const second = service.prepareSlice('a', { documentId: 'doc' })
+    await Promise.all([reading, embedding])
+    assert.equal(activeLeases, 2, 'concurrent extraction and embedding each own a document lease')
+    releaseRead(); releaseEmbed()
+    assert.equal(await second, false)
+    await service.prepare('a', { documentId: 'doc' })
+    assert.equal(f.reads(), 2)
+    assert.equal(f.batches.flat().length, 2)
+  } finally { releaseRead(); releaseEmbed(); await service.dispose(); assert.equal(activeLeases, 0) }
 })
 
 test('a small working budget flushes the page window instead of rejecting individually processable pages', async () => {

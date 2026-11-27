@@ -273,30 +273,46 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
     return index.toPage + 1
   }
 
-  async function step(index: Index, source: SharedRetrievalSource, deadline: number, retrying: boolean, pass?: PreparationPass): Promise<void> {
+  async function step(index: Index, source: SharedRetrievalSource, parallelSource: SharedRetrievalSource,
+    deadline: number, retrying: boolean, pass?: PreparationPass): Promise<void> {
     phase(index, 'restoring')
+    // A sliced background step can embed pages already extracted while the
+    // next page is read. Retry passes may revisit the same page, so keep them
+    // sequential. Attach a rejection handler immediately while extraction runs.
+    const embedding = !retrying && Number.isFinite(deadline) && index.embeddedCount < index.chunkCount
+      ? embedStep(index, parallelSource, deadline) : undefined
+    void embedding?.catch(() => {})
     // Foreground continuations can repair missing pages. Optional enrichment
     // on already usable pages is only retried by an indexing occurrence.
     let page = retrying ? nextIncompletePage(index, pass?.nextRetryPage ?? index.fromPage, !!pass) : index.nextPage
-    for (let processed = 0; processed < limits.pagesPerStep && page <= index.toPage; processed++) {
-      if (retrying || !index.pages.has(page)) {
-        try { await readPage(index, page, source) } catch (error) {
-          source.check()
-          const critical = fatalContentError(error)
-          if (critical !== undefined) throw critical
-          const code = codeOf(error)
-          if (code.includes('budget') || code.startsWith('pdf/index-storage-')) throw error
-          index.failures.set(page, { page, attempts: (index.failures.get(page)?.attempts ?? 0) + 1, code })
+    let readFailure: { error: unknown } | undefined
+    try {
+      for (let processed = 0; processed < limits.pagesPerStep && page <= index.toPage; processed++) {
+        if (retrying || !index.pages.has(page)) {
+          try { await readPage(index, page, source) } catch (error) {
+            source.check()
+            const critical = fatalContentError(error)
+            if (critical !== undefined) throw critical
+            const code = codeOf(error)
+            if (code.includes('budget') || code.startsWith('pdf/index-storage-')) throw error
+            index.failures.set(page, { page, attempts: (index.failures.get(page)?.attempts ?? 0) + 1, code })
+          }
         }
+        if (retrying) {
+          if (pass) pass.nextRetryPage = page + 1
+        } else index.nextPage = Math.max(index.nextPage, page + 1)
+        await new Promise<void>(resolve => setImmediate(resolve)); source.check()
+        if (performance.now() >= deadline) break
+        page = retrying ? nextIncompletePage(index, page + 1, !!pass) : index.nextPage
       }
-      if (retrying) {
-        if (pass) pass.nextRetryPage = page + 1
-      } else index.nextPage = Math.max(index.nextPage, page + 1)
-      await new Promise<void>(resolve => setImmediate(resolve)); source.check()
-      if (performance.now() >= deadline) break
-      page = retrying ? nextIncompletePage(index, page + 1, !!pass) : index.nextPage
+    } catch (error) { readFailure = { error } }
+    if (embedding) {
+      try { await embedding } catch (error) { readFailure ??= { error } }
     }
-    await embedStep(index, source, deadline)
+    if (readFailure) throw readFailure.error
+    // A slow OCR page has already spent this slice's budget. Its vectors can
+    // run beside extraction in the next slice instead of extending this one.
+    if (performance.now() < deadline) await embedStep(index, source, deadline)
     source.check(); notifyProgress(index)
   }
 
@@ -314,9 +330,11 @@ export function createRetrievalService(ports: RetrievalPorts): RetrievalService 
       const created: Job = { controller, subscribers: new Set(), promise: Promise.resolve(), retrying, pass }
       // Defer execution until the job is registered and subscribers are attached.
       created.promise = Promise.resolve().then(async () => {
-        const source = createSharedRetrievalSource(ports, created.subscribers, controller.signal,
+        const makeSource = () => createSharedRetrievalSource(ports, created.subscribers, controller.signal,
           () => checkIndex(index, controller.signal), checkBinding, checkOrigin)
-        try { await step(index, source, slice ? performance.now() + 750 : Infinity, retrying, pass) } finally { source.dispose() }
+        const source = makeSource(), parallelSource = slice ? makeSource() : source
+        try { await step(index, source, parallelSource, slice ? performance.now() + 750 : Infinity, retrying, pass) }
+        finally { source.dispose(); if (parallelSource !== source) parallelSource.dispose() }
       }).finally(() => jobs.delete(index.key))
       void created.promise.catch(() => {})
       job = created; jobs.set(index.key, job)

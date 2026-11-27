@@ -91,7 +91,9 @@ export async function embedIndexStep(
     batches++; rows.clear()
   }
   const exhausted = () => batches >= context.limits.embeddingBatchesPerStep || batches > 0 && performance.now() >= deadline
-  for (const [page, summary] of index.pages) {
+  // Extraction may add a later page while this batch is running. Only process
+  // pages that existed when the batch started; the next step picks up the rest.
+  for (const [page, summary] of [...index.pages]) {
     if (summary.embedded === summary.chunks) continue
     const loaded = await context.loadPage(index, page)
     source.check()

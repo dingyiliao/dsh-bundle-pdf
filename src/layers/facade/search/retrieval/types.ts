@@ -34,7 +34,7 @@ export interface RetrievalEmbedding {
 export interface RetrievalPorts {
   documents: {
     snapshot(sessionId: string, documentId: string): RetrievalDocument
-    /** One build-owned lease, independent of the lifetime of any one subscriber. */
+    /** A build-owned lease for source work, independent of any one subscriber. */
     retain?(sessionId: string, documentId: string, signal: AbortSignal): Promise<() => void>
   }
   pages: {
