@@ -4,6 +4,37 @@ All notable user-visible changes to this project are documented here. Versions f
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-29
+
+### Changed
+
+- Pages that mix readable native text with undecodable glyphs (such as LaTeX math symbols) retain their native PDFium text layer and native selection instead of replacing the entire page with local OCR.
+- Selection evidence, text annotations and navigation validate the selected character range rather than rejecting the whole page; automatic scan-page indexing OCR now runs only on pages with no readable native text.
+- Semantic indexing overlaps sliced page extraction with embedding requests.
+
+### Fixed
+
+- Active text selections cancel cleanly when scrolled out of the rendered viewport.
+- Native PDFium text extraction emits `U+FFFD` with glyph bounds for undecodable characters so extracted offsets align with native selection geometry.
+
+### Compatibility
+
+- DSH `>=0.2.2-rc.1 <0.3.0-0`.
+- Historical `local-ocr` evidence records in stored sessions remain loadable and report as stale rather than failing schema validation.
+
+### Breaking
+
+- None.
+
+### Migration
+
+- None.
+
+### Known issues
+
+- Encrypted PDFs that are also signed remain on the stricter protected-document path and are not made editable by the ordinary signed-PDF policy.
+- Selections that directly include undecodable glyphs without a valid PDF Unicode mapping cannot produce character-level native text evidence; select an image region or run explicit OCR for those symbols.
+
 ## [0.1.10] - 2026-11-21
 
 ### Added
