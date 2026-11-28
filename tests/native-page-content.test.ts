@@ -113,7 +113,7 @@ test('real image-only PDF becomes local OCR page content, searchable evidence an
         const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
           address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
         assert.ok('bytes' in opened)
-        const native = await pdf.readPageText(sessionId, opened.id, 1, signal, { recover: false })
+        const native = await pdf.readPageText(sessionId, opened.id, 1, signal)
         assert.deepEqual(native.content.items, [], 'the source has no hidden native text for retrieval to exploit')
         await content.prepare(sessionId, signal)
         const page = await content.read(sessionId, opened.id, 1, signal)

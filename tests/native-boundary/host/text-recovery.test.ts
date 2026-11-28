@@ -28,40 +28,43 @@ const executable = process.env.DSH_PDF_NATIVE_HELPER ?? resolve(`dist/native/dsh
 const skip = !existsSync(executable)
 const sessionId = 'recover-text', agent = { session: { id: sessionId, header: {} } }, signal = new AbortController().signal
 
-test('invalid Unicode mapping is detected and repaired once, identically for Reader and model reads', { skip }, async () => {
+test('invalid Unicode mappings stay on the native text layer with quality observations instead of starting automatic OCR', { skip }, async () => {
   const bytes = await brokenTextMappingFixture(), state = memoryWorkspace(bytes)
-  const worker = new NativeWorker(executable, nativeTestSubprocess), local = createLocalTextRecovery()
+  const worker = new NativeWorker(executable, nativeTestSubprocess)
   let calls = 0
   const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
-    textRecovery: { dispose: local.dispose, async recognize(...args) { calls++; return local.recognize(...args) } } })
+    textRecovery: { async recognize() { calls++; throw new Error('Page text reads must not start OCR') }, async dispose() {} } })
   try {
     await worker.request({ command: 'open', documentId: 'fault' }, bytes)
     const raw = (await worker.request({ command: 'text', documentId: 'fault', pageIndex: 0 })).value as NativeTextContent
     assert.ok(raw.quality!.unmappedCharacters > 0)
-    assert.doesNotMatch(joinPageText(raw.items), /Full name in English/)
+    assert.match(joinPageText(raw.items), /^\ufffd+/u)
     const opened = await service.dispatch(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as { id: string; reader: { bytesHash: string } }
     const model = await readPageWindow(state.workspaces, service, sessionId, opened.id, 1, undefined, undefined, signal)
-    assert.match(model.text, /Full name in English/); assert.equal(model.extraction, 'local-ocr')
+    assert.equal(model.text, joinPageText(raw.items))
+    assert.match(model.limitations?.[0] ?? '', /undecodable characters/)
     assert.doesNotMatch(model.text, /DO NOT READ|FORM VALUE/)
     const client = await service.native(sessionId, { action: 'text', sessionId, id: opened.id,
       bytesHash: opened.reader.bytesHash, page: 1 }, agent, signal) as NativeTextContent
-    assert.equal(joinPageText(client.items), model.text); assert.equal(calls, 1)
-    assert.ok(client.items.length >= 4); assert.ok(client.items.every(item => item.width > 0 && item.height > 0))
+    assert.equal(joinPageText(client.items), model.text)
+    assert.equal(client.quality?.unmappedCharacters, raw.quality?.unmappedCharacters)
+    assert.equal(calls, 0)
     assert.equal(state.writes(), 0); assert.deepEqual(state.current(), bytes)
     assert.equal(state.workspaces.readSnapshot(sessionId, opened.id).dirty, false)
   } finally { await service.dispose(); await worker.dispose(); await state.workspaces.dispose() }
 })
 
-test('normal native text never starts OCR; cancellation/disposal terminate recognition threads', { skip }, async () => {
-  const state = memoryWorkspace(await nativeFixture()), local = createLocalTextRecovery()
-  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess,
-    textRecovery: { async recognize() { throw new Error('Normal text must not OCR') }, dispose: local.dispose } })
+test('normal native text never starts OCR; local OCR worker still supports recognition, cancellation and disposal', { skip }, async () => {
+  const bytes = await brokenTextMappingFixture(), state = memoryWorkspace(bytes), local = createLocalTextRecovery()
+  const service = createPdfService(state.workspaces, { executable, subprocess: nativeTestSubprocess, textRecovery: local })
   try {
     const opened = await state.workspaces.execute(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal)
     assert.ok('bytes' in opened)
-    assert.match(joinPageText((await service.readPageText(sessionId, opened.id, 1, signal)).content.items), /Native PDF test/)
+    const artifact = await service.readOcrArtifact(sessionId, opened.id, 1, signal)
+    assert.match(artifact.artifact.output.text, /Full name in English/)
+    assert.doesNotMatch(artifact.artifact.output.text, /DO NOT READ|FORM VALUE/)
     const cancelled = new AbortController(); cancelled.abort(new Error('Cancelled by test'))
     await assert.rejects(local.recognize(new Uint8Array(), 100, 100, cancelled.signal), /Cancelled by test/)
     const pending = local.recognize(new Uint8Array([1]), 100, 100, signal)
@@ -81,7 +84,7 @@ test('ordinary line-wrap hyphens keep native text for both model and Reader with
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as { id: string; reader: { bytesHash: string } }
     const model = await readPageWindow(state.workspaces, service, sessionId, opened.id, 1, undefined, undefined, signal)
     assert.match(model.text, /understand\s+ing the model/)
-    assert.notEqual(model.extraction, 'local-ocr')
+    assert.equal(model.limitations, undefined)
     const reader = await service.native(sessionId, { action: 'text', sessionId, id: opened.id,
       bytesHash: opened.reader.bytesHash, page: 1 }, agent, signal) as NativeTextContent
     assert.equal(joinPageText(reader.items), model.text)
@@ -91,7 +94,7 @@ test('ordinary line-wrap hyphens keep native text for both model and Reader with
   } finally { await service.dispose(); await state.workspaces.dispose() }
 })
 
-test('a queued text repair rejects a baseline changed by reload instead of publishing or caching old text', { skip }, async () => {
+test('a queued OCR artifact rejects a baseline changed by reload instead of publishing or caching old output', { skip }, async () => {
   const bytes = await brokenTextMappingFixture(), state = memoryWorkspace(bytes)
   let resume!: () => void, entered!: () => void
   const gate = new Promise<void>(resolve => { resume = resolve }), started = new Promise<void>(resolve => { entered = resolve })
@@ -104,18 +107,12 @@ test('a queued text repair rejects a baseline changed by reload instead of publi
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as {
       id: string; revision: number; path: string; reader: { bytesHash: string }
     }
-    const first = service.readPageText(sessionId, opened.id, 1, signal)
+    const first = service.readOcrArtifact(sessionId, opened.id, 1, signal)
     const firstRejected = assert.rejects(first, { code: 'pdf/stale-reader' })
     await started
-    const common = { sessionId, id: opened.id, bytesHash: opened.reader.bytesHash, page: 1 }
-    const second = service.native(sessionId, { ...common, action: 'text' }, agent, signal)
-    const secondRejected = assert.rejects(second, { code: 'pdf/stale-reader' })
-    // Native lease barrier: the second read has captured its old snapshot and
-    // queued behind recognition, without relying on a timeout or private state.
-    await service.native(sessionId, { ...common, action: 'links' }, agent, signal)
     await state.files.save(agent, opened.path, new Uint8Array([...bytes, 10, 37, 10]), digest(bytes))
     await state.workspaces.execute(sessionId, { action: 'reload', sessionId, id: opened.id, revision: opened.revision }, agent, signal)
-    resume(); await Promise.all([firstRejected, secondRejected])
+    resume(); await firstRejected
   } finally { resume(); await service.dispose(); await state.workspaces.dispose() }
 })
 
@@ -166,7 +163,7 @@ async function storedRecords(store: ReturnType<typeof createRetrievalStore>, pre
   } finally { db.close() }
 }
 
-test('index OCR and read-page recovery share a durable raw artifact in both directions, including a new Host/session/document', { skip }, async () => {
+test('index OCR shares a durable raw artifact across Host/session/document restarts while page text reads stay native', { skip }, async () => {
   const bytes = await brokenTextMappingFixture()
   const directory = await mkdtemp(join(tmpdir(), 'pdf-shared-page-ocr-'))
   let f = sharedFixture(directory, bytes)
@@ -185,17 +182,15 @@ test('index OCR and read-page recovery share a durable raw artifact in both dire
     assert.equal(f.counts.recognition, 1); assert.equal(Math.max(...f.dimensions[0]!), 2048)
     const afterIndex = renders
     const read = await f.service.readPageText('index-first', id, 1, signal)
-    assert.equal(read.content.extraction, 'local-ocr'); assert.equal(joinPageText(read.content.items), representation.text)
-    assert.ok(read.content.items.every(item => item.glyphs === undefined))
-    assert.equal(f.counts.recognition, 1); assert.equal(renders, afterIndex, 'artifact reuse avoids rasterizing as well as recognizing')
+    assert.match(joinPageText(read.content.items), /^\ufffd+/u)
+    assert.ok(read.content.items.every(item => item.glyphs !== undefined))
+    assert.equal(f.counts.recognition, 1); assert.equal(renders, afterIndex)
     const artifactRecords = await storedRecords(f.store, 'pageocr_')
     assert.equal(artifactRecords.entries.length, 1)
     await f.dispose()
     f = sharedFixture(directory, bytes)
     const reopenedId = await f.open('reader-after-restart')
     assert.notEqual(reopenedId, id)
-    const restored = await f.service.readPageText('reader-after-restart', reopenedId, 1, signal)
-    assert.equal(restored.content.extraction, 'local-ocr'); assert.equal(f.counts.recognition, 0); assert.equal(renders, afterIndex)
     // Remove only the final/representation cache in this isolated test store.
     // The raw OCR derivative alone is enough to reconstruct an index layer.
     for (const [key] of (await storedRecords(f.store, 'pagecontent_')).entries) await f.store.delete(key)
@@ -206,24 +201,24 @@ test('index OCR and read-page recovery share a durable raw artifact in both dire
   } finally { NativeWorker.prototype.request = originalRequest; await f.dispose(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('an index subscriber can cancel while another session completes the same local repair and caches it', { skip }, async () => {
+test('an index subscriber can cancel while another session completes the same shared OCR artifact and caches it', { skip }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pdf-shared-ocr-cancel-'))
   let entered!: () => void, finish!: () => void, producing!: AbortSignal
   const started = new Promise<void>(yes => { entered = yes }), gate = new Promise<void>(yes => { finish = yes })
   const f = sharedFixture(directory, await brokenTextMappingFixture(), async active => { producing = active; entered(); await gate })
   const abortIndex = new AbortController()
   try {
-    const indexId = await f.open('cancel-index'), readerId = await f.open('keep-reader')
+    const indexId = await f.open('cancel-index'), secondId = await f.open('keep-artifact')
     const indexing = f.content.read('cancel-index', indexId, 1, abortIndex.signal)
     const rejected = assert.rejects(indexing, /Index subscriber cancelled/)
     await started
-    const reading = f.service.readPageText('keep-reader', readerId, 1, signal)
-    // A native-read lease barrier admits the second read before cancellation.
-    await f.service.readOutline('keep-reader', readerId, signal)
+    const second = f.service.readOcrArtifact('keep-artifact', secondId, 1, signal)
+    // A native-read lease barrier admits the second subscriber before cancellation.
+    await f.service.readOutline('keep-artifact', secondId, signal)
     abortIndex.abort(new Error('Index subscriber cancelled')); await rejected
     assert.equal(producing.aborted, false)
     finish()
-    assert.equal((await reading).content.extraction, 'local-ocr')
+    assert.equal((await second).artifact.output.text, 'Recovered label')
     assert.equal(f.counts.recognition, 1); assert.equal((await storedRecords(f.store, 'pageocr_')).entries.length, 1)
   } finally { finish(); await f.dispose(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -240,7 +235,7 @@ test('existing 1024px OCR index representations retain provenance and remain rea
     const cached = await f.content.read('legacy-index', id, 1, signal)
     assert.deepEqual(cached, original); assert.equal(f.counts.recognition, 1)
     assert.equal((await storedRecords(f.store, 'pageocr_')).entries.length, 0, 'a lossy PageRepresentation is not fabricated into raw OCR')
-    await f.service.readPageText('legacy-index', id, 1, signal)
+    await f.service.readOcrArtifact('legacy-index', id, 1, signal)
     assert.equal(f.counts.recognition, 2); assert.equal(Math.max(...f.dimensions[1]!), 2048)
     assert.deepEqual(await f.content.read('legacy-index', id, 1, signal), original)
   } finally { legacy.dispose(); await f.dispose(); await rm(directory, { recursive: true, force: true }) }
@@ -281,8 +276,8 @@ test('third-party OCR keeps its own input/producer and shares one clean raster w
     const raw = externalArtifacts.entries[0]![1] as { producer: { id: string; requestIdentity: string }; input: { render: { width: number } } }
     assert.equal(raw.producer.id, 'fixture-external'); assert.match(raw.producer.requestIdentity, /languages/)
     assert.equal(raw.input.render.width, 1024)
-    await f.service.readPageText('external-index', id, 1, signal)
-    assert.equal(f.counts.recognition, 1, 'local repair cannot consume the different external producer or 1024px input')
+    await f.service.readOcrArtifact('external-index', id, 1, signal)
+    assert.equal(f.counts.recognition, 1, 'local producer cannot consume the different external producer or 1024px input')
     assert.equal((await storedRecords(f.store, 'pageocr_')).entries.length, 2)
     assert.equal(externalCalls, 1)
   } finally {
@@ -303,7 +298,7 @@ test('PDF disposal stops the local producer while draining a shared artifact, ev
   try {
     const opened = await service.dispatch(sessionId, { action: 'open', sessionId,
       address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as { id: string }
-    const reading = service.readPageText(sessionId, opened.id, 1, signal)
+    const reading = service.readOcrArtifact(sessionId, opened.id, 1, signal)
     const rejected = assert.rejects(reading, /abort/i)
     await started; await service.dispose(); await rejected
     assert.equal(disposed, 1)

@@ -57,8 +57,7 @@ function fixture(options: { native?: string; scan?: boolean; describe?: boolean;
         annotations: [], signed: false, encrypted: false, readOnly: false } }
   }
   const pages: Parameters<typeof createPdfPageContent>[1] = {
-    async readPageText(session, id, _page, _signal, readOptions) {
-      assert.equal(readOptions?.recover, false, 'content extraction must not recurse through legacy OCR fallback')
+    async readPageText(session, id) {
       const original = snapshot(session, id)
       state.reads++; await state.onNative?.()
       return { snapshot: original, content: { ...layer(state.native), ...(state.unmappedCharacters ? { quality: { unmappedCharacters: state.unmappedCharacters } } : {}) } }
@@ -742,9 +741,19 @@ test('an offline OCR availability probe prevents rendering pixels or starting re
   } finally { f.dispose() }
 })
 
-test('OCR repair for damaged nonempty native text is an alternative of the same logical text block', async () => {
-  const f = fixture({ native: 'Broken native needle' })
-  f.state.unmappedCharacters = 2
+test('pages with readable native text skip scan-page OCR even when a few characters are unmapped, while all-unmapped pages run OCR', async () => {
+  const partial = fixture({ native: 'Readable prose \ufffd' })
+  partial.state.unmappedCharacters = 1
+  try {
+    const result = await partial.content.read('a', 'doc-a', 1, signal)
+    const text = result.blocks.find(block => block.kind === 'text')!
+    assert.deepEqual(text.representations.map(rep => rep.kind), ['native-text'])
+    assert.equal(partial.state.recognitions, 0)
+    assert.equal(partial.state.renders, 0)
+  } finally { partial.dispose() }
+
+  const f = fixture({ native: '\ufffd\ufffd\ufffd' })
+  f.state.unmappedCharacters = 3
   try {
     const result = await f.content.read('a', 'doc-a', 1, signal)
     const text = result.blocks.find(block => block.kind === 'text')!
@@ -831,8 +840,8 @@ test('retrying one failed optional producer restores the other successful repres
   } finally { f.dispose() }
 })
 
-test('cached native quality still requests OCR when recognition is enabled later', async () => {
-  const f = fixture({ native: 'damaged native content', scan: false })
+test('cached undecodable-only native text still requests OCR when recognition is enabled later', async () => {
+  const f = fixture({ native: '\ufffd\ufffd', scan: false })
   try {
     f.state.unmappedCharacters = 2
     await f.content.read('a', 'doc-a', 1, signal)

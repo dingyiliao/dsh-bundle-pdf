@@ -7,8 +7,6 @@ import { evidenceSha256 } from './provenance.js'
 import { savedTextReferenceSchema, savedTextRangeReferenceSchema, type EvidenceReferenceStore } from './reference-store.js'
 import { assertFreshSource, type FreshSourceRead } from './source-freshness.js'
 import { matchEvidenceQuote, type QuoteMatchMode } from './quote-match.js'
-import { createTextRangeReferences } from './text-range.js'
-import { describeEvidenceCapabilities, type EvidenceCapabilities } from './capabilities.js'
 
 /** Reusable, current native geometry; stored approximate boxes never authorize a mark or jump. */
 export interface ResolvedTextReference {
@@ -35,25 +33,6 @@ export interface TextReferenceResolverPort {
     readSource?: FreshSourceRead): Promise<{ refId: string; pages: ResolvedTextReference[] }>
 }
 
-export interface ResolvedEvidencePage {
-  documentId: string
-  contentVersion: string
-  revision: number
-  sourceVersion: string
-  sourceDigest: string
-  page: number
-  refId: string
-  precision: 'page-only'
-  locator: { kind: 'page-only' }
-  capabilities: EvidenceCapabilities
-  limitations: string[]
-}
-
-export interface EvidencePageResolverPort {
-  resolvePage(sessionId: string, documentId: string, refId: string, signal: AbortSignal,
-    readSource: FreshSourceRead): Promise<ResolvedEvidencePage>
-}
-
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }) }
 
 function identity(snapshot: HostWorkspaceSnapshot) {
@@ -77,33 +56,8 @@ function quotedRange(text: string, start: number, end: number, quote?: string,
 
 /** A ref is evidence, not a file-access grant. Reauthorize the live document and all text before use. */
 export function createTextReferenceResolver(workspaces: WorkingCopyReadPort, pages: AgentPageReadPort,
-  references: EvidenceReferenceStore): TextReferenceResolverPort & EvidencePageResolverPort {
-  const resolver: TextReferenceResolverPort & EvidencePageResolverPort = {
-    async resolvePage(sessionId, documentId, refId, signal, readSource) {
-      if (!readSource) fail('pdf/source-unavailable', 'OCR page navigation requires a fresh-source adapter')
-      // The read primitive reauthorizes the session and verifies every stored
-      // page. OCR requires the attested source bytes, not just similar wording.
-      const read = await createTextRangeReferences(workspaces, pages, references)
-        .readEvidence(sessionId, documentId, refId, signal, readSource)
-      const capabilities = read.pages.some(page => page.extraction)
-        ? { ...describeEvidenceCapabilities(read.pages.find(page => page.extraction)!),
-          source: read.pages.every(page => page.extraction) ? 'local-ocr' as const : 'mixed-text' as const }
-        : describeEvidenceCapabilities(read.pages[0]!)
-      if (capabilities.navigation !== 'page') {
-        fail('pdf/invalid-evidence', 'Page-only text navigation requires derived OCR evidence')
-      }
-      signal.throwIfAborted()
-      const current = workspaces.readSnapshot(sessionId, documentId), first = read.pages[0]!
-      if (current.conflict || current.path !== first.sourcePath || current.contentVersion !== read.contentVersion
-        || current.revision !== read.revision || current.sourceVersion !== first.sourceVersion
-        || evidenceSha256(current.bytes) !== first.sourceDigest) {
-        fail('pdf/stale-reader', 'PDF changed after checking the OCR reference; locate it again')
-      }
-      return { documentId, contentVersion: current.contentVersion, revision: current.revision,
-        sourceVersion: current.sourceVersion, sourceDigest: first.sourceDigest,
-        page: first.page, refId: read.refId, precision: 'page-only', locator: { kind: 'page-only' },
-        capabilities, limitations: [capabilities.reason] }
-    },
+  references: EvidenceReferenceStore): TextReferenceResolverPort {
+  const resolver: TextReferenceResolverPort = {
     async resolveRange(sessionId, documentId, refId, signal, readSource) {
       const raw = references.get(refId)
       const range = savedTextRangeReferenceSchema.safeParse(raw)

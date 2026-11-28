@@ -8,7 +8,7 @@ export type { EvidenceCapabilities } from './capabilities.js'
 export type { QuoteMatchMode } from './quote-match.js'
 export { createTextRangeReferences } from './text-range.js'
 export type { TextRangeInput, ReadTextEvidence } from './text-range.js'
-export type { TextReferenceResolverPort, EvidencePageResolverPort, ResolvedTextReference, ResolvedEvidencePage } from './text-target.js'
+export type { TextReferenceResolverPort, ResolvedTextReference } from './text-target.js'
 export type { ImageEvidenceSource } from './provenance.js'
 export { savedReferenceSchema, savedTextReferenceSchema, savedImageReferenceSchema,
   savedTextRangeReferenceSchema, textEvidenceSchema, imageEvidenceSchema, createMemoryEvidenceReferenceStore } from './reference-store.js'

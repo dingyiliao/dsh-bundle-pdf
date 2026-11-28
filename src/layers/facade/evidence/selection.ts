@@ -89,8 +89,6 @@ function outsideSelection(item: NativeTextContent['items'][number], boxes: reado
 
 function selectedGlyphText(content: NativeTextContent, fragment: SelectionFragment, crop: PdfRect) {
   const boxes = checkGeometry(fragment, crop)
-  if (content.extraction) fail('pdf/selection-ocr-unverifiable',
-    'OCR-recovered text has no verified native character positions; select an image region instead')
   const starts: number[] = []
   const pageText = joinPositionedText(content.items, starts)
   const selected: { start: number; end: number }[] = []
@@ -138,7 +136,11 @@ function selectedGlyphText(content: NativeTextContent, fragment: SelectionFragme
     }
     cursor = glyph.end
   }
-  return { text: pageText.slice(startUtf16, endUtf16), pageText, startUtf16, endUtf16 }
+  const text = pageText.slice(startUtf16, endUtf16)
+  if (text.includes('\ufffd')) {
+    fail('pdf/selection-unverifiable', 'The selected text contains undecodable PDF characters; select an image region instead')
+  }
+  return { text, pageText, startUtf16, endUtf16 }
 }
 
 function comparable(text: string): string { return text.replace(/\s/gu, '') }
@@ -190,7 +192,6 @@ export async function prepareTextSelectionEvidence(workspaces: WorkingCopyReadPo
         sourcePath: initial.path, sourceDigest, sourceVersion: initial.sourceVersion,
         contentVersion: initial.contentVersion, revision: initial.revision, page: item.page,
         source: 'pdf-text', pageTextDigest: evidenceSha256(item.pageText),
-        ...(item.content.extraction ? { extraction: item.content.extraction } : {}),
         snapshot: { text: item.text, sha256: evidenceSha256(item.text) },
         locator: { kind: 'text-window', startUtf16: item.startUtf16, endUtf16: item.endUtf16,
           ...(rects ? { rectsPdf: rects } : {}) },

@@ -98,8 +98,7 @@ export async function navigateAgentRequest(request: AgentNavigationRequest, sign
     const nativeSnapshot = ready.document!.snapshot
     if (nativeSnapshot.id !== request.documentId || nativeSnapshot.contentVersion !== request.contentVersion
       || nativeSnapshot.reader.bytesHash !== target.sourceDigest) return 'stale'
-    const content = await ready.document!.text(request.page, signal, { recover: false })
-    if (content.extraction === 'local-ocr') return 'stale'
+    const content = await ready.document!.text(request.page, signal)
     const text = joinPageText(content.items)
     const hash = options.hashText ?? browserSha256
     if (target.endUtf16 > text.length || await hash(text) !== target.pageTextDigest

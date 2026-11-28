@@ -6,7 +6,8 @@ import { registerPdfAgentTools } from '../../../../src/surfaces/host/tools/agent
 import { createPdfRetrieval } from '../../../../src/layers/facade/search/host-retrieval.ts'
 import { createPdfService } from '../../../../src/capabilities/pdfium/index.ts'
 import { EmbeddingRegistry } from '../../../../src/engines/embedding/sdk/index.ts'
-import { createMemoryEvidenceReferenceStore, type PdfTextEvidence } from '../../../../src/layers/facade/evidence/index.ts'
+import { createMemoryEvidenceReferenceStore, evidenceSha256, prepareTextSelectionEvidence,
+  type PdfTextEvidence } from '../../../../src/layers/facade/evidence/index.ts'
 import { createAgentNavigation, createReaderContexts } from '../../../../src/layers/facade/navigation/index.ts'
 import { NativeDocument } from '../../../../src/surfaces/client/viewer/rendering/document.ts'
 import { navigateAgentRequest } from '../../../../src/surfaces/client/viewer/controllers/agent-text-navigation.ts'
@@ -21,7 +22,7 @@ import { NativeTestSubprocess } from '../../../native-test-subprocess.ts'
 const executable = process.env.DSH_PDF_NATIVE_HELPER
   ?? resolve(`dist/native/dsh-pdf-native${process.platform === 'win32' ? '.exe' : ''}`)
 const signal = new AbortController().signal
-const sessionId = 'native-reference-with-repairable-page'
+const sessionId = 'native-reference-with-unmapped-page'
 const agent = { session: { id: sessionId, header: {} } }
 const passage = 'Training error does not certify generalization.'
 type Tool = { name: string; execute(input: unknown, execution: unknown): Promise<unknown> }
@@ -30,15 +31,9 @@ async function fixture() {
   const state = memoryWorkspace(await partialTextMappingFixture())
   let recognitions = 0
   const pdf = createPdfService(state.workspaces, { executable, subprocess: new NativeTestSubprocess(),
-    // Recognition itself is isolated; native Unicode failure, rendering,
-    // reference resolution, draft changes and Client navigation are real.
     textRecovery: { async recognize() {
       recognitions++
-      const text = `OCR transcription: ${passage} BAD MAPPING`
-      return { text, status: 'complete', blocks: [], lines: [],
-        words: [{ id: 'recognized-line', parentId: 'line', text,
-          box: { x0: 40, y0: 40, x1: 400, y1: 100 }, confidence: null }],
-        confidence: null, coverage: [], warnings: [] }
+      throw new Error('Page text reads must not trigger automatic local OCR')
     }, async dispose() {} } })
   const references = createMemoryEvidenceReferenceStore(), contexts = createReaderContexts(state.workspaces)
   const navigation = createAgentNavigation(state.workspaces, contexts, 2000)
@@ -61,13 +56,13 @@ async function fixture() {
       await pdf.dispose(); await state.workspaces.dispose() } }
 }
 
-test('native search references remain readable and precisely navigable when the same page also has cached OCR',
+test('pages with unmapped symbols keep native text for Reader, selection evidence, search, annotation and navigation without OCR',
   { skip: !existsSync(executable) }, async () => {
     const f = await fixture()
     let visible: NativeDocument | undefined
     try {
       const id = f.opened.documentId
-      const native = await f.pdf.readPageText(sessionId, id, 2, signal, { recover: false })
+      const native = await f.pdf.readPageText(sessionId, id, 2, signal)
       assert.ok(native.content.quality!.unmappedCharacters > 0, 'the real PDF has a damaged Unicode mapping')
       assert.ok(joinPageText(native.content.items).includes(passage))
       const result = await f.run('pdf_semantic_search', { documentId: id, query: 'generalization', topK: 4 }) as {
@@ -78,26 +73,45 @@ test('native search references remain readable and precisely navigable when the 
       assert.equal(hit.annotationStatus, 'unavailable', 'quality warnings are reported conservatively')
       assert.equal(hit.evidence.extraction, undefined)
 
-      // The original failure occurred here: rereading immediately switched to
-      // OCR and invalidated the newly issued native reference.
       const narrowed = await f.run('pdf_evidence_read', { documentId: id, refId: hit.evidence.refId, quote: passage }) as {
         refId: string; pages: PdfTextEvidence[] }
       assert.equal(narrowed.pages[0]!.snapshot.text, passage)
       assert.equal(narrowed.pages[0]!.extraction, undefined)
-      assert.equal(f.recognitions(), 0, 'revalidating native evidence must not start OCR')
 
-      const repaired = await f.run('pdf_page_read', { documentId: id, page: 2 }) as { extraction: string; evidence: PdfTextEvidence }
-      assert.equal(repaired.extraction, 'local-ocr')
-      assert.equal(f.recognitions(), 1)
-      const repeated = await f.run('pdf_evidence_read', { documentId: id, refId: hit.evidence.refId, quote: passage }) as {
-        pages: PdfTextEvidence[] }
-      assert.equal(repeated.pages[0]!.snapshot.text, passage, 'cached OCR cannot replace a native parent representation')
+      const pageRead = await f.run('pdf_page_read', { documentId: id, page: 2 }) as {
+        text: string; limitations?: string[]; evidence: PdfTextEvidence }
+      assert.ok(pageRead.text.includes(passage))
+      assert.match(pageRead.limitations?.[0] ?? '', /undecodable characters/)
+      assert.equal(f.recognitions(), 0, 'page reads keep native text without starting OCR')
+      // Whole-page reference includes undecodable glyphs and must be narrowed before markup.
       await assert.rejects(f.run('pdf_annotation_create', { documentId: id, expectedRevision: 0,
-        subtype: 'Highlight', target: { kind: 'reference', refId: repaired.evidence.refId } }),
+        subtype: 'Highlight', target: { kind: 'reference', refId: pageRead.evidence.refId } }),
       { code: 'pdf/text-geometry-unavailable' })
 
-      // A valid native run on a partially damaged page is still decided by
-      // fresh selected-glyph geometry, never by a capability-report flag.
+      // Explanation-mode text selection succeeds on the clean passage of the same page,
+      // and fails closed with selection-unverifiable when selecting the undecodable run.
+      const cleanItem = native.content.items.find(item => item.str.includes(passage))!
+      const cleanBox: [number, number, number, number] = [38, 495, 40 + cleanItem.width + 2, 520]
+      const cleanSelection = await prepareTextSelectionEvidence(f.state.workspaces, f.pdf, f.references, {
+        sessionId, documentId: id, expectedRevision: 0,
+        expectedContentVersion: f.state.workspaces.readSnapshot(sessionId, id).contentVersion,
+        quote: passage,
+        fragments: [{ page: 2, rect: cleanBox,
+          quadPoints: [cleanBox[0], cleanBox[3], cleanBox[2], cleanBox[3], cleanBox[0], cleanBox[1], cleanBox[2], cleanBox[1]] }],
+      }, signal, async (_session, observed) => ({ path: observed.path, digest: evidenceSha256(observed.bytes) }))
+      assert.equal(cleanSelection.text, passage)
+
+      const brokenItem = native.content.items.find(item => item.str.includes('\ufffd'))!
+      const brokenBox: [number, number, number, number] = [38, 345, 40 + brokenItem.width + 2, 370]
+      await assert.rejects(prepareTextSelectionEvidence(f.state.workspaces, f.pdf, f.references, {
+        sessionId, documentId: id, expectedRevision: 0,
+        expectedContentVersion: f.state.workspaces.readSnapshot(sessionId, id).contentVersion,
+        quote: brokenItem.str,
+        fragments: [{ page: 2, rect: brokenBox,
+          quadPoints: [brokenBox[0], brokenBox[3], brokenBox[2], brokenBox[3], brokenBox[0], brokenBox[1], brokenBox[2], brokenBox[1]] }],
+      }, signal, async (_session, observed) => ({ path: observed.path, digest: evidenceSha256(observed.bytes) })),
+      { code: 'pdf/selection-unverifiable' })
+
       const changed = await f.run('pdf_annotation_create', { documentId: id, expectedRevision: 0,
         subtype: 'Highlight', target: { kind: 'reference', refId: narrowed.refId } }) as {
         revision: number; annotationId: string; resolvedTarget: { rectPdf: number[] }; savedToFile: boolean }
@@ -106,13 +120,12 @@ test('native search references remain readable and precisely navigable when the 
       assert.ok(changed.resolvedTarget.rectPdf[1]! > 480)
       const snapshot = await f.pdf.dispatch(sessionId, { action: 'open', sessionId,
         address: `dsh-resource://file/session/${sessionId}//fixtures/native.pdf` }, agent, signal) as WorkspaceSnapshot
-      const api = { async text(owner, documentId, reader, page, active, options) {
+      const api = { async text(owner, documentId, reader, page, active) {
         return await f.pdf.native(owner, { action: 'text', sessionId: owner, id: documentId,
-          bytesHash: reader.bytesHash, page, ...(options ? { recover: options.recover } : {}) }, agent,
-        active ?? signal) as NativeTextContent
+          bytesHash: reader.bytesHash, page }, agent, active ?? signal) as NativeTextContent
       } } as NativeReaderApi
       visible = new NativeDocument(snapshot, sessionId, api)
-      assert.equal((await visible.text(2, signal)).extraction, 'local-ocr', 'the visible Reader may already cache repaired text')
+      assert.ok(joinPageText((await visible.text(2, signal)).items).includes(passage))
       const lease = { sessionId, tabId: 'reader', leaseId: 'lease', documentId: id, contentVersion: snapshot.contentVersion }
       f.contexts.update(sessionId, { action: 'set', ...lease, sequence: 1, page: 1 })
       const awaited = f.navigation.dispatch(sessionId, { action: 'wait', ...lease }, signal)
@@ -131,7 +144,7 @@ test('native search references remain readable and precisely navigable when the 
       assert.equal(status, 'opened')
       assert.equal((await jumping as { status: string }).status, 'opened')
       assert.equal(jumps, 1)
-      assert.equal(f.recognitions(), 1, 'native navigation does not rerun cached OCR or use its offsets')
+      assert.equal(f.recognitions(), 0)
       assert.equal(f.state.writes(), 0, 'model edits and navigation leave the original PDF untouched')
     } finally { await visible?.dispose(); await f.dispose() }
   })
@@ -147,7 +160,7 @@ test('continuous native capture and narrowing keep raw text through a repairable
       const child = await f.run('pdf_evidence_read', { documentId: f.opened.documentId, refId: range.refId,
         quote: passage }) as { pages: PdfTextEvidence[] }
       assert.equal(child.pages[0]!.snapshot.text, passage)
-      assert.ok(child.pages.every(page => !page.extraction))
+      assert.ok(child.pages.every(page => page.extraction === undefined))
       assert.equal(f.recognitions(), 0)
       assert.equal(f.state.workspaces.readSnapshot(sessionId, f.opened.documentId).revision, 0)
       assert.equal(f.state.writes(), 0)

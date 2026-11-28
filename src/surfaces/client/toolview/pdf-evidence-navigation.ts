@@ -8,7 +8,7 @@ export interface VisiblePdfReader {
   snapshot: WorkspaceSnapshot
   /** Must return null when the tab or this exact snapshot is no longer visible. */
   current(): WorkspaceSnapshot | null
-  readPageText(page: number, signal: AbortSignal, options?: { recover?: boolean }): Promise<string>
+  readPageText(page: number, signal: AbortSignal): Promise<string>
   jump(page: number): Promise<boolean>
   navigateTarget?(page: number, target: TextNavigationTarget, signal: AbortSignal): Promise<EvidenceNavigationResult>
 }
@@ -117,18 +117,18 @@ export function createPdfEvidenceNavigation(revalidate: RevalidateEvidence,
         const { startUtf16, endUtf16 } = evidence.locator
         const excerpt = evidence.snapshot.text
         const boundedEnd = startUtf16 + excerpt.length
-        if (!evidence.sourcePathDigest || !evidence.pageTextDigest || endUtf16 < boundedEnd
+        if (evidence.extraction === 'local-ocr'
+          || !evidence.sourcePathDigest || !evidence.pageTextDigest || endUtf16 < boundedEnd
           || await hashText(current.path) !== evidence.sourcePathDigest) return 'stale'
         signal.throwIfAborted()
         const validated = await revalidate({ action: 'revalidate', sessionId, documentId: current.id,
           sourcePathDigest: evidence.sourcePathDigest, sourceDigest: evidence.sourceDigest, page: evidence.page,
-          ...(evidence.extraction === 'local-ocr' ? { extraction: evidence.extraction } : {}),
           pageTextDigest: evidence.pageTextDigest, startUtf16, endUtf16: boundedEnd,
           excerpt, excerptSha256: evidence.snapshot.sha256 }, signal)
         signal.throwIfAborted()
         if (!stillVisible(entry, sessionId, evidence)
           || !isCurrentResult(current, evidence.page, validated)) return 'stale'
-        const pageText = await reader.readPageText(evidence.page, signal, { recover: evidence.extraction === 'local-ocr' })
+        const pageText = await reader.readPageText(evidence.page, signal)
         signal.throwIfAborted()
         if (!stillVisible(entry, sessionId, evidence)
           || !await pageStillMatches(evidence, pageText, hashText)) return 'stale'

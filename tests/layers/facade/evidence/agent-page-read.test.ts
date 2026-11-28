@@ -133,19 +133,21 @@ test('search rejects malformed or mixed continuation locators and invalid first-
   }
 })
 
-test('search reports blank and OCR pages, respects terminal boundaries and rejects concurrent changes', async () => {
+test('search reports blank pages, respects terminal boundaries and rejects concurrent changes; page-read surfaces unmapped limitations', async () => {
   const initial = source(2)
   let current = initial
   const workspaces: WorkingCopyReadPort = { readSnapshot() { return current } }
   const pages: AgentPageReadPort = { async readPageText(_session, _document, page) {
-    return { snapshot: initial, content: page === 1 ? content('') : { ...content('Needle'), extraction: 'local-ocr' } }
+    return { snapshot: initial, content: page === 1 ? content('') : { ...content('Needle \ufffd'), quality: { unmappedCharacters: 1 } } }
   } }
+  const read = await readPageWindow(workspaces, pages, 'session-1', initial.id, 2, 0, 8000, signal)
+  assert.match(read.limitations?.[0] ?? '', /undecodable characters/)
   const result = await searchPageWindows(workspaces, pages, 'session-1', initial.id, { query: 'Needle' }, signal)
   assert.deepEqual(result.noTextPages, [1])
-  assert.deepEqual(result.ocrRepairedPages, [2])
+  assert.equal('ocrRepairedPages' in result, false)
   assert.equal(result.nextCursor, null)
   const boundary = await searchPageWindows(workspaces, pages, 'session-1', initial.id,
-    { query: 'Needle', fromPage: 2, offset: 6 }, signal)
+    { query: 'Needle', fromPage: 2, offset: 8 }, signal)
   assert.deepEqual(boundary.matches, [])
   assert.equal(boundary.nextCursor, null)
   const changed: AgentPageReadPort = { async readPageText() {

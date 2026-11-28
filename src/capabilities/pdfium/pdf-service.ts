@@ -8,7 +8,7 @@ import { encodePng } from './png.js'
 import { readEncryptedAnnotations, saveEncryptedAnnotations, verifyEncryptedSave } from './encrypted-annotations.js'
 import { encryptedDocumentInfo } from './encrypted-document.js'
 import { ByteCache } from '../../shared/cache/index.js'
-import { ocrRegionRenderPlan, pageRenderPlan, recoveredPageText } from '../../layers/document/content/index.js'
+import { ocrRegionRenderPlan, pageRenderPlan } from '../../layers/document/content/index.js'
 import { CapabilityRegistry, pdfCapabilities, requiredPdfOpenCapabilities } from '../index.js'
 import { projectedReaderOutline } from '../../layers/document/outlines/index.js'
 import { inspectFormPage } from '../../layers/document/forms/index.js'
@@ -36,7 +36,7 @@ const nativeRequest = z.discriminatedUnion('action', [
     rasterWidth: integer.min(1).max(1048576), rasterHeight: integer.min(1).max(1048576),
     x: integer.min(-2), y: integer.min(-2), width: integer.min(1).max(1026), height: integer.min(1).max(1026), annotations: z.boolean(),
   }).strict().refine(t => t.x + t.width <= t.rasterWidth + 2 && t.y + t.height <= t.rasterHeight + 2) }).strict(),
-  z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000), recover: z.boolean().optional() }).strict(),
+  z.object({ ...common, action: z.literal('text'), page: integer.min(1).max(100000) }).strict(),
   z.object({ ...common, action: z.literal('links'), page: integer.min(1).max(100000) }).strict(),
   z.object({ ...common, action: z.literal('selectionGeometry'), page: integer.min(1).max(100000), offset: integer.min(0).max(200000) }).strict(),
   z.object({ ...common, action: z.literal('outline') }).strict(),
@@ -346,7 +346,7 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     if (input.action === 'text') {
       const snapshot = workspaces.readSnapshot(sessionId, input.id)
       if (workspaces.bytesHash(snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF baseline changed; use the latest reader snapshot')
-      const read = await readPageText(sessionId, input.id, input.page, signal, { recover: input.recover })
+      const read = await readPageText(sessionId, input.id, input.page, signal)
       if (workspaces.bytesHash(read.snapshot.bytes) !== input.bytesHash) fail('pdf/stale-reader', 'PDF changed while the text request waited; use the latest reader snapshot')
       return read.content
     }
@@ -411,39 +411,32 @@ export function createPdfService(workspaces: ReturnType<typeof createWorkingCopy
     const release = await workspaces.acquire(sessionId, input.id, agent, signal)
     try { return await nativeRequestDispatch(sessionId, input, signal) } finally { release() }
   }
-  async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
-    readOptions?: { recover?: boolean }): Promise<{
+  async function readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }> {
-    const read = await withHandleLease(async () => {
-    signal.throwIfAborted()
-    const snapshot = workspaces.readSnapshot(sessionId, documentId)
-    if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
-      fail('pdf/invalid-page', 'Page is outside the document')
-    }
-    if (snapshot.document.encrypted && !snapshot.document.allowTextExtraction) {
-      return { snapshot, content: { items: [], styles: {}, lang: null } }
-    }
-    const handle = await ensure(snapshot, signal)
-    const reply = await worker.readText({ documentId: handle.documentId, pageIndex: page - 1 }, signal, -5)
-    signal.throwIfAborted()
-    return { snapshot, content: reply.value as NativeTextContent }
+    return withHandleLease(async () => {
+      signal.throwIfAborted()
+      const snapshot = workspaces.readSnapshot(sessionId, documentId)
+      if (!Number.isSafeInteger(page) || page < 1 || page > snapshot.document.pageCount) {
+        fail('pdf/invalid-page', 'Page is outside the document')
+      }
+      if (snapshot.document.encrypted && !snapshot.document.allowTextExtraction) {
+        return { snapshot, content: { items: [], styles: {}, lang: null } }
+      }
+      const handle = await ensure(snapshot, signal)
+      const reply = await worker.readText({ documentId: handle.documentId, pageIndex: page - 1 }, signal, -5)
+      signal.throwIfAborted()
+      return { snapshot, content: reply.value as NativeTextContent }
     }, signal)
-    if (readOptions?.recover === false
-      || !read.content.quality?.unmappedCharacters || !options.textRecovery) return read
-    const { snapshot, artifact } = await readOcrArtifact(sessionId, documentId, page, signal, undefined, read.snapshot)
-    return { snapshot, content: recoveredPageText(artifact.output, read.snapshot.document.pages[page - 1],
-      artifact.input.render.width, artifact.input.render.height) }
   }
-  /** Both text repair and indexing consume the same raw, provenance-bearing OCR derivative. */
+  /** Indexing consumes a shared raw, provenance-bearing OCR derivative. */
   async function readOcrArtifact(sessionId: string, documentId: string, page: number, signal: AbortSignal,
-    recognition?: PageOcrRecognition, expectedSnapshot?: HostWorkspaceSnapshot) {
+    recognition?: PageOcrRecognition) {
     const active = AbortSignal.any([signal, recoveryLifetime.signal])
     active.throwIfAborted()
     if (closed) fail('pdf/unavailable', 'PDF service is unloading')
     const snapshot = workspaces.readSnapshot(sessionId, documentId)
     const bytesHash = workspaces.bytesHash(snapshot.bytes)
-    if (expectedSnapshot && workspaces.bytesHash(expectedSnapshot.bytes) !== bytesHash) fail('pdf/stale-reader', 'PDF changed before text recovery')
     const geometry = snapshot.document.pages[page - 1]
     if (!Number.isSafeInteger(page) || page < 1 || !geometry) fail('pdf/invalid-page', 'Page is outside the document')
     if (!recognition && !options.textRecovery) fail('pdf/text-recovery-unavailable', 'Local PDF text recovery is unavailable')

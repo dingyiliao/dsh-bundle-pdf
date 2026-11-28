@@ -8,9 +8,9 @@ import { imageEvidenceSchema } from '../../../../src/layers/facade/evidence/refe
 
 const snapshot = { id: 'doc', path: '/paper.pdf', bytes: Buffer.from('source'), sourceVersion: 'fs-1',
   contentVersion: 'v1', revision: 0, document: { pageCount: 1, pages: [] } } as unknown as HostWorkspaceSnapshot
-const content: NativeTextContent = { items: [], styles: {}, lang: null, extraction: 'local-ocr' }
+const content: NativeTextContent = { items: [], styles: {}, lang: null }
 const native = createTextEvidence(snapshot, 1, 'text', 0, 4)
-const ocr = createTextEvidence(snapshot, 1, 'text', 0, 4, content)
+const ocr = { ...native, extraction: 'local-ocr' as const, precision: 'page-only' as const }
 
 test('capabilities come from provenance, preserve old OCR refs and remain outside stored strict schemas', () => {
   assert.equal(describeEvidenceCapabilities(native).source, 'native-text')
@@ -25,10 +25,10 @@ test('capabilities come from provenance, preserve old OCR refs and remain outsid
 })
 
 test('Host-observed unmapped native characters constrain annotation reporting without changing native text or geometry routing', () => {
-  const observed = { ...content, extraction: undefined, quality: { unmappedCharacters: 2 } }
+  const observed: NativeTextContent = { ...content, quality: { unmappedCharacters: 2 } }
   const degraded = createTextEvidence(snapshot, 1, 'text', 0, 4, observed)
   assert.deepEqual(degraded.quality, { unmappedCharacters: 2 })
-  observed.quality.unmappedCharacters = 3
+  observed.quality!.unmappedCharacters = 3
   assert.equal(degraded.quality?.unmappedCharacters, 2, 'capture copies the observed quality signal')
   assert.ok(textEvidenceSchema.safeParse(degraded).success)
   const caps = describeEvidenceCapabilities(degraded)
@@ -41,7 +41,7 @@ test('Host-observed unmapped native characters constrain annotation reporting wi
   assert.match(caps.reason, /do not establish whether a selected subrange has valid geometry/)
   assert.equal(degraded.snapshot.text, native.snapshot.text)
   assert.equal('capabilities' in degraded, false)
-  const clean = createTextEvidence(snapshot, 1, 'text', 0, 4, { ...content, extraction: undefined,
+  const clean = createTextEvidence(snapshot, 1, 'text', 0, 4, { ...content,
     quality: { unmappedCharacters: 0 } })
   assert.equal(clean.quality, undefined)
   assert.equal(describeEvidenceCapabilities(clean).exactAnnotate, true)

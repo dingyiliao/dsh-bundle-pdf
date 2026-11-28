@@ -171,20 +171,28 @@ test('stored snapshot, offset and digest tampering is rejected before any geomet
   await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal), { code: 'pdf/reference-unavailable' })
 })
 
-test('text targeting rejects missing, invalid and OCR-derived glyph geometry, including an invalid middle glyph', async () => {
-  for (const mode of ['stored-ocr', 'native-ocr', 'missing', 'invalid-middle', 'outside-crop'] as const) {
+test('text targeting rejects missing, invalid, undecodable and legacy OCR-derived glyph geometry, including an invalid middle glyph', async () => {
+  for (const mode of ['stored-ocr', 'undecodable', 'missing', 'invalid-middle', 'outside-crop'] as const) {
     const f = await fixture()
     const content = f.content()
     if (mode === 'stored-ocr') {
       const record = f.records.get(f.first)!
       if (record.evidence.source !== 'pdf-text') assert.fail('Expected text evidence')
       record.evidence.extraction = 'local-ocr'
-    } else if (mode === 'native-ocr') f.setContent({ ...content, extraction: 'local-ocr' })
-    else if (mode === 'missing') content.items[0]!.glyphs = undefined
+    } else if (mode === 'undecodable') {
+      const damaged = 'Repeated \ufffdevidence'
+      f.setContent({ ...content, items: [line(damaged, 200), line(quote, 100, false)] })
+      const record = f.records.get(f.first)!
+      if (!('pageTextDigest' in record)) assert.fail('Expected text evidence')
+      record.pageTextDigest = evidenceSha256(`${damaged}\n${quote}`)
+      record.evidence.pageTextDigest = record.pageTextDigest
+      record.evidence.snapshot = { text: damaged, sha256: evidenceSha256(damaged) }
+      record.evidence.locator = { kind: 'text-window', startUtf16: 0, endUtf16: damaged.length }
+    } else if (mode === 'missing') content.items[0]!.glyphs = undefined
     else if (mode === 'invalid-middle') content.items[0]!.glyphs![5]![2] = 0
     else f.update({ document: { ...f.current().document, pages: [{ ...f.current().document.pages[0]!, cropBox: [0, 0, 10, 10] }] } })
     await assert.rejects(f.resolver.resolve('alice', 'doc-1', f.first, signal),
-      { code: mode === 'native-ocr' ? 'pdf/text-representation-unavailable' : 'pdf/text-geometry-unavailable' })
+      { code: 'pdf/text-geometry-unavailable' })
   }
 })
 

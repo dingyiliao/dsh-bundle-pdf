@@ -14,7 +14,6 @@ function snapshot(evidence: PdfTextEvidence, maxChars: number) {
     ...(evidence.pageTextDigest ? { pageTextDigest: evidence.pageTextDigest } : {}),
     contentVersion: evidence.contentVersion, revision: evidence.revision, page: evidence.page,
     source: evidence.source, precision: evidence.precision,
-    ...(evidence.extraction ? { extraction: evidence.extraction } : {}),
     locator: { kind: evidence.locator.kind, startUtf16: evidence.locator.startUtf16,
       endUtf16: evidence.locator.endUtf16 },
     snapshot: { text, sha256: evidenceSha256(text), originalSha256: evidence.snapshot.sha256,
@@ -27,7 +26,7 @@ export function readPagePresentationMeta(value: {
   documentId: string; path: string; page: number; sourceDigest: string; sourceVersion: string;
   pageTextDigest: string;
   contentVersion: string; revision: number; text: string; offset: number; nextOffset: number | null;
-  totalChars: number; status: string; extraction?: 'local-ocr'; limitations?: string[]
+  totalChars: number; status: string; limitations?: string[]
 }) {
   const text = value.text.slice(0, MAX_REPLAY_TEXT_CHARS)
   return { kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_page_read',
@@ -35,7 +34,6 @@ export function readPagePresentationMeta(value: {
     sourcePathDigest: evidenceSha256(value.path),
     sourceDigest: value.sourceDigest, sourceVersion: value.sourceVersion,
     pageTextDigest: value.pageTextDigest,
-    ...(value.extraction ? { extraction: value.extraction } : {}),
     contentVersion: value.contentVersion, revision: value.revision, page: value.page,
     status: value.status, locator: { kind: 'text-window', startUtf16: value.offset,
       endUtf16: value.offset + text.length },

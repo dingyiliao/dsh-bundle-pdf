@@ -13,19 +13,15 @@ import { assertToolCursorIdentity, decodeToolCursor, encodeToolCursor } from './
 import { rememberTextEvidence } from './text-evidence.js'
 import type { EvidenceReferenceStore, PdfTextEvidence } from './reference-store.js'
 
-/** Revalidate the attested representation instead of the current page-read default.
- * A native reference must never trigger OCR or inherit its text/coordinates.
- */
+/** Revalidate the attested native representation; historical local-OCR refs fail closed. */
 export async function readEvidencePageText(pages: AgentPageReadPort, sessionId: string, documentId: string,
-  page: number, signal: AbortSignal, extraction?: NativeTextContent['extraction']) {
+  page: number, signal: AbortSignal, extraction?: 'local-ocr') {
   signal.throwIfAborted()
-  const read = await pages.readPageText(sessionId, documentId, page, signal, { recover: extraction === 'local-ocr' })
-  signal.throwIfAborted()
-  if (read.content.extraction !== extraction) {
-    throw Object.assign(new Error(`Page ${page} no longer provides the saved ${extraction === 'local-ocr' ? 'local OCR' : 'native text'} representation; read the page again for current evidence`),
+  if (extraction === 'local-ocr') {
+    throw Object.assign(new Error(`Page ${page} no longer provides the saved local OCR representation; read the page again for current evidence`),
       { code: 'pdf/text-representation-unavailable' })
   }
-  return read
+  return pages.readPageText(sessionId, documentId, page, signal)
 }
 
 const MAX_SEARCH_OUTPUT_CHARS = 64_000
@@ -51,11 +47,16 @@ export async function readPageWindow(workspaces: WorkingCopyReadPort, pages: Age
     page, text, window.offset, window.offset + window.text.length, content) : undefined
   signal.throwIfAborted()
   if (!sameRevision(snapshot, workspaces.readSnapshot(sessionId, documentId))) stale('PDF changed while recording page text; retry')
+  const limitations = [
+    ...(content.quality?.unmappedCharacters
+      ? ['Native page text contains undecodable characters; inspect the page image or run OCR for missing symbols.'] : []),
+    ...(content.warnings ?? []),
+  ]
   return { status: text ? 'ok' : 'no_text', documentId: snapshot.id, path: snapshot.path,
     page, pageCount: snapshot.document.pageCount, revision: snapshot.revision,
     contentVersion: snapshot.contentVersion, sourceVersion: snapshot.sourceVersion,
     sourceDigest: evidenceSha256(snapshot.bytes), pageTextDigest: evidenceSha256(text),
-    ...(content.extraction ? { extraction: content.extraction, limitations: content.warnings ?? [] } : {}),
+    ...(limitations.length ? { limitations } : {}),
     ...window, ...(evidence ? { evidence } : {}) }
 }
 
@@ -105,19 +106,17 @@ export async function searchPageWindows(workspaces: WorkingCopyReadPort, pages: 
     return { documentId: snapshot.id, path: snapshot.path, pageCount: snapshot.document.pageCount,
       revision: snapshot.revision, contentVersion: snapshot.contentVersion, fromPage: startPage, throughPage,
       mode, scope: { fromPage: scopeStart, throughPage: scopeEnd },
-      matches, noTextPages, ...(ocrRepairedPages.length ? { ocrRepairedPages } : {}), nextCursor }
+      matches, noTextPages, nextCursor }
   }
   const throughPage = Math.min(scopeEnd, startPage + 9)
   const matches: { page: number; offset: number; endOffset: number; excerpt: string; evidence?: PdfTextEvidence }[] = []
   const noTextPages: number[] = []
-  const ocrRepairedPages: number[] = []
   for (let current = startPage; current <= throughPage; current++) {
     signal.throwIfAborted()
     const read = await pages.readPageText(sessionId, documentId, current, signal)
     signal.throwIfAborted()
     ensureCurrent(read.snapshot)
     const pageText = joinPageText(read.content.items)
-    if (read.content.extraction === 'local-ocr') ocrRepairedPages.push(current)
     if (!pageText.trim()) noTextPages.push(current)
     const start = current === startPage ? startOffset : 0
     if (start > pageText.length) throw Object.assign(new Error('Search offset is outside the page'), { code: 'pdf/invalid-window' })
@@ -131,8 +130,7 @@ export async function searchPageWindows(workspaces: WorkingCopyReadPort, pages: 
         excerpt: match.excerpt, ...(evidence ? { evidence } : {}) }
       // Full provenance can be larger than the short search excerpt. Resume at the omitted
       // match, not at the end of the native search batch; always emit one item for progress.
-      if (matches.length && JSON.stringify({ path: snapshot.path, matches: [...matches, candidate], noTextPages,
-        ocrRepairedPages }).length > MAX_SEARCH_OUTPUT_CHARS) {
+      if (matches.length && JSON.stringify({ path: snapshot.path, matches: [...matches, candidate], noTextPages }).length > MAX_SEARCH_OUTPUT_CHARS) {
         return response(current, continuation(current, match.offset))
       }
       matches.push(candidate)

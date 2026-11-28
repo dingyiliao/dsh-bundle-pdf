@@ -41,7 +41,7 @@ test('native page content preserves exact joined offsets, paragraphs and known g
   assert.equal(parsePageContent(JSON.parse(JSON.stringify(result)))?.nativeText.text, result.nativeText.text)
 })
 
-test('empty, unavailable and recovered layers never invent native text or figure segmentation', () => {
+test('empty, unavailable and broken-mapping layers never invent native text or figure segmentation', () => {
   const empty = page(content([]))
   assert.equal(empty.nativeText.text, '')
   assert.deepEqual(empty.nativeText.paragraphBreaks, [])
@@ -54,12 +54,6 @@ test('empty, unavailable and recovered layers never invent native text or figure
   const brokenMapping = page({ ...content([item('unmapped')]), quality: { unmappedCharacters: 1 } })
   assert.equal(brokenMapping.blocks[0]?.representations[0]?.status, 'partial')
   assert.match(brokenMapping.warnings[0]!, /invalid PDF mapping/)
-  const recovered = page({ ...content([item('Recognized text')]), extraction: 'local-ocr' })
-  assert.equal(recovered.nativeText.text, '')
-  assert.equal(recovered.blocks[0]?.nativeRange, undefined)
-  assert.equal(recovered.blocks[0]?.representations[0]?.kind, 'ocr-text')
-  assert.equal(recovered.blocks[0]?.representations[0]?.text, 'Recognized text')
-  assert.equal(recovered.blocks[0]?.representations[0]?.spans, undefined)
 })
 
 test('missing, invalid and multiline geometry stays absent without changing text', () => {

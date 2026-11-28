@@ -83,7 +83,7 @@ RGBA 在 Host 编码为 PNG，通过有界 RPC 返回 Client。Client 管理解�
 - 表单绘制及编辑不执行 PDF JavaScript 或网络动作。XFA 不支持。签名不受保护：保存重写字节后签名失效，`open` 同时返回认证签名的 DocMDP 权限供保存前提示。检测到签名结构不代表验证了签名真伪。
 - PDFium 能解锁的加密 PDF 遵守文档的文本提取和批注权限。密码和批注草稿由 Host 在阅读视图存续期间保留在内存中。另存为在隔离句柄上输出仍受原安全设置保护的字节，验证后才写到其他路径。
 - 截图/OCR 可关闭原生标注或 widget 外观；图像生成不能据此推断 OCR/图像理解后端可用。未保存的编辑投影也不是 native 源基线的一部分。
-- 文字提取区分合法换行断字标记与 Unicode 映射故障。Host 可用随包本地 OCR 修复异常文字层，结果标记为派生/近似文字；不会改写原 PDF，也不能冒充精确原生字形证据。复杂字体、RTL、竖排等版面的结果仍取决于实际提取质量。
+- 文字提取区分合法换行断字标记与 Unicode 映射故障：未映射字符统一归一化为 `U+FFFD` 并统计在页面质量信息中，保留其余可读原生文字与字形位置，不做隐式整页 OCR 替换；包含未映射字形的选区不能冒充精确原生字形证据。复杂字体、RTL、竖排等版面的结果仍取决于实际提取质量。
 - 页面对象检查为只读；对象移动、正文替换、图片/矢量写入和稳定页面对象 ID 不在当前协议中。
 
 协议、进程生命周期和原生集成测试由 `npm run check` 收集；真实原生用例需先构建 helper，`DSH_PDF_REQUIRE_NATIVE_TESTS=1` 可禁止缺少 helper 时跳过。覆盖率入口见 [测试文档](docs/testing.md)。历史原生 smoke 数据保留在 [benchmark 目录](https://github.com/dingyiliao/dsh-bundle-pdf/blob/main/docs/benchmarks/native-v1-20260930/README.md)，不作为当前实现的性能结论。

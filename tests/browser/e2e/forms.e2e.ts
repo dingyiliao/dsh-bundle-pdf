@@ -3,14 +3,14 @@ import { launchWebScaffold, seedSession, newEnglishPage, saveFailureShot, MODEL_
 import { type Browser } from 'playwright'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { brokenTextMappingFixture } from '../../fixtures/broken-text-mapping.ts'
+import { partialTextMappingFixture } from '../../fixtures/broken-text-mapping.ts'
 import { launchPdfBrowser as launchBrowser } from '../launch.ts'
 import { acroformFixture } from '../../fixtures/acroform.ts'
 import { inspectFixturePdf } from '../../fixtures/native-document.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { documentAction } from '../support/toolbar.ts'
 
-it('recovers an invalid Unicode text layer and allows dragging the formerly missing English label', async () => {
+it('keeps the native text layer selectable on pages that also contain undecodable symbols without running OCR', async () => {
   const scaffold = await launchWebScaffold({ profile: { packages: [{ dir: ROOT, enabled: true }] } })
   let browser: Browser | undefined
   try {
@@ -18,7 +18,7 @@ it('recovers an invalid Unicode text layer and allows dragging the formerly miss
     const sessionId = await seedSession(scaffold, await readFile(SESSION, 'utf8'), 'pdf-text-recovery-e2e')
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: 'PDF text recovery test' })
-    const path = join(scaffold.workspaceCwd, 'reader-broken-text-e2e.pdf'), bytes = await brokenTextMappingFixture()
+    const path = join(scaffold.workspaceCwd, 'reader-broken-text-e2e.pdf'), bytes = await partialTextMappingFixture()
     await writeFile(path, bytes)
     browser = await launchBrowser()
     const page = await newEnglishPage(browser)
@@ -33,18 +33,20 @@ it('recovers an invalid Unicode text layer and allows dragging the formerly miss
     await column.locator('[data-files-entry="file"]').getByRole('button', { name: 'reader-broken-text-e2e.pdf' }).click()
     const reader = page.locator('.dsh-pdf-reader')
     await reader.waitFor({ state: 'visible' })
-    const words = reader.locator('[data-pdf-page="1"] .dsh-pdf-text-layer span')
-    // Opening the Reader precedes native rendering and local OCR startup.
-    // Wait for the recovered text layer before checking its exact contents.
-    await words.first().waitFor({ state: 'visible' })
-    await expect.poll(() => words.allTextContents()).toEqual(['Full ', 'name ', 'in ', 'English'])
-    const first = await words.first().boundingBox(), last = await words.last().boundingBox()
+    await reader.locator('[data-pdf-page="2"]').scrollIntoViewIfNeeded()
+    const spans = reader.locator('[data-pdf-page="2"] .dsh-pdf-text-layer span')
+    await spans.first().waitFor({ state: 'visible' })
+    await expect.poll(async () => (await spans.allTextContents()).join('')).toContain('Training error does not certify generalization.')
+    const startSpan = spans.filter({ hasText: 'T' }).first()
+    const endSpan = spans.filter({ hasText: '.' }).first()
+    const first = await startSpan.boundingBox(), last = await endSpan.boundingBox()
     expect(first).not.toBeNull(); expect(last).not.toBeNull()
     await page.mouse.move(first!.x + 1, first!.y + first!.height / 2)
     await page.mouse.down()
     await page.mouse.move(last!.x + last!.width - 1, last!.y + last!.height / 2, { steps: 12 })
     await page.mouse.up()
-    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Full name in English')
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString()))
+      .toBe('Training error does not certify generalization.')
     await expect.poll(() => reader.locator('.dsh-pdf-selection-overlay div').count()).toBeGreaterThan(0)
     expect(await readFile(path)).toEqual(Buffer.from(bytes))
   } finally { await browser?.close(); await scaffold.close() }

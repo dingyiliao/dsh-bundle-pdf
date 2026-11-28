@@ -40,9 +40,8 @@ async function fixture(native = false) {
   assert.ok('bytes' in opened)
   let texts = [...originalTexts]
   const pdf = native ? createPdfService(state.workspaces, { executable: nativeExecutable, subprocess: nativeTestSubprocess }) : undefined
-  const pages: AgentPageReadPort = pdf ?? { async readPageText(sessionId, documentId, page, active, options) {
+  const pages: AgentPageReadPort = pdf ?? { async readPageText(sessionId, documentId, page, active) {
     active.throwIfAborted()
-    assert.equal(options?.recover, false, 'saved native refs must not silently switch to OCR')
     return { snapshot: state.workspaces.readSnapshot(sessionId, documentId), content: content(texts[page - 1]!) }
   } }
   const readSource: FreshSourceRead = async (sessionId, snapshot, active) => {

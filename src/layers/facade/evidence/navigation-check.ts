@@ -50,11 +50,10 @@ export async function revalidateEvidenceNavigation(workspaces: WorkingCopyReadPo
     return stale('The visible PDF no longer has the referenced source path')
   }
   if (page > before.document.pageCount) return stale('Referenced PDF page no longer exists')
-  const localOcr = request.extraction === 'local-ocr'
-  if (localOcr && request.sourceDigest !== evidenceSha256(before.bytes)) {
-    return stale('The OCR card source bytes cannot be verified; read the current page again')
+  if (request.extraction === 'local-ocr') {
+    return stale('Historical local OCR cards are no longer supported; read the current page again')
   }
-  const read = await readEvidencePageText(pages, sessionId, documentId, page, signal, request.extraction)
+  const read = await readEvidencePageText(pages, sessionId, documentId, page, signal)
   signal.throwIfAborted()
   const after = workspaces.readSnapshot(sessionId, documentId)
   const sameSnapshot = (candidate: typeof before) => !candidate.conflict && candidate.id === before.id
@@ -85,7 +84,7 @@ export async function revalidateEvidenceNavigation(workspaces: WorkingCopyReadPo
   // current reference and use the same resolver as model annotation/navigation.
   // Native geometry is normally cached; no second coordinate algorithm lives here.
   let target
-  if (references && !localOcr) {
+  if (references) {
     const evidence = await rememberTextEvidence(references, sessionId, before, page, text,
       request.startUtf16, request.endUtf16, read.content)
     const resolved = await createTextReferenceResolver(workspaces, pages, references)

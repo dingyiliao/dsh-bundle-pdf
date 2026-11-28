@@ -1,5 +1,4 @@
 export { pageRenderPlan, ocrRegionRenderPlan } from './native-render-plan.js'
-export { recoveredPageText, RECOVERED_TEXT_WARNING } from './text-recovery.js'
 export type { NativeRenderPlan } from './native-render-plan.js'
 export { digestPdfBytes, encodePdfBaseline, decodePdfBaseline } from './source.js'
 export { PAGE_CONTENT_VERSION, NATIVE_PAGE_CONTENT_EXTRACTION_VERSION, MAX_PAGE_CONTENT_TEXT,

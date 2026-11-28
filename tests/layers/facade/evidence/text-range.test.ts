@@ -13,7 +13,6 @@ function fixture(texts = ['first START alpha', 'middle evidence', 'omega END las
     sourceVersion: 'fs-1', contentVersion: 'content-1', revision: 0, conflict: false,
     dirty: false, canUndo: false, canRedo: false,
     document: { pageCount: texts.length, pages: texts.map(() => ({ cropBox: [0, 0, 100000, 800] })) } as HostWorkspaceSnapshot['document'] }
-  let extraction: 'local-ocr' | undefined
   let onRead: (() => void) | undefined
   const workspaces = { readSnapshot(owner: string, id: string) {
     if (owner !== 'alice' || id !== current.id) throw Object.assign(new Error('Not owned'), { code: 'pdf/session-mismatch' })
@@ -25,7 +24,7 @@ function fixture(texts = ['first START alpha', 'middle evidence', 'omega END las
     const content: NativeTextContent = { items: [{ str: text, hasEOL: false,
       transform: [12, 0, 0, 12, 60, 200], width: Array.from(text).length * 6, height: 12,
       dir: 'ltr', fontName: 'test', glyphs: Array.from(text, (_, index) => [60 + index * 6, 200, 6]) }],
-      styles: {}, lang: null, ...(extraction ? { extraction } : {}) }
+      styles: {}, lang: null }
     onRead?.()
     return { snapshot, content }
   } }
@@ -35,7 +34,6 @@ function fixture(texts = ['first START alpha', 'middle evidence', 'omega END las
     resolver: createTextReferenceResolver(workspaces, pages, references),
     current: () => current,
     update(patch: Partial<HostWorkspaceSnapshot>) { current = { ...current, ...patch } },
-    extraction(value: 'local-ocr') { extraction = value },
     onRead(value: () => void) { onRead = value },
   }
 }
@@ -69,22 +67,22 @@ test('evidence subquotes are scoped to the captured occurrence and can span adja
     { code: 'pdf/ambiguous-text-target' })
 })
 
-test('reference reads allow derived text but precise range creation and writes require native geometry', async () => {
+test('legacy stored local-OCR references fail closed on read, derivation and range resolution', async () => {
   const f = fixture(['ordinary text'])
-  f.extraction('local-ocr')
   const page = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 0, 8000, signal, f.references)
-  const read = await f.ranges.readEvidence('alice', 'doc-1', page.evidence!.refId, signal)
-  assert.equal(read.pages[0]?.snapshot.text, 'ordinary text')
-  assert.equal(read.pages[0]?.precision, 'page-only')
-  assert.equal(read.pages[0]?.locator.rectsPdf, undefined)
-  assert.deepEqual(describeEvidenceCapabilities(read.pages[0]!), {
+  const stored = f.references.get(page.evidence!.refId)!
+  if (stored.evidence.source !== 'pdf-text') assert.fail('Expected text evidence')
+  stored.evidence.extraction = 'local-ocr'
+  stored.evidence.precision = 'page-only'
+  delete stored.evidence.locator.rectsPdf
+  assert.deepEqual(describeEvidenceCapabilities(stored.evidence), {
     source: 'local-ocr', textMatching: 'derived', navigation: 'page', exactAnnotate: false,
     reason: 'Local OCR is a derived transcription. Quotes can narrow its snapshot; only the verified source page is navigable, and OCR coordinates cannot authorize native text markup.',
   })
-  await assert.rejects(f.resolver.resolveRange('alice', 'doc-1', read.refId, signal), { code: 'pdf/text-geometry-unavailable' })
-  await assert.rejects(f.ranges.capture('alice', 'doc-1',
-    { start: { page: 1, quote: 'ordinary' }, end: { page: 1, quote: 'text' } }, signal),
-  { code: 'pdf/text-representation-unavailable' })
+  await assert.rejects(f.ranges.readEvidence('alice', 'doc-1', page.evidence!.refId, signal),
+    { code: 'pdf/text-representation-unavailable' })
+  await assert.rejects(f.resolver.resolveRange('alice', 'doc-1', page.evidence!.refId, signal),
+    { code: 'pdf/text-geometry-unavailable' })
 })
 
 test('whitespace-normalized derivation maps original UTF-16 offsets and native geometry within the parent', async () => {
@@ -110,90 +108,6 @@ test('whitespace-normalized derivation maps original UTF-16 offsets and native g
     'START A😀\t\n  B middle')
 })
 
-test('local OCR can narrow and navigate its attested page while legacy precision never grants markup', async () => {
-  const f = fixture(['prefix A😀\n\tB suffix'])
-  f.extraction('local-ocr')
-  const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 7, 8, signal, f.references)
-  const refId = read.evidence!.refId
-  const record = f.references.get(refId)!
-  if (record.evidence.source !== 'pdf-text') assert.fail('Expected text evidence')
-  record.evidence.precision = 'exact-text'
-  record.evidence.locator.rectsPdf = [[0, 0, 100, 100]]
-  const replay = await f.ranges.readEvidence('alice', 'doc-1', refId, signal)
-  assert.equal(replay.pages[0]!.precision, 'page-only')
-  assert.equal(replay.pages[0]!.locator.rectsPdf, undefined)
-  const child = await f.ranges.derive('alice', 'doc-1', refId, 'A😀 B', signal, undefined, 'whitespace-normalized')
-  assert.equal(child.pages[0]!.snapshot.text, 'A😀\n\tB')
-  const freshSource = async () => ({ path: '/paper.pdf', digest: evidenceSha256(f.current().bytes) })
-  const resolved = await f.resolver.resolvePage('alice', 'doc-1', child.refId, signal, freshSource)
-  assert.equal(resolved.page, 1)
-  assert.equal(resolved.precision, 'page-only')
-  assert.deepEqual(resolved.locator, { kind: 'page-only' })
-  assert.equal('rectPdf' in resolved, false)
-  assert.equal('quadPoints' in resolved, false)
-  await assert.rejects(f.resolver.resolve('alice', 'doc-1', child.refId, signal), { code: 'pdf/text-geometry-unavailable' })
-  await assert.rejects(f.ranges.derive('alice', 'doc-1', refId, 'prefix A😀 B', signal, undefined, 'whitespace-normalized'),
-    { code: 'pdf/text-not-found' })
-  await assert.rejects(f.resolver.resolvePage('bob', 'doc-1', child.refId, signal, freshSource),
-    { code: 'pdf/reference-unavailable' })
-  f.update({ bytes: Buffer.from('different PDF with identical OCR wording'), sourceVersion: 'fs-2', revision: 1 })
-  await assert.rejects(f.resolver.resolvePage('alice', 'doc-1', child.refId, signal, freshSource), { code: 'pdf/stale-reader' })
-  await assert.rejects(f.ranges.derive('alice', 'doc-1', refId, 'A😀 B', signal, freshSource, 'whitespace-normalized'),
-    { code: 'pdf/stale-reader' })
-})
-
-test('page-only navigation rejects native references and identifies mixed native/OCR ranges', async () => {
-  const native = fixture(['native text'])
-  const nativeRead = await readPageWindow(native.workspaces, native.pages, 'alice', 'doc-1', 1,
-    0, 8000, signal, native.references)
-  const nativeSource = async () => ({ path: '/paper.pdf', digest: evidenceSha256(native.current().bytes) })
-  await assert.rejects(native.resolver.resolvePage('alice', 'doc-1', nativeRead.evidence!.refId,
-    signal, nativeSource), { code: 'pdf/invalid-evidence' })
-
-  const mixed = fixture(['START native text', 'OCR text END'])
-  const parent = await mixed.ranges.capture('alice', 'doc-1',
-    { start: { page: 1, quote: 'START' }, end: { page: 2, quote: 'END' } }, signal)
-  const stored = mixed.references.get(parent.refId)!
-  if (stored.evidence.source !== 'pdf-text-range') assert.fail('Expected a multi-page text reference')
-  const second = stored.evidence.pages[1]!.evidence
-  second.extraction = 'local-ocr'
-  second.precision = 'page-only'
-  delete second.locator.rectsPdf
-  const pages = { async readPageText(owner: string, id: string, page: number, abort: AbortSignal) {
-    const read = await mixed.pages.readPageText(owner, id, page, abort)
-    return page === 2 ? { ...read, content: { ...read.content, extraction: 'local-ocr' as const } } : read
-  } }
-  const resolver = createTextReferenceResolver(mixed.workspaces, pages, mixed.references)
-  const mixedSource = async () => ({ path: '/paper.pdf', digest: evidenceSha256(mixed.current().bytes) })
-  const target = await resolver.resolvePage('alice', 'doc-1', parent.refId, signal, mixedSource)
-  assert.equal(target.page, 1)
-  assert.equal(target.precision, 'page-only')
-  assert.equal(target.capabilities.source, 'mixed-text')
-  assert.equal(target.capabilities.exactAnnotate, false)
-})
-
-test('page-only navigation rejects a draft edit after the final source check', async () => {
-  const f = fixture(['OCR passage'])
-  f.extraction('local-ocr')
-  const read = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1,
-    0, 8000, signal, f.references)
-  const originalRead = f.workspaces.readSnapshot
-  let sourceChecks = 0, afterFinalSource = false, snapshotChecks = 0
-  const workspaces = { readSnapshot(owner: string, id: string) {
-    const snapshot = originalRead(owner, id)
-    return afterFinalSource && ++snapshotChecks === 2 ? { ...snapshot, revision: snapshot.revision + 1 } : snapshot
-  } }
-  const resolver = createTextReferenceResolver(workspaces, f.pages, f.references)
-  const freshSource = async () => {
-    if (++sourceChecks === 2) afterFinalSource = true
-    return { path: '/paper.pdf', digest: evidenceSha256(f.current().bytes) }
-  }
-  await assert.rejects(resolver.resolvePage('alice', 'doc-1', read.evidence!.refId, signal, freshSource),
-    { code: 'pdf/stale-reader', message: 'PDF changed after checking the OCR reference; locate it again' })
-  assert.equal(sourceChecks, 2)
-  assert.equal(snapshotChecks, 2)
-})
-
 test('normalized derivation rejects ambiguous, changed-provenance, cross-session and Unicode-half requests', async () => {
   const f = fixture(['A😀\tB A😀 B'])
   const parent = await readPageWindow(f.workspaces, f.pages, 'alice', 'doc-1', 1, 0, 8000, signal, f.references)
@@ -204,7 +118,8 @@ test('normalized derivation rejects ambiguous, changed-provenance, cross-session
     { code: 'pdf/reference-unavailable' })
   await assert.rejects(f.ranges.derive('alice', 'doc-1', refId, '😀'.slice(0, 1), signal, undefined, 'whitespace-normalized'),
     { code: 'pdf/ambiguous-text-target' })
-  f.extraction('local-ocr')
+  const stored = f.references.get(refId)!
+  if (stored.evidence.source === 'pdf-text') stored.evidence.extraction = 'local-ocr'
   await assert.rejects(f.ranges.derive('alice', 'doc-1', refId, 'A😀\tB', signal, undefined, 'whitespace-normalized'),
     { code: 'pdf/text-representation-unavailable' })
 })

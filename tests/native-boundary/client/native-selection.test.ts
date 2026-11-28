@@ -160,21 +160,26 @@ test('a glyph wholly beyond the page crop cannot participate in hit testing or a
   assert.equal(page.fragment(0, 2), null)
 })
 
-test('selection pages reject mixed chunk revisions and cache the decision to fall back for unusable data', async () => {
+test('selection pages reject mixed chunk revisions, retain pages with unmapped symbols, and fall back above the character budget', async () => {
   const lifetime = new AbortController()
   try {
     const calls: [number, number][] = []
     const pages = createSelectionPages({ signal: lifetime.signal, cropBox: () => [0, 0, 100, 100], async read(page, offset) {
       calls.push([page, offset])
       if (page === 1) return { offset, charCount: offset === 0 ? 2 : 3, nextOffset: offset === 0 ? 1 : null, unmapped: 0, glyphs: [] }
-      return { offset, charCount: page === 2 ? 1 : 24_001, nextOffset: null, unmapped: page === 2 ? 1 : 0, glyphs: [] }
+      if (page === 2) return { offset, charCount: 2, nextOffset: null, unmapped: 1,
+        glyphs: [{ index: 0, end: 1, text: 'A', line: 0, quad: [10, 20, 15, 20, 10, 10, 15, 10] },
+          { index: 1, end: 2, text: '\ufffd', line: 0, quad: [30, 20, 35, 20, 30, 10, 35, 10] }] }
+      return { offset, charCount: 24_001, nextOffset: null, unmapped: 0, glyphs: [] }
     } })
     await assert.rejects(pages.load(1), /geometry changed while reading the page/)
     assert.equal(pages.get(1), undefined, 'never publish partial geometry')
-    for (const page of [2, 3]) {
-      assert.equal(await pages.load(page), null)
-      assert.equal(await pages.load(page), null)
-    }
+    const retained = await pages.load(2)
+    assert.ok(retained)
+    assert.equal(retained.text, 'A\ufffd')
+    assert.ok(retained.fragment(0, 1))
+    assert.equal(await pages.load(3), null)
+    assert.equal(await pages.load(3), null)
     assert.deepEqual(calls, [[1, 0], [1, 1], [2, 0], [3, 0]])
   } finally { lifetime.abort() }
 })

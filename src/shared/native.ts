@@ -20,8 +20,6 @@ export interface NativeTextContent {
   lang: string | null
   /** A mapping failure is distinct from a scanned/empty page. */
   quality?: { unmappedCharacters: number }
-  /** Local, derived recognition must never be presented as exact native text. */
-  extraction?: 'local-ocr'
   warnings?: string[]
 }
 export interface NativeOutlineItem {
@@ -32,14 +30,9 @@ export interface NativeOutlineItem {
   url?: string
   items: NativeOutlineItem[]
 }
-export interface NativeTextReadOptions {
-  /** Defaults to true for the Reader. Exact native validation must opt out of OCR repair. */
-  recover?: boolean
-}
 export interface NativeReaderApi {
   tile(sessionId: string, id: string, reader: ReaderDescriptor, tile: NativeTileRequest, signal?: AbortSignal): Promise<NativeTile>
-  text(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal,
-    options?: NativeTextReadOptions): Promise<NativeTextContent>
+  text(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal): Promise<NativeTextContent>
   selectionGeometry?(sessionId: string, id: string, reader: ReaderDescriptor, page: number, offset: number,
     signal: AbortSignal): Promise<SelectionGeometryChunk>
   links(sessionId: string, id: string, reader: ReaderDescriptor, page: number, signal?: AbortSignal): Promise<unknown[]>

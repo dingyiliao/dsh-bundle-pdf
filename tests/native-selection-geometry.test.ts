@@ -95,8 +95,13 @@ test('selection geometry distinguishes undecodable glyphs from removed layout hy
     assert.equal(hyphenated.glyphs.map(glyph => glyph.text).join(''), 'understanding the model')
     await worker.request({ command: 'open', documentId }, await brokenTextMappingFixture())
     const malformed = (await worker.request(request)).value
+    const malformedText = (await worker.request({ command: 'text', documentId, pageIndex: 0 })).value
     assert.ok(malformed.unmapped > 0)
     assert.equal(malformed.glyphs.filter(glyph => glyph.text === '\ufffd').length, malformed.unmapped)
+    assert.equal(malformedText.quality?.unmappedCharacters, malformed.unmapped)
+    assert.equal(malformedText.items.map((item, i) => item.str + (item.hasEOL && i < malformedText.items.length - 1 ? '\n' : '')).join(''),
+      malformed.glyphs.map(glyph => glyph.text).join('').replace(/\n$/u, ''))
+    assert.ok(malformedText.items.every(item => item.glyphs?.length === Array.from(item.str).length))
   } finally { await worker.dispose() }
 })
 

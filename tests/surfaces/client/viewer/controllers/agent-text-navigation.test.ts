@@ -48,34 +48,28 @@ test('exact navigation verifies the second repeated quote by UTF-16 offset and p
   assert.equal(f.jumps(), 1)
 })
 
-test('an exact target validates raw native text while the same page keeps automatic OCR repair in the visible Reader cache', async () => {
-  const f = fixture(), modes: boolean[] = []
+test('an exact target validates cached native text on pages that also report unmapped characters elsewhere', async () => {
+  const f = fixture()
+  let calls = 0
   const native: NativeTextContent = { items: [{ str: text, transform: [10, 0, 0, 10, 40, 220], width: 200,
-    height: 10, dir: 'ltr', fontName: 'native', hasEOL: false }], styles: {}, lang: null }
-  const repaired: NativeTextContent = { ...native, extraction: 'local-ocr', warnings: ['Approximate local recognition'],
-    items: native.items.map(item => ({ ...item, str: 'OCR produces a different reading of this page' })) }
-  const api: NativeReaderApi = { async text(_session, _id, _reader, _page, _signal, options) {
-    const recover = options?.recover !== false; modes.push(recover); return recover ? repaired : native
-  }, async tile() { throw new Error('Navigation does not render') }, async links() { return [] },
-  async outline() { return null }, async destination() { return null } }
+    height: 10, dir: 'ltr', fontName: 'native', hasEOL: false }], styles: {}, lang: null,
+    quality: { unmappedCharacters: 2 } }
+  const api: NativeReaderApi = { async text() { calls++; return native },
+    async tile() { throw new Error('Navigation does not render') }, async links() { return [] },
+    async outline() { return null }, async destination() { return null } }
   const document = new NativeDocument(f.snapshot, 'session', api)
   f.update({ document })
   try {
-    assert.deepEqual(await document.text(2), repaired, 'the ordinary Reader has already cached automatic OCR')
+    assert.deepEqual(await document.text(2), native)
     assert.equal(await navigateAgentRequest(request(), new AbortController().signal, f.options), 'opened')
-    assert.equal(f.jumps(), 1); assert.deepEqual(modes, [true, false])
-    assert.deepEqual(await document.text(2), repaired)
-    assert.deepEqual(await document.text(2, undefined, { recover: false }), native)
-    assert.deepEqual(modes, [true, false], 'neither representation evicts or replaces the other')
+    assert.equal(f.jumps(), 1)
+    assert.equal(calls, 1)
   } finally { await document.dispose() }
 })
 
-test('exact navigation rejects a recovery-labelled response even when an adapter ignores recover:false and its text matches', async () => {
+test('exact navigation rejects mismatched visible page text without jumping', async () => {
   const f = fixture(), document = f.options.current().document!
-  document.text = async (_page, _signal, options) => {
-    assert.deepEqual(options, { recover: false })
-    return { items: [{ str: text }], extraction: 'local-ocr' } as NativeTextContent
-  }
+  document.text = async () => ({ items: [{ str: 'Different visible page text' }], styles: {}, lang: null } as NativeTextContent)
   assert.equal(await navigateAgentRequest(request(), new AbortController().signal, f.options), 'stale')
   assert.equal(f.jumps(), 0)
 })

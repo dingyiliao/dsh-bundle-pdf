@@ -82,12 +82,14 @@ function assertReadingOrder(content: NativeTextContent, starts: readonly number[
 /** Resolve an attested UTF-16 range, including repeated quotes, against native glyphs only. */
 export function locateTextOffsetRange(content: NativeTextContent, start: number,
   end: number, requireReadingOrder = true): TextTargetRange {
-  if (content.extraction) fail('pdf/text-geometry-unavailable', 'Derived OCR text cannot certify native PDF glyph geometry')
   const starts: number[] = []
   const text = joinPositionedText(content.items, starts)
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0
     || end <= start || end > text.length || splitsScalar(text, start) || splitsScalar(text, end)) {
     fail('pdf/invalid-text-range', 'The text range must span whole Unicode characters inside the extracted page text')
+  }
+  if (text.slice(start, end).includes('\ufffd')) {
+    fail('pdf/text-geometry-unavailable', 'This PDF text contains undecodable characters; no annotation was created')
   }
   if (end - start > 8000) fail('pdf/text-range-too-large', 'Text range exceeds 8000 UTF-16 characters; mark it in smaller ranges')
   if (requireReadingOrder) assertReadingOrder(content, starts, start, end)

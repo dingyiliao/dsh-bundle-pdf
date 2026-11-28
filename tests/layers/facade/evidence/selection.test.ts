@@ -135,16 +135,22 @@ test('positioned single Unicode scalars can be selected without being mistaken f
   }
 })
 
-test('OCR-derived words cannot be certified as native glyph evidence', async () => {
+test('unmapped glyphs outside the selection allow clean prose while unmapped glyphs inside the selection fail closed', async () => {
   const state = fixture(['Hello'])
   const base = await state.reader.readPageText(owner, documentId, 1)
-  for (const glyphs of [undefined, base.content.items[0]!.glyphs]) {
-    const reader = { async readPageText() { return { ...base,
-      content: { ...base.content, extraction: 'local-ocr' as const,
-        items: [{ ...base.content.items[0]!, glyphs }] } } } }
-    await assert.rejects(prepareTextSelectionEvidence(state.workspaces, reader, state.references,
-      state.input, signal, state.readSource), { code: 'pdf/selection-ocr-unverifiable' })
-  }
+  const unmappedFormula = { ...textContent('\ufffd').items[0]!, transform: [1, 0, 0, 1, 140, 140],
+    glyphs: [[140, 140, 10] as [number, number, number]] }
+  const withOutsideUnmapped = { async readPageText() { return { ...base,
+    content: { ...base.content, quality: { unmappedCharacters: 1 }, items: [...base.content.items, unmappedFormula] } } } }
+  const clean = await prepareTextSelectionEvidence(state.workspaces, withOutsideUnmapped, state.references,
+    state.input, signal, state.readSource)
+  assert.equal(clean.text, 'Hello')
+
+  const insideUnmapped = { async readPageText() { return { ...base,
+    content: { ...base.content, quality: { unmappedCharacters: 1 },
+      items: [{ ...textContent('He\ufffdlo').items[0]! }] } } } }
+  await assert.rejects(prepareTextSelectionEvidence(state.workspaces, insideUnmapped, state.references,
+    { ...state.input, quote: 'He\ufffdlo' }, signal, state.readSource), { code: 'pdf/selection-unverifiable' })
 })
 
 test('Host rejects forged quote, unrelated geometry, missing glyph positions, and unordered pages', async () => {

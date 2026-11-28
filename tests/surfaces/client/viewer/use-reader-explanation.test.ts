@@ -401,7 +401,6 @@ test('explanation draft is scoped to content identity and cleared on document sw
 test('selection verification failures are localized and preserve the question without calling the model', async () => {
   for (const [code, key] of [
     ['pdf/selection-unverifiable', 'selectionUnverifiable'],
-    ['pdf/selection-ocr-unverifiable', 'selectionOcr'],
     ['pdf/selection-mismatch', 'selectionMismatch'],
     ['pdf/stale-reader', 'sourceChanged'],
   ]) await withExplanation(async ({ state, options, render, prompts }) => {

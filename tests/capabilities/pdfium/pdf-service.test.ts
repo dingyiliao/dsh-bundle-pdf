@@ -55,11 +55,11 @@ test('a visible tile overtakes queued indexing text and rasters at the native ha
   const outstanding: Promise<unknown>[] = []
   try {
     const opened = await open(service, sessionId)
-    const first = service.readPageText(sessionId, opened.id, 1, signal, { recover: false })
+    const first = service.readPageText(sessionId, opened.id, 1, signal)
     outstanding.push(first)
     await active.promise
 
-    const backgroundText = service.readPageText(sessionId, opened.id, 2, signal, { recover: false })
+    const backgroundText = service.readPageText(sessionId, opened.id, 2, signal)
     const backgroundImage = service.renderOcrImage(sessionId, opened.id, 3, undefined, 512, signal, false)
     const cancelled = new AbortController()
     const obsolete = assert.rejects(service.readPageText(sessionId, opened.id, 4, cancelled.signal), { name: 'AbortError' })

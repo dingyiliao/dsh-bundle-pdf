@@ -240,7 +240,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
     let native = storedNative?.value
     if (!native) {
       native = await observe('native', async () => {
-        const extracted = await pages.readPageText(sessionId, documentId, page, active, { recover: false })
+        const extracted = await pages.readPageText(sessionId, documentId, page, active)
         check()
         const value = buildNativePageContent({ ...sourceIdentity, page, extractionIdentity: NATIVE_PAGE_CONTENT_EXTRACTION_VERSION,
           pageRect: [...geometry.cropBox], content: extracted.content })
@@ -249,8 +249,7 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
       })
     }
     let content = { ...native, extractionIdentity: selection.fingerprint }
-    const needsOcr = selection.scan && (!content.nativeText.text.trim()
-      || content.blocks.some(block => block.representations.some(rep => rep.kind === 'native-text' && rep.status === 'partial')))
+    const needsOcr = selection.scan && !/[^\s\ufffd]/u.test(content.nativeText.text)
     if (needsOcr || selection.describe) {
       type Rendered = Awaited<ReturnType<Pages['renderOcrImage']>>
       const failures: { error: unknown; warning: string }[] = []
@@ -277,8 +276,6 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
         } catch (error) { activity(kind, 'failed', error); recordFailure(error, warning); return undefined }
       }
       const visual = content.blocks.find(block => block.kind === 'visual-region')!
-      // Broken native mappings and their OCR repair are alternatives for one text block.
-      const ocrBlock = content.nativeText.text.trim() ? content.blocks.find(block => block.kind === 'text')! : visual
       const restore = async (kind: 'ocr' | 'image', blockId: string): Promise<boolean> => {
         const selected = selection[kind].identity
         if (!selected) return false
@@ -294,6 +291,8 @@ export function createPdfPageContent(workspaces: WorkingCopyReadPort, pages: Pag
         return true
       }
       if (needsOcr) {
+        // Pages whose native text consists solely of undecodable markers keep OCR on that text block.
+        const ocrBlock = content.nativeText.text.trim() ? content.blocks.find(block => block.kind === 'text')! : visual
         const warning = 'Optional OCR enrichment failed; available page text is retained.'
         const identity = await restore('ocr', ocrBlock.id) ? undefined : await candidate('ocr', warning)
         if (identity) {

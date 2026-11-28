@@ -10,7 +10,6 @@ import { joinPositionedText } from '../../../shared/page-text.js'
  */
 export function approximateTextRects(content: NativeTextContent, page: PdfPageInfo | undefined,
   startUtf16: number, endUtf16: number): PdfRect[] | null {
-  if (content.extraction) return null
   if (!page || page.rotation % 360 !== 0 || !Number.isFinite(page.userUnit) || page.userUnit <= 0
     || !Number.isSafeInteger(startUtf16) || !Number.isSafeInteger(endUtf16)
     || endUtf16 <= startUtf16 || endUtf16 - startUtf16 > 512) return null
@@ -21,7 +20,7 @@ export function approximateTextRects(content: NativeTextContent, page: PdfPageIn
   const text = joinPositionedText(content.items, starts)
   if (startUtf16 < 0 || endUtf16 > text.length) return null
   const selected = text.slice(startUtf16, endUtf16)
-  if (!selected.trim()) return null
+  if (!selected.trim() || selected.includes('\ufffd')) return null
   const covered = new Uint8Array(selected.length)
   const rects: PdfRect[] = []
   let selectedGlyphs = 0

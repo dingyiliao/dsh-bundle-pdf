@@ -109,7 +109,7 @@ test('one-scalar native runs use their exact origin and width without guessing m
     { ...single('A', 60), glyphs: [] },
     single('AB', 60),
   ]) assert.throws(() => locateTextRange(page([item]), item.str, item.str, true), { code: 'pdf/text-geometry-unavailable' })
-  assert.throws(() => locateTextRange({ ...page([single('A', 60)]), extraction: 'local-ocr' }, 'A', 'A', true),
+  assert.throws(() => locateTextRange(page([single('\ufffd', 60)]), '\ufffd', '\ufffd', true),
     { code: 'pdf/text-geometry-unavailable' })
 })
 

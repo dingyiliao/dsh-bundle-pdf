@@ -112,10 +112,6 @@ export function createTextRangeReferences(workspaces: WorkingCopyReadPort, pages
     const saved = savedPages(sessionId, refId)
     const initial = workspaces.readSnapshot(sessionId, documentId)
     if (saved.identity.sourcePath !== initial.path) fail('pdf/reference-unavailable', 'Text evidence belongs to another source path')
-    if (saved.pages.some(page => page.evidence.extraction)
-      && saved.identity.sourceDigest !== evidenceSha256(initial.bytes)) {
-      fail('pdf/stale-reader', 'The OCR reference source bytes changed; read OCR from the current PDF again')
-    }
     await check(sessionId, initial, signal, readSource)
     const rebound: PdfTextEvidence[] = []
     for (const { evidence, pageTextDigest } of saved.pages) {

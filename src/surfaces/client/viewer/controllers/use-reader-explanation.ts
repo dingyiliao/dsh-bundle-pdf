@@ -286,9 +286,8 @@ export function useReaderExplanation(options: ReaderExplanationOptions) {
         if (!signal.aborted) {
           const code = failure && typeof failure === 'object' && 'code' in failure ? failure.code : undefined
           const key = code === 'pdf/selection-unverifiable' ? 'selectionUnverifiable'
-            : code === 'pdf/selection-ocr-unverifiable' ? 'selectionOcr'
-              : code === 'pdf/selection-mismatch' ? 'selectionMismatch'
-                : code === 'pdf/stale-reader' ? 'sourceChanged' : undefined
+            : code === 'pdf/selection-mismatch' ? 'selectionMismatch'
+              : code === 'pdf/stale-reader' ? 'sourceChanged' : undefined
           setError(key ? t(`reader.explain.${key}`) : failure instanceof Error ? failure.message : String(failure))
         }
       } finally {

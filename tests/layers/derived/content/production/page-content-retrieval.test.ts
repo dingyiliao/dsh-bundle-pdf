@@ -36,8 +36,7 @@ function fixture(options: { scan?: boolean; describe?: boolean; imageEngine?: st
   }
   const workspaces = { readSnapshot: snapshot }
   const pages: Parameters<typeof createPdfPageContent>[1] = {
-    async readPageText(session, id, page, _active, options) {
-      assert.equal(options?.recover, false)
+    async readPageText(session, id, page) {
       state.nativeReads.push(page)
       const text = page === 1 ? state.native : ''
       const content: NativeTextContent = { items: text ? [{ str: text, transform: [10, 0, 0, 10, 10, 200], width: text.length * 4,

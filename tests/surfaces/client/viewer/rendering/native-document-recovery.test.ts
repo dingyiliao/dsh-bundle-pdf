@@ -31,7 +31,6 @@ function deferred<T>() {
 
 const paths = [
   { name: 'text', method: 'text', run: (document: NativeDocument) => document.text(1) },
-  { name: 'raw text', method: 'text', run: (document: NativeDocument) => document.text(1, undefined, { recover: false }) },
   { name: 'bitmap', method: 'tile', run: (document: NativeDocument) => document.bitmap(tile, new AbortController().signal) },
   { name: 'page links', method: 'links', run: async (document: NativeDocument) => (await document.getPage(1)).getAnnotations() },
   { name: 'outline', method: 'outline', run: (document: NativeDocument) => document.getOutline() },
@@ -140,48 +139,15 @@ test('a caller abort wins over late successful text and never populates the cach
   assert.equal(ready, 1)
 })
 
-test('raw native validation and default/explicit OCR repair retain separate per-page cache entries in either order', async () => {
+test('native page text is cached once per page and shared with page.getTextContent', async () => {
   const raw: NativeTextContent = { ...text, quality: { unmappedCharacters: 2 } }
-  const repaired: NativeTextContent = { ...text, extraction: 'local-ocr', warnings: ['Approximate OCR text'] }
-  for (const rawFirst of [true, false]) {
-    const modes: boolean[] = []
-    const document = new NativeDocument(snapshot(), 'session', api({ async text(_session, _id, _reader, _page, _signal, options) {
-      modes.push(options?.recover !== false)
-      return options?.recover === false ? raw : repaired
-    } }))
-    try {
-      if (rawFirst) assert.deepEqual(await document.text(1, undefined, { recover: false }), raw)
-      else assert.deepEqual(await document.text(1), repaired)
-      assert.deepEqual(await document.text(1, undefined, { recover: false }), raw)
-      assert.deepEqual(await document.text(1), repaired)
-      assert.deepEqual(await document.text(1, undefined, { recover: true }), repaired)
-      assert.deepEqual(await document.text(1, undefined, {}), repaired)
-      assert.deepEqual(await (await document.getPage(1)).getTextContent(), repaired, 'ordinary page text keeps automatic repair after exact native validation')
-      assert.deepEqual(modes, rawFirst ? [false, true] : [true, false])
-    } finally { await document.dispose() }
-  }
-})
-
-test('concurrent raw/repaired reads completing out of order cannot overwrite the other representation cache', async () => {
-  const raw: NativeTextContent = { ...text, quality: { unmappedCharacters: 1 } }
-  const repaired: NativeTextContent = { ...text, extraction: 'local-ocr', warnings: ['OCR is approximate'] }
-  for (const delayedRaw of [true, false]) {
-    const delayed = deferred<NativeTextContent>(), modes: boolean[] = []
-    const document = new NativeDocument(snapshot(), 'session', api({ async text(_session, _id, _reader, _page, _signal, options) {
-      const recover = options?.recover !== false
-      modes.push(recover)
-      return delayedRaw === !recover ? delayed.promise : recover ? repaired : raw
-    } }))
-    try {
-      const pending = document.text(1, undefined, { recover: !delayedRaw })
-      assert.deepEqual(await document.text(1, undefined, { recover: delayedRaw }), delayedRaw ? repaired : raw)
-      delayed.resolve(delayedRaw ? raw : repaired)
-      await pending
-      assert.deepEqual(await document.text(1), repaired)
-      assert.deepEqual(await document.text(1, undefined, { recover: false }), raw)
-      assert.equal(modes.length, 2)
-    } finally { delayed.resolve(raw); await document.dispose() }
-  }
+  let calls = 0
+  const document = new NativeDocument(snapshot(), 'session', api({ async text() { calls++; return raw } }))
+  try {
+    assert.deepEqual(await document.text(1), raw)
+    assert.deepEqual(await (await document.getPage(1)).getTextContent(), raw)
+    assert.equal(calls, 1)
+  } finally { await document.dispose() }
 })
 
 test('a tile arriving after cancellation is never decoded', async () => {

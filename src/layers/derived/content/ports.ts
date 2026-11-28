@@ -3,8 +3,7 @@ import type { NativeTextContent } from '../../../shared/native.js'
 
 /** Page-reading port used by derived-content production without depending on the facade. */
 export interface AgentPageReadPort {
-  readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal,
-    options?: { recover?: boolean }): Promise<{
+  readPageText(sessionId: string, documentId: string, page: number, signal: AbortSignal): Promise<{
     snapshot: HostWorkspaceSnapshot; content: NativeTextContent
   }>
 }

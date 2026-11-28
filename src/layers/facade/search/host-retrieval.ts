@@ -129,8 +129,8 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
       ...(options.content.indexIdentity ? { indexIdentity: options.content.indexIdentity } : {}) } : {}), async read(sessionId, id, page, signal) {
       if (options.content) return projectPageContent(await options.content.read(sessionId, id, page, signal))
       // Whole-document indexing must not unexpectedly OCR hundreds of pages.
-      const { content } = await pages.readPageText(sessionId, id, page, signal, { recover: false })
-      return { ...nativePageContentText(content.items), source: content.extraction === 'local-ocr' ? 'ocr' : 'pdf-text',
+      const { content } = await pages.readPageText(sessionId, id, page, signal)
+      return { ...nativePageContentText(content.items), source: 'pdf-text',
         warnings: [...(content.warnings ?? []), ...(content.quality?.unmappedCharacters
           ? ['Some native characters could not be decoded; OCR or visual inspection is needed.'] : [])] }
     } } })
@@ -230,7 +230,7 @@ export function createPdfRetrieval(workspaces: WorkingCopyReadPort, pages: Agent
           let read = pageReads.get(chunk.page)
           if (!read) {
             // Reauthorize/recheck the source without rerunning a nondeterministic OCR or description.
-            read = await pages.readPageText(sessionId, input.documentId, chunk.page, signal, { recover: false })
+            read = await pages.readPageText(sessionId, input.documentId, chunk.page, signal)
             pageReads.set(chunk.page, read)
           }
           check()

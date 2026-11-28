@@ -25,15 +25,14 @@ function fixture() {
   }
   const jumps: number[] = []
   const reads: number[] = []
-  const readOptions: Array<{ recover?: boolean } | undefined> = []
   let current: WorkspaceSnapshot | null = snapshot
   let text = pageText
   const reader: VisiblePdfReader = {
     sessionId: 'session-1', snapshot, current: () => current,
-    readPageText: async (page, _signal, options) => { reads.push(page); readOptions.push(options); return text },
+    readPageText: async page => { reads.push(page); return text },
     jump: async page => { jumps.push(page); return true },
   }
-  return { snapshot, evidence, reader, jumps, reads, readOptions,
+  return { snapshot, evidence, reader, jumps, reads,
     setCurrent: (value: WorkspaceSnapshot | null) => { current = value },
     setText: (value: string) => { text = value } }
 }
@@ -289,7 +288,7 @@ test('a historical tool card uses Host-revalidated exact geometry and never fall
   assert.deepEqual(f.jumps, [], 'unavailable exact positioning must not silently degrade to the wrong location')
 })
 
-test('historical local OCR cards retain sourceDigest through replay and send it for page-only Host validation', async () => {
+test('historical local OCR cards are treated as stale without revalidating, reading or jumping', async () => {
   const f = fixture()
   const persisted = JSON.parse(JSON.stringify({ ...f.evidence,
     kind: 'pdf-evidence-snapshot', version: 1, tool: 'pdf_page_read', status: 'ok',
@@ -300,56 +299,23 @@ test('historical local OCR cards retain sourceDigest through replay and send it 
   assert.equal(evidence.sourceDigest, f.snapshot.reader.bytesHash)
   assert.equal(evidence.extraction, 'local-ocr')
   const requests: EvidenceRevalidationRequest[] = []
-  let exactCalls = 0
-  f.reader.navigateTarget = async () => { exactCalls++; throw new Error('OCR has no exact native target') }
-  const navigation = createPdfEvidenceNavigation(async (request, signal) => {
-    assert.equal(request.sourceDigest, evidence.sourceDigest, 'the old OCR source digest must reach Host unchanged')
-    assert.equal(request.extraction, 'local-ocr')
-    return approve(f.snapshot, requests)(request, signal)
-  }, hashText)
+  const navigation = createPdfEvidenceNavigation(approve(f.snapshot, requests), hashText)
   navigation.register(f.reader)
   await nextTurn()
-  assert.equal(await navigation.navigate('session-1', evidence, new AbortController().signal), 'opened')
-  assert.deepEqual(requests.map(request => [request.sourceDigest, request.pageTextDigest, request.excerpt]),
-    [[f.snapshot.reader.bytesHash, hash(pageText), excerpt]])
-  assert.deepEqual(f.reads, [2])
-  assert.deepEqual(f.readOptions, [{ recover: true }])
-  assert.deepEqual(f.jumps, [2])
-  assert.equal(exactCalls, 0)
+  assert.equal(await navigation.navigate('session-1', evidence, new AbortController().signal), 'stale')
+  assert.equal(requests.length, 0)
+  assert.deepEqual(f.reads, [])
+  assert.deepEqual(f.jumps, [])
 })
 
-test('native historical cards use raw Client post-validation even when the Reader default is OCR', async () => {
-  const f = fixture(), optionsSeen: Array<{ recover?: boolean } | undefined> = []
-  f.reader.readPageText = async (_page, _signal, options) => {
-    optionsSeen.push(options)
-    return options?.recover === false ? pageText : `${pageText} Different OCR text.`
-  }
+test('native historical cards revalidate against Host and verify visible native page text before jumping', async () => {
+  const f = fixture()
   const requests: EvidenceRevalidationRequest[] = []
   const navigation = createPdfEvidenceNavigation(approve(f.snapshot, requests), hashText)
   navigation.register(f.reader)
   await nextTurn()
   assert.equal(await navigation.navigate('session-1', f.evidence, new AbortController().signal), 'opened')
   assert.equal(requests[0]!.extraction, undefined)
-  assert.deepEqual(optionsSeen, [{ recover: false }])
+  assert.deepEqual(f.reads, [2])
   assert.deepEqual(f.jumps, [2])
-})
-
-test('a historical OCR card with identical wording cannot jump when Host rejects its old source bytes', async () => {
-  const f = fixture()
-  const current = { ...f.snapshot, reader: { ...f.snapshot.reader, bytesHash: hash('replaced PDF bytes') } }
-  const requests: EvidenceRevalidationRequest[] = []
-  const reader: VisiblePdfReader = { ...f.reader, snapshot: current, current: () => current }
-  const navigation = createPdfEvidenceNavigation(async request => {
-    requests.push(request)
-    assert.equal(request.sourceDigest, f.evidence.sourceDigest)
-    assert.notEqual(request.sourceDigest, current.reader.bytesHash)
-    throw Object.assign(new Error('OCR card source bytes cannot be verified'), { code: 'pdf/stale-reader' })
-  }, hashText)
-  navigation.register(reader)
-  await nextTurn()
-  assert.equal(await navigation.navigate('session-1', { ...f.evidence, extraction: 'local-ocr' },
-    new AbortController().signal), 'stale')
-  assert.equal(requests.length, 1)
-  assert.deepEqual(f.reads, [], 'Host source denial stops the Client before reading or jumping')
-  assert.deepEqual(f.jumps, [])
 })

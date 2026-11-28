@@ -63,14 +63,12 @@ export function buildNativePageContent(input: BuildNativePageContentInput): Page
   const warnings = [...(content?.warnings ?? [])].slice(0, 18).map(warning => warning.slice(0, 500))
   if (!content) warnings.push('Native text extraction is unavailable for this page.')
   if ((content?.quality?.unmappedCharacters ?? 0) > 0) warnings.push('Native text contains characters with an invalid PDF mapping.')
-  const layer = nativePageContentText(content?.items ?? [])
-  const recovered = content?.extraction === 'local-ocr'
-  const nativeText = recovered ? { text: '', paragraphBreaks: [] } : layer
-  const spans = content && !recovered ? nativeSpans(content, warnings) : undefined
-  const textBlockId = pageContentBlockId(input, recovered ? 'recovered-text' : 'native-text')
-  const representation = createPageRepresentation({ kind: recovered ? 'ocr-text' : 'native-text', text: layer.text,
-    producer: { id: recovered ? 'local-ocr-recovery' : 'pdf-native', version: input.extractionIdentity },
-    ...(spans ? { spans } : {}), status: !content || recovered || (content.quality?.unmappedCharacters ?? 0) > 0
+  const nativeText = nativePageContentText(content?.items ?? [])
+  const spans = content ? nativeSpans(content, warnings) : undefined
+  const textBlockId = pageContentBlockId(input, 'native-text')
+  const representation = createPageRepresentation({ kind: 'native-text', text: nativeText.text,
+    producer: { id: 'pdf-native', version: input.extractionIdentity },
+    ...(spans ? { spans } : {}), status: !content || (content.quality?.unmappedCharacters ?? 0) > 0
       ? 'partial' : 'complete', warnings: [...warnings] })
   return PageContentSchema.parse({ version: 1, sourceDigest: input.sourceDigest, page: input.page,
     ...(input.indexContentDigest ? { indexContentDigest: input.indexContentDigest } : {}),
@@ -78,7 +76,7 @@ export function buildNativePageContent(input: BuildNativePageContentInput): Page
     extractionIdentity: input.extractionIdentity, pageRect: [...input.pageRect],
     nativeText: { ...nativeText, digest: pageContentDigest(nativeText.text) }, warnings,
     blocks: [{ id: textBlockId, kind: 'text', rectPdf: [...input.pageRect],
-      ...(recovered ? {} : { nativeRange: { startUtf16: 0, endUtf16: nativeText.text.length } }),
+      nativeRange: { startUtf16: 0, endUtf16: nativeText.text.length },
       representations: [representation] },
     { id: pageContentBlockId(input, 'full-page-visual'), kind: 'visual-region', rectPdf: [...input.pageRect], representations: [] }],
   })

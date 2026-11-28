@@ -27,7 +27,7 @@ const request = evidenceNavigationRequestSchema.parse({ action: 'revalidate', se
   excerptSha256: evidenceSha256(excerpt) })
 const ocrRequest = { ...request, extraction: 'local-ocr' as const }
 
-function harness(initial: HostWorkspaceSnapshot, pageText: typeof content & { extraction?: 'local-ocr' } = content) {
+function harness(initial: HostWorkspaceSnapshot, pageText: typeof content = content) {
   let current = initial
   let sourceBytes = initial.bytes
   const workspaces: WorkingCopyReadPort = { readSnapshot(caller, id) {
@@ -118,9 +118,9 @@ test('text navigation rejects a concurrent external overwrite and respects cance
     }), /abort/i)
 })
 
-test('OCR card replay checks the working copy once more after source validation', async () => {
+test('native card replay checks the working copy once more after source validation', async () => {
   const state = snapshot([9, 8, 7], 4)
-  const h = harness(state, { ...content, extraction: 'local-ocr' as const })
+  const h = harness(state)
   const originalRead = h.workspaces.readSnapshot
   let sourceChecks = 0, afterFinalSource = false, snapshotChecks = 0
   h.workspaces.readSnapshot = (caller, id) => {
@@ -132,9 +132,8 @@ test('OCR card replay checks the working copy once more after source validation'
     if (++sourceChecks === 2) afterFinalSource = true
     return result
   }
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, readSource),
-  { code: 'pdf/stale-reader', message: 'PDF changed while preparing the reference; retry' })
+  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, request, signal, readSource),
+    { code: 'pdf/stale-reader', message: 'PDF changed while preparing the reference; retry' })
   assert.equal(sourceChecks, 2)
   assert.equal(snapshotChecks, 2)
 })
@@ -170,39 +169,21 @@ test('production historical-card navigation never falls back to approximate boxe
     h.readSource, createMemoryEvidenceReferenceStore()), { code: 'pdf/text-geometry-unavailable' })
 })
 
-test('local OCR cards retain their representation and navigate page-only without native geometry', async () => {
+test('historical local OCR cards are rejected as stale without minting references or reading page text', async () => {
   const state = snapshot([9, 8, 7], 4)
-  const h = harness(state, { ...content, extraction: 'local-ocr' as const })
+  let reads = 0, writes = 0
+  const h = harness(state)
+  const pages: AgentPageReadPort = { async readPageText(...args) { reads++; return h.pages.readPageText(...args) } }
   const references = createMemoryEvidenceReferenceStore()
-  let writes = 0
   references.put = async () => { writes++ }
-  // The marker selects OCR; current Host extraction and source bytes must
-  // still attest to it, and no card marker grants native geometry.
-  const value = await revalidateEvidenceNavigation(h.workspaces, h.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, h.readSource, references)
-  assert.equal(value.status, 'valid')
-  assert.equal(value.page, 1)
-  assert.equal(value.target, undefined)
-  assert.equal(writes, 0, 'page-only replay never mints a native-geometry reference')
+  for (const value of [ocrRequest, { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }]) {
+    await assert.rejects(revalidateEvidenceNavigation(h.workspaces, pages, value, signal, h.readSource, references),
+      { code: 'pdf/stale-reader' })
+  }
+  assert.equal(reads, 0)
+  assert.equal(writes, 0)
   assert.equal(evidenceNavigationRequestSchema.safeParse({ ...request,
     sourceDigest: evidenceSha256(state.bytes), source: 'pdf-text', precision: 'exact-text' }).success, false)
-})
-
-test('OCR cards reject missing, forged or obsolete source digests even when the complete text matches', async () => {
-  const state = snapshot([9, 8, 7], 4)
-  const h = harness(state, { ...content, extraction: 'local-ocr' as const })
-  for (const value of [ocrRequest, { ...ocrRequest, sourceDigest: evidenceSha256('forged source') }]) {
-    await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, value, signal, h.readSource,
-      createMemoryEvidenceReferenceStore()), { code: 'pdf/stale-reader' })
-  }
-  h.set(snapshot([9, 8, 7, 6], 5))
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, h.readSource,
-    createMemoryEvidenceReferenceStore()), { code: 'pdf/stale-reader' })
-  h.overwriteSource()
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(new Uint8Array([9, 8, 7, 6])) }, signal, h.readSource),
-    { code: 'pdf/stale-reader' })
 })
 
 test('legacy native cards retain precise annotation-only revalidation with or without an old source digest', async () => {
@@ -222,59 +203,22 @@ test('legacy native cards retain precise annotation-only revalidation with or wi
   assert.equal(value.sourceDigest, evidenceSha256(new Uint8Array([9, 8, 7, 6])))
 })
 
-test('OCR card replay rejects Unicode halves and a source-check race before a page-only result escapes', async () => {
+test('card replay rejects Unicode halves and a source-check race before a result escapes', async () => {
   const state = snapshot([9, 8, 7], 4)
   const unicodeText = 'A😀B', partial = unicodeText.slice(1, 2)
-  const h = harness(state, { ...content, extraction: 'local-ocr' as const,
-    items: [{ ...content.items[0]!, str: unicodeText }] })
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, { ...ocrRequest,
-    sourceDigest: evidenceSha256(state.bytes), pageTextDigest: evidenceSha256(unicodeText),
+  const h = harness(state, { ...content, items: [{ ...content.items[0]!, str: unicodeText }] })
+  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, { ...request,
+    pageTextDigest: evidenceSha256(unicodeText),
     startUtf16: 1, endUtf16: 2, excerpt: partial, excerptSha256: evidenceSha256(partial) }, signal, h.readSource),
   { code: 'pdf/stale-reader' })
-  const race = harness(state, { ...content, extraction: 'local-ocr' as const })
+  const race = harness(state)
   let checks = 0
   await assert.rejects(revalidateEvidenceNavigation(race.workspaces, race.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, async (...args) => {
+    request, signal, async (...args) => {
       const result = await race.readSource(...args)
       if (++checks === 2) race.set({ ...state, conflict: true })
       return result
     }), { code: 'pdf/stale-reader' })
-})
-
-test('historical native and OCR cards use distinct text representations on a recoverable page', async () => {
-  const state = snapshot([9, 8, 7], 4)
-  state.document.pages = [{ page: 1, cropBox: [0, 0, 300, 400], rotation: 0, userUnit: 1 }]
-  const raw = { ...content, items: [{ ...content.items[0]!, transform: [10, 0, 0, 10, 20, 200],
-    glyphs: Array.from(text, (_, index) => [20 + index * 5, 200, 5] as [number, number, number]) }] }
-  const h = harness(state, raw), reads: boolean[] = []
-  const recoveredText = `${text} OCR-only text.`
-  const pages: AgentPageReadPort = { async readPageText(owner, id, page, abort, options) {
-    abort.throwIfAborted()
-    assert.equal(page, 1)
-    reads.push(options?.recover !== false)
-    const read = await h.pages.readPageText(owner, id, page, abort)
-    return options?.recover === false ? read : { snapshot: read.snapshot, content: {
-      ...raw, extraction: 'local-ocr', items: [{ ...raw.items[0]!, str: recoveredText }] } }
-  } }
-  const references = createMemoryEvidenceReferenceStore()
-  const native = await revalidateEvidenceNavigation(h.workspaces, pages, request, signal, h.readSource, references)
-  assert.equal(native.target?.kind, 'text')
-  assert.ok(reads.every(recover => recover === false), 'native replay and its precise resolver both remain raw')
-  const ocr = { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes), pageTextDigest: evidenceSha256(recoveredText) }
-  const derived = await revalidateEvidenceNavigation(h.workspaces, pages, ocr, signal, h.readSource, references)
-  assert.equal(derived.target, undefined)
-  assert.equal(reads.at(-1), true)
-  // A legacy OCR card without its extraction marker never triggers OCR or
-  // silently turns its snapshot into native-position authorization.
-  const { extraction: _legacyMarker, ...legacyOcr } = ocr
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, pages, legacyOcr, signal, h.readSource, references),
-    { code: 'pdf/stale-reader' })
-  assert.equal(reads.at(-1), false)
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages, ocrRequest, signal, h.readSource, references),
-    { code: 'pdf/stale-reader' })
-  await assert.rejects(revalidateEvidenceNavigation(h.workspaces, h.pages,
-    { ...ocrRequest, sourceDigest: evidenceSha256(state.bytes) }, signal, h.readSource, references),
-    { code: 'pdf/text-representation-unavailable' })
 })
 
 test('historical-card navigation retries if the draft changes while its new reference is persisted', async () => {

@@ -243,7 +243,7 @@ test('protected model reads honor extraction permissions after shared password a
       { code: 'pdf/protected-text' })
     await assert.rejects(state.reader.native(sessionId, { ...request, action: 'selectionGeometry', offset: 0 }, agent, signal),
       { code: 'pdf/protected-text' })
-    assert.deepEqual(await state.reader.native(sessionId, { ...request, action: 'text', recover: true }, agent, signal),
+    assert.deepEqual(await state.reader.native(sessionId, { ...request, action: 'text' }, agent, signal),
       { items: [], styles: {}, lang: null })
 
     await state.dispatch({ action: 'release', id: opened.id, referenceId: 'tab-a' })

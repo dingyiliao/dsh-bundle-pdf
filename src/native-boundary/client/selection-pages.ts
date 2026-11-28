@@ -31,7 +31,7 @@ export function createSelectionPages(options: {
         throw new Error('PDF selection geometry changed while reading the page')
       }
       // The preview does not build a large spatial index on the UI thread.
-      if (chunk.unmapped || chunk.charCount > 24_000) {
+      if (chunk.charCount > 24_000) {
         unavailable.add(page)
         return null
       }
